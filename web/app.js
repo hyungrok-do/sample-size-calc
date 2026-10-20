@@ -535,7 +535,6 @@ async function boot() {
   if (!(await showStatus())) return;
   try {
     state.catalog = (await engine.call('catalog')).value;
-    $('method-count').textContent = state.catalog.procedures.length;
     for (const [id, proc] of Object.entries((await engine.call('procedures')).value)) schemas.set(id, proc);
     if ($('search').value.trim()) search();
     else renderList(null);

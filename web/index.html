@@ -98,6 +98,7 @@
   .points svg { width: 18px; height: 18px; flex: none; color: var(--accent); }
   .points p { margin: 6px 0 0; font-size: 14px; color: var(--ink-2); }
   .points a { color: var(--accent); }
+  .points li:empty { min-height: 88px; }  /* kept for content to come */
 
   .layout {
     display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 24px;
@@ -233,14 +234,8 @@
       <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>Open source</h3>
       <p>A free, open source project: the code is on <a href="https://github.com/hyungrok-do/sample-size-calc">GitHub</a>.</p>
     </li>
-    <li>
-      <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span><span id="method-count">66</span> methods</span></h3>
-      <p>Means, proportions, survival, regression, cluster and stepped-wedge trials, group-sequential designs, equivalence, diagnostic accuracy and more, plus simulation for complex designs.</p>
-    </li>
-    <li>
-      <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Checked against R</h3>
-      <p>Results are compared with R (pwr, rpact, stats) and published examples. The project is still under validation, so check important designs with a statistician.</p>
-    </li>
+    <li aria-hidden="true"></li>
+    <li aria-hidden="true"></li>
   </ul>
 </section>
 
