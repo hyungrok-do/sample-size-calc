@@ -18,7 +18,7 @@ export class Engine {
     this.pending = new Map();
     this.recycle = false;
     this.failed = false;
-    this.worker = new Worker(new URL(`./worker.js?engine=${this.variant}`, import.meta.url), { type: 'module' });
+    this.worker = new Worker(new URL(`./worker.js?engine=${this.variant}&v=dev`, import.meta.url), { type: 'module' });
     let watchdog = 0;
     this.worker.onmessage = ({ data }) => {
       if (data.stage === 'compiled') {

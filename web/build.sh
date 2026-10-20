@@ -14,4 +14,9 @@ for threads in OFF ON; do
   cmake --build "$dir" --target ssc_web --parallel
   cp "$dir"/ssc_web*.mjs "$dir"/ssc_web*.wasm "$here/engine/"
 done
+# The multi-core engine starts its helper threads from the address it was loaded from, version included, rather
+# than from its bare file name, which a browser could answer with an older copy it kept.
+sed -i 's|new URL("ssc_web_mt.mjs",import.meta.url)|new URL(import.meta.url)|' "$here/engine/ssc_web_mt.mjs"
+grep -q 'new Worker(new URL(import.meta.url)' "$here/engine/ssc_web_mt.mjs" ||
+  { echo "ssc_web_mt.mjs: the helper threads' address was not found; check web/build.sh" >&2; exit 1; }
 ls -l "$here/engine"

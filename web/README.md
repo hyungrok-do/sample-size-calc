@@ -39,6 +39,16 @@ soon as it is published. Without a network the page starts from the copies,
 and Stop restarts the engine from them. The multi-core engine is kept from the
 first visit that uses it.
 
+## Versions
+
+Browsers keep a static host's files for a while (GitHub Pages allows 10
+minutes), so a reload can pair a new page with an older script. To prevent
+that, the page asks for every other file with the version in its address. The
+source uses `?v=dev`, and `web/stamp.sh` replaces it with the commit when the
+Pages workflow publishes the site. The multi-core engine starts its helper
+threads from the same versioned address (`web/build.sh`), and the service
+worker always checks the page itself with the server.
+
 ## Responsiveness and memory
 
 - The engine runs in a Web Worker, so the page stays responsive during a long

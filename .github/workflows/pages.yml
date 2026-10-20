@@ -43,6 +43,7 @@ jobs:
           cp web/index.html web/app.js web/engine.js web/worker.js web/sw.js _site/
           cp web/engine/ssc_web.mjs web/engine/ssc_web.wasm web/engine/ssc_web_mt.mjs web/engine/ssc_web_mt.wasm _site/engine/
           cp LICENSE THIRD_PARTY_NOTICES.md _site/
+          web/stamp.sh _site "${GITHUB_SHA::12}"
           ls -lR _site
       - uses: actions/upload-pages-artifact@v3
 

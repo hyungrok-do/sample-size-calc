@@ -6,7 +6,7 @@ const variant = new URL(self.location.href).searchParams.get('engine') === 'ssc_
 let loadMs = 0;
 
 async function compile() {
-  const response = await fetch(new URL(`./engine/${variant}.wasm`, import.meta.url));
+  const response = await fetch(new URL(`./engine/${variant}.wasm?v=dev`, import.meta.url));
   if (!response.ok) throw new Error(`the engine file could not be downloaded (${response.status})`);
   const type = response.headers.get('content-type') ?? '';
   // a static host that answers a missing file with its home page
@@ -21,7 +21,7 @@ async function load() {
   if (variant === 'ssc_web_mt' && !(self.crossOriginIsolated && typeof SharedArrayBuffer === 'function')) {
     throw new Error('the multi-core engine needs a cross-origin isolated page');
   }
-  const [module, compiled] = await Promise.all([import(`./engine/${variant}.mjs`), compile()]);
+  const [module, compiled] = await Promise.all([import(`./engine/${variant}.mjs?v=dev`), compile()]);
   self.postMessage({ stage: 'compiled' });
   const M = await module.default({
     instantiateWasm(imports, receive) {

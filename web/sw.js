@@ -3,15 +3,19 @@
 //    visit after this worker is installed);
 //  - a copy of each of the page's files, used when the network is not there, so the page and its engine
 //    start offline.
-// The network comes first, so a new version is used as soon as it is published.
-const CACHE = 'ssc-1';
+// The network comes first, so a new version is used as soon as it is published.  Every file but the page is
+// asked for with the version in its address (?v=, stamped by web/stamp.sh when the site is published), so a
+// browser never mixes a new page with an older file it kept.
+const CACHE = 'ssc-dev';
 // fetched at installation: the first visit loaded them before this worker could keep a copy (the multi-core
 // engine is kept when it is first used, from the next visit)
-const FILES = ['./', 'app.js', 'engine.js', 'worker.js', 'engine/ssc_web.mjs', 'engine/ssc_web.wasm'];
+const FILES = ['./', 'app.js?v=dev', 'engine.js?v=dev', 'worker.js?engine=ssc_web&v=dev', 'engine/ssc_web.mjs?v=dev',
+  'engine/ssc_web.wasm?v=dev'];
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)).catch(() => {}));
+  const fresh = FILES.map((file) => new Request(file, { cache: 'reload' }));  // not an older copy the browser kept
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(fresh)).catch(() => {}));
 });
 
 self.addEventListener('activate', (event) => {
@@ -35,7 +39,8 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
   event.respondWith((async () => {
     try {
-      const response = await fetch(request);
+      // the page itself is checked with the server every time: it names the version of every other file
+      const response = await (request.mode === 'navigate' ? fetch(request.url, { cache: 'no-cache' }) : fetch(request));
       if (response.ok) {
         const copy = response.clone();
         event.waitUntil(caches.open(CACHE).then((cache) => cache.put(request, copy)));

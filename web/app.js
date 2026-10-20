@@ -1,6 +1,6 @@
 // The calculator in a web page, on its own engine: pick a method, fill its inputs (a form generated from the
 // method's schema) and calculate; and a speed test of the engine in this browser.
-import { Engine } from './engine.js';
+import { Engine } from './engine.js?v=dev';
 
 const $ = (id) => document.getElementById(id);
 const engine = new Engine();
