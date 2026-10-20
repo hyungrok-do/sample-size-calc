@@ -48,7 +48,8 @@ from ssc import mcp_server
 assert mcp_server.main(["--transport", "stdio"]) == 1
 print("ok")
 """
-    env = {**os.environ, "PYTHONPATH": str(PACKAGE.parent) + os.pathsep +
+    import ssc  # the package these tests use: installed (with its compiled core) or the source tree (conftest.py)
+    env = {**os.environ, "PYTHONPATH": str(Path(ssc.__file__).resolve().parents[1]) + os.pathsep +
            os.environ.get("PYTHONPATH", "")}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
     assert out.returncode == 0 and out.stdout.strip().endswith("ok"), out.stdout + out.stderr
