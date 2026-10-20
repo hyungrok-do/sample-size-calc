@@ -278,8 +278,9 @@ def check_result(pid: str, solve: str, inputs: dict, res: dict, seconds: float) 
     problems = []
     where = f"{pid} [{solve}] {inputs}"
     # simulations refit a model to every simulated study, so extreme designs (thousands of clusters)
-    # legitimately take longer than closed-form calculations
-    if seconds > (30 if SCHEMAS[pid].get("simulation") else 10):
+    # legitimately take longer than closed-form calculations: a win-ratio search that ends at 4,117 patients per
+    # group compares every pair in each of 500 studies, 18 s on 4 cores and 71 s on one.  The limit is for hangs.
+    if seconds > (120 if SCHEMAS[pid].get("simulation") else 10):
         problems.append(f"slow ({seconds:.1f} s): {where}")
     if not res.get("ok"):
         msg = (res.get("error") or "") + " " + " ".join((res.get("input_errors") or {}).values())
