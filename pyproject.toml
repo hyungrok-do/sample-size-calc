@@ -1,0 +1,55 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "sample-size-calculator"
+version = "0.1.0"
+description = "Power analysis and sample size calculator: a multi-threaded C++ engine with a command line, an MCP server for language models, and a web page."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Hyungrok Do" }]
+keywords = ["sample size", "power analysis", "biostatistics", "clinical trials", "statistics"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+# the MCP server for language-model clients (ssc-mcp); the SDK needs Python 3.10 or later
+mcp = ["mcp>=2,<3; python_version >= '3.10'"]
+
+[project.scripts]
+ssc-calc = "ssc.cli:main"
+ssc-mcp = "ssc.mcp_server:main"
+
+[project.urls]
+Homepage = "https://hyungrok-do.github.io/sample-size-calc/"
+Source = "https://github.com/hyungrok-do/sample-size-calc"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.15"
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["python/ssc"]
+# The core is loaded through ctypes (no Python C-API), so a single wheel per
+# platform works with every Python 3 version.
+wheel.py-api = "py3"
+sdist.exclude = ["/build*", ".github"]  # "/": only the build directories at the top
+
+[tool.scikit-build.cmake.define]
+SSC_BUILD_TESTS = "OFF"
+SSC_BUILD_CLI = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

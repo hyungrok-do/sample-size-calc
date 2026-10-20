@@ -1,0 +1,203 @@
+// Procedure regression tests: run each case of fixtures/procedures.json
+// through the engine and compare with reference values computed independently
+// of it (the fixture records the software that computed them).  Also checks
+// engine behavior that does not depend on reference values: thread-count
+// invariance, cancellation and input validation.
+#include <fstream>
+#include <sstream>
+
+#include "engine/runner.hpp"
+#include "testing.hpp"
+#include "util/json.hpp"
+#include "util/parallel.hpp"
+
+using namespace ssc;
+
+namespace {
+
+// The reference cases.
+json::Value reference_cases() {
+  std::ifstream in(std::string(SSC_FIXTURE_DIR) + "/procedures.json");
+  std::stringstream ss;
+  ss << in.rdbuf();
+  return json::parse(ss.str()).get("cases");
+}
+
+json::Value run(const std::string& request, Token* token = nullptr) {
+  Token local;
+  return run_request(json::parse(request), token ? token : &local);
+}
+
+json::Value request_of(const json::Value& c, int threads, bool curve) {
+  json::Value req = json::Value::object();
+  req.set("procedure", c.get("procedure").as_string());
+  req.set("solve_for", c.get("solve_for").as_string());
+  req.set("inputs", c.get("inputs"));
+  json::Value opts = json::Value::object();
+  opts.set("threads", static_cast<double>(threads));
+  opts.set("power_curve", curve);
+  req.set("options", opts);
+  return req;
+}
+
+}  // namespace
+
+TEST_CASE("procedures: independent reference values") {
+  const json::Value cases = reference_cases();
+  CHECK(cases.size() > 40);
+  for (const auto& c : cases.elements()) {
+    const std::string name = c.get("name").as_string();
+    Token token;
+    const json::Value res = run_request(request_of(c, 0, false), &token);
+    if (!res.get("ok").as_bool()) {
+      ::ssc::test::count_check();
+      ::ssc::test::report_failure(name + ": " + res.dump(), __FILE__, __LINE__);
+      continue;
+    }
+    const double rtol = c.get("rtol").as_number(1e-8);
+    for (const auto& e : c.get("expect").elements()) {
+      const auto& row = res.get("rows").at(static_cast<std::size_t>(e.get("row").as_number()));
+      const std::string key = e.get("key").as_string();
+      const double got = row.get(key).as_number(NAN), want = e.get("value").as_number();
+      ::ssc::test::count_check();
+      if (!::ssc::test::close(got, want, rtol, 0)) {
+        std::ostringstream os;
+        os.precision(12);
+        os << name << ": " << key << " = " << got << ", expected " << want << " ("
+           << c.get("source").as_string() << ")";
+        if (row.find("_error")) os << " error: " << row.get("_error").as_string();
+        ::ssc::test::report_failure(os.str(), __FILE__, __LINE__);
+      }
+    }
+  }
+}
+
+TEST_CASE("procedures: results do not depend on the number of threads") {
+  const json::Value cases = reference_cases();
+  int n = 0;
+  for (const auto& c : cases.elements()) {
+    if (++n % 3 != 0) continue;  // a sample keeps the test quick
+    Token t1, t4;
+    const json::Value a = run_request(request_of(c, 1, true), &t1);
+    const json::Value b = run_request(request_of(c, 4, true), &t4);
+    // identical rows and power curves (bitwise: no reductions depend on scheduling)
+    CHECK_EQ(a.get("rows").dump(), b.get("rows").dump());
+    CHECK_EQ(a.get("plots").dump(), b.get("plots").dump());
+  }
+}
+
+TEST_CASE("procedures: input validation and errors") {
+  const json::Value bad = run(R"({"procedure":"means.two.t","solve_for":"n","inputs":{"power":"1.5"}})");
+  CHECK(!bad.get("ok").as_bool());
+  CHECK(bad.get("input_errors").find("power") != nullptr);
+
+  const json::Value unknown = run(R"({"procedure":"no.such.procedure","solve_for":"n","inputs":{}})");
+  CHECK(!unknown.get("ok").as_bool());
+
+  // a scenario that cannot be computed reports a per-row error, the others still run
+  const json::Value mixed = run(R"({"procedure":"means.two.t","solve_for":"n","inputs":{"mu1":"0 1","mu2":"0"}})");
+  CHECK(mixed.get("ok").as_bool());
+  CHECK_EQ(mixed.get("rows").size(), std::size_t{2});
+  CHECK(mixed.get("rows").at(0).find("_error") != nullptr);
+  CHECK(mixed.get("rows").at(1).find("_error") == nullptr);
+
+  // lists and ranges expand into scenarios
+  const json::Value grid = run(
+      R"({"procedure":"means.two.t","solve_for":"power","inputs":{"n1":"10 to 50 by 10","mu1":"0.5 1"}})");
+  CHECK_EQ(grid.get("rows").size(), std::size_t{10});
+}
+
+TEST_CASE("procedures: typed and pasted numbers") {
+  auto message = [](const std::string& mu1) {
+    const json::Value r = run(R"({"procedure":"means.two.t","solve_for":"n","inputs":{"mu1":")" + mu1 + R"("}})");
+    return r.get("ok").as_bool() ? std::string() : r.get("input_errors").get("mu1").as_string();
+  };
+  auto first_mu1 = [](const std::string& mu1) {
+    const json::Value r = run(R"({"procedure":"means.two.t","solve_for":"n","inputs":{"mu1":")" + mu1 + R"("}})");
+    return r.get("rows").at(0).get("mu1").as_number();
+  };
+  // "10-20" read as 10 and -20 would quietly make two scenarios; a range is written "10 to 20"
+  CHECK(message("10-20").find("'10 to 20'") != std::string::npos);
+  CHECK(message("0.5-1").find("'0.5 to 1'") != std::string::npos);
+  CHECK(message("3+4").find("as a number") != std::string::npos);
+  CHECK(message("80%").find("without '%'") != std::string::npos);
+  CHECK_EQ(message("1e-5 -1 -2"), std::string());  // exponents and negative values in a list
+  // the minus sign, and the spaces of pasted text (no-break, thin, narrow no-break)
+  CHECK_EQ(first_mu1("\u22120.5"), -0.5);
+  CHECK_EQ(first_mu1("0.75\u00a0"), 0.75);
+  CHECK_EQ(first_mu1("\u2009 0.25\u202f"), 0.25);
+  // a long text is refused before it is read
+  CHECK(message(std::string(1000001, '1')).find("too long") != std::string::npos);
+  // objects and arrays nested beyond any request are refused, not followed into a stack overflow
+  std::string deep = R"({"procedure":"means.two.t","inputs":{"x":)";
+  for (int i = 0; i < 100000; ++i) deep += '[';
+  bool refused = false;
+  try {
+    json::parse(deep);
+  } catch (const std::exception& e) {
+    refused = std::string(e.what()).find("nested too deeply") != std::string::npos;
+  }
+  CHECK(refused);
+}
+
+TEST_CASE("procedures: cancellation stops a running calculation") {
+  Token token;
+  token.cancel();
+  const json::Value res = run(
+      R"({"procedure":"prop.two","solve_for":"power",)"
+      R"("inputs":{"n1":"500 to 5000 by 5","test":"fisher","p1":"0.5","p2":"0.45"}})",
+      &token);
+  CHECK(!res.get("ok").as_bool());
+  CHECK(res.get("cancelled").as_bool());
+}
+
+TEST_CASE("procedures: every procedure runs its example") {
+  const json::Value cat = catalog_json();
+  for (const auto& p : cat.get("procedures").elements()) {
+    const std::string id = p.get("id").as_string();
+    const json::Value schema = json::parse(procedure_json(*find_procedure(id)).dump());
+    const json::Value& example = schema.get("example");
+    json::Value req = json::Value::object();
+    req.set("procedure", id);
+    req.set("solve_for", example.get("solve_for").as_string());
+    req.set("inputs", example.get("inputs"));
+    Token token;
+    const json::Value res = run_request(req, &token);
+    ::ssc::test::count_check();
+    bool ok = res.get("ok").as_bool();
+    for (const auto& r : res.get("rows").elements())
+      if (r.find("_error")) ok = false;
+    if (!ok) ::ssc::test::report_failure(id + " example failed: " + res.dump().substr(0, 400), __FILE__, __LINE__);
+  }
+}
+
+TEST_CASE("procedures: every input has a help text") {
+  // The app explains each input with its help text: one or two short, complete sentences.
+  const json::Value cat = catalog_json();
+  int params = 0;
+  for (const auto& p : cat.get("procedures").elements()) {
+    const std::string id = p.get("id").as_string();
+    const json::Value schema = procedure_json(*find_procedure(id));
+    for (const auto& q : schema.get("params").elements()) {
+      ++params;
+      const std::string where = id + " " + q.get("id").as_string() + ": ";
+      const std::string help = q.get("help").as_string();
+      std::size_t chars = 0;  // Unicode code points of the UTF-8 text
+      for (char c : help)
+        if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) ++chars;
+      ::ssc::test::count_check();
+      if (help.empty()) {
+        ::ssc::test::report_failure(where + "no help text", __FILE__, __LINE__);
+        continue;
+      }
+      if (help.back() != '.')
+        ::ssc::test::report_failure(where + "the help text does not end with a period: " + help, __FILE__, __LINE__);
+      if (chars > 300)
+        ::ssc::test::report_failure(where + "the help text has " + std::to_string(chars) + " characters (at most 300)",
+                                    __FILE__, __LINE__);
+      if (help.front() == ' ' || help.find("  ") != std::string::npos)
+        ::ssc::test::report_failure(where + "stray spaces in the help text: " + help, __FILE__, __LINE__);
+    }
+  }
+  CHECK(params > 700);
+}

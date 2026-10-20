@@ -1,0 +1,581 @@
+// Agreement (intraclass correlation, Cohen's kappa) and diagnostic accuracy
+// (area under the ROC curve, sensitivity and specificity).
+#include "procedures/binomial_tools.hpp"
+#include "procedures/common.hpp"
+
+namespace ssc::procs {
+namespace {
+
+using namespace blocks;
+
+// =====================================================================================
+// Intraclass correlation (one-way random effects, k ratings per subject)
+// =====================================================================================
+// With n subjects rated k times, F = MSB/MSW equals c(ρ)·F* where
+// c(ρ) = (1 + (k − 1)ρ)/(1 − ρ) and F* ~ F(n − 1, n(k − 1)); the test of
+// H0: ρ = ρ0 compares F with c(ρ0) times an F quantile, so power is exact.
+double icc_c(double rho, double k) { return (1 + (k - 1) * rho) / (1 - rho); }
+
+double icc_power(double n, double k, double rho0, double rho1, double alpha, Alt a) {
+  using namespace stats;
+  const double df1 = n - 1, df2 = n * (k - 1);
+  if (!(df1 > 0 && df2 > 0)) return NAN;
+  const double ratio = icc_c(rho0, k) / icc_c(rho1, k);
+  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  double pw = 0;
+  if (a != Alt::Lower) pw += pf(qf(side, df1, df2, false) * ratio, df1, df2, false);
+  if (a != Alt::Upper) pw += pf(qf(side, df1, df2, true) * ratio, df1, df2, true);
+  return stats::clamp01(pw);
+}
+
+Procedure icc() {
+  Procedure p;
+  p.id = "agree.icc";
+  p.name = "Tests for an Intraclass Correlation (Reliability)";
+  p.category = "Agreement";
+  p.subcategory = "Intraclass Correlation";
+  p.order = 1;
+  p.summary =
+      "Number of subjects for testing H0: ρ = ρ0 for the intraclass correlation of a one-way random-effects model in "
+      "which every subject is measured by k raters (or k times). Power is exact, from the F distribution (Walter, "
+      "Eliasziw & Donner, 1998).";
+  p.keywords = {"intraclass correlation", "icc", "reliability", "raters", "agreement", "repeatability", "test-retest", "inter-rater reliability"};
+  p.solve_for = {{"n", "Sample Size", "n", "N (Subjects)"},
+                 {"power", "Power", "power", "Power"},
+                 {"rho1", "Effect Size (ρ1)", "rho1", "Detectable ρ1"}};
+  p.params = {
+      alternative("Two-sided (H1: ρ ≠ ρ0)", "One-sided (H1: ρ > ρ0)", "One-sided (H1: ρ < ρ0)", "upper"),
+      power_param(),
+      alpha_param(),
+      n_param("n", "N (Number of Subjects)", "30", 2)
+          .sym("N")
+          .hint("Number of subjects, each rated by all k raters (or measured k times)."),
+      dropout_param(),
+      num("k", "k (Raters or Measurements per Subject)", "2")
+          .grp(G_N)
+          .sym("k")
+          .at_least(2)
+          .whole()
+          .sugg({"2", "3", "2 3 4"})
+          .hint("How many raters rate each subject, or how many times each subject is measured."),
+      num("rho0", "ρ0 (ICC under H0)", "0.4")
+          .grp(G_EFFECT)
+          .sym("ρ0")
+          .range(-1, 1, true, true)
+          .sugg({"0", "0.4", "0.6"})
+          .hint("The intraclass correlation (reliability) under the null hypothesis, typically a level that the "
+                "true reliability should be shown to exceed."),
+      num("rho1", "ρ1 (ICC under H1)", "0.7")
+          .grp(G_EFFECT)
+          .sym("ρ1")
+          .range(-1, 1, true, true)
+          .sugg({"0.7", "0.6 0.7 0.8"})
+          .hint("The intraclass correlation you expect to be true; values near 1 mean that the ratings of a "
+                "subject agree closely.")
+          .show(when(not_solving({"rho1"}))),
+  };
+  p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    const double k = s("k"), rho0 = s("rho0"), alpha = s("alpha");
+    const Alt a = alt(s);
+    if (!(rho0 > -1 / (k - 1))) throw CalcError("ρ0 must exceed −1/(k − 1)");
+    double n, rho1;
+    if (s.solve == "rho1") {
+      n = s("n");
+      const double target = s("power");
+      const bool up = a != Alt::Lower;
+      auto P = [&](double x) { return icc_power(n, k, rho0, x, alpha, a); };
+      const double lo_lim = -1 / (k - 1) + 1e-9;
+      rho1 = up ? solve::solve_increasing(P, target, rho0, rho0 + 0.5 * (1 - rho0), 1 - 1e-9, 1e-11, "ρ1")
+                : solve::solve_decreasing(P, target, rho0, rho0 - 0.5 * (rho0 - lo_lim), lo_lim, 1e-11, "ρ1");
+    } else {
+      rho1 = s("rho1");
+      if (!(rho1 > -1 / (k - 1))) throw CalcError("ρ1 must exceed −1/(k − 1)");
+      if (rho1 == rho0) throw CalcError("ρ1 equals ρ0");
+      if ((a == Alt::Upper && rho1 < rho0) || (a == Alt::Lower && rho1 > rho0))
+        throw CalcError("ρ1 lies on the side opposite to the one-sided alternative");
+      if (s.solve == "n") {
+        solve::NSearch o;
+        o.lo = 2;
+        // Fisher-type normal approximation for a starting value
+        const double z = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false) + stats::qnorm(s("power"));
+        const double d = std::log(icc_c(rho1, k) / icc_c(rho0, k));
+        o.guess = 2 * k * z * z / ((k - 1) * d * d) + 2;
+        n = solve::min_n([&](double x) { return icc_power(x, k, rho0, rho1, alpha, a); }, s("power"), o, &ctx);
+      } else {
+        n = s("n");
+      }
+    }
+    r.set("n", n);
+    put_power(s, r, icc_power(n, k, rho0, rho1, alpha, a));
+    r.set("k", k);
+    r.set("total", n * k);
+    r.set("rho0", rho0);
+    r.set("rho1", rho1);
+    r.set("alpha", alpha);
+  };
+  p.columns = [](const Scenario& s) {
+    auto c = power_columns(s);
+    for (auto x : {col("n", "N", "int", "Number of subjects"), col("k", "k", "int", "Ratings per subject"),
+                   col("total", "N × k", "int", "Total number of ratings"), col("rho0", "ρ0", "num"),
+                   col("rho1", "ρ1", "num"), col("alpha", "Alpha", "alpha")})
+      c.push_back(x);
+    return c;
+  };
+  p.statement = [](const Scenario& s, const Row& r) {
+    return "A sample of " + fint(r.num("n")) + " subjects, each rated " + fint(r.num("k")) + " times, " +
+           achieves_singular(s, r) + " to detect an intraclass correlation of " + fnum(r.num("rho1")) +
+           " when the value under the null hypothesis is " + fnum(r.num("rho0")) + ", using a " + alt_words(alt(s)) +
+           " F-test at significance level α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.definitions = {{"N", "Number of subjects."},
+                   {"k", "Number of raters (or repeated measurements) per subject."},
+                   {"ρ0, ρ1", "Intraclass correlation under the null and the alternative hypotheses."}};
+  p.references = {"Walter, S. D., Eliasziw, M. & Donner, A. (1998). Sample size and optimal designs for reliability "
+                  "studies. Statistics in Medicine 17, 101–110.",
+                  "Shrout, P. E. & Fleiss, J. L. (1979). Intraclass correlations: uses in assessing rater reliability. "
+                  "Psychological Bulletin 86, 420–428."};
+  p.curve_param = "n";
+  p.curve_label = "N (Subjects)";
+  p.curve_min = 2;
+  p.dropout_groups = {"n"};
+  p.example_solve = "n";
+  p.example = {{"power", "0.8 0.9"}, {"k", "2 3"}, {"rho0", "0.4"}, {"rho1", "0.7"}};
+  return p;
+}
+SSC_REGISTER(icc);
+
+// =====================================================================================
+// Cohen's kappa: two raters, binary ratings
+// =====================================================================================
+// Asymptotic variance of the estimated kappa (Fleiss, Cohen & Everitt, 1969) for
+// a 2×2 table with equal marginal probabilities π for both raters, as used by
+// Cantor (1996): n·Var(κ̂) = Q(κ).
+double kappa_q(double kappa, double pi) {
+  const double a = pi, b = 1 - pi;
+  const double pe = a * a + b * b;
+  const double p11 = a * a + kappa * a * b, p22 = b * b + kappa * a * b, p12 = (1 - kappa) * a * b;
+  const double t1 = p11 * std::pow(1 - 2 * a * (1 - kappa), 2) + p22 * std::pow(1 - 2 * b * (1 - kappa), 2);
+  const double t2 = (1 - kappa) * (1 - kappa) * 2 * p12;  // p.i + pj. = 1 for equal marginals
+  const double t3 = std::pow(kappa - pe * (1 - kappa), 2);
+  return (t1 + t2 - t3) / ((1 - pe) * (1 - pe));
+}
+
+// Smallest and largest kappa for which all four cells are probabilities.
+double kappa_min(double pi) { return -std::min(pi, 1 - pi) / std::max(pi, 1 - pi); }
+
+double kappa_power(double n, double k0, double k1, double pi, double alpha, Alt a) {
+  using namespace stats;
+  const double s0 = std::sqrt(kappa_q(k0, pi) / n), s1 = std::sqrt(kappa_q(k1, pi) / n);
+  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double z = qnorm(side, false), d = k1 - k0;
+  double pw = 0;
+  if (a != Alt::Lower) pw += pnorm((d - z * s0) / s1);
+  if (a != Alt::Upper) pw += pnorm((-d - z * s0) / s1);
+  return stats::clamp01(pw);
+}
+
+Procedure kappa() {
+  Procedure p;
+  p.id = "agree.kappa";
+  p.name = "Tests for Cohen's Kappa (Two Raters, Binary Ratings)";
+  p.category = "Agreement";
+  p.subcategory = "Kappa";
+  p.order = 1;
+  p.summary =
+      "Number of subjects for testing H0: κ = κ0 for the agreement of two raters who classify each subject as "
+      "positive or negative, given the proportion of positive ratings; uses the large-sample variance of the "
+      "estimated kappa under the null and the alternative (Fleiss, Cohen & Everitt, 1969; Cantor, 1996).";
+  p.keywords = {"kappa", "cohen", "agreement", "raters", "inter-rater", "reliability", "binary", "cohen's kappa", "inter-observer", "inter-rater agreement"};
+  p.solve_for = {{"n", "Sample Size", "n", "N (Subjects)"}, {"power", "Power", "power", "Power"}};
+  p.params = {
+      alternative("Two-sided (H1: κ ≠ κ0)", "One-sided (H1: κ > κ0)", "One-sided (H1: κ < κ0)", "upper"),
+      power_param(),
+      alpha_param(),
+      n_param("n", "N (Number of Subjects)", "100", 2)
+          .sym("N")
+          .hint("Number of subjects, each classified as positive or negative by both raters."),
+      dropout_param(),
+      num("kappa0", "κ0 (Kappa under H0)", "0.4")
+          .grp(G_EFFECT)
+          .sym("κ0")
+          .range(-1, 1, false, true)
+          .sugg({"0", "0.4", "0.6"})
+          .hint("The kappa under the null hypothesis, typically a level of agreement that the true kappa should be "
+                "shown to exceed (0 is agreement by chance alone)."),
+      num("kappa1", "κ1 (Kappa under H1)", "0.7")
+          .grp(G_EFFECT)
+          .sym("κ1")
+          .range(-1, 1, false, true)
+          .sugg({"0.7", "0.6 0.7 0.8"})
+          .hint("The kappa you expect to be true; 1 is perfect agreement and 0 is agreement no better than "
+                "chance."),
+      num("prev", "π (Proportion of Positive Ratings)", "0.3")
+          .grp(G_EFFECT)
+          .sym("π")
+          .range(0, 1, true, true)
+          .sugg({"0.3", "0.5", "0.1 0.3 0.5"})
+          .hint("Marginal probability that a rater classifies a subject as positive (the same for both raters)."),
+  };
+  p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    const double k0 = s("kappa0"), k1 = s("kappa1"), pi = s("prev"), alpha = s("alpha");
+    const Alt a = alt(s);
+    const double kmin = kappa_min(pi);
+    if (!(k0 >= kmin && k1 >= kmin))
+      throw CalcError("with π = " + fnum(pi) + ", kappa cannot be below " + fnum(kmin, 4));
+    if (k1 == k0) throw CalcError("κ1 equals κ0");
+    if ((a == Alt::Upper && k1 < k0) || (a == Alt::Lower && k1 > k0))
+      throw CalcError("κ1 lies on the side opposite to the one-sided alternative");
+    double n;
+    if (s.solve == "n") {
+      const double z0 = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false), z1 = stats::qnorm(s("power"));
+      const double guess = std::pow(z0 * std::sqrt(kappa_q(k0, pi)) + z1 * std::sqrt(kappa_q(k1, pi)), 2) /
+                           ((k1 - k0) * (k1 - k0));
+      solve::NSearch o;
+      o.lo = 2;
+      o.guess = guess;
+      n = solve::min_n([&](double x) { return kappa_power(x, k0, k1, pi, alpha, a); }, s("power"), o, &ctx);
+    } else {
+      n = s("n");
+    }
+    r.set("n", n);
+    put_power(s, r, kappa_power(n, k0, k1, pi, alpha, a));
+    r.set("kappa0", k0);
+    r.set("kappa1", k1);
+    r.set("prev", pi);
+    r.set("po1", 1 - 2 * (1 - k1) * pi * (1 - pi));
+    r.set("alpha", alpha);
+  };
+  p.columns = [](const Scenario& s) {
+    auto c = power_columns(s);
+    for (auto x : {col("n", "N", "int", "Number of subjects"), col("kappa0", "κ0", "num"), col("kappa1", "κ1", "num"),
+                   col("prev", "π", "num", "Proportion of positive ratings"),
+                   col("po1", "Agreement under H1", "num", "Proportion of subjects both raters classify alike"),
+                   col("alpha", "Alpha", "alpha")})
+      c.push_back(x);
+    return c;
+  };
+  p.statement = [](const Scenario& s, const Row& r) {
+    return "A sample of " + fint(r.num("n")) + " subjects rated by two raters " + achieves_singular(s, r) +
+           " to detect a kappa of " + fnum(r.num("kappa1")) + " when the value under the null hypothesis is " +
+           fnum(r.num("kappa0")) + ", assuming a proportion of positive ratings of " + fnum(r.num("prev")) +
+           ", using a " + alt_words(alt(s)) + " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.definitions = {{"κ0, κ1", "Cohen's kappa under the null and the alternative hypotheses."},
+                   {"π", "Probability that a rater classifies a subject as positive (equal for both raters)."},
+                   {"Agreement under H1", "Probability that the two raters agree when κ = κ1."}};
+  p.references = {"Fleiss, J. L., Cohen, J. & Everitt, B. S. (1969). Large sample standard errors of kappa and "
+                  "weighted kappa. Psychological Bulletin 72, 323–327.",
+                  "Cantor, A. B. (1996). Sample-size calculations for Cohen's kappa. Psychological Methods 1, 150–153."};
+  p.curve_param = "n";
+  p.curve_label = "N (Subjects)";
+  p.curve_min = 2;
+  p.dropout_groups = {"n"};
+  p.example_solve = "n";
+  p.example = {{"power", "0.8 0.9"}, {"kappa0", "0.4"}, {"kappa1", "0.6 0.7"}, {"prev", "0.3"}};
+  return p;
+}
+SSC_REGISTER(kappa);
+
+// =====================================================================================
+// Area under the ROC curve
+// =====================================================================================
+// Hanley & McNeil (1982): Var(AUC) = [A(1 − A) + (n1 − 1)(Q1 − A²) + (n0 − 1)(Q2 − A²)]/(n1 n0)
+// with Q1 = A/(2 − A) and Q2 = 2A²/(1 + A); n1 cases (diseased), n0 controls.
+double auc_var(double A, double n1, double n0) {
+  const double q1 = A / (2 - A), q2 = 2 * A * A / (1 + A);
+  return (A * (1 - A) + (n1 - 1) * (q1 - A * A) + (n0 - 1) * (q2 - A * A)) / (n1 * n0);
+}
+
+double auc_power(double n1, double n0, double a0, double a1, double alpha, Alt a) {
+  using namespace stats;
+  const double s0 = std::sqrt(auc_var(a0, n1, n0)), s1 = std::sqrt(auc_var(a1, n1, n0));
+  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double z = qnorm(side, false), d = a1 - a0;
+  double pw = 0;
+  if (a != Alt::Lower) pw += pnorm((d - z * s0) / s1);
+  if (a != Alt::Upper) pw += pnorm((-d - z * s0) / s1);
+  return stats::clamp01(pw);
+}
+
+Procedure auc() {
+  Procedure p;
+  p.id = "diag.auc";
+  p.name = "Tests for the Area Under a ROC Curve";
+  p.category = "Diagnostic Accuracy";
+  p.subcategory = "ROC Curves";
+  p.order = 1;
+  p.summary =
+      "Numbers of cases (with the condition) and controls for testing whether the area under the ROC curve of a "
+      "diagnostic test differs from a reference value (0.5 for an uninformative test), using the variance of the "
+      "estimated AUC of Hanley & McNeil (1982).";
+  p.keywords = {"roc", "auc", "area under the curve", "diagnostic", "c-statistic", "discrimination", "biomarker", "receiver operating characteristic", "hanley-mcneil"};
+  p.solve_for = {{"n", "Sample Size", "n1", "Cases"}, {"power", "Power", "power", "Power"}};
+  p.params = {
+      alternative("Two-sided (H1: AUC ≠ AUC0)", "One-sided (H1: AUC > AUC0)", "One-sided (H1: AUC < AUC0)", "upper"),
+      power_param(),
+      alpha_param(),
+      n_param("n1", "Number of Cases (With the Condition)", "50", 2)
+          .sym("Cases")
+          .hint("Number of subjects with the condition (cases); the controls number this times the controls per "
+                "case, rounded up."),
+      num("ratio", "Controls per Case", "1")
+          .grp(G_N)
+          .sym("Controls/Case")
+          .above(0)
+          .sugg({"1", "2", "1 2 3"})
+          .hint("Number of subjects without the condition (controls) per case; 1 gives equal numbers."),
+      num("auc0", "AUC0 (Area under H0)", "0.5")
+          .grp(G_EFFECT)
+          .sym("AUC0")
+          .range(0, 1, true, true)
+          .sugg({"0.5", "0.7"})
+          .hint("The area under the ROC curve under the null hypothesis; 0.5 is a test no better than chance."),
+      num("auc1", "AUC1 (Area under H1)", "0.7")
+          .grp(G_EFFECT)
+          .sym("AUC1")
+          .range(0, 1, true, true)
+          .sugg({"0.7", "0.65 0.7 0.75 0.8"})
+          .hint("The area under the ROC curve you expect: the chance that a random case scores higher on the test "
+                "than a random control."),
+  };
+  p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    const double a0 = s("auc0"), a1 = s("auc1"), ratio = s("ratio"), alpha = s("alpha");
+    const Alt a = alt(s);
+    if (a1 == a0) throw CalcError("AUC1 equals AUC0");
+    if ((a == Alt::Upper && a1 < a0) || (a == Alt::Lower && a1 > a0))
+      throw CalcError("AUC1 lies on the side opposite to the one-sided alternative");
+    auto controls = [&](double n1) { return std::ceil(n1 * ratio - 1e-9); };
+    double n1;
+    if (s.solve == "n") {
+      solve::NSearch o;
+      o.lo = solve::first_whole([&](double x) { return controls(x) >= 2; }, 2, o.hi,
+                                "the ratio of controls to cases is too small: there would be fewer than 2 controls");
+      n1 = solve::min_n([&](double x) { return auc_power(x, controls(x), a0, a1, alpha, a); }, s("power"), o, &ctx);
+    } else {
+      n1 = s("n1");
+    }
+    const double n0 = controls(n1);
+    if (n0 < 2)
+      throw CalcError("there would be " + fint(n0) + " control (cases × the ratio, rounded up); at least 2 are "
+                      "needed");
+    r.set("n1", n1);
+    r.set("n0", n0);
+    r.set("n", n1 + n0);
+    put_power(s, r, auc_power(n1, n0, a0, a1, alpha, a));
+    r.set("auc0", a0);
+    r.set("auc1", a1);
+    r.set("se1", std::sqrt(auc_var(a1, n1, n0)));
+    r.set("alpha", alpha);
+  };
+  p.columns = [](const Scenario& s) {
+    auto c = power_columns(s);
+    for (auto x : {col("n1", "Cases", "int", "Subjects with the condition"),
+                   col("n0", "Controls", "int", "Subjects without the condition"), col("n", "N", "int", "Total"),
+                   col("auc0", "AUC0", "num"), col("auc1", "AUC1", "num"),
+                   col("se1", "SE(AUC) under H1", "num", "Standard error of the estimated AUC when AUC = AUC1"),
+                   col("alpha", "Alpha", "alpha")})
+      c.push_back(x);
+    return c;
+  };
+  p.statement = [](const Scenario& s, const Row& r) {
+    return "Samples of " + fint(r.num("n1")) + " cases and " + fint(r.num("n0")) + " controls " +
+           achieves(s, r) + " to detect an area under the ROC curve of " + fnum(r.num("auc1")) +
+           " when the value under the null hypothesis is " + fnum(r.num("auc0")) + ", using a " + alt_words(alt(s)) +
+           " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.definitions = {{"Cases, Controls", "Subjects with and without the condition (by the reference standard)."},
+                   {"AUC", "Area under the ROC curve: the probability that a random case scores higher than a random "
+                           "control."}};
+  p.references = {"Hanley, J. A. & McNeil, B. J. (1982). The meaning and use of the area under a receiver operating "
+                  "characteristic (ROC) curve. Radiology 143, 29–36.",
+                  "Obuchowski, N. A. (1998). Sample size calculations in studies of test accuracy. Statistical Methods "
+                  "in Medical Research 7, 371–392."};
+  p.notes = {"The variance uses Hanley and McNeil's exponential approximation; for binormal data it is close but "
+             "slightly conservative."};
+  p.curve_param = "n1";
+  p.curve_label = "Number of Cases";
+  p.curve_min = 2;
+  p.example_solve = "n";
+  p.example = {{"power", "0.8 0.9"}, {"auc0", "0.5"}, {"auc1", "0.65 0.7 0.75"}, {"ratio", "1"}};
+  return p;
+}
+SSC_REGISTER(auc);
+
+// =====================================================================================
+// Sensitivity and specificity (exact binomial tests)
+// =====================================================================================
+// Smallest c with P(X ≥ c | n, p0) ≤ α: the exact one-sided test of H0: p ≤ p0.
+double exact_upper_power(int n, double p0, double p1, double alpha) {
+  if (n < 1) return 0;
+  const int c = upper_critical(n, p0, alpha);
+  return c > n ? 0.0 : stats::pbinom(c - 1, n, p1, false);
+}
+
+Procedure sens_spec() {
+  Procedure p;
+  p.id = "diag.sens";
+  p.name = "Tests for Sensitivity and Specificity (One Diagnostic Test)";
+  p.category = "Diagnostic Accuracy";
+  p.subcategory = "Sensitivity and Specificity";
+  p.order = 1;
+  p.summary =
+      "Total number of subjects for showing that a diagnostic test's sensitivity exceeds Se0 and/or its specificity "
+      "exceeds Sp0, with exact one-sided binomial tests among the subjects with and without the condition, given the "
+      "prevalence of the condition in the sampled population.";
+  p.keywords = {"sensitivity", "specificity", "diagnostic accuracy", "screening", "prevalence", "binomial", "true positive rate", "true negative rate"};
+  p.solve_for = {{"n", "Sample Size", "n", "N (Total)"}, {"power", "Power", "power", "Power"}};
+  p.params = {
+      select("goal", "Hypotheses",
+             {{"both", "Sensitivity and specificity (both tests significant)", {}},
+              {"se", "Sensitivity only", {}},
+              {"sp", "Specificity only", {}}},
+             "both")
+          .grp(G_TEST)
+          .hint("What the study must show: both a high enough sensitivity and specificity (both tests must "
+                "succeed), or only one of them."),
+      power_param(),
+      alpha_param("0.05", "Alpha (One-Sided, Each Test)").range(0, 0.5, true, true),
+      n_param("n", "N (Total Number of Subjects)", "200", 2)
+          .sym("N")
+          .hint("Total number of subjects tested, with and without the condition; the prevalence splits them."),
+      num("prev", "Prevalence of the Condition", "0.2")
+          .grp(G_N)
+          .sym("Prevalence")
+          .range(0, 1, true, true)
+          .sugg({"0.1", "0.2", "0.3"})
+          .hint("The share of the sampled subjects who have the condition, between 0 and 1; it sets how many "
+                "subjects with and without it to expect."),
+      num("se0", "Se0 (Sensitivity under H0)", "0.7")
+          .grp(G_EFFECT)
+          .sym("Se0")
+          .range(0, 1, true, true)
+          .hint("The sensitivity (share of subjects with the condition who test positive) that the test must be "
+                "shown to exceed.")
+          .show(when(is_not("goal", {"sp"}))),
+      num("se1", "Se1 (Sensitivity under H1)", "0.85")
+          .grp(G_EFFECT)
+          .sym("Se1")
+          .range(0, 1, true, true)
+          .hint("The sensitivity you expect the test to have; it must exceed Se0.")
+          .show(when(is_not("goal", {"sp"}))),
+      num("sp0", "Sp0 (Specificity under H0)", "0.8")
+          .grp(G_EFFECT)
+          .sym("Sp0")
+          .range(0, 1, true, true)
+          .hint("The specificity (share of subjects without the condition who test negative) that the test must "
+                "be shown to exceed.")
+          .show(when(is_not("goal", {"se"}))),
+      num("sp1", "Sp1 (Specificity under H1)", "0.9")
+          .grp(G_EFFECT)
+          .sym("Sp1")
+          .range(0, 1, true, true)
+          .hint("The specificity you expect the test to have; it must exceed Sp0.")
+          .show(when(is_not("goal", {"se"}))),
+  };
+  p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    const double prev = s("prev"), alpha = s("alpha");
+    const bool use_se = !s.is("goal", "sp"), use_sp = !s.is("goal", "se");
+    const double se0 = use_se ? s("se0") : NAN, se1 = use_se ? s("se1") : NAN;
+    const double sp0 = use_sp ? s("sp0") : NAN, sp1 = use_sp ? s("sp1") : NAN;
+    if (use_se && !(se1 > se0)) throw CalcError("Se1 must exceed Se0");
+    if (use_sp && !(sp1 > sp0)) throw CalcError("Sp1 must exceed Sp0");
+    // subjects with / without the condition: whole numbers not exceeding the expected counts
+    auto nd = [&](double n) { return std::floor(n * prev + 1e-9); };
+    auto nn = [&](double n) { return std::floor(n * (1 - prev) + 1e-9); };
+    auto power_parts = [&](double n, double& pse, double& psp) {
+      pse = use_se ? exact_upper_power(static_cast<int>(nd(n)), se0, se1, alpha) : 1.0;
+      psp = use_sp ? exact_upper_power(static_cast<int>(nn(n)), sp0, sp1, alpha) : 1.0;
+      return pse * psp;
+    };
+    double n;
+    if (s.solve == "n") {
+      solve::NSearch o;
+      o.lo = 2;
+      o.monotone = false;  // exact binomial power is saw-toothed
+      // a tooth is about 1/min(p0, 1 − p0) subjects with (or without) the condition; the first one that reaches the
+      // target can end two teeth before the next begins (power 0.83 at N = 161, then 0.80 only from N = 242)
+      if (use_se) o.period = 1 / (prev * std::fmin(se0, 1 - se0));
+      if (use_sp) o.period = std::fmax(o.period, 1 / ((1 - prev) * std::fmin(sp0, 1 - sp0)));
+      const double z = stats::qnorm(alpha, false) + stats::qnorm(s("power"));
+      double guess = 2;
+      if (use_se) guess = std::max(guess, z * z * se1 * (1 - se1) / ((se1 - se0) * (se1 - se0)) / prev);
+      if (use_sp) guess = std::max(guess, z * z * sp1 * (1 - sp1) / ((sp1 - sp0) * (sp1 - sp0)) / (1 - prev));
+      o.guess = guess;
+      double a, b;
+      n = solve::min_n([&](double x) { return power_parts(x, a, b); }, s("power"), o, &ctx);
+    } else {
+      n = s("n");
+    }
+    double pse, psp;
+    const double pw = power_parts(n, pse, psp);
+    r.set("n", n);
+    r.set("nd", nd(n));
+    r.set("nn", nn(n));
+    put_power(s, r, pw);
+    if (use_se) {
+      r.set("pse", pse);
+      r.set("se0", se0);
+      r.set("se1", se1);
+    }
+    if (use_sp) {
+      r.set("psp", psp);
+      r.set("sp0", sp0);
+      r.set("sp1", sp1);
+    }
+    r.set("prev", prev);
+    r.set("alpha", alpha);
+  };
+  p.columns = [](const Scenario& s) {
+    auto c = power_columns(s);
+    c.push_back(col("n", "N", "int", "Total number of subjects"));
+    c.push_back(col("nd", "With Condition", "int", "Subjects with the condition (N × prevalence, rounded down)"));
+    c.push_back(col("nn", "Without", "int", "Subjects without the condition (N × (1 − prevalence), rounded down)"));
+    if (!s.is("goal", "sp")) {
+      c.push_back(col("pse", "Power (Se)", "prob", "Power of the sensitivity test"));
+      c.push_back(col("se0", "Se0", "num"));
+      c.push_back(col("se1", "Se1", "num"));
+    }
+    if (!s.is("goal", "se")) {
+      c.push_back(col("psp", "Power (Sp)", "prob", "Power of the specificity test"));
+      c.push_back(col("sp0", "Sp0", "num"));
+      c.push_back(col("sp1", "Sp1", "num"));
+    }
+    c.push_back(col("prev", "Prevalence", "num"));
+    c.push_back(col("alpha", "Alpha", "alpha"));
+    return c;
+  };
+  p.statement = [](const Scenario& s, const Row& r) {
+    std::string what;
+    if (!s.is("goal", "sp"))
+      what = "a sensitivity of " + fnum(r.num("se1")) + " (null value " + fnum(r.num("se0")) + ")";
+    if (s.is("goal", "both")) what += " and ";
+    if (!s.is("goal", "se"))
+      what += "a specificity of " + fnum(r.num("sp1")) + " (null value " + fnum(r.num("sp0")) + ")";
+    // both counts are rounded down, so they can add up to one less than N
+    return "A total of " + fint(r.num("n")) + " subjects (" + fint(r.num("nd")) + " with and " + fint(r.num("nn")) +
+           " without the condition: the expected numbers at a prevalence of " + fnum(r.num("prev")) +
+           ", rounded down) " + achieves_singular(s, r) +
+           " to show " + what + " with exact one-sided binomial tests at α = " + fnum(r.num("alpha")) +
+           (s.is("goal", "both") ? " each (power: both tests significant)." : ".");
+  };
+  p.definitions = {{"Se, Sp", "Sensitivity (true positive rate) and specificity (true negative rate)."},
+                   {"Power", "Probability that the test(s) reject the null hypotheses when Se = Se1 and Sp = Sp1; for "
+                             "both, the product of the two powers (independent subjects)."}};
+  p.references = {"Flahault, A., Cadilhac, M. & Thomas, G. (2005). Sample size calculation should be performed for "
+                  "design accuracy in diagnostic test studies. Journal of Clinical Epidemiology 58, 859–862.",
+                  "Pepe, M. S. (2003). The Statistical Evaluation of Medical Tests for Classification and Prediction. "
+                  "Oxford University Press."};
+  p.notes = {"Exact binomial power is not monotone in N; the smallest N reaching the target is reported."};
+  p.curve_param = "n";
+  p.curve_label = "N (Total)";
+  p.curve_min = 2;
+  p.curve_integer = true;
+  p.example_solve = "n";
+  p.example = {{"goal", "both"}, {"power", "0.8"}, {"prev", "0.2 0.3"}, {"se0", "0.7"}, {"se1", "0.85"},
+               {"sp0", "0.8"}, {"sp1", "0.9"}};
+  return p;
+}
+SSC_REGISTER(sens_spec);
+
+}  // namespace
+}  // namespace ssc::procs

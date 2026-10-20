@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.hyungrok-do/sample-size-calc",
+  "title": "Sample Size Calculator",
+  "description": "Power and sample size for t-tests, proportions, survival, ANOVA, regression, trials and more.",
+  "repository": {
+    "url": "https://github.com/hyungrok-do/sample-size-calc",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "sample-size-calculator",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

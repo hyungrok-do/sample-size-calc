@@ -1,0 +1,12 @@
+# the MCP server image (packaging/mcp/Dockerfile) builds from the sources only
+build/
+build-*/
+build_*/
+dist/
+_skbuild/
+.git/
+.github/
+**/__pycache__/
+*.egg-info/
+python/ssc/_native/
+docs/images/

@@ -1,0 +1,27 @@
+# build outputs
+build/
+build-*/
+build_*/
+dist/
+_skbuild/
+*.egg-info/
+python/ssc/_native/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# logs
+*.log
+
+# the web page's engine, built by web/build.sh
+web/engine/

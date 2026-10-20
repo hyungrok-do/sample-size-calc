@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sample Size Calculator</title>
+<meta name="description" content="Sample size and power for study planning. The calculator's C++ engine runs in your browser through WebAssembly; nothing you type leaves the page.">
+<style>
+  :root {
+    --bg: #f6f6f3;
+    --surface: #ffffff;
+    --surface-2: #f0efea;
+    --ink: #1c1c1a;
+    --ink-2: #4a4a45;
+    --muted: #6f6f68;
+    --line: #dddcd4;
+    --field-line: #878780;  /* 3.6:1 against the card: a field's edge must be seen */
+    --accent: #2457c5;
+    --accent-ink: #ffffff;
+    --accent-soft: #e8eefb;
+    --error: #a8261d;
+    --error-soft: #fbeceb;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615;
+      --surface: #1f1f1d;
+      --surface-2: #2a2a27;
+      --ink: #ecebe6;
+      --ink-2: #c9c8c1;
+      --muted: #9d9c94;
+      --line: #3a3a36;
+      --field-line: #74746e;
+      --accent: #84a9f5;
+      --accent-ink: #0f1420;
+      --accent-soft: #22304c;
+      --error: #f0a29b;
+      --error-soft: #3a201e;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161615;
+    --surface: #1f1f1d;
+    --surface-2: #2a2a27;
+    --ink: #ecebe6;
+    --ink-2: #c9c8c1;
+    --muted: #9d9c94;
+    --line: #3a3a36;
+    --field-line: #74746e;
+    --accent: #84a9f5;
+    --accent-ink: #0f1420;
+    --accent-soft: #22304c;
+    --error: #f0a29b;
+    --error-soft: #3a201e;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  [hidden] { display: none !important; }
+  h1, h2, h3 { margin: 0; line-height: 1.25; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .skip {
+    position: absolute; left: 16px; top: 8px; z-index: 10; transform: translateY(-200%);
+    font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); border: 0;
+  }
+  .skip:focus { transform: none; }
+
+  .top {
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px;
+    padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--line);
+  }
+  .brand h1 { font-size: 18px; }
+  .status { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .layout {
+    display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 24px;
+    max-width: 1240px; margin: 0 auto; padding: 20px 24px 48px;
+  }
+  .methods { position: sticky; top: 16px; align-self: start; }
+  .methods input {
+    width: 100%; padding: 8px 12px; border: 1px solid var(--field-line); border-radius: 8px;
+    background: var(--surface); color: var(--ink); font: inherit; font-size: 16px;
+  }
+  #method-list { max-height: calc(100vh - 110px); overflow-y: auto; margin-top: 10px; padding-right: 4px; }
+  #method-list h3 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    margin: 14px 10px 4px;
+  }
+  #method-list ul { list-style: none; margin: 0; padding: 0; }
+  #method-list p { margin: 8px 10px; }
+  .method {
+    display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 8px;
+    padding: 5px 10px; color: var(--ink-2); font: inherit; font-size: 14px; line-height: 1.35; cursor: pointer;
+  }
+  .method:hover { background: var(--surface-2); color: var(--ink); }
+  .method[aria-current] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+
+  main { display: grid; gap: 20px; min-width: 0; align-content: start; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; min-width: 0; }
+  .eyebrow { font-size: 13px; color: var(--muted); margin: 0 0 4px; }
+  .card h2 { font-size: 21px; }
+  .summary { color: var(--ink-2); margin: 8px 0 0; max-width: 75ch; }
+  .sim-note { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+
+  .solve { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 18px 0 20px; }
+  .solve-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 4px; }
+  .seg { position: relative; }
+  .seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .seg span {
+    display: inline-block; padding: 5px 12px; border: 1px solid var(--field-line); border-radius: 999px;
+    font-size: 14px; color: var(--ink-2);
+  }
+  .seg input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  fieldset { border: 0; margin: 0 0 18px; padding: 0; min-width: 0; }
+  legend {
+    font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    padding: 0; margin-bottom: 8px;
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px 18px; }
+  .field { min-width: 0; }
+  .field label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  /* 16px: phones zoom into a smaller field when it gets the focus */
+  .field input[type="text"], .field select, .details select {
+    width: 100%; padding: 7px 10px; border: 1px solid var(--field-line); border-radius: 8px;
+    background: var(--bg); color: var(--ink); font: inherit; font-size: 16px; font-variant-numeric: tabular-nums;
+  }
+  .field [aria-invalid="true"] { border-color: var(--error); box-shadow: 0 0 0 1px var(--error); }
+  .check { display: flex; align-items: center; gap: 8px; }
+  .check label { margin: 0; }
+  input:focus-visible, select:focus-visible, button:focus-visible, .table-wrap:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  .help {
+    margin: 4px 0 0; font-size: 12.5px; line-height: 1.4; color: var(--muted); cursor: pointer;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .help.open { display: block; }
+
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 4px; }
+  button.primary, button.secondary {
+    font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 18px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 1px solid var(--accent); }
+  button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--field-line); }
+  button[aria-disabled="true"] { opacity: .55; cursor: default; }
+  #timing { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+  #result { margin-top: 18px; display: grid; gap: 12px; }
+  #result:empty { display: none; }
+  #result h3 { font-size: 15px; margin-top: 6px; }
+  .statement { margin: 0; padding: 14px 16px; border-radius: 10px; background: var(--accent-soft); font-size: 15.5px; max-width: 90ch; overflow-wrap: anywhere; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 12px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { background: var(--surface-2); color: var(--ink-2); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .row-error { text-align: left; color: var(--error); white-space: normal; overflow-wrap: anywhere; }
+  .notes { margin: 0; padding-left: 20px; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .details { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .details label { font-size: 14px; }
+  .details select { width: auto; max-width: 100%; }
+  .error { border: 1px solid var(--error); background: var(--error-soft); border-radius: 10px; padding: 10px 14px; overflow-wrap: anywhere; }
+  .error p { margin: 0; font-weight: 600; }
+  .error ul { margin: 6px 0 0; padding-left: 20px; }
+
+  .speed p { color: var(--ink-2); margin: 8px 0 14px; max-width: 75ch; }
+  .speed .actions { margin: 0; }
+  #bench-out { margin-top: 14px; font-size: 14px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  table.bench td:first-child, table.bench th:first-child { text-align: left; white-space: normal; }
+  table.bench td.sub { padding-left: 28px; color: var(--muted); }
+  footer { max-width: 1240px; margin: 0 auto; padding: 0 24px 32px; font-size: 13px; color: var(--muted); }
+  footer p { margin: 0 0 4px; max-width: 90ch; }
+  footer a { color: inherit; }
+
+  @media (max-width: 800px) {
+    .top { padding: 12px 16px; }
+    .layout { grid-template-columns: minmax(0, 1fr); padding: 16px; gap: 16px; }
+    .methods { position: static; }
+    #method-list { max-height: 38vh; }
+    .card { padding: 16px; }
+    footer { padding: 0 16px 24px; }
+  }
+</style>
+</head>
+<body>
+<button id="skip" class="skip" type="button">Skip to the calculator</button>
+<header class="top">
+  <div class="brand"><h1>Sample Size Calculator</h1></div>
+  <p id="engine-status" class="status" aria-live="polite">Loading the engine…</p>
+</header>
+
+<div class="layout">
+  <aside class="methods">
+    <input id="search" type="search" placeholder="Search methods: two means, survival…" aria-label="Search methods" autocomplete="off">
+    <nav id="method-list" aria-label="Methods"></nav>
+  </aside>
+
+  <main>
+    <section id="method" class="card" hidden>
+      <p id="m-category" class="eyebrow"></p>
+      <h2 id="m-name"></h2>
+      <p id="m-summary" class="summary"></p>
+      <p id="m-sim" class="sim-note" hidden>A simulation method: the answer comes from simulating many studies, so it takes longer than a formula.</p>
+      <div id="solve" class="solve" role="radiogroup" aria-labelledby="solve-label"></div>
+      <form id="form" novalidate>
+        <div id="fields"></div>
+        <div class="actions">
+          <button id="calc" type="submit" class="primary">Calculate</button>
+          <button id="stop" type="button" class="secondary" hidden>Stop</button>
+          <span id="timing"></span>
+        </div>
+      </form>
+      <section id="result"></section>
+      <p id="announce" class="sr-only" aria-live="polite"></p>
+    </section>
+
+    <section class="card speed">
+      <h2>How fast is it in this browser?</h2>
+      <p>This runs every method and solve-for choice with its default inputs, then three full simulations of 1,000 studies each.</p>
+      <div class="actions">
+        <button id="bench" type="button" class="secondary" aria-disabled="true">Run the speed test</button>
+        <button id="bench-stop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+      <div id="bench-out" aria-live="polite"></div>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <p>The calculator's C++ engine, compiled to WebAssembly and run in your browser: nothing you type leaves this page.</p>
+  <p>Sample Size Calculator by Hyungrok Do. Open source under the MIT License: <a href="https://github.com/hyungrok-do/sample-size-calc">source and citation on GitHub</a>.</p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

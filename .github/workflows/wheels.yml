@@ -1,0 +1,68 @@
+# Installable wheels for Windows, macOS and Linux.  The engine is loaded through
+# ctypes (no Python C API), so one wheel per platform serves every Python 3
+# version: each job builds once (CPython 3.12) and tags the wheel py3-none.
+name: Wheels
+
+on:
+  push:
+    tags: ["v*"]
+    # and whenever the build configuration changes (path filters do not apply to tags)
+    branches: ["**"]
+    paths:
+      - "pyproject.toml"
+      - "CMakeLists.txt"
+      - ".github/workflows/wheels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    name: Wheel · ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, archs: x86_64 }
+          # emulated: GitHub's Arm runners are not available to every repository
+          - { name: linux-aarch64, os: ubuntu-latest, archs: aarch64 }
+          - { name: macos-universal2, os: macos-14, archs: universal2 }
+          - { name: windows-amd64, os: windows-latest, archs: AMD64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.archs == 'aarch64'
+        with:
+          platforms: arm64
+      - uses: pypa/cibuildwheel@v2.22
+        env:
+          CIBW_BUILD: cp312-*
+          # the package requires Qt for Python, which publishes no musllinux wheels and
+          # needs glibc 2.28 or later: build in the manylinux_2_28 images only
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          CIBW_ARCHS: ${{ matrix.archs }}
+          CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=10.15
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: pytest {project}/tests/test_core.py {project}/tests/test_cli.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build && python -m build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz

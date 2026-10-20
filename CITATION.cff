@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Sample Size Calculator"
+abstract: >-
+  Power analysis and sample size determination for study design: a C++
+  engine with 66 procedures, available as a web page, a command line and
+  Python library, and an MCP server for language-model clients.
+authors:
+  - family-names: "Do"
+    given-names: "Hyungrok"
+version: "0.1.0"
+license: MIT
+repository-code: "https://github.com/hyungrok-do/sample-size-calc"
+url: "https://hyungrok-do.github.io/sample-size-calc/"
+keywords:
+  - sample size
+  - power analysis
+  - biostatistics
+  - clinical trials
+  - simulation

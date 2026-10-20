@@ -1,0 +1,60 @@
+# Builds the web page (web/) with its engines and publishes it to GitHub Pages:
+# https://hyungrok-do.github.io/sample-size-calc/
+# Only the page and the engines it loads are published, not the repository.
+# Needs Settings → Pages → Source: GitHub Actions.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+      - "web/**"
+      - "CMakeLists.txt"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.13
+          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.13
+      - name: The engines
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          web/build.sh
+      - name: The site
+        run: |
+          mkdir -p _site/engine
+          cp web/index.html web/app.js web/engine.js web/worker.js web/sw.js _site/
+          cp web/engine/ssc_web.mjs web/engine/ssc_web.wasm web/engine/ssc_web_mt.mjs web/engine/ssc_web_mt.wasm _site/engine/
+          cp LICENSE THIRD_PARTY_NOTICES.md _site/
+          ls -lR _site
+      - uses: actions/upload-pages-artifact@v3
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

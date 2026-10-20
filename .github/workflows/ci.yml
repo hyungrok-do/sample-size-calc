@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: C++ core · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  python:
+    name: Python ${{ matrix.python }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.13"]
+        include:
+          - { os: ubuntu-latest, python: "3.9" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build and install the package
+        run: python -m pip install ".[test]"
+      - name: Test
+        run: python -m pytest -v
+      - name: Command-line smoke test
+        run: ssc-calc run means.two.t --solve n power=0.8 mu1=1 mu2=0 sigma=1
+
+  web:
+    name: WebAssembly engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.13
+          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.13
+      - name: C++ tests under Node (the threaded build)
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcmake cmake -S . -B build-wasm-tests -DCMAKE_BUILD_TYPE=Release -DSSC_WASM_THREADS=ON -DSSC_BUILD_TESTS=ON
+          cmake --build build-wasm-tests --parallel
+          node build-wasm-tests/ssc_tests.js
+      - name: The web page's engines
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          web/build.sh
