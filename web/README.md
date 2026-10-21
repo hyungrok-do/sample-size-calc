@@ -5,6 +5,35 @@ in the browser. You can search the methods, fill in a form generated from each
 method's description and calculate. Nothing you type leaves the browser, and
 the server only hands out files.
 
+The default **Guide me** view asks study-design questions using chips. Each
+question selects one answer; additional requirements select all that apply.
+**Recommended analysis** stays below the choices. **Use this analysis** opens
+the generated calculator below and applies the selected analysis settings.
+Numerical defaults are example values to review, not assumptions inferred
+from the guide. **Browse all methods** retains the searchable catalog.
+
+The guide covers all 66 procedures. Unanswered, unsure, unsupported, and
+incompatible selections do not open a recommended calculator. Changing an
+earlier answer clears dependent choices, retains additional requirements,
+and hides the previous guided form. Requirements are checked together against
+the selected procedure; they do not automatically reroute to another design.
+The guide is curated planning guidance, not a general statistical model selector.
+
+`guide-data.js` contains the questions, procedure routes, compatibility lists,
+and explanations; `guide-state.js` handles the selections; `guide.js` renders
+them. The engine remains authoritative for parameter names, allowed options,
+visibility rules, and calculations. `selection.js` validates a recommendation
+before the form applies it. Reapplying the same procedure keeps numerical
+study inputs when their context (design, effect scale, distribution, etc.) is
+unchanged, and resets analysis options to the schema defaults plus the explicit
+recommendation. A changed context starts with example values again. Changes to the form invalidate previous results,
+including results still being calculated.
+
+Existing links such as `#means.two.t` still work. Selected options can travel
+in the fragment, for example `#prop.two?test=fisher&method=exact`; they are
+validated against the engine schema on arrival. These links contain analysis
+options, not study inputs or the guide's full answer history.
+
 It is published at https://hyungrok-do.github.io/sample-size-calc/ by
 `.github/workflows/pages.yml`. To run it on your own computer:
 
@@ -100,6 +129,25 @@ exponents. Over 56,000 values and every column format, the only difference is
 that the page shows a negative zero as `0`.
 
 ## Tests
+
+After building the web engines, run the frontend checks with Node 24:
+
+```bash
+npm ci --prefix web
+cd web
+npx playwright install chromium
+npm test
+npm run test:browser
+```
+
+The first suite checks every route against the real WebAssembly catalog and
+schemas, all-procedure coverage, combined requirements, ancestor resets,
+unknown/conditional presets, and link round trips. The Chromium suite loads
+the actual page and engine, applies every recommendation path, and checks a
+calculation, same-procedure option changes, stale-result protection, keyboard
+use, direct links/history, mobile/dark layout, and offline reload. CI runs both.
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can select an installed Chromium binary;
+`SSC_SCREENSHOTS` optionally saves layout screenshots to a directory.
 
 The engine's own tests run under Node with the threaded build (some of them
 test the thread pool). They need a build directory of their own, since

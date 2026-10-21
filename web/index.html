@@ -85,6 +85,8 @@
   }
   .brand h1 { font-size: 18px; }
   .status { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .engine-activity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+  .engine-activity button { font-size: 13px; padding: 4px 10px; }
 
   .intro { max-width: 1240px; margin: 0 auto; padding: 28px 24px 4px; }
   .intro h2 { font-size: 24px; letter-spacing: -0.01em; }
@@ -98,12 +100,15 @@
   .points svg { width: 18px; height: 18px; flex: none; color: var(--accent); }
   .points p { margin: 6px 0 0; font-size: 14px; color: var(--ink-2); }
   .points a { color: var(--accent); }
-  .points li:empty { min-height: 88px; }  /* kept for content to come */
+  .entry-modes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+  .entry-modes button { border-radius: 999px; }
+  .entry-modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 
   .layout {
     display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 24px;
     max-width: 1240px; margin: 0 auto; padding: 20px 24px 48px;
   }
+  .layout[data-mode="guide"] { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
   .methods { position: sticky; top: 16px; align-self: start; }
   .methods input {
     width: 100%; padding: 8px 12px; border: 1px solid var(--field-line); border-radius: 8px;
@@ -129,6 +134,40 @@
   .card h2 { font-size: 21px; }
   .summary { color: var(--ink-2); margin: 8px 0 0; max-width: 75ch; }
   .sim-note { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+
+  .guide-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+  .guide-heading button { flex: none; padding: 5px 10px; font-size: 13px; }
+  #guide-questions { margin-top: 26px; }
+  #guide fieldset { margin-bottom: 24px; }
+  #guide legend { text-transform: none; letter-spacing: 0; font-size: 15px; color: var(--ink); }
+  .guide-hint { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 3px; }
+  .guide-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .guide-chip { position: relative; display: inline-flex; max-width: 100%; cursor: pointer; }
+  .guide-chip input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .guide-chip span {
+    display: block; min-height: 40px; padding: 9px 14px; border: 1px solid var(--field-line); border-radius: 22px;
+    background: var(--surface); color: var(--ink-2); font-size: 14px; line-height: 1.4;
+  }
+  .guide-chip:hover span { background: var(--surface-2); }
+  .guide-chip input:checked + span { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+  .guide-chip input:checked + span::before { content: '✓ '; color: var(--accent); }
+  .guide-chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 3px; }
+  #guide-requirements { border-top: 1px solid var(--line); padding-top: 20px; }
+  #guide-recommendation { border-top: 1px solid var(--line); padding-top: 22px; }
+  #guide-recommendation h3 { font-size: 17px; }
+  #guide-recommendation .guide-analysis-name { font-size: 21px; margin-top: 16px; }
+  #guide-recommendation h4 { font-size: 13px; margin: 18px 0 4px; }
+  #guide-recommendation p { margin: 6px 0 12px; }
+  .guide-message { color: var(--ink-2); }
+  .guide-settings { display: grid; gap: 8px; padding: 14px 16px; border-radius: 8px; background: var(--accent-soft); }
+  .guide-settings div { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+  .guide-settings dt { font-size: 13px; color: var(--ink-2); }
+  .guide-settings dd { margin: 0; font-size: 13px; font-weight: 600; }
+  #guide-recommendation details { margin: 16px 0; color: var(--ink-2); font-size: 14px; }
+  #guide-recommendation summary { cursor: pointer; }
+  #guide-recommendation button { margin-top: 8px; }
+  #m-source { padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); }
+  #m-name:focus { outline: 2px solid var(--accent); outline-offset: 4px; }
 
   .solve { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 18px 0 20px; }
   .solve-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 4px; }
@@ -216,15 +255,18 @@
 </style>
 </head>
 <body>
-<button id="skip" class="skip" type="button">Skip to the calculator</button>
+<button id="skip" class="skip" type="button">Skip to study planning</button>
 <header class="top">
   <div class="brand"><h1>Sample Size Calculator</h1></div>
-  <p id="engine-status" class="status" aria-live="polite">Loading the engine…</p>
+  <div class="engine-activity">
+    <p id="engine-status" class="status" aria-live="polite">Loading the engine…</p>
+    <button id="activity-stop" type="button" class="secondary" hidden>Stop calculation</button>
+  </div>
 </header>
 
 <section class="intro" aria-labelledby="intro-title">
   <h2 id="intro-title">A sample size calculator for planning studies</h2>
-  <p class="lede">Find the sample size a study needs, its power, or the smallest effect it can detect. Pick a method to start.</p>
+  <p class="lede">Describe your study to find a suitable analysis, then calculate sample size, power, or a detectable effect.</p>
   <ul class="points">
     <li>
       <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>Runs on your device</h3>
@@ -234,21 +276,46 @@
       <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>Open source</h3>
       <p>A free, open source project: the code is on <a href="https://github.com/hyungrok-do/sample-size-calc">GitHub</a>.</p>
     </li>
-    <li aria-hidden="true"></li>
-    <li aria-hidden="true"></li>
   </ul>
+  <div class="entry-modes" role="group" aria-label="Choose how to find an analysis">
+    <button id="mode-guide" type="button" class="secondary" aria-pressed="true">Guide me</button>
+    <button id="mode-browse" type="button" class="secondary" aria-pressed="false">Browse all methods</button>
+  </div>
 </section>
 
-<div class="layout">
-  <aside class="methods">
+<div id="workspace" class="layout" data-mode="guide">
+  <aside id="browse-methods" class="methods" hidden>
     <input id="search" type="search" placeholder="Search methods: two means, survival…" aria-label="Search methods" autocomplete="off">
     <nav id="method-list" aria-label="Methods"></nav>
   </aside>
 
   <main>
+    <div id="navigation-error" class="error" role="alert" hidden></div>
+    <section id="guide" class="card" aria-labelledby="guide-title">
+      <div class="guide-heading">
+        <div>
+          <p class="eyebrow">Study design</p>
+          <h2 id="guide-title">Find your analysis</h2>
+        </div>
+        <button id="guide-reset" type="button" class="secondary">Start over</button>
+      </div>
+      <p class="summary">Select the chips that describe your study. Each question says whether to choose one or several.</p>
+      <div id="guide-questions"><p class="muted">Loading the study guide…</p></div>
+      <fieldset id="guide-requirements" hidden>
+        <legend>Any additional study requirements?<span class="guide-hint">Choose all that apply. These are checked together with your choices above.</span></legend>
+        <div id="guide-requirement-chips" class="guide-chips"></div>
+      </fieldset>
+      <section id="guide-recommendation" aria-labelledby="guide-recommendation-title">
+        <h3 id="guide-recommendation-title">Recommended analysis</h3>
+        <div id="guide-recommendation-content"><p class="muted">Your recommendation will appear here.</p></div>
+      </section>
+      <p id="guide-announcement" class="sr-only" aria-live="polite"></p>
+    </section>
+
     <section id="method" class="card" hidden>
       <p id="m-category" class="eyebrow"></p>
-      <h2 id="m-name"></h2>
+      <h2 id="m-name" tabindex="-1"></h2>
+      <p id="m-source" class="small" hidden></p>
       <p id="m-summary" class="summary"></p>
       <p id="m-sim" class="sim-note" hidden>A simulation method: the answer comes from simulating many studies, so it takes longer than a formula.</p>
       <div id="solve" class="solve" role="radiogroup" aria-labelledby="solve-label"></div>

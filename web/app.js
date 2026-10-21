@@ -1,12 +1,17 @@
 // The calculator in a web page, on its own engine: pick a method, fill its inputs (a form generated from the
 // method's schema) and calculate; and a speed test of the engine in this browser.
 import { Engine } from './engine.js?v=dev';
+import { mountGuide } from './guide.js?v=dev';
+import { visible, prepareSelection, selectionHash, parseSelectionHash } from './selection.js?v=dev';
 
 const $ = (id) => document.getElementById(id);
 const engine = new Engine();
 const state = { catalog: null, proc: null, solve: '', fields: new Map(), busy: false, form: 0 };
 const schemas = new Map();  // procedure id → its description, so opening a method never waits on a calculation
 const MAX_ROWS = 1000;      // rows of an answer drawn in the table
+let guide;
+let mode = 'guide';
+let guidedForm = false;
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -168,16 +173,11 @@ function quickSearch(query) {
 // ---------------------------------------------------------------------------------------------------------
 // One method: solve-for choices and the generated form
 // ---------------------------------------------------------------------------------------------------------
-function visible(rule, lookup) {
-  if (!rule || !rule.length) return true;
-  return rule.some((clauses) => clauses.every((c) => (c.values ?? []).includes(lookup(c.key)) !== Boolean(c.negate)));
-}
-
 function value(id) {
   const f = state.fields.get(id);
   if (!f) return '';
   if (f.p.type === 'bool') return f.input.checked ? 'true' : 'false';
-  if (f.p.type === 'select' && f.options === null) return f.p.default;
+  if (f.p.type === 'select' && f.options === null) return f.initial;
   return f.input.value;
 }
 
@@ -214,14 +214,14 @@ function inputmode(p) {
   return p.integer && p.min != null && p.min >= 0 ? 'numeric' : null;
 }
 
-function field(p) {
+function field(p, initial = p.default ?? '') {
   const id = `in-${p.id}`;
   let input;
   if (p.type === 'select') input = el('select', { id, onchange: refresh });
-  else if (p.type === 'bool') input = el('input', { id, type: 'checkbox', checked: p.default === 'true', onchange: refresh });
+  else if (p.type === 'bool') input = el('input', { id, type: 'checkbox', checked: initial === 'true', onchange: refresh });
   else {
     input = el('input', {
-      id, type: 'text', value: p.default ?? '', autocomplete: 'off', spellcheck: 'false', inputmode: inputmode(p),
+      id, type: 'text', value: initial, autocomplete: 'off', spellcheck: 'false', inputmode: inputmode(p),
       oninput: () => input.removeAttribute('aria-invalid'),
     });
   }
@@ -233,10 +233,10 @@ function field(p) {
   if (help) input.setAttribute('aria-describedby', help.id);
   const label = el('label', { for: id }, p.label);
   const wrap = el('div', { class: 'field' }, p.type === 'bool' ? el('div', { class: 'check' }, input, label) : [label, input], help);
-  return { p, wrap, input, options: null };
+  return { p, wrap, input, options: null, initial };
 }
 
-function buildForm() {
+function buildForm(values = {}) {
   const box = $('fields');
   // Chromium's style engine can keep a reference to an option of a removed <select>, and through it the
   // whole old form: emptying the selects first leaves it at most an option
@@ -249,7 +249,7 @@ function buildForm() {
     if (!params.length) continue;
     const grid = el('div', { class: 'grid' });
     for (const p of params) {
-      const f = field(p);
+      const f = field(p, values[p.id]);
       state.fields.set(p.id, f);
       grid.append(f.wrap);
     }
@@ -267,6 +267,7 @@ function renderSolve() {
         type: 'radio', name: 'solve', value: s.value, checked: s.value === state.solve,
         onchange: () => {
           state.solve = s.value;
+          state.form++;
           refresh();
           clearResult();
         },
@@ -282,44 +283,91 @@ async function schema(id) {
 
 // The address names the method on screen: a method chosen from the list is a step in the browser's history.
 const known = (id) => Boolean(state.catalog?.procedures.some((p) => p.id === id));
-function hashId() {
-  try {
-    return decodeURIComponent(location.hash.slice(1));
-  } catch {
-    return '';  // a malformed escape, such as "#%"
-  }
+function choose(id) {
+  navigate({ procedure: id, inputs: {} });
 }
 
-function choose(id) {
-  if (id === state.proc?.id) return;
-  location.hash = id;  // the hashchange that follows opens it
+function setMode(next) {
+  mode = next;
+  $('workspace').dataset.mode = mode;
+  $('browse-methods').hidden = mode !== 'browse';
+  $('guide').hidden = mode !== 'guide';
+  $('mode-guide').setAttribute('aria-pressed', String(mode === 'guide'));
+  $('mode-browse').setAttribute('aria-pressed', String(mode === 'browse'));
+  $('method').hidden = !state.proc || (mode === 'guide' && !guidedForm);
+}
+
+async function navigate(selection, fromGuide = false, push = true) {
+  $('navigation-error').hidden = true;
+  try {
+    if (!(await openMethod(selection, fromGuide))) return false;
+    if (push && location.hash !== selectionHash(selection)) history.pushState(null, '', selectionHash(selection));
+    setMode(fromGuide ? 'guide' : 'browse');
+    $('m-name').focus();
+    return true;
+  } catch (error) {
+    if (fromGuide) throw error;
+    state.proc = null;
+    guidedForm = false;
+    guide?.clearApplied();
+    setMode('browse');
+    $('method').hidden = true;
+    $('navigation-error').textContent = error.message;
+    $('navigation-error').hidden = false;
+    return false;
+  }
 }
 
 let openSeq = 0;
-async function openMethod(id) {
+async function openMethod(selection, fromGuide = false) {
   const seq = ++openSeq;
+  state.form++;  // invalidate an answer before waiting for a new method
+  clearResult();
   let proc;
   try {
-    proc = await schema(id);
+    proc = await schema(selection.procedure);
   } catch (e) {
-    if (!e.stopped && seq === openSeq) showError(e.message);
-    return;
+    if (!e.stopped && seq === openSeq) throw e;
+    return false;
   }
-  if (!proc || seq !== openSeq) return;  // a method chosen after this one is already on its way
+  if (seq !== openSeq) return false;  // a newer choice is already on its way
+  const prepared = prepareSelection(proc, selection);
+  // Preserve numerical inputs only when their context (design, effect scale, distribution, etc.) is the
+  // same. Test/power-calculation choices can change without reinterpreting these inputs. In particular,
+  // do not carry a risk-difference margin into a risk-ratio design, or a within-person CV into parallel BE.
+  const sameContext = state.proc?.id === proc.id && proc.params
+    .filter((p) => p.type === 'select' && !['test', 'method'].includes(p.id))
+    .every((p) => value(p.id) === prepared.values[p.id]);
+  if (fromGuide && sameContext) {
+    for (const f of state.fields.values()) {
+      if (f.p.type !== 'select' && f.p.type !== 'bool') prepared.values[f.p.id] = value(f.p.id);
+    }
+  }
   state.proc = proc;
-  state.solve = proc.solve_for[0].value;
+  state.solve = prepared.solve;
   $('m-category').textContent = [proc.category, proc.subcategory].filter(Boolean).join(' · ');
   $('m-name').textContent = proc.name;
   $('m-summary').textContent = proc.summary;
   $('m-sim').hidden = !proc.simulation;
   renderSolve();
-  buildForm();
+  buildForm(prepared.values);
+  for (const [key, wanted] of Object.entries(selection.inputs ?? {})) {
+    if (value(key) !== wanted || state.fields.get(key).wrap.hidden) {
+      $('method').hidden = true;
+      throw new Error('The selected analysis settings could not be applied. Please review the study choices.');
+    }
+  }
   clearResult();
+  guidedForm = fromGuide;
+  if (!fromGuide) guide?.clearApplied();
+  $('m-source').hidden = !fromGuide;
+  $('m-source').textContent = 'From your study choices. Review the example values below and replace them with your study inputs.';
   $('method').hidden = false;
   for (const b of document.querySelectorAll('#method-list .method')) {
     if (b.dataset.id === proc.id) b.setAttribute('aria-current', 'true');
     else b.removeAttribute('aria-current');
   }
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -331,6 +379,7 @@ function setBusy(busy, what) {
   // the buttons stay enabled (a disabled button drops the keyboard focus) and say that they wait
   for (const id of ['calc', 'bench']) $(id).setAttribute('aria-disabled', String(busy));
   $('stop').hidden = !busy;
+  $('activity-stop').hidden = !busy;
   if (what !== undefined) $('timing').textContent = what;
   if (!busy && searchedWhileBusy) {
     searchedWhileBusy = false;
@@ -518,29 +567,69 @@ async function speedTest() {
 async function boot() {
   $('form').addEventListener('submit', calculate);
   $('stop').addEventListener('click', () => engine.stop());
+  $('activity-stop').addEventListener('click', () => engine.stop());
   $('bench-stop').addEventListener('click', () => engine.stop());
   $('bench').addEventListener('click', speedTest);
   $('search').addEventListener('input', onSearch);
-  $('skip').addEventListener('click', () => ($('solve').querySelector('input:checked') ?? $('calc')).focus());
+  $('skip').addEventListener('click', () => {
+    const target = !$('method').hidden ? $('m-name') : mode === 'guide' ? $('guide-questions').querySelector('input') : $('search');
+    (target ?? $('mode-guide')).focus();
+  });
+  $('mode-guide').addEventListener('click', () => { openSeq++; setMode('guide'); });
+  $('mode-browse').addEventListener('click', () => {
+    openSeq++;
+    setMode('browse');
+    if (!state.proc && state.catalog) choose('means.two.t');
+  });
+  const edited = () => {
+    state.form++;
+    clearResult();
+    if (guidedForm && !guide?.matches(state.proc, value)) {
+      guide?.clearApplied();
+      $('m-source').textContent = 'Calculator settings changed. Reapply the recommended analysis above to restore its choices.';
+    }
+  };
+  $('fields').addEventListener('input', edited);
+  $('fields').addEventListener('change', edited);
   engine.onstart = () => showStatus();
   window.addEventListener('online', () => engine.retry());
   window.addEventListener('hashchange', () => {
-    const id = hashId();
-    if (known(id)) {
-      if (id !== state.proc?.id) openMethod(id);
-    } else if (state.proc) {
-      history.replaceState(null, '', `${location.search}#${state.proc.id}`);  // an unknown name: the method shown
+    const selection = parseSelectionHash(location.hash);
+    if (known(selection.procedure)) {
+      navigate(selection, false, false);
+    } else {
+      openSeq++;
+      state.form++;
+      clearResult();
+      guidedForm = false;
+      setMode('guide');
     }
   });
-  if (!(await showStatus())) return;
+  if (!(await showStatus())) {
+    $('guide-questions').textContent = 'The study guide needs the calculator engine. Reload the page when the connection is available.';
+    return;
+  }
   try {
     state.catalog = (await engine.call('catalog')).value;
     for (const [id, proc] of Object.entries((await engine.call('procedures')).value)) schemas.set(id, proc);
     if ($('search').value.trim()) search();
     else renderList(null);
-    const first = known(hashId()) ? hashId() : 'means.two.t';
-    if (hashId() !== first) history.replaceState(null, '', `${location.search}#${first}`);
-    await openMethod(first);
+    guide = mountGuide($('guide'), {
+      schemas,
+      onChange() {
+        openSeq++;
+        guidedForm = false;
+        state.form++;
+        clearResult();
+        $('method').hidden = true;
+        $('navigation-error').hidden = true;
+        history.replaceState(null, '', location.pathname + location.search);
+      },
+      onApply: (selection) => navigate(selection, true),
+    });
+    const first = parseSelectionHash(location.hash);
+    if (known(first.procedure)) await navigate(first, false, false);
+    else if (mode === 'browse') await navigate({ procedure: 'means.two.t', inputs: {} });
     $('bench').setAttribute('aria-disabled', 'false');
   } catch (e) {
     $('engine-status').textContent = `The engine did not load: ${e.message}`;
