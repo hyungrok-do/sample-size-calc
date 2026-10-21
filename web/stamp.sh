@@ -5,7 +5,7 @@
 set -eu
 site=$1
 version=$2
-for file in index.html app.js engine.js worker.js sw.js; do
+for file in index.html app.js engine.js worker.js sw.js guide.js; do
   grep -q 'v=dev' "$site/$file" || { echo "$file: no ?v=dev to stamp" >&2; exit 1; }
   sed -i "s/v=dev/v=$version/g; s/'ssc-dev'/'ssc-$version'/" "$site/$file"
 done

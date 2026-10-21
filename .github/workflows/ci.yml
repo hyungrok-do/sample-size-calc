@@ -52,10 +52,13 @@ jobs:
         run: ssc-calc run means.two.t --solve n power=0.8 mu1=1 mu2=0 sigma=1
 
   web:
-    name: WebAssembly engine
+    name: WebAssembly engine and frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Emscripten
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
@@ -71,3 +74,10 @@ jobs:
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           web/build.sh
+      - name: Guide coverage and browser integration
+        run: |
+          npm ci --prefix web
+          cd web
+          npx playwright install --with-deps chromium
+          npm test
+          npm run test:browser
