@@ -19,7 +19,6 @@ export class Engine {
     this.variant = this.threaded ? 'ssc_web_mt' : 'ssc_web';
     this.pending = new Map();
     this.recycle = false;
-    this.crashed = false;
     this.failed = false;
     this.worker = new Worker(new URL(`./worker.js?engine=${this.variant}&v=dev`, import.meta.url), { type: 'module' });
     let watchdog = 0;
@@ -31,11 +30,19 @@ export class Engine {
       const call = this.pending.get(data.id);
       if (!call) return;
       this.pending.delete(data.id);
+      if (data.crashed) {
+        // A trapped engine cannot calculate again: a fresh one at once, before anyone can call the old one.  After
+        // the multi-core engine, the one-thread engine for the rest of the visit, and the call may be run again.
+        const retry = this.threaded;
+        this.threaded = false;
+        this.restart();
+        call.reject(Object.assign(new Error(CRASHED), { crashed: true, retry, detail: data.error }));
+        return;
+      }
       if (data.ok) call.resolve(data);
-      else call.reject(Object.assign(new Error(data.crashed ? CRASHED : data.error), { crashed: !!data.crashed, detail: data.error }));
-      if (data.crashed) this.crashed = true;
-      if (data.value?.memoryBytes > RECYCLE_BYTES) this.recycle = true;
-      if ((this.recycle || this.crashed) && this.pending.size === 0) queueMicrotask(() => this.replace());
+      else call.reject(new Error(data.error));
+      if (data.value?.memoryBytes > Math.max(RECYCLE_BYTES, data.value?.initialBytes ?? 0)) this.recycle = true;
+      if (this.recycle && this.pending.size === 0) queueMicrotask(() => this.replace());
     };
     this.worker.onerror = (e) => {
       e.preventDefault();
@@ -61,11 +68,15 @@ export class Engine {
     this.onstart?.();
   }
 
-  // The one-thread engine in place of a multi-core one that failed or never started; the calls waiting for the
-  // old one go to the new one.
+  // The one-thread engine in place of a multi-core one that failed or never started.
   fallBack() {
     if (!this.threaded) return;
     this.threaded = false;
+    this.restart();
+  }
+
+  // A fresh engine (offline too: the service worker keeps copies); the calls waiting for the old one go to it.
+  restart() {
     const waiting = [...this.pending.values()];
     this.worker.terminate();
     const moved = new Error('moved to another engine');
@@ -77,10 +88,10 @@ export class Engine {
     }
   }
 
-  // A fresh engine in place of an idle one that a large answer left big (not while offline: the new worker could not
-  // download the engine), or that crashed (always: it cannot calculate any more, and offline copies may start one).
+  // A fresh engine in place of an idle one that a large answer left big.  Not while offline: the new worker
+  // could not download the engine.
   replace() {
-    if (this.pending.size || !(this.crashed || (this.recycle && navigator.onLine !== false))) return;
+    if (!this.recycle || this.pending.size || navigator.onLine === false) return;
     this.worker.terminate();
     this.start();
   }

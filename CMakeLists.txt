@@ -82,9 +82,12 @@ if(EMSCRIPTEN)
       "-sEXPORTED_FUNCTIONS=${SSC_WASM_EXPORTS}"
       -sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAP8)
   if(SSC_WASM_THREADS)
-    # growing shared memory slows JavaScript's access to it; the page only copies short strings in and out
+    # growing shared memory slows JavaScript's access to it; the page only copies short strings in and out.
+    # It starts at 128 MB, more than the largest answer needs (20,000 scenarios: 100 MB): Safari's engine (WebKit)
+    # stopped the multi-core engine the first time its shared memory had to grow.  Operating systems back memory
+    # only once it is used, so the unused part costs little.
     list(APPEND SSC_WASM_LINK -sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency
-         -sDEFAULT_PTHREAD_STACK_SIZE=2MB -Wno-pthreads-mem-growth)
+         -sDEFAULT_PTHREAD_STACK_SIZE=2MB -sINITIAL_MEMORY=128MB -Wno-pthreads-mem-growth)
   endif()
   add_executable(ssc_web $<TARGET_OBJECTS:ssc_obj>)
   target_link_options(ssc_web PRIVATE ${SSC_WASM_LINK})

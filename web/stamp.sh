@@ -9,7 +9,8 @@ for file in index.html app.js engine.js worker.js sw.js guide.js; do
   grep -q 'v=dev' "$site/$file" || { echo "$file: no ?v=dev to stamp" >&2; exit 1; }
   sed -i "s/v=dev/v=$version/g; s/'ssc-dev'/'ssc-$version'/" "$site/$file"
 done
-if grep -n 'v=dev\|ssc-dev' "$site"/*.html "$site"/*.js; then
+# exactly v=dev, so a version such as dev-test is not taken for it
+if grep -nE "v=dev([^[:alnum:]_.-]|$)|'ssc-dev'" "$site"/*.html "$site"/*.js; then
   echo "left unstamped (above)" >&2
   exit 1
 fi

@@ -182,6 +182,8 @@ try {
     const gap = await p.evaluate(() => { window.__stopTicks = true; return window.__gap; });
     assert.ok(gap < 2000, `longest pause ${Math.round(gap)} ms`);
     assert.match(await p.textContent('#result'), /20,000/);
+    // answered by the multi-core engine itself, not the one-thread engine after it stopped
+    if (await p.evaluate(() => navigator.hardwareConcurrency) > 1) assert.match(await p.textContent('#engine-status'), /\d+ threads/);
     return `longest pause ${Math.round(gap)} ms`;
   });
   await p.context().close();
@@ -198,6 +200,21 @@ try {
     await q.evaluate(() => { location.hash = '%'; }); await q.waitForTimeout(300);
     assert.equal(await q.evaluate(() => location.hash), '#prop.two');
     assert.equal(await q.isVisible('#method'), true);
+    await q.context().close();
+  });
+  await check('a method opens, from the list and the guide, when the browser refuses to change the address', async () => {
+    // as Safari does past 100 changes in 10 seconds
+    const q = await open(`${base}#prop.two`); await ready(q);
+    await q.evaluate(() => {
+      for (const name of ['pushState', 'replaceState']) history[name] = () => { throw new DOMException('refused', 'SecurityError'); };
+    });
+    await q.click('#method-list .method[data-id="corr.one"]');
+    await q.waitForFunction(() => /Correlation/.test(document.getElementById('m-name').textContent), null, { timeout: 5000 });
+    assert.equal(await q.evaluate(() => location.hash), '#prop.two', 'the address stays as it was');
+    await q.click('#mode-guide');
+    await q.check('#guide input[name="q1"][value="0"]');
+    await q.locator('.guide-candidate').first().click();
+    await q.waitForFunction(() => !document.getElementById('method').hidden, null, { timeout: 5000 });
     await q.context().close();
   });
   await check('a long error wraps at phone width, and fields use 16px text (no zoom on iPhones)', async () => {
@@ -240,25 +257,33 @@ try {
         return `one thread after ${((Date.now() - started) / 1000).toFixed(1)} s`;
       });
     }
-    await check('after an engine crash, the page says so, starts a fresh engine and calculates again', async () => {
-      // a worker whose engine traps on one input, as an engine out of memory does
+    // a worker whose engine traps on one input, as an engine out of memory does (only the multi-core one, or both)
+    async function crashing(onlyMultiCore) {
       const source = await readFile(resolve(web, 'worker.js'), 'utf8');
-      const crashing = source.replace('run: (M, { request, maxRows = Infinity }) => {',
-        "run: (M, { request, maxRows = Infinity }) => {\n    if (request.inputs?.mu1 === '13.13') throw new WebAssembly.RuntimeError('unreachable');");
-      assert.notEqual(crashing, source);
+      const trap = `if (request.inputs?.mu1 === '13.13'${onlyMultiCore ? " && variant === 'ssc_web_mt'" : ''}) throw new WebAssembly.RuntimeError('unreachable');`;
+      const body = source.replace('run: (M, { request, maxRows = Infinity }) => {', `run: (M, { request, maxRows = Infinity }) => {\n    ${trap}`);
+      assert.notEqual(body, source);
       const context = await browser.newContext({ serviceWorkers: 'block' });
-      await context.route('**/worker.js*', (r) => r.fulfill({ body: crashing, contentType: 'text/javascript', headers: isolation }));
+      await context.route('**/worker.js*', (r) => r.fulfill({ body, contentType: 'text/javascript', headers: isolation }));
       const q = await context.newPage();
       q.on('pageerror', (e) => errors.push(`crash: ${e.message}`));
       await q.goto(`${base}#means.two.t`); await ready(q);
-      const workers = q.workers().length;
       await q.click('#solve label >> nth=1'); await q.fill('#in-mu1', '13.13'); await q.click('#calc'); await answer(q);
+      return q;
+    }
+    await check('when the multi-core engine stops, the calculation runs again on one thread', async () => {
+      const q = await crashing(true);
+      assert.ok(await q.$('#result .statement'), (await q.textContent('#result')).slice(0, 120));
+      assert.match(await q.textContent('#engine-status'), /1 thread/);
+      await q.context().close();
+    });
+    await check('when the engine stops on one thread too, the page says so and a fresh engine calculates', async () => {
+      const q = await crashing(false);
       assert.match(await q.textContent('#result .error'), /stopped unexpectedly/);
       await q.waitForFunction(() => /ready in/.test(document.getElementById('engine-status').textContent));
       await q.fill('#in-mu1', '1'); await q.click('#calc'); await answer(q);
       assert.ok(await q.$('#result .statement'), 'a fresh engine answers');
-      await context.close();
-      return `${workers} worker(s) before the crash`;
+      await q.context().close();
     });
     await fallBack('without the multi-core engine file, the one-thread engine calculates', (c) =>
       c.route('**/engine/ssc_web_mt.wasm*', (r) => r.fulfill({ status: 404, body: '' })), 30000);
@@ -269,7 +294,7 @@ try {
       c.route('**/engine/ssc_web_mt.mjs*', (r) => r.fulfill({ body: stuck, contentType: 'text/javascript', headers: isolation })), 60000);
   }
 
-  await check('no page errors', async () => { assert.deepEqual(errors, []); });
+  await check('no page errors', async () => { assert.equal(errors.length, 0, errors.join(' | ')); });
 } finally {
   await browser.close();
   server.close();

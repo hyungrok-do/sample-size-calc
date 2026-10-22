@@ -78,7 +78,13 @@ try {
       });
     assert.equal(await page.locator('#method').isVisible(), true);
   }
+  // Safari allows 100 address changes in 10 seconds, and each route makes up to two (Reset clears the address, and
+  // applying sets it): routes are paced there to stay below that, as a person's clicks would be.
+  const pace = kind === 'webkit' ? 250 : 0;
+  let last = 0;
   for (const route of routes) {
+    if (pace) await page.waitForTimeout(Math.max(0, last + pace - Date.now()));
+    last = Date.now();
     await select(route);
     if (route.node.type !== 'candidate') {
       assert.equal(await page.locator('#guide-recommendation-content button').count(), 0);

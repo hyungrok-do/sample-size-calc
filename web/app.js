@@ -232,7 +232,13 @@ async function schema(id) {
   return schemas.get(id);
 }
 
-// The address names the method on screen: a method chosen from the list is a step in the browser's history.
+// The address names the method on screen: a method chosen from the list is a step in the browser's history.  It
+// changes only when it must, and a refusal (Safari allows 100 changes in 10 seconds) leaves the address as it was
+// rather than failing the action.
+function address(url, push = false) {
+  if (url === location.pathname + location.search + location.hash) return;
+  try { history[push ? 'pushState' : 'replaceState'](null, '', url); } catch { /* the address stays as it was */ }
+}
 const known = (id) => Boolean(state.catalog?.procedures.some((p) => p.id === id));
 function choose(id) {
   // the method already open keeps what was typed into it
@@ -254,7 +260,7 @@ async function navigate(selection, fromGuide = false, push = true) {
   $('navigation-error').hidden = true;
   try {
     if (!(await openMethod(selection, fromGuide))) return false;
-    if (push && location.hash !== selectionHash(selection)) history.pushState(null, '', selectionHash(selection));
+    if (push) address(location.pathname + location.search + selectionHash(selection), true);
     setMode(fromGuide ? 'guide' : 'browse');
     $('m-name').focus();
     return true;
@@ -448,13 +454,21 @@ async function calculate(event) {
   setBusy(true, state.proc.simulation ? 'Simulating…' : 'Calculating…');
   // the answer goes only under the form it was computed from (not one opened or reset since)
   const asked = () => state.form === form && state.solve === request.solve_for;
-  try {
-    const { result, engineMs } = await engine.run(request, MAX_ROWS);
-    setBusy(false, '');
-    if (asked()) renderResult(result, engineMs);
-  } catch (e) {
-    setBusy(false, e.stopped ? 'Stopped.' : '');
-    if (!e.stopped && asked()) showError(e.message);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const { result, engineMs } = await engine.run(request, MAX_ROWS);
+      setBusy(false, '');
+      if (asked()) renderResult(result, engineMs);
+    } catch (e) {
+      // the multi-core engine stopped: once more, on the one-thread engine that replaced it
+      if (e.crashed && e.retry && attempt === 0 && asked()) {
+        setBusy(true, 'Calculating again with one thread…');
+        continue;
+      }
+      setBusy(false, e.stopped ? 'Stopped.' : '');
+      if (!e.stopped && asked()) showError(e.message);
+    }
+    return;
   }
 }
 
@@ -552,7 +566,7 @@ async function boot() {
       navigate(selection, false, false);
     } else if (location.hash.length > 1 && state.proc && !$('method').hidden) {
       // a malformed or unknown name: the method shown stays, and so does its address
-      history.replaceState(null, '', `${location.pathname}${location.search}#${state.proc.id}`);
+      address(`${location.pathname}${location.search}#${state.proc.id}`);
     } else {
       openSeq++;
       state.form++;
@@ -579,7 +593,7 @@ async function boot() {
         clearResult();
         $('method').hidden = true;
         $('navigation-error').hidden = true;
-        history.replaceState(null, '', location.pathname + location.search);
+        address(location.pathname + location.search);
       },
       onApply: (selection) => navigate(selection, true),
     });
@@ -590,7 +604,7 @@ async function boot() {
       const start = { procedure: 'means.two.t', inputs: {} };
       if (await openMethod(start)) {  // not navigate(): no focus, so the page stays at its top
         setMode('browse');
-        history.replaceState(null, '', location.pathname + location.search + selectionHash(start));
+        address(location.pathname + location.search + selectionHash(start));
       }
     }
     $('bench').setAttribute('aria-disabled', 'false');

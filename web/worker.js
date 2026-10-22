@@ -4,6 +4,7 @@
 const started = performance.now();
 const variant = new URL(self.location.href).searchParams.get('engine') === 'ssc_web_mt' ? 'ssc_web_mt' : 'ssc_web';
 let loadMs = 0;
+let initialBytes = 0;  // the engine's memory when it started: only growth beyond it counts as a big engine
 
 async function compile() {
   const response = await fetch(new URL(`./engine/${variant}.wasm?v=dev`, import.meta.url));
@@ -30,6 +31,7 @@ async function load() {
     },
   });
   loadMs = performance.now() - started;
+  initialBytes = M.HEAP8.buffer.byteLength;
   return M;
 }
 
@@ -99,7 +101,7 @@ const ops = {
           if (result.dropout?.rows) result.dropout.rows = result.dropout.rows.filter((r) => r._row < maxRows);
         }
         // the engine's memory never shrinks: the page replaces an engine that a large answer left big
-        return { result, engineMs, memoryBytes: M.HEAP8.buffer.byteLength };
+        return { result, engineMs, memoryBytes: M.HEAP8.buffer.byteLength, initialBytes };
       });
     } finally {
       M._ssc_token_free(token);

@@ -93,11 +93,17 @@ worker always checks the page itself with the server.
 - An answer can have up to 20,000 scenarios. The page shows the first 1,000,
   drawing a hundred rows per frame. With 20,000 scenarios, the page's longest
   pause is about 0.1 s, against 8.5 s when every row was drawn at once.
-- The engine uses about 21 MB, and 37 MB for the largest simulated study it
-  allows. Simulations keep only a block of studies at a time. WebAssembly
-  memory never shrinks, so after an answer that leaves the engine above
-  64 MB (20,000 scenarios need 110 MB), the page replaces the engine once it
-  is idle and online.
+- The one-thread engine uses about 21 MB, and 37 MB for the largest simulated
+  study it allows. Simulations keep only a block of studies at a time. The
+  multi-core engine starts with 128 MB of shared memory, more than the largest
+  answer needs (20,000 scenarios: 100 MB), because Safari's engine (WebKit)
+  stopped it the first time its shared memory had to grow. WebAssembly memory
+  never shrinks, so after an answer that grows the engine beyond its start
+  (and beyond 64 MB), the page replaces the engine once it is idle and online.
+- If the engine stops during a calculation (it traps, for example when out of
+  memory), the page starts a fresh one at once. After the multi-core engine,
+  it uses the one-thread engine for the rest of the visit and runs the
+  calculation again; otherwise it explains what happened.
 - No leaks were found:
   - The engine's allocated memory is identical after every round of all
     methods, the error cases and requests the engine refuses.
