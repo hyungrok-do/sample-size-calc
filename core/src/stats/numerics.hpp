@@ -102,6 +102,8 @@ template <class F>
 double adapt(F& f, double a, double b, double eps_abs, double eps_rel, int depth, double whole) {
   double err;
   const double r = gk15(f, a, b, err);
+  // A NaN at a node of a removable point clears in a split or two; a NaN integrand is not split to max_depth.
+  if (std::isnan(r)) depth = std::min(depth, 4);
   if (depth <= 0 || err <= std::max(eps_abs, eps_rel * std::fabs(whole)) || !(b - a > 1e-300)) return r;
   const double m = 0.5 * (a + b);
   return adapt(f, a, m, eps_abs * 0.5, eps_rel, depth - 1, whole) +

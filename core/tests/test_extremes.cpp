@@ -11,6 +11,7 @@
 #include "engine/solve.hpp"
 #include "sim/simulate.hpp"
 #include "stats/dispatch.hpp"
+#include "stats/numerics.hpp"
 #include "stats/stats.hpp"
 #include "testing.hpp"
 #include "util/json.hpp"
@@ -335,6 +336,30 @@ TEST_CASE("extremes: distribution functions outside their domain give NaN at onc
   CHECK(seconds_since(t0) < 1);
 }
 
+TEST_CASE("extremes: the bivariate normal at an infinite limit is that of the other variable") {
+  // an endpoint whose power is 1 to double precision has Φ⁻¹ = −∞, and the series met 0·∞ (NaN)
+  for (double r : {-0.95, -0.5, 0.0, 0.5, 0.95})
+    for (double k : {-2.0, 0.0, 1.5}) {
+      CHECK(stats::bvn_upper(-INFINITY, k, r) == stats::pnorm(-k));
+      CHECK(stats::bvn_upper(k, -INFINITY, r) == stats::pnorm(-k));
+      CHECK(stats::bvn_upper(INFINITY, k, r) == 0);
+      CHECK(stats::bvn_upper(k, INFINITY, r) == 0);
+    }
+  CHECK(stats::bvn_upper(-INFINITY, -INFINITY, 0.3) == 1);
+  CHECK(std::isnan(stats::bvn_upper(NAN, 0, 0.3)));
+}
+
+TEST_CASE("extremes: a NaN integrand ends the adaptive integration at once") {
+  // a NaN error estimate never passed the test, so every panel was split down to max_depth (6e10 calls)
+  long calls = 0;
+  const double nan = numerics::integrate([&](double) { ++calls; return NAN; }, 0, 1);
+  CHECK(std::isnan(nan));
+  CHECK(calls < 2000);
+  // a 0/0 at the midpoint, a node of the first panel, still clears
+  const double si = numerics::integrate([](double x) { return std::sin(x) / x; }, -1, 1);
+  CHECK(std::fabs(si - 1.8921661407343660) < 1e-13);
+}
+
 TEST_CASE("extremes: binomial, F and beta probabilities at a billion trials agree with R") {
   // shapes beyond 1e8 took the series or continued fraction near the mean, which needs about √a terms
   // (0.5008 for 0.5 at a billion trials; the reference values are R's, from TOMS 708)
@@ -342,6 +367,8 @@ TEST_CASE("extremes: binomial, F and beta probabilities at a billion trials agre
   CHECK_CLOSE(stats::pbinom(5e8 + std::sqrt(2.5e8), 1e9, 0.5, true), 0.8413464554586505, 1e-12, 0);
   CHECK_CLOSE(stats::pbinom(5e8 - 3 * std::sqrt(2.5e8), 1e9, 0.5, true), 0.0013498040997050719, 1e-11, 0);
   CHECK_CLOSE(stats::pf(1, 1e9, 1e9, true), 0.5, 1e-12, 0);
+  // a − (a + b)·x is rounded once where the compiler fuses it (Apple arm64) and twice elsewhere (as in R): one
+  // rounding of (a + b)·x ≈ 1e10 moves the probability by about 1e-11, so the check is to the problem's conditioning
   CHECK_CLOSE(stats::pbeta(1.0 / 3 + std::sqrt(2e10 / (9e20 * (3e10 + 1))), 1e10, 2e10, true), 0.50000453231113418,
-              1e-12, 0);
+              2e-11, 0);
 }

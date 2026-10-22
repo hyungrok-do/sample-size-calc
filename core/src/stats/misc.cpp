@@ -110,6 +110,10 @@ const GLRule& gauss_legendre(int n) {
 // building on Drezner & Wesolowsky (1990).
 
 double bvn_upper(double dh, double dk, double r) {
+  if (std::isnan(dh) || std::isnan(dk) || std::isnan(r)) return NAN;
+  if (dh == INFINITY || dk == INFINITY) return 0;
+  if (dh == -INFINITY) return pnorm(-dk);  // the formulas below meet 0·∞ or ∞ − ∞ at an infinite limit
+  if (dk == -INFINITY) return pnorm(-dh);
   int ng;
   if (std::fabs(r) < 0.3)
     ng = 6;

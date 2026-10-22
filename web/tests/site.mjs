@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
 
@@ -88,27 +89,33 @@ await new Promise((done) => server.listen(0, '127.0.0.1', done));
 const url = `http://127.0.0.1:${server.address().port}${prefix}`;
 
 const kind = process.env.SSC_BROWSER ?? 'chromium';
-const browser = await { chromium, firefox, webkit }[kind].launch(kind === 'chromium'
-  ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined, args: ['--disable-dev-shm-usage'] } : {});
+// a profile on disk, as a browser keeps one (a new context of WebKit keeps the stored copies only in memory)
+const profile = await mkdtemp(join(tmpdir(), 'ssc-site-'));
+const context = await { chromium, firefox, webkit }[kind].launchPersistentContext(profile, {
+  serviceWorkers: 'allow', ...(kind === 'chromium' ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+    || undefined, args: ['--disable-dev-shm-usage'] } : {}) });
+// the offline copies the service worker keeps, by cache
+const stored = (p) => p.evaluate(async () => {
+  const kept = {};
+  for (const name of await caches.keys())
+    kept[name] = (await (await caches.open(name)).keys()).map((r) => new URL(r.url).pathname.split('/').pop() + new URL(r.url).search);
+  return kept;
+});
+let keptOnline = null;  // the copies kept just before the network goes down
 async function ready(p) {
   try {
     await p.waitForFunction(() => /ready in/.test(document.getElementById('engine-status')?.textContent)
       && !document.getElementById('method').hidden, null, { timeout: 60000 });
   } catch (error) {
-    const state = await p.evaluate(async () => {
-      // the offline copies the service worker keeps, by cache
-      const kept = {};
-      for (const name of await caches.keys())
-        kept[name] = (await (await caches.open(name)).keys()).map((r) => new URL(r.url).pathname.split('/').pop() + new URL(r.url).search);
-      return {
-        status: document.getElementById('engine-status')?.textContent, controlled: !!navigator.serviceWorker?.controller,
-        isolated: self.crossOriginIsolated, title: document.title,
-        error: document.getElementById('navigation-error')?.textContent, kept,
-      };
-    }).catch((e) => ({ page: e.message }));
+    const state = await p.evaluate(() => ({
+      status: document.getElementById('engine-status')?.textContent, controlled: !!navigator.serviceWorker?.controller,
+      isolated: self.crossOriginIsolated, title: document.title,
+      error: document.getElementById('navigation-error')?.textContent,
+    })).catch((e) => ({ page: e.message }));
+    const kept = await stored(p).catch((e) => e.message);
     const recent = (list) => list.slice(-15);
-    throw new Error(`the page did not become ready: ${JSON.stringify({ ...state, dropped: recent(dropped),
-      failed: recent(failed), console: recent(logged) }, null, 1)}`);
+    throw new Error(`the page did not become ready: ${JSON.stringify({ ...state, kept, keptOnline,
+      dropped: recent(dropped), failed: recent(failed), console: recent(logged) }, null, 1)}`);
   }
 }
 async function calculates(p) {
@@ -119,7 +126,6 @@ async function calculates(p) {
 const loaded = (p) => p.evaluate(() => performance.getEntriesByType('resource').map((e) => new URL(e.name))
   .filter((u) => /\.(m?js|wasm)$/.test(u.pathname) && !u.pathname.endsWith('/sw.js')).map((u) => u.searchParams.get('v')));
 try {
-  const context = await browser.newContext({ serviceWorkers: 'allow' });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -163,6 +169,7 @@ try {
   await page.goto(url);
   await ready(page);
 
+  keptOnline = await stored(page);
   down = true;
   await page.reload();
   await ready(page);
@@ -183,9 +190,9 @@ try {
   assert.deepEqual([...new Set(await loaded(page))], [next], 'and on the next visit');
   console.log('Site: after an update the page and every file it loads are the new version.');
   assert.deepEqual(errors, []);
-  await context.close();
   console.log(`Site: every check passed in ${kind}.`);
 } finally {
-  await browser.close();
+  await context.close();
+  await rm(profile, { recursive: true, force: true });
   server.close();
 }
