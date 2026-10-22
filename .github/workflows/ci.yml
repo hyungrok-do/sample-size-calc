@@ -1,78 +1,16 @@
 name: CI
 
+# Debug branch only: why WebKit keeps no offline copies (web/tests/sw-debug.mjs).  The engines are committed here
+# (built locally) so the job needs no Emscripten build.
 on:
   push:
-  pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  core:
-    name: C++ core · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-      - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
-
-  sanitizer:
-    name: C++ core with the undefined-behavior checker
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        # integer overflow and out-of-range conversions (GCC leaves float-cast-overflow out of -fsanitize=undefined)
-        # stop the tests at the first one
-        run: >-
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          "-DCMAKE_CXX_FLAGS=-fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all -fno-sanitize=vptr"
-          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=undefined -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=undefined
-      - name: Build
-        run: cmake --build build --parallel
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
-  python:
-    name: Python ${{ matrix.python }} · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.13"]
-        include:
-          - { os: ubuntu-latest, python: "3.9" }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Build and install the package
-        run: python -m pip install ".[test]"
-      - name: Test
-        run: python -m pytest -v
-      - name: Command-line smoke test
-        run: ssc-calc run means.two.t --solve n power=0.8 mu1=1 mu2=0 sigma=1
-
-  web:
-    name: WebAssembly engine and frontend
+  webkit-debug:
+    name: Service worker caches in webkit
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -80,87 +18,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Emscripten
-        run: |
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.13
-          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.13
-      - name: C++ tests under Node (the threaded build)
-        run: |
-          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          emcmake cmake -S . -B build-wasm-tests -DCMAKE_BUILD_TYPE=Release -DSSC_WASM_THREADS=ON -DSSC_BUILD_TESTS=ON
-          cmake --build build-wasm-tests --parallel
-          node build-wasm-tests/ssc_tests.js
-      - name: The web page's engines
-        run: |
-          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
-          web/build.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: web-engines
-          path: web/engine/
-          retention-days: 3
-      - name: Guide coverage and number formatting
-        run: |
-          npm ci --prefix web
-          cd web
-          npx playwright install --with-deps chromium
-          npm test
-      - name: Guide and calculator in Chromium
-        if: ${{ !cancelled() }}
-        run: cd web && npm run test:browser
-      - name: The testers' fixes, responsiveness and engine fallback in Chromium
-        if: ${{ !cancelled() }}
-        run: cd web && npm run test:page
-      - name: The site as published (web/assemble.sh) in Chromium
-        if: ${{ !cancelled() }}
-        run: |
-          web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
-          cd web && npm run test:site -- "$RUNNER_TEMP/site"
-
-  browsers:
-    name: Web page in ${{ matrix.browser }}
-    needs: web
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [firefox, webkit]
-    env:
-      SSC_BROWSER: ${{ matrix.browser }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/download-artifact@v4
-        with:
-          name: web-engines
-          path: web/engine
       - name: Browser
-        id: browser
-        timeout-minutes: 20
         run: |
           npm ci --prefix web
           cd web
-          # the system libraries come through apt, which holds the package lock while
-          # it works, so they install once and only this step's limit bounds them
-          npx playwright install-deps ${{ matrix.browser }}
-          # the browser download alone is tried again when it stalls (once one held
-          # the job for half an hour)
+          npx playwright install-deps webkit
           for attempt in 1 2 3; do
-            timeout 300 npx playwright install ${{ matrix.browser }} && break
+            timeout 300 npx playwright install webkit && break
             if [ "$attempt" = 3 ]; then exit 1; fi
-            echo "Downloading ${{ matrix.browser }} did not finish in 5 minutes; trying again"
           done
-      - name: Guide and calculator
-        run: cd web && npm run test:browser
-      - name: The testers' fixes and responsiveness
-        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
-        run: cd web && npm run test:page
-      - name: The site as published
-        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
+      - name: Diagnose
         run: |
-          web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
-          cd web && npm run test:site -- "$RUNNER_TEMP/site"
+          web/assemble.sh "$RUNNER_TEMP/site" "dbg-${GITHUB_SHA::7}"
+          cd web && SSC_BROWSER=webkit node tests/sw-debug.mjs "$RUNNER_TEMP/site"
