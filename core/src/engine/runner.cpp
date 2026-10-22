@@ -871,7 +871,9 @@ json::Value run_request(const json::Value& req, Token* token) {
       for (const auto& p : proc->params)
         if (p.id == job.param && std::isfinite(p.min))
           lo = std::max(lo, p.min_open ? (p.integer ? std::floor(p.min) + 1 : std::nextafter(p.min, INFINITY)) : p.min);
-      const double hi = std::max(2 * cmax, lo + 10);
+      double hi = std::max(2 * cmax, lo + 10);
+      for (const auto& p : proc->params)  // and no larger than the input allows (whole numbers: up to 1e9)
+        if (p.id == job.param) hi = std::max(lo, std::min({hi, p.max, p.integer ? 1e9 : INFINITY}));
       std::set<double> grid;
       for (int k = 0; k < curve_points; ++k) {
         double x = lo + (hi - lo) * k / (curve_points - 1);

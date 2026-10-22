@@ -63,7 +63,7 @@ inline int upper_critical(int n, double p, double a) {
   int lo = -1, hi = n + 1;  // P(X ≥ hi) = 0 ≤ a ; find boundary
   // P(X ≥ c) = pbinom(c − 1, upper)
   while (hi - lo > 1) {
-    const int mid = (lo + hi) / 2;
+    const int mid = lo + (hi - lo) / 2;  // (lo + hi) can pass INT_MAX
     if (pbinom(mid - 1, n, p, false) <= a)
       hi = mid;
     else
@@ -77,7 +77,7 @@ inline int lower_critical(int n, double p, double a) {
   using namespace stats;
   int lo = -1, hi = n + 1;  // invariant: P(X ≤ lo) ≤ a (lo = −1 trivially), P(X ≤ hi) > a
   while (hi - lo > 1) {
-    const int mid = (lo + hi) / 2;
+    const int mid = lo + (hi - lo) / 2;  // (lo + hi) can pass INT_MAX
     if (pbinom(mid, n, p, true) <= a)
       lo = mid;
     else

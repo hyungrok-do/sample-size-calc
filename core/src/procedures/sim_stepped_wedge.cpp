@@ -58,7 +58,7 @@ lmm::Data patterns(const Design& d, double clusters_per_step) {
   for (int s = 1; s <= d.steps; ++s) {
     lmm::Pattern pt;
     pt.count = clusters_per_step;
-    pt.n = static_cast<long>(std::lround(w * T));
+    pt.n = std::llround(w * T);
     double x[lmm::PMAX];
     for (int j = 0; j < T; ++j) {
       design_row(d, s, j, x);

@@ -279,3 +279,32 @@ TEST_CASE("extremes: a request object with many keys is read in linear time") {
   CHECK_EQ(v.get("a").as_number(0), 3.0);  // a repeated key keeps its place and takes the last value
   CHECK_EQ(v.items()[200000].first, std::string("a"));
 }
+
+TEST_CASE("extremes: counts beyond a 32-bit integer give the same answers on every platform") {
+  auto request = [](const std::string& text) {
+    Token token;
+    return run_request(json::parse(text), &token);
+  };
+  {  // a dropout rate of 1e-12: the last visit, as an int, overflowed and dropped every patient (power 0)
+    const json::Value res = request(
+        R"({"procedure":"sim.mmrm","solve_for":"power","options":{"power_curve":false},)"
+        R"("inputs":{"n1":"100","drop1":"1e-12","drop2":"1e-12","reps":"200"}})");
+    CHECK(res.get("rows").elements().at(0).get("power").as_number(0) > 0.6);
+  }
+  {  // 1e9 subjects per cluster-period: the observations per cluster fit no 32-bit long (WebAssembly, Windows)
+    const json::Value res = request(
+        R"({"procedure":"sim.sw","solve_for":"power","options":{"power_curve":false},)"
+        R"("inputs":{"m":"1000000000","g":"2","delta":"4.242640687119285e-05","reps":"100"}})");
+    CHECK(res.get("rows").elements().at(0).get("mean_df").as_number(0) > 2e10);
+  }
+  {  // a power curve stays within the input's range (whole numbers up to 1e9), where the integer searches hold
+    const json::Value res = request(R"({"procedure":"prop.one","solve_for":"power","inputs":{"n":"800000000"}})");
+    const json::Value& series = res.get("plots").elements().at(0).get("series").elements().at(0);
+    const auto& xs = series.get("x").elements();
+    const auto& ys = series.get("y").elements();
+    bool ok = !xs.empty();
+    for (std::size_t i = 0; i < xs.size(); ++i)
+      if (xs[i].as_number(0) > 1e9 || (xs[i].as_number(0) > 1e6 && ys[i].as_number(0) < 0.5)) ok = false;
+    CHECK(ok);
+  }
+}

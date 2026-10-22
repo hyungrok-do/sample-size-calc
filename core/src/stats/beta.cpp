@@ -22,7 +22,8 @@ double beta_cf(double a, double b, double x) {
   if (std::fabs(d) < TINY) d = TINY;
   d = 1 / d;
   double h = d;
-  const int maxIt = 20000 + static_cast<int>(20 * std::sqrt(std::fmax(a, b)));
+  // bounded before conversion: shapes beyond 1e16 (a noncentral F with an enormous noncentrality) pass any int
+  const int maxIt = 20000 + static_cast<int>(std::fmin(20 * std::sqrt(std::fmax(a, b)), 1e8));
   for (int m = 1; m <= maxIt; ++m) {
     const double m2 = 2.0 * m;
     double aa = m * (b - m) * x / ((qam + m2) * (a + m2));

@@ -309,7 +309,10 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
       const double u = rng.uniform();
       // the last visit observed: retained through visit t when u ≤ (1 − dropout)^(t/T)
       int k = T;
-      if (d.drop[g] > 0) k = std::min(T, static_cast<int>(std::floor(T * std::log(u) / ldrop + 1e-12)));
+      if (d.drop[g] > 0) {  // compared before conversion: a tiny dropout rate puts it far beyond any int
+        const double last = std::floor(T * std::log(u) / ldrop + 1e-12);
+        k = last >= T ? T : static_cast<int>(last);
+      }
       for (int t = 0; t < T; ++t) {
         double v = g == 0 ? d.delta * (t + 1) / T : 0;  // the difference grows linearly to δ at the last visit
         for (int c = 0; c <= t; ++c) v += d.chol[t * TMAX + c] * e[c];

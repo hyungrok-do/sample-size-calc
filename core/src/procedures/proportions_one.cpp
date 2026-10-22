@@ -48,7 +48,7 @@ Region one_prop_region(const std::string& test, int n, double p0, double alpha, 
   if (a != Alt::Lower) {  // smallest x with z > zc (z is non-decreasing in x)
     int lo = -1, hi = n + 1;
     while (hi - lo > 1) {
-      const int mid = (lo + hi) / 2;
+      const int mid = lo + (hi - lo) / 2;
       if (z_stat(test, mid, n, p0) > zc)
         hi = mid;
       else
@@ -59,7 +59,7 @@ Region one_prop_region(const std::string& test, int n, double p0, double alpha, 
   if (a != Alt::Upper) {  // largest x with z < −zc
     int lo = -1, hi = n + 1;
     while (hi - lo > 1) {
-      const int mid = (lo + hi) / 2;
+      const int mid = lo + (hi - lo) / 2;
       if (z_stat(test, mid, n, p0) < -zc)
         lo = mid;
       else

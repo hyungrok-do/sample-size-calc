@@ -17,6 +17,7 @@
 // from the numerical Hessian of the REML criterion in (σ², D).
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 namespace ssc::sim::lmm {
@@ -27,7 +28,7 @@ constexpr int QMAX = 2;  // random effects per cluster
 /// All clusters that share the design matrices X (n × p) and Z (n × q).
 struct Pattern {
   double count = 0;  // clusters with this design (an expected count in analytic approximations)
-  long n = 0;        // observations per cluster
+  std::int64_t n = 0;  // observations per cluster (a long has 32 bits in WebAssembly and on Windows)
   double xx[PMAX * PMAX] = {};  // X'X, Z'Z, Z'X of one cluster (row-major)
   double zz[QMAX * QMAX] = {};
   double zx[QMAX * PMAX] = {};
