@@ -27,7 +27,20 @@ jobs:
             timeout 300 npx playwright install webkit && break
             if [ "$attempt" = 3 ]; then exit 1; fi
           done
-      - name: Diagnose
+      - name: Which part of the site test loses the copies
+        timeout-minutes: 40
         run: |
           web/assemble.sh "$RUNNER_TEMP/site" "dbg-${GITHUB_SHA::7}"
-          cd web && SSC_BROWSER=webkit node tests/sw-debug.mjs "$RUNNER_TEMP/site"
+          cd web
+          for variant in "" nostored nolink noetag nolink,noetag,nostored; do
+            pass=0; fail=0; first=""
+            for run in 1 2 3 4 5; do
+              if out=$(SSC_BROWSER=webkit VARIANT=$variant timeout 240 node tests/site-variant.mjs "$RUNNER_TEMP/site" 2>&1); then
+                pass=$((pass + 1))
+              else
+                fail=$((fail + 1)); [ -z "$first" ] && first=$(echo "$out" | grep -v '^Site:' | head -c 1500)
+              fi
+            done
+            echo "=== variant '${variant:-as is}': $pass passed, $fail failed"
+            [ -n "$first" ] && echo "$first"
+          done
