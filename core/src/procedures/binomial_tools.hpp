@@ -95,16 +95,29 @@ inline double two_tail_prob(int n, double p, int c_low, int c_high) {
   return std::min(1.0, s);
 }
 
+/// Width of binom_window for n trials: about 16.5 standard deviations.
+inline double binom_window_width(double n, double p) { return 16.5 * std::sqrt(n * p * (1 - p)) + 3; }
+
+/// Rough cost of one exact power evaluation for two binomial samples: the cells of the joint window (Fisher's
+/// test does about 8 times that, building the null distribution of every table total).
+inline double exact_power_work(double n1, double n2, double p1, double p2, bool fisher = false) {
+  return binom_window_width(n1, p1) * binom_window_width(n2, p2) * (fisher ? 8 : 1);
+}
+
 /// Rough cost of an exact sample-size search for two binomial samples of about
-/// n1 and n2: the cells of the joint window (binom_window keeps about 16.5
-/// standard deviations of each) times the power evaluations of the saw-tooth
-/// search in solve::min_n (a scan over 15% of n below the bisection result).
+/// n1 and n2: the cells of the joint window times the power evaluations of the
+/// saw-tooth search in solve::min_n (a scan over 15% of n below the bisection result).
 inline double exact_search_work(double n1, double n2, double p1, double p2) {
-  auto width = [](double n, double p) { return 16.5 * std::sqrt(n * p * (1 - p)) + 3; };
-  return width(n1, p1) * width(n2, p2) * (std::max(25.0, 0.15 * std::max(n1, n2)) + 40);
+  return exact_power_work(n1, n2, p1, p2) * (std::max(25.0, 0.15 * std::max(n1, n2)) + 40);
 }
 
 /// Above this work (a few seconds), exact searches use the normal approximation instead.
 constexpr double EXACT_SEARCH_BUDGET = 2.5e8;
+
+/// Whether a point of the power curves (curve_points runs in all; 0 when not on a curve) is to use the normal
+/// approximation: enumerating every point like it would take the curves past the exact search's budget.
+inline bool curve_too_long(int curve_points, double work) {
+  return curve_points > 0 && curve_points * work > EXACT_SEARCH_BUDGET;
+}
 
 }  // namespace ssc::procs

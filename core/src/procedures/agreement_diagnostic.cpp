@@ -1,6 +1,8 @@
 // Agreement (intraclass correlation, Cohen's kappa) and diagnostic accuracy
 // (area under the ROC curve, sensitivity and specificity of one test, and two
 // tests compared on the same subjects).
+#include <unordered_map>
+
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
 #include "procedures/mcnemar.hpp"
@@ -741,9 +743,18 @@ Procedure paired_diagnostic() {
     auto nd = [&](double n) { return std::floor(n * prev + 1e-9); };
     auto nn = [&](double n) { return std::floor(n * (1 - prev) + 1e-9); };
     McNemarCache cse, csp;  // the exact test's rejection probabilities, kept between sample sizes
+    // and each group's power by its number of pairs: at a prevalence of 0.001 a thousand totals in a row have the
+    // same number of subjects with the condition, and the search's scan of totals would compute it again for each
+    std::unordered_map<int, double> mse, msp;
+    auto part = [&](std::unordered_map<int, double>& memo, double pairs, const PairedCells& c, McNemarCache& cache) {
+      if (pairs < 1) return 0.0;
+      const int k = static_cast<int>(pairs);
+      const auto it = memo.find(k);
+      return it != memo.end() ? it->second : memo.emplace(k, mcnemar_power(s, k, c.p10, c.p01, cache, ctx)).first->second;
+    };
     auto power_parts = [&](double n, double& pse, double& psp) {
-      pse = !use_se ? 1.0 : (nd(n) < 1 ? 0.0 : mcnemar_power(s, static_cast<int>(nd(n)), se.p10, se.p01, cse, ctx));
-      psp = !use_sp ? 1.0 : (nn(n) < 1 ? 0.0 : mcnemar_power(s, static_cast<int>(nn(n)), sp.p10, sp.p01, csp, ctx));
+      pse = !use_se ? 1.0 : part(mse, nd(n), se, cse);
+      psp = !use_sp ? 1.0 : part(msp, nn(n), sp, csp);
       return pse * psp;
     };
     // the exact test is computed for up to a million pairs in each group

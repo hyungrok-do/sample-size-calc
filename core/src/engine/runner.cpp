@@ -886,6 +886,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     // the curves of simulation procedures come from their analytic approximation
     RunContext curve_ctx = ctx;
     curve_ctx.approximate = proc->simulation;
+    curve_ctx.curve_points = static_cast<int>(work.size());
     try {
       parallel_for(
           work.size(), threads,

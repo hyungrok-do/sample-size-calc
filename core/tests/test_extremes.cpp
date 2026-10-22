@@ -195,6 +195,11 @@ TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an
       // the option lowers the limit of scenarios and never raises it
       {many + "1e12}}", "limit 20000"},
       {many + "-1}}", "limit 1)"},
+      // with the power curve (on here): its points use the normal approximation when enumerating them all would
+      // take long (74 s), and the paired diagnostic search computes each number of pairs once (3 s)
+      {R"({"procedure":"prop.cc","solve_for":"n","inputs":{"test":"fisher","m":"100","or":"1.05"}})", ""},
+      {R"({"procedure":"diag.paired","solve_for":"n","inputs":{"method":"exact","goal":"se","se1":"0.9","se2":"0.8",)"
+       R"("prev":"0.001"}})", ""},
       // 20,000 group-sequential designs with 20 analyses: about 25 minutes of work
       {R"({"procedure":"gs.means","solve_for":"n","inputs":{"looks":"20","alpha":"0.0001 to 0.05 by 0.0000049995",)"
        R"("power":"0.8 0.9"}})",

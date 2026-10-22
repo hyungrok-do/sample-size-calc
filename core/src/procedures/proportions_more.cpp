@@ -382,7 +382,8 @@ Procedure two_prop_ni() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
-      if (exact) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
+      if (exact && !curve_too_long(ctx.curve_points, exact_power_work(n1, n2, p1, p2))) {
         const double v = fm_power_exact({S}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;
@@ -415,7 +416,7 @@ Procedure two_prop_ni() {
     r.set(bkey, S.bound);
     r.set(actual_key(sc), measure(sc, p1, p2));
     r.set("alpha", S.alpha);
-    if (exact && !fell_back) {
+    if (exact && !fell_back && !ctx.curve_points) {  // a curve uses only the power
       const double size = fm_power_exact({S}, n.n1, n.n2, std::min(std::max(p10, 1e-9), 1 - 1e-9), p2, ctx);
       if (!std::isnan(size)) r.set("actual_alpha", size);
     }
@@ -558,7 +559,8 @@ Procedure two_prop_equiv() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
-      if (exact) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
+      if (exact && !curve_too_long(ctx.curve_points, 2 * exact_power_work(n1, n2, p1, p2))) {  // two tests a table
         const double v = fm_power_exact({L, U}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;

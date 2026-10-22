@@ -317,7 +317,8 @@ Procedure two_props() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto power = [&](double n1, double n2, double x) {
-      if (exact) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
+      if (exact && !curve_too_long(ctx.curve_points, exact_power_work(n1, n2, x, p2, T.test == "fisher"))) {
         const double pw = two_prop_exact(T, n1, n2, x, p2, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
@@ -359,7 +360,7 @@ Procedure two_props() {
     r.set("ratio", p1 / p2);
     r.set("or", p1 / (1 - p1) / (p2 / (1 - p2)));
     r.set("alpha", s("alpha"));
-    if (exact && !fell_back) {
+    if (exact && !fell_back && !ctx.curve_points) {  // a curve uses only the power
       // the size can need a larger enumeration than the power (when P1 is the more extreme proportion)
       const double size = two_prop_exact(T, n.n1, n.n2, p2, p2, ctx);
       if (!std::isnan(size)) r.set("actual_alpha", size);
@@ -695,7 +696,8 @@ Procedure case_control() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto power = [&](double n1, double n2, double x) {
-      if (exact) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
+      if (exact && !curve_too_long(ctx.curve_points, exact_power_work(n1, n2, x, p0, T.test == "fisher"))) {
         const double pw = two_prop_exact(T, n1, n2, x, p0, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
@@ -743,7 +745,7 @@ Procedure case_control() {
     r.set("p0", p0);
     r.set("or", odds_ratio_of(p1, p0));
     r.set("alpha", s("alpha"));
-    if (exact && !fell_back) {
+    if (exact && !fell_back && !ctx.curve_points) {  // a curve uses only the power
       // the size can need a larger enumeration than the power (when P1 is the more extreme proportion)
       const double size = two_prop_exact(T, n.n1, n.n2, p0, p0, ctx);
       if (!std::isnan(size)) r.set("actual_alpha", size);

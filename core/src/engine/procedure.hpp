@@ -225,6 +225,7 @@ struct RunContext {
   int threads = 1;
   bool approximate = false;     // simulation procedures: analytic approximation instead of simulating
   Progress* progress = nullptr;  // progress of the scenario being computed (may be null)
+  int curve_points = 0;          // a point of the power curves, which take this many runs in all (0: not a curve)
   void check() const {
     if (token) token->check();
   }
