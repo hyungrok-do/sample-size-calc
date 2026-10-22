@@ -63,10 +63,17 @@ const nextFiles = new Map([...files].map(([file, body]) => {
 }));
 let live = files;
 let down = false;  // the server drops every connection, as when the network is gone
+// what a failed check reports: the requests dropped while the network was gone (and what kind of request each was),
+// requests the browser saw fail, and the errors and warnings in the console
+const dropped = [], failed = [], logged = [];
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 const prefix = '/sample-size-calc/';
 const server = createServer((req, res) => {
-  if (down) { req.socket.destroy(); return; }
+  if (down) {
+    dropped.push(`${req.url} (${req.headers['sec-fetch-dest'] ?? 'no destination'})`);
+    req.socket.destroy();
+    return;
+  }
   const pathname = new URL(req.url, 'http://localhost').pathname;
   if (!pathname.startsWith(prefix)) { res.writeHead(404).end(); return; }
   const file = pathname.slice(prefix.length) || 'index.html';
@@ -88,11 +95,20 @@ async function ready(p) {
     await p.waitForFunction(() => /ready in/.test(document.getElementById('engine-status')?.textContent)
       && !document.getElementById('method').hidden, null, { timeout: 60000 });
   } catch (error) {
-    const state = await p.evaluate(() => ({
-      status: document.getElementById('engine-status')?.textContent, controlled: !!navigator.serviceWorker?.controller,
-      title: document.title, error: document.getElementById('navigation-error')?.textContent,
-    })).catch((e) => ({ page: e.message }));
-    throw new Error(`the page did not become ready: ${JSON.stringify(state)}`);
+    const state = await p.evaluate(async () => {
+      // the offline copies the service worker keeps, by cache
+      const kept = {};
+      for (const name of await caches.keys())
+        kept[name] = (await (await caches.open(name)).keys()).map((r) => new URL(r.url).pathname.split('/').pop() + new URL(r.url).search);
+      return {
+        status: document.getElementById('engine-status')?.textContent, controlled: !!navigator.serviceWorker?.controller,
+        isolated: self.crossOriginIsolated, title: document.title,
+        error: document.getElementById('navigation-error')?.textContent, kept,
+      };
+    }).catch((e) => ({ page: e.message }));
+    const recent = (list) => list.slice(-15);
+    throw new Error(`the page did not become ready: ${JSON.stringify({ ...state, dropped: recent(dropped),
+      failed: recent(failed), console: recent(logged) }, null, 1)}`);
   }
 }
 async function calculates(p) {
@@ -107,6 +123,8 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  context.on('requestfailed', (r) => failed.push(`${r.url()}: ${r.failure()?.errorText}`));
+  page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') logged.push(`${m.type()}: ${m.text()}`); });
 
   await page.goto(url);
   await ready(page);
