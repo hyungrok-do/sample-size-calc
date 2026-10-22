@@ -246,20 +246,26 @@ TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an
 }
 
 TEST_CASE("extremes: Stop ends an exact enumeration on one thread at once") {
-  Token token;
-  std::thread stop([&] {
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    token.cancel();
-  });
-  const auto t0 = std::chrono::steady_clock::now();
-  const json::Value res = run_request(
-      json::parse(R"({"procedure":"prop.two","solve_for":"power","options":{"threads":1,"power_curve":false},)"
-                  R"("inputs":{"alternative":"upper","test":"fisher","es":"or","or1":"1e-9","n1":"2000000"}})"),
-      &token);
-  const double took = seconds_since(t0);
-  stop.join();
-  CHECK(res.get("cancelled").as_bool(false));
-  CHECK(took < 1.5);
+  // Fisher's test with many table totals, and an equivalence test with 65 rows of 380,000 tables each
+  for (const char* inputs :
+       {R"({"alternative":"upper","test":"fisher","es":"or","or1":"1e-9","n1":"2000000"})",
+        R"({"method":"exact","alloc":"ratio","n1":"64","r":"32812500","p1":"0.5","p2":"0.5","dl":"-0.4","du":"0.4"})"}) {
+    Token token;
+    std::thread stop([&] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      token.cancel();
+    });
+    const std::string procedure = std::string(inputs).find("fisher") != std::string::npos ? "prop.two" : "prop.two.equiv";
+    const auto t0 = std::chrono::steady_clock::now();
+    const json::Value res = run_request(json::parse(R"({"procedure":")" + procedure +
+                                                    R"(","solve_for":"power","options":{"threads":1,"power_curve":false},"inputs":)" +
+                                                    inputs + "}"),
+                                        &token);
+    const double took = seconds_since(t0);
+    stop.join();
+    CHECK(res.get("cancelled").as_bool(false));
+    CHECK(took < 1.0);
+  }
 }
 
 TEST_CASE("extremes: a request object with many keys is read in linear time") {

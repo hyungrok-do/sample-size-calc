@@ -138,7 +138,7 @@ void enumerate(std::size_t n, double work, const RunContext& ctx, F&& body) {
     return;
   }
   for (std::size_t k = 0; k < n; ++k) {
-    if (k % 64 == 0) ctx.check();
+    ctx.check();  // a step is a whole row or table total: thousands of cells
     body(k);
   }
 }
@@ -336,7 +336,9 @@ Procedure two_props() {
       const double pb = (p1 + p2) / 2;
       const double g = std::pow(za * std::sqrt(2 * pb * (1 - pb)) + zb * std::sqrt(p1 * (1 - p1) + p2 * (1 - p2)), 2) /
                        ((p1 - p2) * (p1 - p2));
-      if (exact && exact_search_work(g, g, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
+      // the groups the search tries: with a ratio allocation, group 2 is R times group 1
+      const double ratio = s.is("alloc", "ratio") ? s("r") : 1.0, g1 = g * (1 + 1 / ratio) / 2;
+      if (exact && exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
       n = solve_two_group_n(
           s, [&](double a1, double a2) { return power(a1, a2, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
     } else {
@@ -353,6 +355,7 @@ Procedure two_props() {
       }
     }
     put_two_group(r, n);
+    if (exact) fell_back = false;  // the answer is labeled by its own evaluation, not by the search's steps
     put_power(s, r, power(n.n1, n.n2, p1));
     r.set("p1", p1);
     r.set("p2", p2);
@@ -739,6 +742,7 @@ Procedure case_control() {
     r.set("ncase", n.n1);
     r.set("nctrl", n.n2);
     r.set("n", n.total());
+    if (exact) fell_back = false;  // the answer is labeled by its own evaluation, not by the search's steps
     put_power(s, r, power(n.n1, n.n2, p1));
     r.set("m", m);
     r.set("p1", p1);

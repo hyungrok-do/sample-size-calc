@@ -162,7 +162,9 @@ constexpr double MAX_CELLS = 4e7;
 // enumeration is too large (the callers then use the normal approximation).
 double fm_power_exact(const std::vector<NiSpec>& tests, double n1d, double n2d, double p1, double p2,
                       const RunContext& ctx) {
-  if (!(n1d >= 0 && n2d >= 0 && n1d + n2d <= std::numeric_limits<int>::max())) return NAN;  // the counts are ints
+  // the counts are ints (binom_window computes n + 1); their sums are taken as doubles
+  constexpr double most = std::numeric_limits<int>::max() - 1.0;
+  if (!(n1d >= 0 && n2d >= 0 && n1d <= most && n2d <= most)) return NAN;
   const int n1 = static_cast<int>(n1d), n2 = static_cast<int>(n2d);
   const BinomWindow w1 = binom_window(n1, p1), w2 = binom_window(n2, p2);
   const double cells = static_cast<double>(w1.hi - w1.lo + 1) * (w2.hi - w2.lo + 1);
@@ -188,7 +190,7 @@ double fm_power_exact(const std::vector<NiSpec>& tests, double n1d, double n2d, 
     parallel_for(nr, ctx.threads, body, ctx.token);
   } else {
     for (std::size_t k = 0; k < nr; ++k) {
-      if (k % 64 == 0) ctx.check();  // so that Stop ends it
+      ctx.check();  // so that Stop ends it (a step is a whole row: thousands of cells)
       body(k);
     }
   }
@@ -404,12 +406,15 @@ Procedure two_prop_ni() {
         const double v = p1 * (1 - p1) + (sc == Scale::Ratio ? S.bound * S.bound : 1.0) * p2 * (1 - p2);
         g = zf * v / (eff * eff);
       }
-      if (exact && exact_search_work(g, g, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
+      // the groups the search tries: with a ratio allocation, group 2 is R times group 1
+      const double ratio = s.is("alloc", "ratio") ? s("r") : 1.0, g1 = g * (1 + 1 / ratio) / 2;
+      if (exact && exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
       n = solve_two_group_n(s, P, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
     } else {
       n = two_group_n(s);
     }
     put_two_group(r, n);
+    if (exact) fell_back = false;  // the answer is labeled by its own evaluation, not by the search's steps
     put_power(s, r, P(n.n1, n.n2));
     r.set("p1", p1);
     r.set("p2", p2);
@@ -575,12 +580,15 @@ Procedure two_prop_equiv() {
                         stats::qnorm(std::fabs(m - (ml + mu) / 2) < 1e-12 ? 1 - (1 - s("power")) / 2 : s("power"));
       const double g = group_guess(sc, zf * zf, p1, p2, gap);
       // two score tests per table
-      if (exact && 2 * exact_search_work(g, g, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
+      // the groups the search tries: with a ratio allocation, group 2 is R times group 1
+      const double ratio = s.is("alloc", "ratio") ? s("r") : 1.0, g1 = g * (1 + 1 / ratio) / 2;
+      if (exact && 2 * exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
       n = solve_two_group_n(s, P, s("power"), 2, g, !exact, ctx, 1e7);
     } else {
       n = two_group_n(s);
     }
     put_two_group(r, n);
+    if (exact) fell_back = false;  // the answer is labeled by its own evaluation, not by the search's steps
     put_power(s, r, P(n.n1, n.n2));
     r.set("p1", p1);
     r.set("p2", p2);

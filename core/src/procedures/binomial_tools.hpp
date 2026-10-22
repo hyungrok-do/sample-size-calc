@@ -98,10 +98,16 @@ inline double two_tail_prob(int n, double p, int c_low, int c_high) {
 /// Width of binom_window for n trials: about 16.5 standard deviations.
 inline double binom_window_width(double n, double p) { return 16.5 * std::sqrt(n * p * (1 - p)) + 3; }
 
-/// Rough cost of one exact power evaluation for two binomial samples: the cells of the joint window (Fisher's
-/// test does about 8 times that, building the null distribution of every table total).
+/// Rough cost of one exact power evaluation for two binomial samples: the cells of the joint window, or for
+/// Fisher's test the null distribution (80 standard deviations wide) of every table total, which is far more
+/// when one proportion is near 0 or 1.
 inline double exact_power_work(double n1, double n2, double p1, double p2, bool fisher = false) {
-  return binom_window_width(n1, p1) * binom_window_width(n2, p2) * (fisher ? 8 : 1);
+  const double w1 = binom_window_width(n1, p1), w2 = binom_window_width(n2, p2);
+  if (!fisher) return w1 * w2;
+  const double N = n1 + n2, mid = n1 * p1 + n2 * p2;
+  const double t = std::clamp(N / 2, mid - (w1 + w2) / 2, mid + (w1 + w2) / 2);  // the widest one
+  const double var = N > 1 ? t * n1 / N * (N - t) / N * (N - n1) / (N - 1) : 0;
+  return std::max(w1 * w2, (w1 + w2) * (80 * std::sqrt(std::max(var, 0.0)) + 41));
 }
 
 /// Rough cost of an exact sample-size search for two binomial samples of about
