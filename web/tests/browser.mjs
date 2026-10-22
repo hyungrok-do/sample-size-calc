@@ -67,7 +67,15 @@ try {
     const button = page.locator('#guide-recommendation-content button.primary');
     assert.match(await button.textContent(), /^(Use|Reapply) this analysis$/);
     await button.click();
-    await page.waitForFunction(() => document.querySelector('#guide-recommendation-content button')?.textContent === 'Reapply this analysis');
+    await page.waitForFunction(() => document.querySelector('#guide-recommendation-content button')?.textContent === 'Reapply this analysis')
+      .catch(async () => {
+        const state = await page.evaluate(() => ({
+          status: document.querySelector('#guide-recommendation-content [role="status"]')?.textContent,
+          error: document.getElementById('navigation-error').textContent, method: !document.getElementById('method').hidden,
+          hash: location.hash,
+        }));
+        throw new Error(`the analysis was not applied: ${JSON.stringify(state)}`);
+      });
     assert.equal(await page.locator('#method').isVisible(), true);
   }
   for (const route of routes) {

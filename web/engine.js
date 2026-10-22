@@ -3,6 +3,8 @@
 // worker in the middle of a calculation and starts a fresh one.
 const STARTUP_MS = 20000;      // from compiled to ready: starting the threads (a tenth of a second); more means never
 const RECYCLE_BYTES = 64e6;    // an engine this big after an answer is replaced once idle (memory never shrinks)
+const CRASHED = 'The engine stopped unexpectedly during this calculation, often for lack of memory with a very large '
+  + 'answer. It has been restarted: try again, with fewer scenarios if this was a large one.';
 
 export class Engine {
   constructor() {
@@ -17,6 +19,7 @@ export class Engine {
     this.variant = this.threaded ? 'ssc_web_mt' : 'ssc_web';
     this.pending = new Map();
     this.recycle = false;
+    this.crashed = false;
     this.failed = false;
     this.worker = new Worker(new URL(`./worker.js?engine=${this.variant}&v=dev`, import.meta.url), { type: 'module' });
     let watchdog = 0;
@@ -29,9 +32,10 @@ export class Engine {
       if (!call) return;
       this.pending.delete(data.id);
       if (data.ok) call.resolve(data);
-      else call.reject(new Error(data.error));
+      else call.reject(Object.assign(new Error(data.crashed ? CRASHED : data.error), { crashed: !!data.crashed, detail: data.error }));
+      if (data.crashed) this.crashed = true;
       if (data.value?.memoryBytes > RECYCLE_BYTES) this.recycle = true;
-      if (this.recycle && this.pending.size === 0) queueMicrotask(() => this.replace());
+      if ((this.recycle || this.crashed) && this.pending.size === 0) queueMicrotask(() => this.replace());
     };
     this.worker.onerror = (e) => {
       e.preventDefault();
@@ -73,10 +77,10 @@ export class Engine {
     }
   }
 
-  // A fresh engine in place of an idle one that a large answer left big.  Not while offline: the new worker
-  // could not download the engine.
+  // A fresh engine in place of an idle one that a large answer left big (not while offline: the new worker could not
+  // download the engine), or that crashed (always: it cannot calculate any more, and offline copies may start one).
   replace() {
-    if (!this.recycle || this.pending.size || navigator.onLine === false) return;
+    if (this.pending.size || !(this.crashed || (this.recycle && navigator.onLine !== false))) return;
     this.worker.terminate();
     this.start();
   }

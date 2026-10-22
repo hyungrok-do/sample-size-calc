@@ -165,7 +165,19 @@ try {
       || !!document.querySelector('#result .error'), null, { timeout: 60000 }).then(() => true, () => false);
     const rows = await p.evaluate(() => document.querySelectorAll('#result tbody tr').length);
     const shown = (await p.textContent('#result')).replace(/\s+/g, ' ').slice(0, 160);
-    assert.ok(drawn && rows >= 1000, `${rows} rows${drawn ? '' : ' after 60 s'}; status "${await p.textContent('#engine-status')}"; result "${shown}"`);
+    if (!(drawn && rows >= 1000)) {
+      // where it breaks: smaller answers, and the one-thread engine
+      const probes = [];
+      for (const [engine, last] of [['', 5001], ['', 2501], ['?engine=single', 10001]]) {
+        const q = await open(`${base}${engine}#means.two.t`); await ready(q);
+        await q.click('#solve label >> nth=1'); await q.fill('#in-n1', `2 to ${last}`); await q.fill('#in-alpha', '0.05 0.01');
+        await q.click('#calc'); await answer(q);
+        const error = await q.$('#result .error');
+        probes.push(`${engine || 'multi-core'} ${2 * (last - 1)} scenarios: ${error ? (await error.textContent()).slice(0, 80) : 'answered'}`);
+        await q.context().close();
+      }
+      assert.fail(`${rows} rows${drawn ? '' : ' after 60 s'}; status "${await p.textContent('#engine-status')}"; result "${shown}"; ${probes.join('; ')}`);
+    }
     await p.waitForTimeout(500);
     const gap = await p.evaluate(() => { window.__stopTicks = true; return window.__gap; });
     assert.ok(gap < 2000, `longest pause ${Math.round(gap)} ms`);
@@ -228,6 +240,26 @@ try {
         return `one thread after ${((Date.now() - started) / 1000).toFixed(1)} s`;
       });
     }
+    await check('after an engine crash, the page says so, starts a fresh engine and calculates again', async () => {
+      // a worker whose engine traps on one input, as an engine out of memory does
+      const source = await readFile(resolve(web, 'worker.js'), 'utf8');
+      const crashing = source.replace('run: (M, { request, maxRows = Infinity }) => {',
+        "run: (M, { request, maxRows = Infinity }) => {\n    if (request.inputs?.mu1 === '13.13') throw new WebAssembly.RuntimeError('unreachable');");
+      assert.notEqual(crashing, source);
+      const context = await browser.newContext({ serviceWorkers: 'block' });
+      await context.route('**/worker.js*', (r) => r.fulfill({ body: crashing, contentType: 'text/javascript', headers: isolation }));
+      const q = await context.newPage();
+      q.on('pageerror', (e) => errors.push(`crash: ${e.message}`));
+      await q.goto(`${base}#means.two.t`); await ready(q);
+      const workers = q.workers().length;
+      await q.click('#solve label >> nth=1'); await q.fill('#in-mu1', '13.13'); await q.click('#calc'); await answer(q);
+      assert.match(await q.textContent('#result .error'), /stopped unexpectedly/);
+      await q.waitForFunction(() => /ready in/.test(document.getElementById('engine-status').textContent));
+      await q.fill('#in-mu1', '1'); await q.click('#calc'); await answer(q);
+      assert.ok(await q.$('#result .statement'), 'a fresh engine answers');
+      await context.close();
+      return `${workers} worker(s) before the crash`;
+    });
     await fallBack('without the multi-core engine file, the one-thread engine calculates', (c) =>
       c.route('**/engine/ssc_web_mt.wasm*', (r) => r.fulfill({ status: 404, body: '' })), 30000);
     const glue = await readFile(resolve(web, 'engine/ssc_web_mt.mjs'), 'utf8');

@@ -83,8 +83,18 @@ const url = `http://127.0.0.1:${server.address().port}${prefix}`;
 const kind = process.env.SSC_BROWSER ?? 'chromium';
 const browser = await { chromium, firefox, webkit }[kind].launch(kind === 'chromium'
   ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined, args: ['--disable-dev-shm-usage'] } : {});
-const ready = (p) => p.waitForFunction(() => /ready in/.test(document.getElementById('engine-status').textContent)
-  && !document.getElementById('method').hidden, null, { timeout: 60000 });
+async function ready(p) {
+  try {
+    await p.waitForFunction(() => /ready in/.test(document.getElementById('engine-status')?.textContent)
+      && !document.getElementById('method').hidden, null, { timeout: 60000 });
+  } catch (error) {
+    const state = await p.evaluate(() => ({
+      status: document.getElementById('engine-status')?.textContent, controlled: !!navigator.serviceWorker?.controller,
+      title: document.title, error: document.getElementById('navigation-error')?.textContent,
+    })).catch((e) => ({ page: e.message }));
+    throw new Error(`the page did not become ready: ${JSON.stringify(state)}`);
+  }
+}
 async function calculates(p) {
   await p.click('#calc');
   await p.waitForSelector('#result .statement', { timeout: 60000 });

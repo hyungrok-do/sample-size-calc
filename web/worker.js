@@ -117,6 +117,7 @@ self.onmessage = async (event) => {
     const value = ops[op](M, arg);
     self.postMessage({ id, ok: true, value, ms: performance.now() - t });
   } catch (e) {
-    self.postMessage({ id, ok: false, error: String(e?.message ?? e) });
+    // a trap (out of memory, for one) leaves the engine unusable: the page starts a fresh one
+    self.postMessage({ id, ok: false, error: String(e?.message ?? e), crashed: e instanceof WebAssembly.RuntimeError });
   }
 };
