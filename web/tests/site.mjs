@@ -62,9 +62,11 @@ const nextFiles = new Map([...files].map(([file, body]) => {
   return [file, Buffer.from(s)];
 }));
 let live = files;
+let down = false;  // the server drops every connection, as when the network is gone
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 const prefix = '/sample-size-calc/';
 const server = createServer((req, res) => {
+  if (down) { req.socket.destroy(); return; }
   const pathname = new URL(req.url, 'http://localhost').pathname;
   if (!pathname.startsWith(prefix)) { res.writeHead(404).end(); return; }
   const file = pathname.slice(prefix.length) || 'index.html';
@@ -117,11 +119,11 @@ try {
   await calculates(page);
   console.log(`Site: second visit — ${isolated ? 'cross-origin isolated' : 'not isolated'}; ${status}`);
 
-  await context.setOffline(true);
+  down = true;
   await page.reload();
   await ready(page);
   await calculates(page);
-  await context.setOffline(false);
+  down = false;
   console.log('Site: without a network the page, guide and engine start from the offline copies.');
 
   // An update: the next version is published while this one is open and kept by the browser.

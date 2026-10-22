@@ -161,7 +161,11 @@ try {
       requestAnimationFrame(tick);
     });
     await p.click('#calc'); await answer(p);
-    await p.waitForFunction(() => document.querySelectorAll('#result tbody tr').length >= 1000, null, { timeout: 60000 });
+    const drawn = await p.waitForFunction(() => document.querySelectorAll('#result tbody tr').length >= 1000
+      || !!document.querySelector('#result .error'), null, { timeout: 60000 }).then(() => true, () => false);
+    const rows = await p.evaluate(() => document.querySelectorAll('#result tbody tr').length);
+    const shown = (await p.textContent('#result')).replace(/\s+/g, ' ').slice(0, 160);
+    assert.ok(drawn && rows >= 1000, `${rows} rows${drawn ? '' : ' after 60 s'}; status "${await p.textContent('#engine-status')}"; result "${shown}"`);
     await p.waitForTimeout(500);
     const gap = await p.evaluate(() => { window.__stopTicks = true; return window.__gap; });
     assert.ok(gap < 2000, `longest pause ${Math.round(gap)} ms`);

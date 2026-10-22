@@ -9,7 +9,10 @@ import { guideData } from '../guide-data.js';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
+// down: the server drops every connection, as when the network is gone (portable, unlike each browser's emulation)
+let down = false;
 const server = createServer(async (req, res) => {
+  if (down) { req.socket.destroy(); return; }
   const path = resolve(web, '.' + (new URL(req.url, 'http://localhost').pathname === '/' ? '/index.html' : new URL(req.url, 'http://localhost').pathname));
   if (!path.startsWith(web + sep)) { res.writeHead(403).end(); return; }
   try {
@@ -54,18 +57,16 @@ try {
     else routes.push({ node, path });
   }
   visit(guideData.root);
+  // chips chosen as a person chooses them, by clicking; no additional requirement needs confirming
   async function select(route) {
     await page.locator('#guide-reset').click();
-    await page.evaluate((path) => {
-      for (const [id, value] of path) {
-        const input = document.querySelector(`#guide input[name="${id}"][value="${value}"]`);
-        input.checked = true;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    }, route.path);  // no additional requirement needs confirming
+    for (const [id, value] of route.path) await page.locator(`#guide input[name="${id}"][value="${value}"]`).check();
   }
   async function apply() {
-    await page.locator('#guide-recommendation-content button').click();
+    // the recommendation's own button (not one of the analyses listed before the route is complete)
+    const button = page.locator('#guide-recommendation-content button.primary');
+    assert.match(await button.textContent(), /^(Use|Reapply) this analysis$/);
+    await button.click();
     await page.waitForFunction(() => document.querySelector('#guide-recommendation-content button')?.textContent === 'Reapply this analysis');
     assert.equal(await page.locator('#method').isVisible(), true);
   }
@@ -75,6 +76,7 @@ try {
       assert.equal(await page.locator('#guide-recommendation-content button').count(), 0);
       continue;
     }
+    assert.equal(await page.locator('#guide-recommendation-content button.primary').getAttribute('data-procedure'), route.node.procedure_id, route.node.node_id);
     await apply();
     assert.equal(new URL(page.url()).hash.split('?')[0], `#${route.node.procedure_id}`);
     for (const [key, value] of Object.entries(route.node.proposed_option_values)) {
@@ -214,9 +216,10 @@ try {
       if (!await cache.match(new URL(file + '?v=dev', location.href))) throw new Error(`Missing cached asset: ${file}`);
     }
   });
-  await offline.setOffline(true);
+  down = true;
   await offlinePage.reload();
   await offlinePage.waitForSelector('#guide-questions input', { state: 'attached' });
+  down = false;
   await offline.close();
   console.log(`Browser: calculation, same-method options, stale results, keyboard, history, mobile/dark layout, and offline reload passed in ${kind}.`);
 } finally {
