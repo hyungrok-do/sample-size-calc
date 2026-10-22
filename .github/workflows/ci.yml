@@ -12,7 +12,7 @@ jobs:
   webkit-debug:
     name: Service worker caches in webkit
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,7 +22,8 @@ jobs:
         run: |
           npm ci --prefix web
           cd web
-          npx playwright install-deps webkit
+          # the package mirror can stall: bounded, and tried once more
+          timeout 600 npx playwright install-deps webkit || timeout 900 npx playwright install-deps webkit
           for attempt in 1 2 3; do
             timeout 300 npx playwright install webkit && break
             if [ "$attempt" = 3 ]; then exit 1; fi
