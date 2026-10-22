@@ -261,6 +261,7 @@ struct Design {
 Design nph_design(const Scenario& s) {
   Design d;
   d.lam2 = std::log(2.0) / s("med2");
+  if (!std::isfinite(d.lam2)) throw CalcError("the median survival in group 2 is too short to compute with");
   d.hr1 = s("hr1");
   d.hr2 = s("hr2");
   d.tc = s("tchange");
@@ -293,7 +294,9 @@ void over_time(const Design& d, double end, Fn&& f) {
   for (double c : {d.tc, d.F})
     if (c > 0 && c < end) cuts.push_back(c);
   const double fastest = d.lam2 * std::fmax(1.0, std::fmax(d.hr1, d.hr2)) + d.eta;
-  for (double t = std::log(2.0) / fastest / 8; t < end; t *= 2) cuts.push_back(t);
+  const double first = std::log(2.0) / fastest / 8;
+  if (first > 0 && std::isfinite(first))  // a doubling from 0 would never reach the end
+    for (double t = first; t < end; t *= 2) cuts.push_back(t);
   std::sort(cuts.begin(), cuts.end());
   cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
   const stats::GLRule& gl = stats::gauss_legendre(8);

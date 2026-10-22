@@ -30,6 +30,24 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
+  sanitizer:
+    name: C++ core with the undefined-behavior checker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        # integer overflow and out-of-range conversions (GCC leaves float-cast-overflow out of -fsanitize=undefined)
+        # stop the tests at the first one
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          "-DCMAKE_CXX_FLAGS=-fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all -fno-sanitize=vptr"
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=undefined -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=undefined
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   python:
     name: Python ${{ matrix.python }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

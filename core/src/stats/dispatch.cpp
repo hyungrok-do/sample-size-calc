@@ -2,6 +2,8 @@
 // and the reference-value tests).
 #include "dispatch.hpp"
 
+#include <cmath>
+#include <limits>
 #include <unordered_map>
 
 #include "stats.hpp"
@@ -57,13 +59,49 @@ const std::unordered_map<std::string, Entry>& table() {
   };
   return t;
 }
+
+// Whether the arguments lie in the function's domain, as R checks them: the internal routines assume it (a
+// negative shape or an infinite count can make them loop for ever), and the calculations always respect it.
+bool in_domain(const std::string& name, const double* a, int nargs) {
+  for (int i = 0; i < nargs; ++i)
+    if (std::isnan(a[i])) return false;
+  auto pos = [](double v) { return v > 0 && std::isfinite(v); };       // a shape or degrees of freedom
+  auto count = [](double v) { return v >= 0 && std::isfinite(v); };    // a count, a rate or a noncentrality
+  auto prob = [](double v) { return v >= 0 && v <= 1; };
+  auto corr = [](double v) { return v >= -1 && v <= 1; };
+  if (name == "stirlerr") return count(a[0]);
+  if (name == "bd0") return count(a[0]) && count(a[1]);
+  if (name == "pgamma") return pos(a[1]);
+  if (name == "qgamma") return prob(a[0]) && pos(a[1]);
+  if (name == "pchisq" || name == "dchisq") return pos(a[1]);
+  if (name == "qchisq") return prob(a[0]) && pos(a[1]);
+  if (name == "dpois" || name == "ppois") return count(a[1]);
+  if (name == "qpois") return prob(a[0]) && count(a[1]);
+  if (name == "pbeta" || name == "dbeta") return pos(a[1]) && pos(a[2]);
+  if (name == "qbeta") return prob(a[0]) && pos(a[1]) && pos(a[2]);
+  if (name == "pt" || name == "dt") return a[1] > 0;  // infinite degrees of freedom: the normal distribution
+  if (name == "qt") return prob(a[0]) && a[1] > 0;
+  if (name == "pf") return a[1] > 0 && a[2] > 0;
+  if (name == "qf") return prob(a[0]) && a[1] > 0 && a[2] > 0;
+  if (name == "dbinom" || name == "pbinom") return count(a[1]) && prob(a[2]);
+  if (name == "qbinom") return prob(a[0]) && count(a[1]) && prob(a[2]);
+  if (name == "dhyper" || name == "phyper") return count(a[1]) && count(a[2]) && count(a[3]);
+  if (name == "pnt") return a[1] > 0 && std::isfinite(a[2]);
+  if (name == "pnchisq") return pos(a[1]) && count(a[2]);
+  if (name == "pnf") return a[1] > 0 && a[2] > 0 && count(a[3]);
+  if (name == "pnbeta") return pos(a[1]) && pos(a[2]) && count(a[3]);
+  if (name == "pcorr" || name == "dcorr") return corr(a[1]) && pos(a[2]);
+  if (name == "pbvnorm") return corr(a[2]);
+  if (name == "qnorm") return prob(a[0]);
+  return true;
+}
 }  // namespace
 
 bool eval(const std::string& name, const double* args, int nargs, double& out) {
   const auto& t = table();
   auto it = t.find(name);
   if (it == t.end() || it->second.nargs != nargs) return false;
-  out = it->second.fn(args);
+  out = in_domain(name, args, nargs) ? it->second.fn(args) : std::numeric_limits<double>::quiet_NaN();
   return true;
 }
 

@@ -759,7 +759,9 @@ Procedure paired_diagnostic() {
     };
     // the exact test is computed for up to a million pairs in each group
     const bool normal = s.is("method", "normal");
-    const double n_max = normal ? 1e8 : std::floor(1e6 / std::max(use_se ? prev : 0.0, use_sp ? 1 - prev : 0.0));
+    // (and no more than the 1e9 subjects any count may have: a prevalence of 1e-303 would give infinity)
+    const double n_max =
+        normal ? 1e8 : std::fmin(1e9, std::floor(1e6 / std::max(use_se ? prev : 0.0, use_sp ? 1 - prev : 0.0)));
     double n;
     if (s.solve == "n") {
       const double za = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false), zb = stats::qnorm(s("power"));

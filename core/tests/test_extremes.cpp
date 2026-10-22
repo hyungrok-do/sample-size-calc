@@ -10,6 +10,7 @@
 #include "engine/runner.hpp"
 #include "engine/solve.hpp"
 #include "sim/simulate.hpp"
+#include "stats/dispatch.hpp"
 #include "stats/stats.hpp"
 #include "testing.hpp"
 #include "util/json.hpp"
@@ -137,6 +138,13 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
       {"means.crossover", "n", R"({"delta":"1e300"})", ""},
       {"means.anova", "power", R"({"sigma":"1e-300"})", ""},
       {"means.rm.anova", "n", R"({"sigma":"1e-300"})", ""},
+      // loops that a value rounding to 0 or infinity stopped from advancing (and that Stop could not end)
+      {"sim.surv.nph", "power", R"({"med2":"5e-324"})", "too short to compute with"},
+      {"sim.surv.nph", "n", R"({"med2":"1e-320"})", "too short to compute with"},
+      {"rates.one.poisson", "power", R"({"alpha":"5e-324","test":"exact"})", "too small to compute with"},
+      {"sim.means.robust", "power", R"({"dist":"lognormal","skew":"1e-9"})", ""},
+      {"sim.means.robust", "n", R"({"dist":"gamma","skew":"-1e-8"})", ""},
+      {"diag.paired", "n", R"({"method":"exact","goal":"se","prev":"1e-303"})", "cannot be reached"},
   };
   {  // a full simulation whose every study would be enormous (Stop acts between studies)
     Token token;
@@ -307,4 +315,22 @@ TEST_CASE("extremes: counts beyond a 32-bit integer give the same answers on eve
       if (xs[i].as_number(0) > 1e9 || (xs[i].as_number(0) > 1e6 && ys[i].as_number(0) < 0.5)) ok = false;
     CHECK(ok);
   }
+}
+
+TEST_CASE("extremes: distribution functions outside their domain give NaN at once") {
+  // a negative shape or an infinite count made the internal routines loop for ever (ssc_eval passes them on)
+  const auto t0 = std::chrono::steady_clock::now();
+  double out = 0;
+  const double bad[][4] = {{-INFINITY, 0, 0, 0}, {-1e300, 0, 0, 0}};
+  for (const auto& a : bad) {
+    CHECK(stats::eval("stirlerr", a, 1, out));
+    CHECK(std::isnan(out));
+  }
+  const double dbeta_args[3] = {0.5, -1e300, 2}, pbeta_args[4] = {0.5, -1e300, 2, 1}, qbinom_args[3] = {0.5, 1e300, NAN};
+  CHECK(stats::eval("dbeta", dbeta_args, 3, out) && std::isnan(out));
+  CHECK(stats::eval("pbeta", pbeta_args, 4, out) && std::isnan(out));
+  CHECK(stats::eval("qbinom", qbinom_args, 3, out) && std::isnan(out));
+  const double ok_args[4] = {0.5, 2, 3, 1};
+  CHECK(stats::eval("pbeta", ok_args, 4, out) && out > 0 && out < 1);
+  CHECK(seconds_since(t0) < 1);
 }

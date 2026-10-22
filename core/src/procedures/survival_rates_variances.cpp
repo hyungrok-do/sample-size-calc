@@ -453,6 +453,8 @@ double pois_at_most(double c, double mu) { return c < 0 ? 0.0 : stats::ppois(c, 
 PoisRegion pois_region(bool exact, double mu0, double alpha, Alt a) {
   PoisRegion r;
   const double side = a == Alt::Two ? alpha / 2 : alpha;
+  // half of the smallest double is 0: no count is that unlikely, and the steps below would never end
+  if (!(side > 0)) throw CalcError("alpha is too small to compute with");
   const double z = stats::qnorm(side, false), sd = std::sqrt(mu0);
   if (exact) {
     // start near the normal quantile (with the Poisson skewness term), then step; beyond 10^15 events a step of

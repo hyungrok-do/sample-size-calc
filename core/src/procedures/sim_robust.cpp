@@ -107,7 +107,9 @@ Shape shape_of(const Scenario& s) {
   };
   if (d == "lognormal" || d == "gamma") {
     const double g = s("skew");
-    if (std::fabs(g) < 1e-9) {
+    // below 1e-6 the skewed shapes' quantiles are rounding noise around the normal ones (and the integral of
+    // P(X1 > X2) over them never meets its tolerance)
+    if (std::fabs(g) < 1e-6) {
       z.words = "a normal distribution";
       return z;
     }
@@ -160,7 +162,8 @@ struct Design {
 double prob_greater(const Design& d) {
   const double delta = d.mu1 - d.mu2;
   return numerics::integrate(
-      [&](double u) { return d.shape.cdf((delta + d.sd1 * d.shape.quantile(u)) / d.sd2); }, 0, 1, 1e-10, 1e-9);
+      [&](double u) { return d.shape.cdf((delta + d.sd1 * d.shape.quantile(u)) / d.sd2); }, 0, 1, 1e-10, 1e-9,
+      20);  // at most about 2 million panels, whatever the integrand
 }
 
 enum Test { POOLED = 0, WELCH = 1, RANKS = 2 };
