@@ -42,7 +42,7 @@ def test_three_read_only_tools_with_titles():
 def test_find_describe_calculate():
     found = call("search_methods", {"description": "two independent means", "limit": 3})
     assert found["methods"][0]["id"] == "means.two.t"
-    assert len(search_methods("")["methods"]) == 66
+    assert len(search_methods("")["methods"]) == 71
     method = call("describe_method", {"method_id": "means.two.t"})
     n2 = next(i for i in method["inputs"] if i["id"] == "n2")
     assert "alloc = sep" in n2["used_when"] and "whole numbers" in n2["values"]

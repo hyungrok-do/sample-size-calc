@@ -53,6 +53,10 @@ export const guideData = {
               ])]
             ])]
           ])],
+          ["Several correlated co-primary endpoints; all must succeed", question("q196", "How will each endpoint's variability be treated?", [
+            ["Estimated from the study: t tests", candidate("q197", "means.coprimary", {"test": "t"})],
+            ["Known population variances: z tests", candidate("q198", "means.coprimary", {"test": "z"})]
+          ])],
           ["Rank ordering / location shift", candidate("q36", "nonpar.mannwhitney", {})]
         ])],
         ["Balanced AB/BA crossover, mean difference", question("q37", "How will the population variability be treated?", [
@@ -118,6 +122,10 @@ export const guideData = {
             ["Fisher exact", candidate("q86", "prop.two", {"test": "fisher", "method": "exact"})]
           ])],
           ["Two paired responses", candidate("q87", "prop.paired.mcnemar", {})],
+          ["Cases versus controls (case-control study of an exposure)", question("q199", "How are the controls chosen?", [
+            ["Independently of the cases (unmatched)", candidate("q200", "prop.cc", {})],
+            ["Individually matched to each case (1 case : M controls)", candidate("q201", "prop.cc.matched", {})]
+          ])],
           ["Ordered independent dose/exposure groups; scored trend", candidate("q88", "prop.trend", {})],
           ["Several independent groups; omnibus association", candidate("q89", "prop.chisq", {"es": "w"})],
           ["Three or more repeated responses", unavailable("q90", "No Cochran-Q or general repeated-binary route.")]
@@ -200,6 +208,11 @@ export const guideData = {
         ["Continuous, overall or incremental predictor block", candidate("q147", "reg.multiple", {})],
         ["Binary, one eligible logistic covariate", candidate("q148", "reg.logistic", {})],
         ["Survival, one PH covariate", candidate("q149", "reg.cox", {})]
+      ])],
+      ["Develop a clinical prediction model", question("q202", "What outcome will the model predict?", [
+        ["Binary (logistic regression)", candidate("q203", "reg.prediction", {"outcome": "binary"})],
+        ["Time to event", candidate("q204", "reg.prediction", {"outcome": "survival"})],
+        ["Continuous (linear regression)", candidate("q205", "reg.prediction", {"outcome": "continuous"})]
       ])]
     ])],
     ["Noninferiority or equivalence", question("q150", "Which effect scale and design describe the margin claim?", [
@@ -224,8 +237,10 @@ export const guideData = {
       ["Two independent response probabilities", question("q164", "Which claim and scale?", [
         ["Noninferiority on risk difference", candidate("q165", "prop.two.ni", {"scale": "diff"})],
         ["Noninferiority on risk ratio", candidate("q166", "prop.two.ni", {"scale": "ratio"})],
-        ["Equivalence on risk difference", candidate("q167", "prop.two.equiv", {})],
-        ["Other equivalence scale", unavailable("q168", "No dedicated ratio/OR equivalence route.")]
+        ["Noninferiority on odds ratio", candidate("q206", "prop.two.ni", {"scale": "or"})],
+        ["Equivalence on risk difference", candidate("q167", "prop.two.equiv", {"scale": "diff"})],
+        ["Equivalence on risk ratio", candidate("q207", "prop.two.equiv", {"scale": "ratio"})],
+        ["Equivalence on odds ratio", candidate("q208", "prop.two.equiv", {"scale": "or"})]
       ])],
       ["Proportional-hazards noninferiority", candidate("q169", "surv.logrank.ni", {})]
     ])],
@@ -242,7 +257,12 @@ export const guideData = {
         ["One AUC versus benchmark", candidate("q179", "diag.auc", {})],
         ["Sensitivity threshold", candidate("q180", "diag.sens", {"goal": "se"})],
         ["Specificity threshold", candidate("q181", "diag.sens", {"goal": "sp"})],
-        ["Both thresholds must succeed", candidate("q182", "diag.sens", {"goal": "both"})]
+        ["Both thresholds must succeed", candidate("q182", "diag.sens", {"goal": "both"})],
+        ["Compare two tests on the same patients", question("q209", "Which accuracy must differ between the tests?", [
+          ["Sensitivity", candidate("q210", "diag.paired", {"goal": "se"})],
+          ["Specificity", candidate("q211", "diag.paired", {"goal": "sp"})],
+          ["Both must differ", candidate("q212", "diag.paired", {"goal": "both"})]
+        ])]
       ])],
       ["Agreement / reliability", question("q183", "Which measurement model?", [
         ["Quantitative ratings, one-way random-effects ICC", candidate("q184", "agree.icc", {})],
@@ -431,13 +451,13 @@ export const guideData = {
     },
     "prop.two.ni": {
       "label": "Two-proportion noninferiority",
-      "inputs_to_request": "Both probabilities; margin on chosen scale; direction; allocation.",
-      "scope_and_checks": "Farrington-Manning score test. Exact enumeration describes power of the score test, not a new exact test."
+      "inputs_to_request": "Both probabilities; margin on the chosen scale (difference, ratio or odds ratio); direction; allocation.",
+      "scope_and_checks": "Farrington-Manning score test (Miettinen-Nurminen for the odds ratio). Exact enumeration describes power of the score test, not a new exact test."
     },
     "prop.two.equiv": {
       "label": "Two-proportion equivalence",
-      "inputs_to_request": "Both probabilities; lower and upper difference bounds; allocation.",
-      "scope_and_checks": "No risk-ratio or odds-ratio equivalence route here."
+      "inputs_to_request": "Both probabilities; lower and upper limits on the chosen scale (difference, ratio or odds ratio); allocation.",
+      "scope_and_checks": "Two one-sided score tests. Exact enumeration describes power of those tests, not a new exact test."
     },
     "surv.logrank.ni": {
       "label": "Survival noninferiority",
@@ -658,6 +678,31 @@ export const guideData = {
       "label": "Simon single-arm two-stage design",
       "inputs_to_request": "Unacceptable and desirable response rates; alpha/power; optimal or minimax criterion.",
       "scope_and_checks": "Optimal minimizes expected N under the null; minimax minimizes maximum N. It is not a randomized two-arm design."
+    },
+    "means.coprimary": {
+      "label": "Co-primary continuous endpoints",
+      "inputs_to_request": "Effect per endpoint (standardized, or mean difference and SD); correlation between endpoints; one-sided alpha; allocation.",
+      "scope_and_checks": "Every endpoint must be significant, without a multiplicity adjustment. One common correlation for all pairs; with t tests the joint power is approximated from exact single-endpoint powers."
+    },
+    "prop.cc": {
+      "label": "Unmatched case-control study",
+      "inputs_to_request": "Exposure prevalence among controls; odds ratio (or exposure among cases); controls per case.",
+      "scope_and_checks": "Compares the exposure of independently sampled cases and controls. Not for individually matched controls or confounder-adjusted analyses."
+    },
+    "prop.cc.matched": {
+      "label": "Matched case-control study",
+      "inputs_to_request": "Exposure prevalence among controls; odds ratio; controls per case; correlation of exposure within matched sets.",
+      "scope_and_checks": "Dupont's approximation to the conditional test on individually matched sets. Frequency matching is an unmatched design."
+    },
+    "reg.prediction": {
+      "label": "Prediction model development",
+      "inputs_to_request": "Candidate predictor parameters; anticipated R-squared or C-statistic; prevalence, event rate and follow-up, or outcome mean and SD.",
+      "scope_and_checks": "Riley et al. minimum sample size for developing a model, as computed by pmsampsize. Not a sample size for validating an existing model."
+    },
+    "diag.paired": {
+      "label": "Two diagnostic tests on the same patients",
+      "inputs_to_request": "Prevalence; both tests' sensitivities and/or specificities; their dependence (independent, correlation or discordant share).",
+      "scope_and_checks": "McNemar tests among patients with and without the condition. Tests given to different patients are two independent proportions."
     }
   },
 };

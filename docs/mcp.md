@@ -21,7 +21,7 @@ Three tools, the loop a person follows on the web page or the command line:
 
 | Tool | What it does |
 |---|---|
-| `search_methods` | Methods that fit a description of a study ("two independent means", "logrank non-inferiority", "cluster randomized proportions"), best first; an empty description lists all 66 |
+| `search_methods` | Methods that fit a description of a study ("two independent means", "logrank non-inferiority", "cluster randomized proportions"), best first; an empty description lists all 71 |
 | `describe_method` | A method's solve options and inputs: ids, choices, defaults, allowed values, and when each input applies; also an example and the method's caveats |
 | `calculate` | Sample size, power or the smallest detectable effect, for one or many scenarios, with the plain-language statement of each, the dropout-inflated sizes, the notes, and warnings about anything in the request that was not used |
 

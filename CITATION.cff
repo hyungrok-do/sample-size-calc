@@ -4,7 +4,7 @@ type: software
 title: "Sample Size Calculator"
 abstract: >-
   Power analysis and sample size determination for study design: a C++
-  engine with 66 procedures, available as a web page, a command line and
+  engine with 71 procedures, available as a web page, a command line and
   Python library, and an MCP server for language-model clients.
 authors:
   - family-names: "Do"

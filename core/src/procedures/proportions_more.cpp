@@ -1,10 +1,11 @@
 // More proportion designs: non-inferiority / superiority / equivalence for two
-// proportions (Farrington–Manning score tests), paired proportions (McNemar),
+// proportions (Farrington–Manning and Miettinen–Nurminen score tests), paired proportions (McNemar),
 // chi-square tests (effect size w) and cluster-randomized proportions.
 #include <unordered_map>
 
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
+#include "procedures/mcnemar.hpp"
 #include "util/parallel.hpp"
 
 namespace ssc::procs {
@@ -74,49 +75,84 @@ void rmle_ratio(double ph1, double ph2, double theta, double phi, double& pt1, d
   pt1 = phi * pt2;
 }
 
+// Odds ratio: maximize under p1/(1 − p1) = psi · p2/(1 − p2).  The score equations keep the expected number of
+// responses n1·p1 + n2·p2 at the observed one, a quadratic in p2 (Miettinen & Nurminen 1985), whose root in [0, 1]
+// is taken without cancellation (the quadratic is linear when psi = 1).
+void rmle_odds(double ph1, double ph2, double theta, double psi, double& pt1, double& pt2) {
+  const double m = ph1 + theta * ph2;  // responses per subject of group 1
+  const double a = theta * (psi - 1), b = psi + theta - m * (psi - 1), c = -m;
+  const double q = -0.5 * (b + std::copysign(std::sqrt(std::max(0.0, b * b - 4 * a * c)), b));
+  double root = q != 0 ? c / q : 0;
+  if (!(root >= -1e-12 && root <= 1 + 1e-12) && a != 0) root = q / a;
+  pt2 = std::min(std::max(root, 0.0), 1.0);
+  pt1 = psi * pt2 / (1 + (psi - 1) * pt2);
+}
+
+enum class Scale { Diff, Ratio, Odds };
+
 struct NiSpec {
-  bool ratio;
-  double bound;  // D0 or R0
-  bool upper;    // H1: diff/ratio > bound
+  Scale scale;
+  double bound;  // D0, R0 or OR0
+  bool upper;    // H1: the difference, ratio or odds ratio exceeds the bound
   double alpha;
 };
 
-// Score statistic for observed proportions.
-double fm_z(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
+// A score statistic for observed proportions: its numerator, the numerator's variance at the boundary of H0 (at the
+// restricted maximum likelihood estimates), and how the numerator moves with the two proportions (for its variance
+// under H1).  For the odds ratio the numerator is group 1's score ph1 − pt1 (Miettinen & Nurminen 1985), which moves
+// with the proportions through pt1 as well.
+struct Score {
+  double num, var0, g1, g2;
+};
+
+Score fm_score(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
   const double theta = n2 / n1;
-  double pt1, pt2, num, var;
-  if (S.ratio) {
+  double pt1, pt2;
+  if (S.scale == Scale::Ratio) {
     rmle_ratio(ph1, ph2, theta, S.bound, pt1, pt2);
-    num = ph1 - S.bound * ph2;
-    var = pt1 * (1 - pt1) / n1 + S.bound * S.bound * pt2 * (1 - pt2) / n2;
-  } else {
-    rmle_diff(ph1, ph2, theta, S.bound, pt1, pt2);
-    num = ph1 - ph2 - S.bound;
-    var = pt1 * (1 - pt1) / n1 + pt2 * (1 - pt2) / n2;
+    return {ph1 - S.bound * ph2, pt1 * (1 - pt1) / n1 + S.bound * S.bound * pt2 * (1 - pt2) / n2, 1, -S.bound};
   }
-  if (!(var > 0)) return num == 0 ? 0.0 : std::copysign(INFINITY, num);
-  return num / std::sqrt(var);
+  if (S.scale == Scale::Odds) {
+    rmle_odds(ph1, ph2, theta, S.bound, pt1, pt2);
+    const double a = n1 * pt1 * (1 - pt1), b = n2 * pt2 * (1 - pt2);  // each group's information
+    if (!(a + b > 0)) return {ph1 - pt1, 0, 1, 0};                     // every response alike: no information
+    return {ph1 - pt1, a * b / (a + b) / (n1 * n1), b / (a + b), -a / (a + b) * theta};
+  }
+  rmle_diff(ph1, ph2, theta, S.bound, pt1, pt2);
+  return {ph1 - ph2 - S.bound, pt1 * (1 - pt1) / n1 + pt2 * (1 - pt2) / n2, 1, -1};
 }
 
-// Normal-approximation power for one bound.
+// Score statistic for observed proportions.
+double fm_z(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
+  const Score c = fm_score(S, ph1, ph2, n1, n2);
+  if (!(c.var0 > 0)) return c.num == 0 ? 0.0 : std::copysign(INFINITY, c.num);
+  return c.num / std::sqrt(c.var0);
+}
+
+// Normal-approximation power for one bound: the numerator has the mean and variance it has under the true
+// proportions, and the critical value its variance at the boundary.
 double fm_power_normal(const NiSpec& S, double n1, double n2, double p1, double p2) {
   using namespace stats;
-  const double theta = n2 / n1;
-  double pt1, pt2, num, v0, v1;
-  if (S.ratio) {
-    rmle_ratio(p1, p2, theta, S.bound, pt1, pt2);
-    num = p1 - S.bound * p2;
-    v0 = pt1 * (1 - pt1) / n1 + S.bound * S.bound * pt2 * (1 - pt2) / n2;
-    v1 = p1 * (1 - p1) / n1 + S.bound * S.bound * p2 * (1 - p2) / n2;
-  } else {
-    rmle_diff(p1, p2, theta, S.bound, pt1, pt2);
-    num = p1 - p2 - S.bound;
-    v0 = pt1 * (1 - pt1) / n1 + pt2 * (1 - pt2) / n2;
-    v1 = p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2;
-  }
+  const Score c = fm_score(S, p1, p2, n1, n2);
+  const double v1 = c.g1 * c.g1 * p1 * (1 - p1) / n1 + c.g2 * c.g2 * p2 * (1 - p2) / n2;
   const double z = qnorm(S.alpha, false);
-  if (!S.upper) num = -num;
-  return pnorm((num - z * std::sqrt(v0)) / std::sqrt(v1));
+  return pnorm(((S.upper ? c.num : -c.num) - z * std::sqrt(c.var0)) / std::sqrt(v1));
+}
+
+// Normal-approximation power of two one-sided score tests that must both reject (equivalence): L that the measure
+// exceeds the lower limit, U that it falls below the upper one.  On the difference scale both numerators are the
+// same estimate; on the ratio and odds-ratio scales they are jointly normal.
+double tost_power_normal(const NiSpec& L, const NiSpec& U, double n1, double n2, double p1, double p2) {
+  using namespace stats;
+  const Score l = fm_score(L, p1, p2, n1, n2), u = fm_score(U, p1, p2, n1, n2);
+  const double w1 = p1 * (1 - p1) / n1, w2 = p2 * (1 - p2) / n2;
+  const double sl = std::sqrt(l.g1 * l.g1 * w1 + l.g2 * l.g2 * w2), su = std::sqrt(u.g1 * u.g1 * w1 + u.g2 * u.g2 * w2);
+  const double z = qnorm(L.alpha, false);
+  if (L.scale == Scale::Diff)
+    return std::max(0.0, pnorm((-u.num - z * std::sqrt(u.var0)) / su) - pnorm((z * std::sqrt(l.var0) - l.num) / sl));
+  const double r = (l.g1 * u.g1 * w1 + l.g2 * u.g2 * w2) / (sl * su);
+  // P(num_L > z·sd0_L and num_U < −z·sd0_U), with the second written as −num_U > z·sd0_U
+  return clamp01(bvn_upper((z * std::sqrt(l.var0) - l.num) / sl, (z * std::sqrt(u.var0) + u.num) / su, -r));
 }
 
 constexpr double MAX_CELLS = 4e7;
@@ -158,15 +194,58 @@ double p1_from(const Scenario& s, double p2) {
     p1 = p2 + s("d1");
   else if (s.is("es", "ratio"))
     p1 = p2 * s("r1");
-  else
+  else if (s.is("es", "or")) {
+    const double o = s("or1") * p2 / (1 - p2);
+    p1 = o / (1 + o);
+  } else
     p1 = s("p1");
   if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not between 0 and 1");
   return p1;
 }
 
+Scale scale_of(const Scenario& s) {
+  return s.is("scale", "ratio") ? Scale::Ratio : (s.is("scale", "or") ? Scale::Odds : Scale::Diff);
+}
+
+// P1 on a boundary of the hypotheses: P2 plus the difference, P2 times the ratio, or the P1 whose odds are the odds
+// ratio times those of P2.
+double p1_at(Scale sc, double bound, double p2) {
+  if (sc == Scale::Ratio) return bound * p2;
+  if (sc == Scale::Odds) return bound * p2 / (1 - p2 + bound * p2);
+  return p2 + bound;
+}
+
+// The comparison of P1 with P2 on a scale.
+double measure(Scale sc, double p1, double p2) {
+  if (sc == Scale::Ratio) return p1 / p2;
+  if (sc == Scale::Odds) return p1 / (1 - p1) / (p2 / (1 - p2));
+  return p1 - p2;
+}
+
+// Result keys and words for each scale: the boundary, the actual value, the quantity.
+const char* actual_key(Scale sc) { return sc == Scale::Ratio ? "r1" : (sc == Scale::Odds ? "or1" : "d1"); }
+std::string quantity(Scale sc) { return sc == Scale::Ratio ? "P1/P2" : (sc == Scale::Odds ? "the odds ratio" : "P1 − P2"); }
+
+// A starting sample size per group for the searches: the normal formula on the scale's natural metric (the log scale
+// for ratios), with `gap` the distance of the actual value from the boundary on that metric.
+double group_guess(Scale sc, double zf, double p1, double p2, double gap) {
+  double v;
+  if (sc == Scale::Ratio)
+    v = (1 - p1) / p1 + (1 - p2) / p2;
+  else if (sc == Scale::Odds)
+    v = 1 / (p1 * (1 - p1)) + 1 / (p2 * (1 - p2));
+  else
+    v = p1 * (1 - p1) + p2 * (1 - p2);
+  return std::ceil(zf * v / (gap * gap));
+}
+double metric(Scale sc, double x) { return sc == Scale::Diff ? x : std::log(x); }
+
 std::vector<ParamDef> actual_effect_params() {
   return {select("es", "Actual Effect Input",
-                 {{"props", "P1", {}}, {"diff", "Difference D1 = P1 − P2", {}}, {"ratio", "Ratio R1 = P1/P2", {}}},
+                 {{"props", "P1", {}},
+                  {"diff", "Difference D1 = P1 − P2", {}},
+                  {"ratio", "Ratio R1 = P1/P2", {}},
+                  {"or", "Odds ratio OR1", {}}},
                  "props")
               .grp(G_EFFECT)
               .hint("How you give the true proportion of the treatment group: directly as P1, or through its "
@@ -194,6 +273,14 @@ std::vector<ParamDef> actual_effect_params() {
               .sugg({"1", "1.1"})
               .hint("The true ratio P1/P2 you expect (1 when the treatments are equally effective); P1 = R1 × P2.")
               .show(when(is("es", {"ratio"}))),
+          num("or1", "OR1 (Actual Odds Ratio)", "1")
+              .grp(G_EFFECT)
+              .sym("OR1")
+              .above(0)
+              .sugg({"1", "1.2"})
+              .hint("The true odds ratio you expect (1 when the treatments are equally effective): the odds "
+                    "P1/(1 − P1) divided by the odds P2/(1 − P2).")
+              .show(when(is("es", {"or"}))),
           num("p2", "P2 (Reference Proportion)", "0.6")
               .grp(G_EFFECT)
               .sym("P2")
@@ -202,6 +289,13 @@ std::vector<ParamDef> actual_effect_params() {
               .hint("The proportion of the reference group (group 2, e.g. the standard treatment) expected to have "
                     "the outcome, between 0 and 1.")};
 }
+
+const char* FM_REF =
+    "Farrington, C. P. & Manning, G. (1990). Test statistics and sample size formulae for comparative binomial trials "
+    "with null hypothesis of non-zero risk difference or non-unity relative risk. Statistics in Medicine 9, "
+    "1447–1454.";
+const char* MN_REF =
+    "Miettinen, O. & Nurminen, M. (1985). Comparative analysis of two rates. Statistics in Medicine 4, 213–226.";
 
 // =====================================================================================
 // Non-inferiority / superiority by a margin
@@ -214,23 +308,25 @@ Procedure two_prop_ni() {
   p.subcategory = "Two Independent Proportions";
   p.order = 2;
   p.summary =
-      "One-sided Farrington–Manning score test that the difference (or ratio) of two proportions exceeds — or falls "
-      "below — a margin, covering non-inferiority and superiority-by-a-margin designs. Power by exact enumeration or "
-      "the normal approximation.";
+      "One-sided score test that the difference, ratio or odds ratio of two proportions exceeds — or falls below — a "
+      "margin (Farrington–Manning for the difference and ratio, Miettinen–Nurminen for the odds ratio), covering "
+      "non-inferiority and superiority-by-a-margin designs. Power by exact enumeration or the normal approximation.";
   p.keywords = {"non-inferiority", "noninferiority", "farrington-manning", "score test", "margin", "risk difference",
-                "relative risk", "active control", "two proportions"};
+                "relative risk", "risk ratio", "odds ratio", "miettinen-nurminen", "active control", "two proportions"};
   p.solve_for = {{"n", "Sample Size", "n", "N (Total)"}, {"power", "Power", "power", "Power"}};
   p.params = {
-      select("scale", "Comparison Scale", {{"diff", "Difference P1 − P2", {}}, {"ratio", "Ratio P1/P2", {}}}, "diff")
+      select("scale", "Comparison Scale",
+             {{"diff", "Difference P1 − P2", {}}, {"ratio", "Ratio P1/P2", {}}, {"or", "Odds ratio", {}}}, "diff")
           .grp(G_TEST)
-          .hint("Compare the proportions by their difference P1 − P2 or by their ratio P1/P2; the margin is given "
-                "on the same scale."),
+          .hint("Compare the proportions by their difference P1 − P2, their ratio P1/P2 (the relative risk) or their "
+                "odds ratio; the margin is given on the same scale."),
       select("h1", "Alternative Hypothesis",
-             {{"upper", "H1: P1 − P2 > D0  (or P1/P2 > R0)", {}}, {"lower", "H1: P1 − P2 < D0  (or P1/P2 < R0)", {}}},
+             {{"upper", "H1: P1 − P2 > D0  (or P1/P2 > R0, OR > OR0)", {}},
+              {"lower", "H1: P1 − P2 < D0  (or P1/P2 < R0, OR < OR0)", {}}},
              "upper")
           .grp(G_TEST)
-          .hint("Upper: higher proportions are better (non-inferiority uses D0 < 0 or R0 < 1). Lower: higher "
-                "proportions are worse."),
+          .hint("Upper: higher proportions are better (non-inferiority uses D0 < 0, or R0 or OR0 below 1). Lower: "
+                "higher proportions are worse."),
       select("method", "Power Calculation",
              {{"normal", "Normal approximation", {}}, {"exact", "Exact (binomial enumeration)", {}}}, "normal")
           .grp(G_TEST)
@@ -256,15 +352,24 @@ Procedure two_prop_ni() {
                          .hint("The ratio P1/P2 at the boundary of the null hypothesis, e.g. 0.80 when the treatment "
                                "may be at most 20% worse (relative) and higher is better.")
                          .show(when(is("scale", {"ratio"}))));
+  p.params.push_back(num("or0", "OR0 (Odds Ratio Boundary under H0)", "0.67")
+                         .grp(G_EFFECT)
+                         .sym("OR0")
+                         .above(0)
+                         .sugg({"0.67", "0.5 0.67", "1.5"})
+                         .hint("The odds ratio at the boundary of the null hypothesis, e.g. 0.67 when the treatment's "
+                               "odds of the outcome may be at most a third lower and higher is better.")
+                         .show(when(is("scale", {"or"}))));
   for (auto& q : actual_effect_params()) p.params.push_back(q);
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    const bool ratio = s.is("scale", "ratio");
-    const NiSpec S{ratio, ratio ? s("r0") : s("d0"), s.is("h1", "upper"), s("alpha")};
+    const Scale sc = scale_of(s);
+    const char* bkey = sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0");
+    const NiSpec S{sc, s(bkey), s.is("h1", "upper"), s("alpha")};
     const double p2 = s("p2"), p1 = p1_from(s, p2);
-    const double p10 = ratio ? S.bound * p2 : p2 + S.bound;   // P1 on the boundary of H0
+    const double p10 = p1_at(sc, S.bound, p2);  // P1 on the boundary of H0
     if (!(p10 > 0 && p10 < 1))
-      throw CalcError("the boundary of the null hypothesis, P1 = " + fnum(p10) + (ratio ? " (R0 × P2)" : " (P2 + D0)") +
-                      ", must lie between 0 and 1");
+      throw CalcError("the boundary of the null hypothesis, P1 = " + fnum(p10) +
+                      (sc == Scale::Ratio ? " (R0 × P2)" : " (P2 + D0)") + ", must lie between 0 and 1");
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
@@ -277,11 +382,18 @@ Procedure two_prop_ni() {
     };
     TwoN n;
     if (s.solve == "n") {
-      const double eff = ratio ? (p1 - S.bound * p2) : (p1 - p2 - S.bound);
-      if ((S.upper && eff <= 0) || (!S.upper && eff >= 0))
+      const double act = measure(sc, p1, p2);
+      if ((S.upper && act <= S.bound) || (!S.upper && act >= S.bound))
         throw CalcError("the actual effect does not lie inside the alternative hypothesis");
-      const double v = p1 * (1 - p1) + (ratio ? S.bound * S.bound : 1.0) * p2 * (1 - p2);
-      const double g = z_factor(S.alpha, s("power"), Alt::Upper) * v / (eff * eff);
+      const double zf = z_factor(S.alpha, s("power"), Alt::Upper);
+      double g;
+      if (sc == Scale::Odds) {
+        g = group_guess(sc, zf, p1, p2, std::log(act) - std::log(S.bound));
+      } else {
+        const double eff = sc == Scale::Ratio ? (p1 - S.bound * p2) : (p1 - p2 - S.bound);
+        const double v = p1 * (1 - p1) + (sc == Scale::Ratio ? S.bound * S.bound : 1.0) * p2 * (1 - p2);
+        g = zf * v / (eff * eff);
+      }
       if (exact && exact_search_work(g, g, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
       n = solve_two_group_n(s, P, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
     } else {
@@ -291,46 +403,50 @@ Procedure two_prop_ni() {
     put_power(s, r, P(n.n1, n.n2));
     r.set("p1", p1);
     r.set("p2", p2);
-    r.set(ratio ? "r0" : "d0", S.bound);
-    r.set(ratio ? "r1" : "d1", ratio ? p1 / p2 : p1 - p2);
+    r.set(bkey, S.bound);
+    r.set(actual_key(sc), measure(sc, p1, p2));
     r.set("alpha", S.alpha);
     if (exact && !fell_back)
-      r.set("actual_alpha",
-            fm_power_exact({S}, static_cast<int>(n.n1), static_cast<int>(n.n2),
-                           ratio ? S.bound * p2 : std::min(std::max(p2 + S.bound, 1e-9), 1 - 1e-9), p2, ctx));
+      r.set("actual_alpha", fm_power_exact({S}, static_cast<int>(n.n1), static_cast<int>(n.n2),
+                                           std::min(std::max(p10, 1e-9), 1 - 1e-9), p2, ctx));
     if (fell_back) r.notes.push_back("Samples too large for exact enumeration; the normal approximation was used.");
   };
   p.columns = [](const Scenario& s) {
     auto c = power_columns(s);
     for (const auto& x : two_group_columns()) c.push_back(x);
-    const bool ratio = s.is("scale", "ratio");
+    const Scale sc = scale_of(s);
     c.push_back(col("p1", "P1", "num"));
     c.push_back(col("p2", "P2", "num"));
-    c.push_back(ratio ? col("r0", "R0", "num", "Ratio under H0") : col("d0", "D0", "num", "Difference under H0"));
-    c.push_back(ratio ? col("r1", "R1", "num", "Actual ratio") : col("d1", "D1", "num", "Actual difference"));
+    if (sc == Scale::Ratio) {
+      c.push_back(col("r0", "R0", "num", "Ratio under H0"));
+      c.push_back(col("r1", "R1", "num", "Actual ratio"));
+    } else if (sc == Scale::Odds) {
+      c.push_back(col("or0", "OR0", "num", "Odds ratio under H0"));
+      c.push_back(col("or1", "OR1", "num", "Actual odds ratio"));
+    } else {
+      c.push_back(col("d0", "D0", "num", "Difference under H0"));
+      c.push_back(col("d1", "D1", "num", "Actual difference"));
+    }
     c.push_back(col("alpha", "Alpha", "alpha"));
     if (s.is("method", "exact")) c.push_back(col("actual_alpha", "Actual Alpha", "prob", "Exact size at the H0 boundary"));
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
-    const bool ratio = s.is("scale", "ratio");
-    const std::string q = ratio ? "P1/P2" : "P1 − P2";
-    const std::string b = fnum(r.num(ratio ? "r0" : "d0"));
+    const Scale sc = scale_of(s);
+    const std::string q = sc == Scale::Ratio ? "P1/P2" : (sc == Scale::Odds ? "OR" : "P1 − P2");
+    const std::string b = fnum(r.num(sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0")));
     const bool up = s.is("h1", "upper");
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
-           " for the one-sided Farrington–Manning score test of H0: " + q + (up ? " ≤ " : " ≥ ") + b + " versus H1: " +
-           q + (up ? " > " : " < ") + b + " at α = " + fnum(r.num("alpha")) + ", when the true proportions are P1 = " +
-           fnum(r.num("p1")) + " and P2 = " + fnum(r.num("p2")) + ".";
+           " for the one-sided " + (sc == Scale::Odds ? "Miettinen–Nurminen" : "Farrington–Manning") +
+           " score test of H0: " + q + (up ? " ≤ " : " ≥ ") + b + " versus H1: " + q + (up ? " > " : " < ") + b +
+           (sc == Scale::Odds ? " (OR: the odds ratio of group 1 to group 2)" : "") + " at α = " + fnum(r.num("alpha")) +
+           ", when the true proportions are P1 = " + fnum(r.num("p1")) + " and P2 = " + fnum(r.num("p2")) + ".";
   };
-  p.definitions = {{"D0 / R0", "Boundary of the null hypothesis (non-inferiority or superiority margin)."},
+  p.definitions = {{"D0 / R0 / OR0", "Boundary of the null hypothesis (non-inferiority or superiority margin)."},
                    {"P1, P2", "Actual proportions in the treatment and reference groups."},
+                   {"OR", "Odds ratio: the odds P1/(1 − P1) divided by the odds P2/(1 − P2)."},
                    {"Actual Alpha", "Exact rejection probability at the boundary of H0 (P2 fixed)."}};
-  p.references = {"Farrington, C. P. & Manning, G. (1990). Test statistics and sample size formulae for comparative "
-                  "binomial trials with null hypothesis of non-zero risk difference or non-unity relative risk. "
-                  "Statistics in Medicine 9, 1447–1454.",
-                  "Miettinen, O. & Nurminen, M. (1985). Comparative analysis of two rates. Statistics in Medicine 4, "
-                  "213–226.",
-                  REF_CHOW, REF_JULIOUS};
+  p.references = {FM_REF, MN_REF, REF_CHOW, REF_JULIOUS};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};
@@ -352,11 +468,19 @@ Procedure two_prop_equiv() {
   p.subcategory = "Two Independent Proportions";
   p.order = 3;
   p.summary =
-      "Two one-sided Farrington–Manning score tests showing that P1 − P2 lies within equivalence limits. Power by "
-      "the normal approximation or exact enumeration.";
-  p.keywords = {"equivalence", "tost", "two proportions", "farrington-manning", "biosimilar", "therapeutic equivalence"};
+      "Two one-sided score tests showing that the difference, ratio or odds ratio of two proportions lies within "
+      "equivalence limits (Farrington–Manning for the difference and ratio, Miettinen–Nurminen for the odds ratio). "
+      "Power by the normal approximation or exact enumeration.";
+  p.keywords = {"equivalence", "tost", "two proportions", "farrington-manning", "biosimilar", "therapeutic equivalence",
+                "relative risk", "risk ratio", "odds ratio", "miettinen-nurminen"};
   p.solve_for = {{"n", "Sample Size", "n", "N (Total)"}, {"power", "Power", "power", "Power"}};
-  p.params = {select("method", "Power Calculation",
+  p.params = {select("scale", "Comparison Scale",
+                     {{"diff", "Difference P1 − P2", {}}, {"ratio", "Ratio P1/P2", {}}, {"or", "Odds ratio", {}}},
+                     "diff")
+                  .grp(G_TEST)
+                  .hint("Compare the proportions by their difference P1 − P2, their ratio P1/P2 (the relative risk) "
+                        "or their odds ratio; the equivalence limits are given on the same scale."),
+              select("method", "Power Calculation",
                      {{"normal", "Normal approximation", {}}, {"exact", "Exact (binomial enumeration)", {}}}, "normal")
                   .grp(G_TEST)
                   .hint("The normal approximation is quick and usually close; enumeration gives the exact power of "
@@ -370,25 +494,57 @@ Procedure two_prop_equiv() {
                          .range(-1, 0, true, true)
                          .sugg({"-0.1", "-0.15"})
                          .hint("The most negative difference P1 − P2 that still counts as equivalent, e.g. −0.10 for "
-                               "10 percentage points."));
+                               "10 percentage points.")
+                         .show(when(is("scale", {"diff"}))));
   p.params.push_back(num("du", "DU (Upper Equivalence Limit for P1 − P2)", "0.1")
                          .grp(G_EFFECT)
                          .sym("DU")
                          .range(0, 1, true, true)
                          .sugg({"0.1", "0.15"})
-                         .hint("The largest positive difference P1 − P2 that still counts as equivalent, e.g. 0.10."));
-  for (auto& q : actual_effect_params()) {
-    if (q.id == "es") {
-      q.options = {{"props", "P1", {}}, {"diff", "Difference D1 = P1 − P2", {}}};
-    }
-    if (q.id == "r1") continue;
-    p.params.push_back(q);
-  }
+                         .hint("The largest positive difference P1 − P2 that still counts as equivalent, e.g. 0.10.")
+                         .show(when(is("scale", {"diff"}))));
+  p.params.push_back(num("rl", "RL (Lower Equivalence Limit for P1/P2)", "0.8")
+                         .grp(G_EFFECT)
+                         .sym("RL")
+                         .range(0, 1, true, true)
+                         .sugg({"0.8", "0.9"})
+                         .hint("The smallest ratio P1/P2 that still counts as equivalent, e.g. 0.80.")
+                         .show(when(is("scale", {"ratio"}))));
+  p.params.push_back(num("ru", "RU (Upper Equivalence Limit for P1/P2)", "1.25")
+                         .grp(G_EFFECT)
+                         .sym("RU")
+                         .above(1)
+                         .sugg({"1.25", "1.1"})
+                         .hint("The largest ratio P1/P2 that still counts as equivalent, e.g. 1.25 (= 1/0.80).")
+                         .show(when(is("scale", {"ratio"}))));
+  p.params.push_back(num("orl", "ORL (Lower Equivalence Limit for the Odds Ratio)", "0.67")
+                         .grp(G_EFFECT)
+                         .sym("ORL")
+                         .range(0, 1, true, true)
+                         .sugg({"0.67", "0.8"})
+                         .hint("The smallest odds ratio that still counts as equivalent, e.g. 0.67.")
+                         .show(when(is("scale", {"or"}))));
+  p.params.push_back(num("oru", "ORU (Upper Equivalence Limit for the Odds Ratio)", "1.5")
+                         .grp(G_EFFECT)
+                         .sym("ORU")
+                         .above(1)
+                         .sugg({"1.5", "1.25"})
+                         .hint("The largest odds ratio that still counts as equivalent, e.g. 1.5 (= 1/0.67).")
+                         .show(when(is("scale", {"or"}))));
+  for (auto& q : actual_effect_params()) p.params.push_back(q);
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    const Scale sc = scale_of(s);
+    const char* lkey = sc == Scale::Ratio ? "rl" : (sc == Scale::Odds ? "orl" : "dl");
+    const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
     const double p2 = s("p2"), p1 = p1_from(s, p2), alpha = s("alpha");
-    const double dl = s("dl"), du = s("du");
-    if (!(p1 - p2 > dl && p1 - p2 < du)) throw CalcError("the actual difference must lie inside the equivalence limits");
-    const NiSpec L{false, dl, true, alpha}, U{false, du, false, alpha};
+    const double lo = s(lkey), hi = s(ukey), act = measure(sc, p1, p2);
+    if (!(act > lo && act < hi))
+      throw CalcError("the actual " + std::string(sc == Scale::Ratio ? "ratio P1/P2" : (sc == Scale::Odds ? "odds ratio"
+                                                                                                        : "difference")) +
+                      " must lie inside the equivalence limits");
+    if (sc == Scale::Ratio && !(hi * p2 < 1))
+      throw CalcError("the upper equivalence limit, P1 = RU × P2 = " + fnum(hi * p2) + ", must lie below 1");
+    const NiSpec L{sc, lo, true, alpha}, U{sc, hi, false, alpha};
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
@@ -397,23 +553,15 @@ Procedure two_prop_equiv() {
         if (!std::isnan(v)) return v;
         fell_back = true;
       }
-      using namespace stats;
-      const double theta = n2 / n1;
-      double a1, a2, b1, b2;
-      rmle_diff(p1, p2, theta, dl, a1, a2);
-      rmle_diff(p1, p2, theta, du, b1, b2);
-      const double vl = a1 * (1 - a1) / n1 + a2 * (1 - a2) / n2;
-      const double vu = b1 * (1 - b1) / n1 + b2 * (1 - b2) / n2;
-      const double v = p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2;
-      const double z = qnorm(alpha, false), d = p1 - p2;
-      return std::max(0.0, pnorm((du - z * std::sqrt(vu) - d) / std::sqrt(v)) -
-                               pnorm((dl + z * std::sqrt(vl) - d) / std::sqrt(v)));
+      return tost_power_normal(L, U, n1, n2, p1, p2);
     };
     TwoN n;
     if (s.solve == "n") {
-      const double d = p1 - p2, gap = std::min(d - dl, du - d);
-      const double zf = stats::qnorm(alpha, false) + stats::qnorm(std::fabs(d - (dl + du) / 2) < 1e-12 ? 1 - (1 - s("power")) / 2 : s("power"));
-      const double g = std::ceil(zf * zf * (p1 * (1 - p1) + p2 * (1 - p2)) / (gap * gap));
+      const double m = metric(sc, act), ml = metric(sc, lo), mu = metric(sc, hi);
+      const double gap = std::min(m - ml, mu - m);
+      const double zf = stats::qnorm(alpha, false) +
+                        stats::qnorm(std::fabs(m - (ml + mu) / 2) < 1e-12 ? 1 - (1 - s("power")) / 2 : s("power"));
+      const double g = group_guess(sc, zf * zf, p1, p2, gap);
       // two score tests per table
       if (exact && 2 * exact_search_work(g, g, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
       n = solve_two_group_n(s, P, s("power"), 2, g, !exact, ctx, 1e7);
@@ -424,31 +572,43 @@ Procedure two_prop_equiv() {
     put_power(s, r, P(n.n1, n.n2));
     r.set("p1", p1);
     r.set("p2", p2);
-    r.set("d1", p1 - p2);
-    r.set("dl", dl);
-    r.set("du", du);
+    r.set(actual_key(sc), act);
+    r.set(lkey, lo);
+    r.set(ukey, hi);
     r.set("alpha", alpha);
     if (fell_back) r.notes.push_back("Samples too large for exact enumeration; the normal approximation was used.");
   };
   p.columns = [](const Scenario& s) {
     auto c = power_columns(s);
     for (const auto& x : two_group_columns()) c.push_back(x);
-    for (auto x : {col("p1", "P1", "num"), col("p2", "P2", "num"), col("d1", "D1", "num", "Actual difference"),
-                   col("dl", "DL", "num"), col("du", "DU", "num"), col("alpha", "Alpha", "alpha")})
-      c.push_back(x);
+    const Scale sc = scale_of(s);
+    c.push_back(col("p1", "P1", "num"));
+    c.push_back(col("p2", "P2", "num"));
+    if (sc == Scale::Ratio) {
+      for (auto x : {col("r1", "R1", "num", "Actual ratio"), col("rl", "RL", "num"), col("ru", "RU", "num")})
+        c.push_back(x);
+    } else if (sc == Scale::Odds) {
+      for (auto x : {col("or1", "OR1", "num", "Actual odds ratio"), col("orl", "ORL", "num"), col("oru", "ORU", "num")})
+        c.push_back(x);
+    } else {
+      for (auto x : {col("d1", "D1", "num", "Actual difference"), col("dl", "DL", "num"), col("du", "DU", "num")})
+        c.push_back(x);
+    }
+    c.push_back(col("alpha", "Alpha", "alpha"));
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const Scale sc = scale_of(s);
+    const char* lkey = sc == Scale::Ratio ? "rl" : (sc == Scale::Odds ? "orl" : "dl");
+    const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
-           " to conclude that P1 − P2 lies between " + fnum(r.num("dl")) + " and " + fnum(r.num("du")) +
+           " to conclude that " + quantity(sc) + " lies between " + fnum(r.num(lkey)) + " and " + fnum(r.num(ukey)) +
            " using two one-sided score tests at α = " + fnum(r.num("alpha")) + " each, when P1 = " + fnum(r.num("p1")) +
            " and P2 = " + fnum(r.num("p2")) + ".";
   };
-  p.definitions = {{"DL, DU", "Equivalence limits for P1 − P2."}, {"D1", "Actual difference P1 − P2."}};
-  p.references = {"Farrington, C. P. & Manning, G. (1990). Test statistics and sample size formulae for comparative "
-                  "binomial trials with null hypothesis of non-zero risk difference or non-unity relative risk. "
-                  "Statistics in Medicine 9, 1447–1454.",
-                  REF_CHOW};
+  p.definitions = {{"DL, DU / RL, RU / ORL, ORU", "Equivalence limits for P1 − P2, P1/P2 or the odds ratio."},
+                   {"D1 / R1 / OR1", "Actual difference, ratio or odds ratio."}};
+  p.references = {FM_REF, MN_REF, REF_CHOW};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};
@@ -462,13 +622,11 @@ SSC_REGISTER(two_prop_equiv);
 // =====================================================================================
 // McNemar test for paired proportions
 // =====================================================================================
-// Rejection probability of the exact conditional test given m discordant pairs,
-// by m.  It does not depend on the number of pairs N, so a sample-size search
-// computes each value once.
-using McNemarCache = std::unordered_map<int, double>;
+}  // namespace
 
 double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCache& cache, const RunContext& ctx) {
   using namespace stats;
+  using namespace blocks;
   const double psi = p10 + p01, delta = p10 - p01, alpha = s("alpha");
   const Alt a = alt(s);
   if (s.is("method", "normal")) {  // Connor (1987)
@@ -512,6 +670,8 @@ double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCa
   }
   return clamp01(total);
 }
+
+namespace {
 
 Procedure mcnemar() {
   Procedure p;

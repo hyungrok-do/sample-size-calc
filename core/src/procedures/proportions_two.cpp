@@ -1,7 +1,9 @@
 // Two independent proportions: z-tests (pooled / unpooled / continuity
 // corrected) and Fisher's exact test, with exact power by enumeration of the
 // two binomial distributions (restricted to the region carrying all but
-// 1e-16 of the probability) or with normal approximations.
+// 1e-16 of the probability) or with normal approximations.  Also the
+// confidence interval for their difference, and case-control studies:
+// unmatched (the exposure of cases against controls) and matched (Dupont).
 #include <atomic>
 #include <mutex>
 
@@ -568,6 +570,388 @@ Procedure two_props_ci() {
   return p;
 }
 SSC_REGISTER(two_props_ci);
+
+// =====================================================================================
+// Case-control studies
+// =====================================================================================
+// Exposure among the cases whose odds are the odds ratio times those among the controls.
+double case_exposure(double odds_ratio, double p0) { return odds_ratio * p0 / (1 - p0 + odds_ratio * p0); }
+double odds_ratio_of(double p1, double p0) { return p1 / (1 - p1) / (p0 / (1 - p0)); }
+
+ParamDef exposure_param() {
+  return num("p0", "P0 (Exposure Prevalence among Controls)", "0.3")
+      .grp(G_EFFECT)
+      .sym("P0")
+      .range(0, 1, true, true)
+      .sugg({"0.3", "0.1 0.2 0.3"})
+      .hint("The share of controls (people without the disease) who were exposed, between 0 and 1; it stands for "
+            "the exposure in the population the cases arose from.");
+}
+
+ParamDef odds_ratio_param(const char* hint) {
+  return num("or", "OR (Odds Ratio of Exposure)", "2").grp(G_EFFECT).sym("OR").above(0).sugg({"2", "1.5 2 3"}).hint(hint);
+}
+
+ParamDef or_direction_param() {
+  return select("ordir", "Search Direction for the Odds Ratio", {{"above", "OR > 1", {}}, {"below", "OR < 1", {}}},
+                "above")
+      .grp(G_EFFECT)
+      .hint("A two-sided test can detect an odds ratio above or below 1; choose which of the two to find.")
+      .show(when({solving({"or"}), is("alternative", {"two"})}));
+}
+
+const char* REF_SCHLESSELMAN = "Schlesselman, J. J. (1982). Case-Control Studies: Design, Conduct, Analysis. Oxford "
+                               "University Press.";
+
+Procedure case_control() {
+  Procedure p;
+  p.id = "prop.cc";
+  p.name = "Unmatched Case-Control Study (Odds Ratio)";
+  p.category = "Proportions";
+  p.subcategory = "Case-Control Studies";
+  p.order = 1;
+  p.summary =
+      "Numbers of cases and controls needed to detect an odds ratio of exposure in an unmatched case-control study, "
+      "from the exposure prevalence among the controls and the number of controls per case, comparing the exposure "
+      "of cases and controls with a chi-square test (with or without continuity correction) or Fisher's exact test. "
+      "Exact power enumerates both binomial distributions.";
+  p.keywords = {"case-control study", "case-control", "case control", "odds ratio", "exposure", "controls per case", "unmatched",
+                "epidemiology", "risk factor", "retrospective study"};
+  p.solve_for = {{"n", "Sample Size", "n", "N (Total)"},
+                 {"power", "Power", "power", "Power"},
+                 {"or", "Effect Size (OR)", "or", "Detectable Odds Ratio"}};
+  p.params = {
+      alternative("Two-sided (H1: OR ≠ 1)", "One-sided (H1: OR > 1)", "One-sided (H1: OR < 1)"),
+      select("test", "Test Type",
+             {{"zpool", "Chi-square test (pooled z-test)", {}},
+              {"zpoolcc", "Chi-square test with continuity correction (Yates)", {}},
+              {"zunpool", "Z-test, unpooled variance", {}},
+              {"fisher", "Fisher's exact test", {}}},
+             "zpool")
+          .grp(G_TEST)
+          .hint("The test comparing the exposure of cases and controls. The chi-square test is the usual choice; "
+                "Yates' correction and Fisher's exact test are more conservative."),
+      select("method", "Power Calculation",
+             {{"exact", "Exact (binomial enumeration)", {}}, {"normal", "Normal approximation", {}}}, "exact")
+          .grp(G_TEST)
+          .hint("Enumeration gives the exact power of the chosen test; the normal approximation is the classical "
+                "closed-form formula (Schlesselman; Fleiss for the continuity correction)."),
+      power_param(),
+      alpha_param(),
+      n_param("ncase", "Number of Cases", "100", 2).sym("Cases").hint("Number of cases (people with the disease)."),
+      num("m", "M (Controls per Case)", "1")
+          .grp(G_N)
+          .sym("M")
+          .above(0)
+          .sugg({"1", "2", "4", "1 2 3 4"})
+          .hint("Number of controls per case: controls = M × cases, rounded up. More than four controls per case "
+                "adds little power."),
+      select("es", "Effect Size Input",
+             {{"or", "Odds ratio OR", {}}, {"p1", "Exposure among cases P1", {}}}, "or")
+          .grp(G_EFFECT)
+          .hint("Describe the effect by the odds ratio of exposure, or by the share of cases expected to have been "
+                "exposed.")
+          .show(when(not_solving({"or"}))),
+      odds_ratio_param("The odds ratio of exposure to detect: the odds of exposure among cases divided by that among "
+                       "controls (about the relative risk when the disease is rare).")
+          .show(when({not_solving({"or"}), is("es", {"or"})})),
+      num("p1", "P1 (Exposure Prevalence among Cases)", "0.46")
+          .grp(G_EFFECT)
+          .sym("P1")
+          .range(0, 1, true, true)
+          .sugg({"0.46", "0.4 0.5"})
+          .hint("The share of cases expected to have been exposed, between 0 and 1.")
+          .show(when({not_solving({"or"}), is("es", {"p1"})})),
+      exposure_param(),
+      or_direction_param()};
+  p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    const double p0 = s("p0"), m = s("m");
+    const Alt a = alt(s);
+    const TwoPropTest T{s.s("test"), a, s("alpha")};
+    bool exact = s.is("method", "exact");
+    bool fell_back = false;
+    auto power = [&](double n1, double n2, double x) {
+      if (exact) {
+        const double pw = two_prop_exact(T, static_cast<int>(n1), static_cast<int>(n2), x, p0, ctx);
+        if (!std::isnan(pw)) return pw;
+        fell_back = true;
+      }
+      return two_prop_normal(T, n1, n2, x, p0);
+    };
+    auto controls = [&](double cases) { return std::ceil(m * cases - 1e-9); };
+    TwoN n;
+    double p1;
+    if (s.solve == "n") {
+      p1 = s.is("es", "p1") ? s("p1") : case_exposure(s("or"), p0);
+      if (p1 == p0) throw CalcError("the odds ratio is 1: cases and controls have the same exposure");
+      if ((a == Alt::Upper && p1 < p0) || (a == Alt::Lower && p1 > p0))
+        throw CalcError("the odds ratio is on the side opposite to the one-sided alternative");
+      // Schlesselman's formula for the number of cases
+      const double za = stats::qnorm(a == Alt::Two ? s("alpha") / 2 : s("alpha"), false), zb = stats::qnorm(s("power"));
+      const double pb = (p1 + m * p0) / (1 + m);
+      const double g = std::pow(za * std::sqrt((1 + 1 / m) * pb * (1 - pb)) + zb * std::sqrt(p1 * (1 - p1) + p0 * (1 - p0) / m), 2) /
+                       ((p1 - p0) * (p1 - p0));
+      if (exact && exact_search_work(g, m * g, p1, p0) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
+      Scenario t = s;  // the two-group search with controls = M × cases
+      t.sel["alloc"] = "ratio";
+      t.num["r"] = m;
+      n = solve_two_group_n(
+          t, [&](double c, double k) { return power(c, k, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
+    } else {
+      n = {s("ncase"), controls(s("ncase"))};
+      if (s.solve == "power") {
+        p1 = s.is("es", "p1") ? s("p1") : case_exposure(s("or"), p0);
+      } else {
+        const bool up = a == Alt::Upper || (a == Alt::Two && !s.is("ordir", "below"));
+        auto f = [&](double x) { return power(n.n1, n.n2, x) - s("power"); };
+        const double lo = up ? p0 : 1e-9, hi = up ? 1 - 1e-9 : p0;
+        if (f(p0) >= 0) throw CalcError("the target power must exceed the power at OR = 1 (the significance level)");
+        if (f(up ? hi : lo) < 0) throw CalcError("the target power cannot be reached with these numbers of cases and controls");
+        p1 = numerics::brent(f, lo, hi, 1e-11);
+      }
+    }
+    r.set("ncase", n.n1);
+    r.set("nctrl", n.n2);
+    r.set("n", n.total());
+    put_power(s, r, power(n.n1, n.n2, p1));
+    r.set("m", m);
+    r.set("p1", p1);
+    r.set("p0", p0);
+    r.set("or", odds_ratio_of(p1, p0));
+    r.set("alpha", s("alpha"));
+    if (exact && !fell_back)
+      r.set("actual_alpha", two_prop_exact(T, static_cast<int>(n.n1), static_cast<int>(n.n2), p0, p0, ctx));
+    if (fell_back) r.notes.push_back("The samples are too large for exact enumeration; the normal approximation was used.");
+  };
+  p.columns = [](const Scenario& s) {
+    auto c = power_columns(s);
+    for (auto x : {col("ncase", "Cases", "int"), col("nctrl", "Controls", "int"), col("n", "N", "int", "Cases plus controls"),
+                   col("m", "M", "num", "Controls per case"), col("or", "OR", "num", "Odds ratio of exposure"),
+                   col("p1", "P1", "num", "Exposure among cases"), col("p0", "P0", "num", "Exposure among controls"),
+                   col("alpha", "Target Alpha", "alpha")})
+      c.push_back(x);
+    if (s.is("method", "exact")) c.push_back(col("actual_alpha", "Actual Alpha", "prob", "Exact size when OR = 1"));
+    return c;
+  };
+  p.statement = [](const Scenario& s, const Row& r) {
+    static const std::map<std::string, std::string> names = {{"zpool", "chi-square test"},
+                                                             {"zunpool", "unpooled z-test"},
+                                                             {"zpoolcc", "continuity-corrected chi-square test"},
+                                                             {"fisher", "Fisher's exact test"}};
+    std::string t = fint(r.num("ncase")) + " cases and " + fint(r.num("nctrl")) + " controls " + achieves(s, r) +
+                    " to detect an odds ratio of exposure of " + fnum(r.num("or"), 3) + " (exposure " +
+                    fpct(r.num("p1")) + " among cases and " + fpct(r.num("p0")) + " among controls) using a " +
+                    alt_words(alt(s)) + " " + names.at(s.s("test")) + " at a target significance level of " +
+                    fnum(r.num("alpha"));
+    if (r.has("actual_alpha")) t += " (actual " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
+    const bool enumerated = s.is("method", "exact") && r.has("actual_alpha");
+    return t + (enumerated ? "; power was computed by exact enumeration." : "; power uses the normal approximation.");
+  };
+  p.definitions = {{"Cases, Controls", "People with and without the disease; controls = M × cases, rounded up."},
+                   {"P1, P0", "Shares of cases and of controls who were exposed."},
+                   {"OR", "Odds ratio of exposure, P1/(1 − P1) divided by P0/(1 − P0)."},
+                   {"Actual Alpha", "Exact probability of rejecting H0 when cases and controls share the exposure P0."}};
+  p.notes = {"With exact enumeration, power is a saw-toothed function of the number of cases; the reported number "
+             "is the first one that reaches the target power.",
+             "Cases and controls are sampled independently; for individually matched controls use the matched "
+             "case-control procedure."};
+  p.references = {REF_SCHLESSELMAN, REF_FLEISS,
+                  "Kelsey, J. L., Whittemore, A. S., Evans, A. S. & Thompson, W. D. (1996). Methods in Observational "
+                  "Epidemiology, 2nd ed. Oxford University Press."};
+  p.curve_param = "ncase";
+  p.curve_label = "Number of Cases";
+  p.example_solve = "n";
+  p.example = {{"power", "0.8 0.9"}, {"or", "2"}, {"p0", "0.2 0.3"}, {"m", "1 2"}};
+  return p;
+}
+SSC_REGISTER(case_control);
+
+// Matched case-control studies (Dupont 1988): sets of one case and M controls whose exposures are correlated (phi)
+// through the matching.  Given t exposed members in a set, the case is the exposed one with probability
+// t·OR/(t·OR + M − t + 1) (t/(M + 1) under H0); sets with no or all members exposed carry no information.
+struct Matched {
+  double delta = 0, v0 = 0, v1 = 0;  // per set: mean of (case exposed − expected under H0), null and true variance
+};
+
+Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
+  const double p1 = case_exposure(odds_ratio, p0), q1 = 1 - p1, q0 = 1 - p0;
+  // exposure of a control given that its case is exposed (plus) or not (minus)
+  const double pp = p0 + phi * std::sqrt(q1 * p0 * q0 / p1), pm = p0 - phi * std::sqrt(p1 * p0 * q0 / q1);
+  if (!(pp >= 0 && pp <= 1 && pm >= 0 && pm <= 1))
+    throw CalcError("the correlation φ is too large in size for these exposures: the exposure of a control given its "
+                    "case's would fall outside 0 to 1");
+  Matched mo;
+  for (int t = 1; t <= M; ++t) {
+    // the chance that a set has t exposed members: the case and t − 1 controls, or t controls
+    const double pt = p1 * std::exp(stats::lchoose(M, t - 1)) * std::pow(pp, t - 1) * std::pow(1 - pp, M - t + 1) +
+                      q1 * std::exp(stats::lchoose(M, t)) * std::pow(pm, t) * std::pow(1 - pm, M - t);
+    const double e = t * odds_ratio / (t * odds_ratio + M - t + 1), e0 = t / (M + 1.0);
+    mo.delta += pt * (e - e0);
+    mo.v0 += pt * e0 * (1 - e0);
+    mo.v1 += pt * e * (1 - e);
+  }
+  return mo;
+}
+
+double matched_power(double n, double odds_ratio, double p0, double phi, int M, double alpha, Alt a) {
+  using namespace stats;
+  const Matched mo = matched_moments(odds_ratio, p0, phi, M);
+  const double rn = std::sqrt(n), s0 = std::sqrt(mo.v0), s1 = std::sqrt(mo.v1);
+  if (!(s1 > 0)) return NAN;
+  auto tail = [&](double d, double z) { return pnorm((rn * d - z * s0) / s1); };
+  if (a == Alt::Two) {
+    const double z = qnorm(alpha / 2, false);
+    return std::min(1.0, tail(mo.delta, z) + tail(-mo.delta, z));
+  }
+  return tail(a == Alt::Upper ? mo.delta : -mo.delta, qnorm(alpha, false));
+}
+
+Procedure matched_case_control() {
+  Procedure p;
+  p.id = "prop.cc.matched";
+  p.name = "Matched Case-Control Study (1:M Matching)";
+  p.category = "Proportions";
+  p.subcategory = "Case-Control Studies";
+  p.order = 2;
+  p.summary =
+      "Number of matched sets — each one case and M individually matched controls — needed to detect an odds ratio "
+      "of exposure with the conditional (Mantel–Haenszel) test, allowing for the correlation of exposure within "
+      "matched sets (Dupont 1988). With one control per case and no correlation it is the classical matched-pairs "
+      "formula.";
+  p.keywords = {"matched case-control", "matching", "matched pairs", "1:m matching", "odds ratio",
+                "conditional logistic regression", "mantel-haenszel", "dupont", "epidemiology", "exposure"};
+  p.solve_for = {{"n", "Sample Size", "n", "Matched Sets"},
+                 {"power", "Power", "power", "Power"},
+                 {"or", "Effect Size (OR)", "or", "Detectable Odds Ratio"}};
+  p.params = {
+      alternative("Two-sided (H1: OR ≠ 1)", "One-sided (H1: OR > 1)", "One-sided (H1: OR < 1)"),
+      power_param(),
+      alpha_param(),
+      n_param("n", "Number of Matched Sets (Cases)", "100", 1)
+          .sym("Sets")
+          .hint("Number of matched sets, each one case with its M controls."),
+      num("mctl", "M (Controls per Case)", "1")
+          .grp(G_N)
+          .sym("M")
+          .at_least(1)
+          .whole()
+          .range(1, 20)
+          .sugg({"1", "2", "4", "1 2 3 4"})
+          .hint("Number of controls matched to each case, a whole number; beyond four the gain is small."),
+      odds_ratio_param("The odds ratio of exposure to detect, as estimated by conditional logistic regression.")
+          .show(when(not_solving({"or"}))),
+      exposure_param(),
+      num("phi", "φ (Correlation of Exposure within Matched Sets)", "0.2")
+          .grp(G_EFFECT)
+          .sym("φ")
+          .range(-1, 1, true, true)
+          .sugg({"0.2", "0 0.1 0.2"})
+          .hint("Correlation between the exposures of a case and its matched control, from matching on factors "
+                "related to the exposure; 0 when matching is unrelated to it. Dupont suggests 0.2 when unknown."),
+      or_direction_param()};
+  p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    const double p0 = s("p0"), phi = s("phi"), alpha = s("alpha");
+    const int M = static_cast<int>(s("mctl"));
+    const Alt a = alt(s);
+    double n, odds_ratio;
+    if (s.solve == "n") {
+      odds_ratio = s("or");
+      if (odds_ratio == 1) throw CalcError("the odds ratio is 1: there is no effect to detect");
+      if ((a == Alt::Upper && odds_ratio < 1) || (a == Alt::Lower && odds_ratio > 1))
+        throw CalcError("the odds ratio is on the side opposite to the one-sided alternative");
+      const Matched mo = matched_moments(odds_ratio, p0, phi, M);
+      const double za = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false), zb = stats::qnorm(s("power"));
+      solve::NSearch o;
+      o.lo = 1;
+      o.hi = 1e8;
+      o.guess = std::ceil(std::pow(za * std::sqrt(mo.v0) + zb * std::sqrt(mo.v1), 2) / (mo.delta * mo.delta));
+      n = solve::min_n([&](double x) { return matched_power(x, odds_ratio, p0, phi, M, alpha, a); }, s("power"), o, &ctx);
+    } else {
+      n = s("n");
+      if (s.solve == "power") {
+        odds_ratio = s("or");
+      } else {
+        const bool up = a == Alt::Upper || (a == Alt::Two && !s.is("ordir", "below"));
+        // the search runs on the log odds ratio, up to where φ still gives valid exposures
+        auto f = [&](double lor) { return matched_power(n, std::exp(lor), p0, phi, M, alpha, a) - s("power"); };
+        if (f(0) >= 0) throw CalcError("the target power must exceed the power at OR = 1 (the significance level)");
+        // widen the bracket until the power reaches the target; where φ gives no valid exposures (too strong an
+        // effect), close in on the last valid point instead
+        double good = 0, far = up ? 1 : -1, fail = NAN;
+        while (true) {
+          bool valid = true;
+          double v = NAN;
+          try {
+            v = f(far);
+          } catch (const CalcError&) {
+            valid = false;
+          }
+          if (valid && v >= 0) break;
+          if (valid)
+            good = far;
+          else
+            fail = far;
+          if (std::isnan(fail)) {
+            if (std::fabs(far) > 30) throw CalcError("the target power cannot be reached with this number of matched sets");
+            far *= 2;
+          } else {
+            if (std::fabs(fail - good) < 1e-10)
+              throw CalcError("the target power cannot be reached with this number of matched sets: the correlation φ "
+                              "allows no stronger effect");
+            far = (good + fail) / 2;
+          }
+        }
+        odds_ratio = std::exp(numerics::brent(f, std::fmin(good, far), std::fmax(good, far), 1e-11));
+      }
+    }
+    r.set("n", n);
+    r.set("nctrl", n * M);
+    r.set("ntotal", n * (M + 1));
+    put_power(s, r, matched_power(n, odds_ratio, p0, phi, M, alpha, a));
+    r.set("mctl", M);
+    r.set("or", odds_ratio);
+    r.set("p1", case_exposure(odds_ratio, p0));
+    r.set("p0", p0);
+    r.set("phi", phi);
+    r.set("alpha", alpha);
+  };
+  p.columns = [](const Scenario& s) {
+    auto c = power_columns(s);
+    for (auto x : {col("n", "Sets", "int", "Matched sets (cases)"), col("nctrl", "Controls", "int"),
+                   col("ntotal", "N", "int", "Cases plus controls"), col("mctl", "M", "int", "Controls per case"),
+                   col("or", "OR", "num", "Odds ratio of exposure"), col("p1", "P1", "num", "Exposure among cases"),
+                   col("p0", "P0", "num", "Exposure among controls"),
+                   col("phi", "φ", "num", "Correlation of exposure within matched sets"), col("alpha", "Alpha", "alpha")})
+      c.push_back(x);
+    return c;
+  };
+  p.statement = [](const Scenario& s, const Row& r) {
+    const int M = static_cast<int>(r.num("mctl"));
+    return fint(r.num("n")) + " matched sets of one case and " + (M == 1 ? "one control" : fint(M) + " controls") +
+           " (" + fint(r.num("ntotal")) + " subjects) " + achieves(s, r) + " to detect an odds ratio of exposure of " +
+           fnum(r.num("or"), 3) + " (exposure " + fpct(r.num("p1")) + " among cases and " + fpct(r.num("p0")) +
+           " among controls, correlation of exposure within sets " + fnum(r.num("phi")) + ") using a " +
+           alt_words(alt(s)) + " conditional test at α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.definitions = {{"Sets", "Matched sets: one case with M matched controls."},
+                   {"P1, P0", "Shares of cases and of controls who were exposed."},
+                   {"OR", "Odds ratio of exposure, P1/(1 − P1) divided by P0/(1 − P0)."},
+                   {"φ", "Correlation between the exposures of a case and a matched control."}};
+  p.notes = {"Power uses Dupont's normal approximation to the conditional test on the matched sets in which some but "
+             "not all members are exposed."};
+  p.references = {"Dupont, W. D. (1988). Power calculations for matched case-control studies. Biometrics 44, "
+                  "1157–1168.",
+                  REF_SCHLESSELMAN,
+                  "Breslow, N. E. & Day, N. E. (1980). Statistical Methods in Cancer Research, Vol. I: The Analysis of "
+                  "Case-Control Studies. IARC."};
+  p.curve_param = "n";
+  p.curve_label = "Matched Sets";
+  p.curve_min = 1;
+  p.example_solve = "n";
+  p.example = {{"power", "0.8 0.9"}, {"or", "2"}, {"p0", "0.3"}, {"mctl", "1 2 4"}};
+  return p;
+}
+SSC_REGISTER(matched_case_control);
 
 }  // namespace
 }  // namespace ssc::procs

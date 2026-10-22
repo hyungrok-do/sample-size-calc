@@ -17,7 +17,7 @@ question on. A completed route shows its recommendation at once, and
 analysis settings. Numerical defaults are example values to review, not
 assumptions inferred from the guide.
 
-The guide covers all 66 procedures. Unsupported and incompatible selections do
+The guide covers all 71 procedures. Unsupported and incompatible selections do
 not open a recommended calculator. Changing an earlier answer clears dependent
 choices, retains additional requirements, and hides the previous guided form.
 Requirements are checked together against the selected procedure; they do not
@@ -128,7 +128,7 @@ Chromium with the native library.
 | Win ratio, power, 1,000 simulated studies | 0.81 s | 0.29 s | 0.63 s | 0.17 s |
 | Win ratio, sample size search, 1,000 studies per step | 11.1 s | 3.2 s | 8.7 s | 2.2 s |
 
-The engine file (`ssc_web.wasm`) is 3.3 MB, or 0.96 MB with gzip, which
+The engine file (`ssc_web.wasm`) is 3.6 MB, or 1.0 MB with gzip, which
 static hosts apply on their own. The page is ready about 0.1 s after the
 download, once the browser has compiled the engine.
 

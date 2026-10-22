@@ -177,5 +177,22 @@
 {"query": "skewed data t test", "expect": "sim.means.robust", "within": 1},
 {"query": "lognormal", "expect": "sim.means.robust", "within": 1},
 {"query": "heavy tailed outliers", "expect": "sim.means.robust", "within": 1},
-{"query": "cluster autocorrelation stepped wedge", "expect": "sim.sw", "within": 1}
+{"query": "cluster autocorrelation stepped wedge", "expect": "sim.sw", "within": 1},
+{"query": "case control study", "expect": "prop.cc", "within": 1},
+{"query": "case-control odds ratio exposure", "expect": "prop.cc", "within": 2},
+{"query": "controls per case", "expect": "prop.cc", "within": 2},
+{"query": "matched case control", "expect": "prop.cc.matched", "within": 1},
+{"query": "1:m matching", "expect": "prop.cc.matched", "within": 1},
+{"query": "conditional logistic regression", "expect": "prop.cc.matched", "within": 2},
+{"query": "prediction model", "expect": "reg.prediction", "within": 1},
+{"query": "riley minimum sample size", "expect": "reg.prediction", "within": 1},
+{"query": "pmsampsize", "expect": "reg.prediction", "within": 1},
+{"query": "events per variable", "expect": "reg.prediction", "within": 2},
+{"query": "prognostic model development", "expect": "reg.prediction", "within": 1},
+{"query": "compare two diagnostic tests", "expect": "diag.paired", "within": 1},
+{"query": "paired sensitivity", "expect": "diag.paired", "within": 2},
+{"query": "co-primary endpoints", "expect": "means.coprimary", "within": 1},
+{"query": "multiple primary endpoints", "expect": "means.coprimary", "within": 2},
+{"query": "non-inferiority odds ratio", "expect": "prop.two.ni", "within": 2},
+{"query": "equivalence relative risk", "expect": "prop.two.equiv", "within": 2}
 ]
