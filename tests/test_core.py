@@ -106,6 +106,51 @@ def test_cancel_from_another_thread():
     assert not out["res"]["ok"]
 
 
+def test_closing_a_token_waits_for_a_cancel_under_way(monkeypatch):
+    # a time limit firing as the calculation ends: the cancel had read the token and was about to write to it
+    # when the other thread freed it (heap corruption on the MCP server)
+    from ssc import _native
+
+    lib = _native.lib()
+    real_cancel, real_free = lib.ssc_token_cancel, lib.ssc_token_free
+    inside, events = threading.Event(), []
+
+    def slow_cancel(ptr):
+        inside.set()
+        time.sleep(0.2)  # releases the GIL, as the foreign call does
+        events.append("cancelled")
+        return real_cancel(ptr)
+
+    def free(ptr):
+        events.append("freed")
+        return real_free(ptr)
+
+    monkeypatch.setattr(lib, "ssc_token_cancel", slow_cancel)
+    monkeypatch.setattr(lib, "ssc_token_free", free)
+    token = ssc.Token()
+    canceller = threading.Thread(target=token.cancel)
+    canceller.start()
+    inside.wait(5)
+    token.close()
+    canceller.join(5)
+    assert events == ["cancelled", "freed"]
+
+
+def test_a_token_closed_during_a_calculation_is_freed_when_it_returns():
+    out = {}
+    token = ssc.Token()
+    worker = threading.Thread(target=lambda: out.update(res=ssc.run(
+        "prop.two", "power", {"n1": "1000 to 3000 by 1", "test": "fisher"}, token=token)))
+    worker.start()
+    time.sleep(0.2)
+    token.cancel()
+    token.close()  # while the engine still reads it
+    worker.join(60)
+    assert out["res"].get("cancelled") is True
+    with pytest.raises(ValueError):
+        ssc.run("means.two.t", "n", {}, token=token)
+
+
 def test_every_procedure_runs_its_example():
     for p in ssc.catalog()["procedures"]:
         ex = ssc.schema(p["id"])["example"]

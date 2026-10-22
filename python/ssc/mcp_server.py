@@ -220,6 +220,7 @@ def calculate(method_id: str, solve_for: str, inputs: Optional[Dict[str, Any]] =
     finally:
         if timer:
             timer.cancel()
+            timer.join()  # a cancel already under way finishes before the token goes
         token.close()
     if res.get("cancelled"):
         return {"ok": False, "error": f"the calculation took longer than {lim.time_limit:g} seconds and was stopped",

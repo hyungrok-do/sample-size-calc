@@ -475,12 +475,13 @@ json::Value run_request(const json::Value& req, Token* token) {
     }
   }
 
-  if (proc->cost) {
+  if (proc->cost && count > 1) {  // one scenario is always computed (the count limit has let it through)
     const double cost = proc->cost(scen);
     if (cost > static_cast<double>(max_scen)) {
       out.set("ok", false);
       out.set("error", "Too many combinations of input values for designs this long to compute (limit about " +
-                           std::to_string(static_cast<long>(static_cast<double>(max_scen) * count / cost)) + " here).");
+                           std::to_string(std::max(1L, static_cast<long>(static_cast<double>(max_scen) * count / cost))) +
+                           " here).");
       return out;
     }
   }
@@ -491,6 +492,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   const long units = proc->simulation && !approximate ? 1000 : 1;  // progress steps per scenario
   token->set_total(static_cast<long>(count) * units + static_cast<long>(n_curves) * curve_points);
   std::vector<Row> rows(count);
+  std::atomic<bool> tables_dropped{false}, curve_approximated{false};
   RunContext ctx{token, threads, approximate, nullptr};
   auto answer_key = [&](const std::string& solve) {
     for (const auto& o : proc->solve_for)
@@ -526,7 +528,10 @@ json::Value run_request(const json::Value& req, Token* token) {
                 throw CalcError("the answer cannot be computed for these inputs; check for an extreme value");
             if (proc->statement) r.statement = proc->statement(scen[i], r);
             // 20,000 rows of group-sequential boundaries would take a gigabyte
-            if (i >= MAX_TABLE_ROWS) r.tables.clear();
+            if (i >= MAX_TABLE_ROWS && !r.tables.empty()) {
+              r.tables.clear();
+              tables_dropped = true;
+            }
           } catch (const CalcError& e) {
             r.error = e.what();
           } catch (const Cancelled&) {
@@ -891,6 +896,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     RunContext curve_ctx = ctx;
     curve_ctx.approximate = proc->simulation;
     curve_ctx.curve_points = static_cast<int>(work.size());
+    curve_ctx.curve_approximated = &curve_approximated;
     try {
       parallel_for(
           work.size(), threads,
@@ -898,9 +904,11 @@ json::Value run_request(const json::Value& req, Token* token) {
             CurveJob& job = jobs[work[w].first];
             Scenario sc = job.sc;
             sc.num[job.param] = job.xs[work[w].second];
+            RunContext point = curve_ctx;  // a series takes one method throughout: the one its largest point needs
+            if (job.xs[work[w].second] > 0) point.curve_scale = std::max(1.0, job.xs.back() / job.xs[work[w].second]);
             Row r;
             try {
-              proc->run(sc, r, curve_ctx);
+              proc->run(sc, r, point);
               job.ys[work[w].second] = r.num("power");
             } catch (const CalcError&) {
             } catch (const Cancelled&) {
@@ -916,6 +924,11 @@ json::Value run_request(const json::Value& req, Token* token) {
       out.set("error", "Calculation cancelled.");
       return out;
     }
+    // each answer lies on its curve, whichever way the curve was computed
+    for (auto& job : jobs)
+      for (const auto& m : job.markers)
+        for (std::size_t k = 0; k < job.xs.size(); ++k)
+          if (job.xs[k] == m.first && std::isfinite(m.second)) job.ys[k] = m.second;
     if (!jobs.empty()) {
       json::Value pl = json::Value::object();
       pl.set("kind", "curve");
@@ -970,6 +983,13 @@ json::Value run_request(const json::Value& req, Token* token) {
   out.set("definitions", defs);
   json::Value notes = json::Value::array();
   for (const auto& n : proc->notes) notes.push(n);
+  if (curve_approximated)
+    notes.push("Where enumerating every point of a power curve would take long, the curve uses the normal "
+               "approximation; the answers marked on it are those of the table.");
+  if (tables_dropped) {
+    notes.push("Detail tables are given for the first 1,000 scenarios.");  // MAX_TABLE_ROWS
+    out.set("tables_rows", static_cast<double>(MAX_TABLE_ROWS));
+  }
   out.set("notes", notes);
   out.set("name", proc->name);
   out.set("solve_label", solve_opt->label);

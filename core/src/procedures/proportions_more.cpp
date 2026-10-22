@@ -385,7 +385,7 @@ Procedure two_prop_ni() {
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      if (exact && !curve_too_long(ctx.curve_points, exact_power_work(n1, n2, p1, p2))) {
+      if (exact && !on_curve_too_long(ctx, exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, p1, p2))) {
         const double v = fm_power_exact({S}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;
@@ -565,7 +565,8 @@ Procedure two_prop_equiv() {
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      if (exact && !curve_too_long(ctx.curve_points, 2 * exact_power_work(n1, n2, p1, p2))) {  // two tests a table
+      // two tests a table
+      if (exact && !on_curve_too_long(ctx, 2 * exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, p1, p2))) {
         const double v = fm_power_exact({L, U}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;

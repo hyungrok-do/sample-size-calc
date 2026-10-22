@@ -318,7 +318,8 @@ Procedure two_props() {
     bool fell_back = false;
     auto power = [&](double n1, double n2, double x) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      if (exact && !curve_too_long(ctx.curve_points, exact_power_work(n1, n2, x, p2, T.test == "fisher"))) {
+      if (exact && !on_curve_too_long(ctx, exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, x, p2,
+                                                             T.test == "fisher"))) {
         const double pw = two_prop_exact(T, n1, n2, x, p2, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
@@ -700,7 +701,8 @@ Procedure case_control() {
     bool fell_back = false;
     auto power = [&](double n1, double n2, double x) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      if (exact && !curve_too_long(ctx.curve_points, exact_power_work(n1, n2, x, p0, T.test == "fisher"))) {
+      if (exact && !on_curve_too_long(ctx, exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, x, p0,
+                                                             T.test == "fisher"))) {
         const double pw = two_prop_exact(T, n1, n2, x, p0, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;

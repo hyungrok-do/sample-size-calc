@@ -11,15 +11,24 @@ from __future__ import annotations
 
 import ctypes
 import json
+import threading
 from typing import Any, Mapping, Optional, Sequence
 
 from . import _native
 
 
 class Token:
-    """Cancellation / progress handle for a running calculation (thread-safe)."""
+    """Cancellation / progress handle for a running calculation.
+
+    Thread-safe: it may be cancelled, read or closed from any thread.  Closing waits for a cancel already under
+    way (a time limit firing as the calculation ends), and a token closed while a calculation uses it is freed
+    when that calculation returns.
+    """
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._busy = 0  # calculations using it
+        self._closed = False
         self._ptr = _native.lib().ssc_token_new()
         if not self._ptr:
             raise MemoryError("could not allocate token")
@@ -29,16 +38,37 @@ class Token:
         return self._ptr
 
     def cancel(self) -> None:
-        if self._ptr:
-            _native.lib().ssc_token_cancel(self._ptr)
+        with self._lock:
+            if self._ptr:
+                _native.lib().ssc_token_cancel(self._ptr)
 
     def progress(self) -> float:
-        return float(_native.lib().ssc_token_progress(self._ptr)) if self._ptr else 0.0
+        with self._lock:
+            return float(_native.lib().ssc_token_progress(self._ptr)) if self._ptr else 0.0
 
     def close(self) -> None:
-        if self._ptr:
-            _native.lib().ssc_token_free(self._ptr)
-            self._ptr = None
+        with self._lock:
+            self._closed = True
+            if self._busy or not self._ptr:
+                return  # freed when the last calculation using it returns
+            ptr, self._ptr = self._ptr, None
+        _native.lib().ssc_token_free(ptr)
+
+    def _use(self) -> int:
+        """The handle for a calculation, which must call _done() when it returns."""
+        with self._lock:
+            if not self._ptr:
+                raise ValueError("the token is closed")
+            self._busy += 1
+            return self._ptr
+
+    def _done(self) -> None:
+        with self._lock:
+            self._busy -= 1
+            if self._busy or not self._closed or not self._ptr:
+                return
+            ptr, self._ptr = self._ptr, None
+        _native.lib().ssc_token_free(ptr)
 
     def __enter__(self) -> "Token":
         return self
@@ -127,8 +157,12 @@ def run(
     if max_scenarios is not None:
         request["options"]["max_scenarios"] = int(max_scenarios)
     payload = json.dumps(request).encode("utf-8")
-    handle = token.handle if token is not None else None
-    text = _native.take_string(_native.lib().ssc_run_json(payload, handle))
+    handle = token._use() if token is not None else None
+    try:
+        text = _native.take_string(_native.lib().ssc_run_json(payload, handle))
+    finally:
+        if token is not None:
+            token._done()
     return json.loads(text)
 
 

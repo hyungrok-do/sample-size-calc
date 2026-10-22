@@ -5,6 +5,7 @@
 #include <cmath>
 #include <vector>
 
+#include "engine/procedure.hpp"
 #include "stats/stats.hpp"
 
 namespace ssc::procs {
@@ -120,10 +121,13 @@ inline double exact_search_work(double n1, double n2, double p1, double p2) {
 /// Above this work (a few seconds), exact searches use the normal approximation instead.
 constexpr double EXACT_SEARCH_BUDGET = 2.5e8;
 
-/// Whether a point of the power curves (curve_points runs in all; 0 when not on a curve) is to use the normal
-/// approximation: enumerating every point like it would take the curves past the exact search's budget.
-inline bool curve_too_long(int curve_points, double work) {
-  return curve_points > 0 && curve_points * work > EXACT_SEARCH_BUDGET;
+/// Whether a point of the power curves is to use the normal approximation: enumerating every point at the work
+/// of its series' largest one (the work given) would take the curves past the exact search's budget.  A series
+/// thus takes one method throughout, and the answer's notes say when it is the approximation.
+inline bool on_curve_too_long(const RunContext& ctx, double work) {
+  if (!(ctx.curve_points > 0 && ctx.curve_points * work > EXACT_SEARCH_BUDGET)) return false;
+  if (ctx.curve_approximated) *ctx.curve_approximated = true;
+  return true;
 }
 
 }  // namespace ssc::procs
