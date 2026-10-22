@@ -63,6 +63,91 @@ double beta_series(double a, double b, double x, double y) {
   return pre * sum;
 }
 
+// x − ln(1 + x), accurate for small x.
+double rlog1(double x) {
+  if (std::fabs(x) > 0.1) return x - std::log1p(x);
+  double term = x * x, sum = 0;  // x²/2 − x³/3 + x⁴/4 − …
+  for (int k = 2; k < 60; ++k) {
+    sum += (k % 2 ? -term : term) / k;
+    term *= x;
+    if (std::fabs(term) < 1e-17 * std::fabs(sum)) break;
+  }
+  return sum;
+}
+
+// exp(x²)·erfc(x) for x ≥ 0, from its continued fraction where erfc alone would underflow.
+double erfcx(double x) {
+  if (x < 2) return std::exp(x * x) * std::erfc(x);
+  double t = x;  // 1/(x + ½/(x + 1/(x + 3/2/(x + …))))
+  for (int k = 200; k >= 1; --k) t = x + 0.5 * k / t;
+  return 1 / (1.77245385090551602730 * t);  // √π
+}
+
+// I_x(a, b) for large a and b near the mean, with λ = a − (a + b)·x ≥ 0: the uniform asymptotic expansion of
+// Didonato & Morris (1992, ACM TOMS 708, BASYM), in terms of erfc.  The series and the continued fraction need
+// about √a terms there and lose accuracy beyond a ≈ 1e8.
+double beta_asymptotic(double a, double b, double lambda) {
+  constexpr int N = 20;  // terms (even)
+  constexpr double e0 = 1.12837916709551257;  // 2/√π
+  constexpr double e1 = 0.353553390593273762;  // 2^(−3/2)
+  constexpr double eps = 1e-15;
+  double a0[N + 1] = {}, b0[N + 1] = {}, c[N + 1] = {}, d[N + 1] = {};
+  const double f = a * rlog1(-lambda / a) + b * rlog1(lambda / b);
+  const double t = std::exp(-f);
+  if (t == 0) return 0;
+  const double z0 = std::sqrt(f), z = z0 / e1 * 0.5, z2 = f + f;
+  double h, r0, r1, w0;
+  if (a < b) {
+    h = a / b;
+    r0 = 1 / (h + 1);
+    r1 = (b - a) / b;
+    w0 = 1 / std::sqrt(a * (h + 1));
+  } else {
+    h = b / a;
+    r0 = 1 / (h + 1);
+    r1 = (b - a) / a;
+    w0 = 1 / std::sqrt(b * (h + 1));
+  }
+  a0[0] = r1 * 2.0 / 3;
+  c[0] = -0.5 * a0[0];
+  d[0] = -c[0];
+  double j0 = 0.5 / e0 * erfcx(z0), j1 = e1;
+  double sum = j0 + d[0] * w0 * j1;
+  double sh = 1, h2 = h * h, hn = 1, w = w0, znm1 = z, zn = z2;
+  for (int n = 2; n <= N; n += 2) {
+    hn *= h2;
+    a0[n - 1] = 2 * r0 * (h * hn + 1) / (n + 2.0);
+    const int np1 = n + 1;
+    sh += hn;
+    a0[np1 - 1] = 2 * r1 * sh / (n + 3.0);
+    for (int i = n; i <= np1; ++i) {
+      const double r = -0.5 * (i + 1.0);
+      b0[0] = r * a0[0];
+      for (int m = 2; m <= i; ++m) {
+        double bsum = 0;
+        for (int j = 1; j <= m - 1; ++j) bsum += (j * r - (m - j)) * a0[j - 1] * b0[m - j - 1];
+        b0[m - 1] = r * a0[m - 1] + bsum / m;
+      }
+      c[i - 1] = b0[i - 1] / (i + 1.0);
+      double dsum = 0;
+      for (int j = 1; j <= i - 1; ++j) dsum += d[i - j - 1] * c[j - 1];
+      d[i - 1] = -(dsum + c[i - 1]);
+    }
+    j0 = e1 * znm1 + (n - 1.0) * j0;
+    j1 = e1 * zn + n * j1;
+    znm1 *= z2;
+    zn *= z2;
+    w *= w0;
+    const double t0 = d[n - 1] * w * j0;
+    w *= w0;
+    const double t1 = d[np1 - 1] * w * j1;
+    sum += t0 + t1;
+    if (std::fabs(t0) + std::fabs(t1) <= eps * sum) break;
+  }
+  const double bcorr = stirlerr(a) + stirlerr(b) - stirlerr(a + b);
+  return e0 * t * std::exp(-bcorr) * sum;
+}
+
 // P(Z ≥ z) for Z ~ Beta(c, d) by adaptive Gauss–Kronrod integration of the
 // density, used when z lies beyond the bulk of a distribution concentrated
 // near c/(c+d) (one shape small, the other large) and the complement computed
@@ -163,6 +248,20 @@ double pbeta_raw(double x, double a, double b, bool lower, double y) {
     if (a == 0 && b == 0) return NaN;
     if (a == 0 || a / b == 0) return lower ? 1.0 : 0.0;  // mass at 0
     return lower ? 0.0 : 1.0;                              // mass at 1
+  }
+  // Both shape parameters large, within 3% of the smaller one from the mean (beyond lies a tail far below any
+  // double's resolution of the other): the asymptotic expansion, for the tail below the mean.
+  if (std::fmin(a, b) >= 1e6) {
+    // a − (a + b)·x; from y when a > b (as TOMS 708 writes it), which keeps its precision there
+    const double lambda = a > b ? (a + b) * y - b : a - (a + b) * x;
+    if (std::fabs(lambda) <= 0.03 * std::fmin(a, b)) {
+      if (lambda >= 0) {
+        const double I = beta_asymptotic(a, b, lambda);  // I_x(a, b)
+        return lower ? I : 1 - I;
+      }
+      const double J = beta_asymptotic(b, a, -lambda);  // I_y(b, a) = 1 − I_x(a, b)
+      return lower ? 1 - J : J;
+    }
   }
   // Series in whichever variable makes (a+b)·var small (one shape parameter
   // small, the other large, near the mean).  Accept the result when the

@@ -334,3 +334,14 @@ TEST_CASE("extremes: distribution functions outside their domain give NaN at onc
   CHECK(stats::eval("pbeta", ok_args, 4, out) && out > 0 && out < 1);
   CHECK(seconds_since(t0) < 1);
 }
+
+TEST_CASE("extremes: binomial, F and beta probabilities at a billion trials agree with R") {
+  // shapes beyond 1e8 took the series or continued fraction near the mean, which needs about √a terms
+  // (0.5008 for 0.5 at a billion trials; the reference values are R's, from TOMS 708)
+  CHECK_CLOSE(stats::pbinom(5e8, 1e9, 0.5, true), 0.50001261566260691, 1e-12, 0);
+  CHECK_CLOSE(stats::pbinom(5e8 + std::sqrt(2.5e8), 1e9, 0.5, true), 0.8413464554586505, 1e-12, 0);
+  CHECK_CLOSE(stats::pbinom(5e8 - 3 * std::sqrt(2.5e8), 1e9, 0.5, true), 0.0013498040997050719, 1e-11, 0);
+  CHECK_CLOSE(stats::pf(1, 1e9, 1e9, true), 0.5, 1e-12, 0);
+  CHECK_CLOSE(stats::pbeta(1.0 / 3 + std::sqrt(2e10 / (9e20 * (3e10 + 1))), 1e10, 2e10, true), 0.50000453231113418,
+              1e-12, 0);
+}
