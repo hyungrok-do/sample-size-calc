@@ -8,8 +8,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, readdir } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
 
@@ -89,11 +88,9 @@ await new Promise((done) => server.listen(0, '127.0.0.1', done));
 const url = `http://127.0.0.1:${server.address().port}${prefix}`;
 
 const kind = process.env.SSC_BROWSER ?? 'chromium';
-// a profile on disk, as a browser keeps one (a new context of WebKit keeps the stored copies only in memory)
-const profile = await mkdtemp(join(tmpdir(), 'ssc-site-'));
-const context = await { chromium, firefox, webkit }[kind].launchPersistentContext(profile, {
-  serviceWorkers: 'allow', ...(kind === 'chromium' ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
-    || undefined, args: ['--disable-dev-shm-usage'] } : {}) });
+const browser = await { chromium, firefox, webkit }[kind].launch(kind === 'chromium'
+  ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined, args: ['--disable-dev-shm-usage'] } : {});
+const context = await browser.newContext({ serviceWorkers: 'allow' });
 // the offline copies the service worker keeps, by cache
 const stored = (p) => p.evaluate(async () => {
   const kept = {};
@@ -192,7 +189,6 @@ try {
   assert.deepEqual(errors, []);
   console.log(`Site: every check passed in ${kind}.`);
 } finally {
-  await context.close();
-  await rm(profile, { recursive: true, force: true });
+  await browser.close();
   server.close();
 }
