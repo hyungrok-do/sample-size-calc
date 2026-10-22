@@ -16,6 +16,7 @@ jobs:
   core:
     name: C++ core · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +33,7 @@ jobs:
   python:
     name: Python ${{ matrix.python }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +56,7 @@ jobs:
   web:
     name: WebAssembly engine and frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -101,6 +104,7 @@ jobs:
     name: Web page in ${{ matrix.browser }}
     needs: web
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -117,9 +121,16 @@ jobs:
           name: web-engines
           path: web/engine
       - name: Browser
+        timeout-minutes: 16
         run: |
           npm ci --prefix web
-          cd web && npx playwright install --with-deps ${{ matrix.browser }}
+          cd web
+          # a download that stalls is tried again (once one held the job for half an hour)
+          for attempt in 1 2 3; do
+            timeout 300 npx playwright install --with-deps ${{ matrix.browser }} && break
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            echo "Installing ${{ matrix.browser }} did not finish in 5 minutes; trying again"
+          done
       - name: Guide and calculator
         run: cd web && npm run test:browser
       - name: The testers' fixes and responsiveness
