@@ -173,6 +173,11 @@ try {
 
   if (!V.has('nostored')) keptOnline = await stored(page);
   if (V.has('settle')) await page.waitForTimeout(3000);
+  if (V.has('settle1')) await page.waitForTimeout(1000);
+  if (V.has('update')) console.log('update:', await page.evaluate(async () => {
+    const t = performance.now(); const r = await navigator.serviceWorker.getRegistration(); await r?.update();
+    return `${Math.round(performance.now() - t)} ms`;
+  }));
   down = true;
   await page.reload();
   await ready(page);

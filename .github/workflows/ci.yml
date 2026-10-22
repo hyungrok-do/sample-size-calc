@@ -35,14 +35,14 @@ jobs:
           web/assemble.sh "$RUNNER_TEMP/site-once" "dbg-${GITHUB_SHA::7}"
           python3 web/tests/put-once.py "$RUNNER_TEMP/site-once"
           cd web
-          for config in "site:" "site:settle" "site-once:"; do
+          for config in "site:" "site:update" "site:settle1"; do
             dir=${config%%:*}; variant=${config#*:}
             pass=0; fail=0
             for run in 1 2 3 4 5 6 7 8; do
               if SSC_BROWSER=webkit VARIANT=$variant timeout 240 node tests/site-variant.mjs "$RUNNER_TEMP/$dir" > /tmp/out.txt 2>&1; then
                 pass=$((pass + 1))
               else
-                fail=$((fail + 1)); grep -m1 -o '"status": "[^"]*"' /tmp/out.txt || tail -3 /tmp/out.txt
+                fail=$((fail + 1)); grep -m1 -o '"status": "[^"]*"' /tmp/out.txt || tail -3 /tmp/out.txt; grep -m1 '^update:' /tmp/out.txt || true
               fi
             done
             echo "=== $dir ${variant:-as is}: $pass passed, $fail failed"
