@@ -25,6 +25,19 @@ TEST_CASE("parallel: every item exactly once, on any number of threads") {
 }
 
 TEST_CASE("parallel: a nested loop is shared with the idle workers, with the same results") {
+  // The workers must be running first: under Node (the WebAssembly build) each is a Worker that takes a while to
+  // start, and the test above has just asked for many.  Each item waits until every thread holds one, so all
+  // the workers have joined; a deadline ends the wait if some never start.
+  {
+    const int k = resolve_threads(64);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    std::atomic<int> arrived{0};
+    parallel_for(static_cast<std::size_t>(k), k, [&](std::size_t) {
+      arrived.fetch_add(1);
+      while (arrived.load() < k && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+  }
   // two outer items on four threads: before the pool, each inner loop ran alone on its outer item's thread
   std::mutex mu;
   std::set<std::thread::id> inner_threads;

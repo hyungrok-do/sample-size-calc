@@ -95,7 +95,7 @@ struct SNodes {
 };
 
 using Probs = std::array<double, KMAX>;
-constexpr int EVENTS_MAX = KMAX + 2;  // events integrated in one pass
+constexpr int EVENTS_MAX = KMAX + 3;  // events integrated in one pass, and the rule's own total
 using Events = std::array<double, EVENTS_MAX>;
 
 /// For the single-step tests with critical value c on |T| (two-sided) or T (one-sided, after orienting the
@@ -123,6 +123,7 @@ Events single_step(const Design& d, const Sizes& n, double c, const SNodes& sn, 
   parallel_for(sn.s.size(), ctx.threads, [&](std::size_t a) {
     const double cs = c * sn.s[a];
     Events inner{}, e{};
+    e[m] = 1;  // the rule's own total, summed exactly as the events are
     Probs prob{};
     for (std::size_t b = 0; b < g.x.size(); ++b) {
       const double z = Z_RANGE * g.x[b];
@@ -137,13 +138,17 @@ Events single_step(const Design& d, const Sizes& n, double c, const SNodes& sn, 
       }
       const double weight = g.w[b] * stats::dnorm(z);
       events(prob, e);
-      for (int j = 0; j < m; ++j) inner[j] += weight * e[j];
+      for (int j = 0; j <= m; ++j) inner[j] += weight * e[j];
     }
     part[a] = inner;
   }, ctx.token);
   Events total{};
   for (std::size_t a = 0; a < sn.s.size(); ++a)
-    for (int j = 0; j < m; ++j) total[j] += sn.w[a] * Z_RANGE * part[a][j];
+    for (int j = 0; j <= m; ++j) total[j] += sn.w[a] * Z_RANGE * part[a][j];
+  // The weights add up to 1 only to rounding, which differs between processors (fused multiply-adds on Arm):
+  // divided by their own total, an event that every node gives is exactly 1, and none goes beyond [0, 1].
+  for (int j = 0; j < m; ++j) total[j] = stats::clamp01(total[j] / total[m]);
+  total[m] = 0;
   return total;
 }
 
