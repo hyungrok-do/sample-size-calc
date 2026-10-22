@@ -158,6 +158,10 @@ try {
     return all;
   });
   assert.ok(kept.length && kept.every((q) => q === '' || /^\?(engine=ssc_web(_mt)?&)?v=[^&]+$/.test(q)), `kept: ${kept.join(' ')}`);
+  // back at the page's own address: the browser's cache keeps each address (10 minutes on GitHub Pages), and the
+  // update below reloads this one
+  await page.goto(url);
+  await ready(page);
 
   down = true;
   await page.reload();
