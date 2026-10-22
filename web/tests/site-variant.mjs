@@ -172,6 +172,7 @@ try {
   }
 
   if (!V.has('nostored')) keptOnline = await stored(page);
+  if (V.has('settle')) await page.waitForTimeout(3000);
   down = true;
   await page.reload();
   await ready(page);

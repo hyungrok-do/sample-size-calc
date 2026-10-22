@@ -27,18 +27,22 @@ jobs:
             timeout 300 npx playwright install webkit && break
             if [ "$attempt" = 3 ]; then exit 1; fi
           done
-      - name: A failing offline reload, with the service worker's log
-        timeout-minutes: 40
+      - name: Whether the copies are lost to writes still under way when the network goes down
+        timeout-minutes: 45
         run: |
           web/assemble.sh "$RUNNER_TEMP/site" "dbg-${GITHUB_SHA::7}"
+          web/assemble.sh "$RUNNER_TEMP/site-once" "dbg-${GITHUB_SHA::7}"
+          python3 web/tests/put-once.py "$RUNNER_TEMP/site-once"
           cd web
-          bad=0
-          for run in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            out=$(SSC_BROWSER=webkit ONLY_MEMORY=1 timeout 240 node tests/sw-debug.mjs "$RUNNER_TEMP/site" 2>&1 | grep -v console.debug)
-            if echo "$out" | grep -q "offline not ready\|did not load\|cache MISS\|put FAILED\|unhandledrejection"; then
-              bad=$((bad + 1)); echo "=== run $run FAILED"; echo "$out" | sed -n '/the third visit/,$p' | cut -c1-400
-            else
-              echo "=== run $run passed"
-            fi
+          for config in "site:" "site:settle" "site-once:"; do
+            dir=${config%%:*}; variant=${config#*:}
+            pass=0; fail=0
+            for run in 1 2 3 4 5 6 7 8; do
+              if SSC_BROWSER=webkit VARIANT=$variant timeout 240 node tests/site-variant.mjs "$RUNNER_TEMP/$dir" > /tmp/out.txt 2>&1; then
+                pass=$((pass + 1))
+              else
+                fail=$((fail + 1)); grep -m1 -o '"status": "[^"]*"' /tmp/out.txt || tail -3 /tmp/out.txt
+              fi
+            done
+            echo "=== $dir ${variant:-as is}: $pass passed, $fail failed"
           done
-          echo "=== $bad of 12 failed"
