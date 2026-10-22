@@ -29,9 +29,21 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  // Browsing all methods comes first and opens a method at once, without scrolling past the introduction.
   await page.goto(base);
-  await page.waitForSelector('#guide-questions input');
+  await page.waitForSelector('#in-test');
+  assert.equal(await page.locator('#mode-browse').getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.evaluate(() => document.querySelector('.entry-modes button').id), 'mode-browse');
+  assert.equal(await page.locator('#guide').isVisible(), false);
+  assert.equal(new URL(page.url()).hash, '#means.two.t');
+  assert.equal(await page.evaluate(() => scrollY), 0);
+  async function openGuide() {
+    await page.locator('#mode-guide').click();
+    await page.waitForSelector('#guide-questions input');
+  }
+  await openGuide();
   assert.equal(await page.locator('#method').isVisible(), false);
+  assert.match(await page.locator('#guide .guide-experimental').textContent(), /This is an experimental feature\./);
   assert.equal(await page.locator('#guide-recommendation-title').textContent(), 'Recommended analysis');
 
   const routes = [];
@@ -48,8 +60,7 @@ try {
         input.checked = true;
         input.dispatchEvent(new Event('change', { bubbles: true }));
       }
-    }, route.path);
-    if (route.node.type === 'candidate') await page.locator('input[name="guide-extra"][value="none"]').check();
+    }, route.path);  // no additional requirement needs confirming
   }
   async function apply() {
     await page.locator('#guide-recommendation-content button').click();
@@ -70,6 +81,22 @@ try {
     }
   }
   console.log(`Browser: ${routes.filter((r) => r.node.type === 'candidate').length} routes applied; unsupported routes withheld.`);
+
+  // One answer already lists the analyses that fit; a requirement narrows them; any of them opens directly.
+  await page.locator('#guide-reset').click();
+  await page.locator(`#guide input[name="${guideData.root.node_id}"][value="0"]`).check();
+  const listed = () => page.locator('#guide-recommendation-content .guide-candidate').evaluateAll((bs) => bs.map((b) => b.dataset.procedure));
+  const afterOne = await listed();
+  assert.ok(afterOne.length > 1, 'analyses listed after one answer');
+  assert.equal(await page.locator('#guide-requirements').isVisible(), true);
+  await page.locator('input[name="guide-extra"][value="cluster"]').check();
+  const cluster = await listed();
+  const allowed = guideData.features.find((f) => f.id === 'cluster').allow;
+  assert.ok(cluster.length > 0 && cluster.length < afterOne.length && cluster.every((id) => allowed.includes(id)));
+  await page.locator('#guide-recommendation-content .guide-candidate').first().click();
+  await page.waitForFunction((id) => location.hash.startsWith(`#${id}`), cluster[0]);
+  assert.equal(await page.locator('#method').isVisible(), true);
+  assert.match(await page.locator('#guide-recommendation-content [role="status"]').textContent(), /open below/);
 
   const fisher = routes.find((r) => r.node.procedure_id === 'prop.two' && r.node.proposed_option_values.test === 'fisher');
   const score = routes.find((r) => r.node.procedure_id === 'prop.two' && r.node.proposed_option_values.test === 'zpool');
@@ -151,7 +178,8 @@ try {
   await page.waitForFunction(() => document.querySelector('#activity-stop').hidden);
 
   await page.goto(base);
-  await page.waitForSelector('#guide-questions input');
+  await page.waitForSelector('#in-test');
+  await openGuide();
   const welch = routes.find((r) => r.node.procedure_id === 'means.two.welch');
   await select(welch); await apply();
   const order = await page.evaluate(() => {
@@ -175,7 +203,7 @@ try {
   const offline = await browser.newContext({ serviceWorkers: 'allow' });
   const offlinePage = await offline.newPage();
   await offlinePage.goto(base);
-  await offlinePage.waitForSelector('#guide-questions input');
+  await offlinePage.waitForSelector('#guide-questions input', { state: 'attached' });
   await offlinePage.evaluate(async () => {
     await navigator.serviceWorker.ready;
     const cache = await caches.open('ssc-dev');
@@ -186,7 +214,7 @@ try {
   });
   await offline.setOffline(true);
   await offlinePage.reload();
-  await offlinePage.waitForSelector('#guide-questions input');
+  await offlinePage.waitForSelector('#guide-questions input', { state: 'attached' });
   await offline.close();
   console.log('Browser: calculation, same-method options, stale results, keyboard, history, mobile/dark layout, and offline reload passed.');
 } finally {

@@ -166,6 +166,16 @@
   #guide-recommendation details { margin: 16px 0; color: var(--ink-2); font-size: 14px; }
   #guide-recommendation summary { cursor: pointer; }
   #guide-recommendation button { margin-top: 8px; }
+  .guide-experimental {
+    display: inline-block; margin: 12px 0 0; padding: 4px 10px; border-radius: 999px; font-size: 13px;
+    background: var(--surface-2); border: 1px solid var(--line); color: var(--ink-2);
+  }
+  .guide-candidates { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  #guide-recommendation .guide-candidate {
+    margin: 0; font: inherit; font-size: 14px; text-align: left; cursor: pointer; padding: 6px 12px; border-radius: 8px;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--field-line);
+  }
+  #guide-recommendation .guide-candidate:hover { background: var(--accent-soft); border-color: var(--accent); }
   #m-source { padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); }
   #m-name:focus { outline: 2px solid var(--accent); outline-offset: 4px; }
 
@@ -255,7 +265,7 @@
 </style>
 </head>
 <body>
-<button id="skip" class="skip" type="button">Skip to study planning</button>
+<button id="skip" class="skip" type="button">Skip to the calculator</button>
 <header class="top">
   <div class="brand"><h1>Sample Size Calculator</h1></div>
   <div class="engine-activity">
@@ -266,7 +276,7 @@
 
 <section class="intro" aria-labelledby="intro-title">
   <h2 id="intro-title">A sample size calculator for planning studies</h2>
-  <p class="lede">Describe your study to find a suitable analysis, then calculate sample size, power, or a detectable effect.</p>
+  <p class="lede">Choose a method, or let the guide suggest one from your study design, then calculate sample size, power, or a detectable effect.</p>
   <ul class="points">
     <li>
       <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>Runs on your device</h3>
@@ -278,20 +288,20 @@
     </li>
   </ul>
   <div class="entry-modes" role="group" aria-label="Choose how to find an analysis">
-    <button id="mode-guide" type="button" class="secondary" aria-pressed="true">Guide me</button>
-    <button id="mode-browse" type="button" class="secondary" aria-pressed="false">Browse all methods</button>
+    <button id="mode-browse" type="button" class="secondary" aria-pressed="true">Browse all methods</button>
+    <button id="mode-guide" type="button" class="secondary" aria-pressed="false">Guide me</button>
   </div>
 </section>
 
-<div id="workspace" class="layout" data-mode="guide">
-  <aside id="browse-methods" class="methods" hidden>
+<div id="workspace" class="layout" data-mode="browse">
+  <aside id="browse-methods" class="methods">
     <input id="search" type="search" placeholder="Search methods: two means, survival…" aria-label="Search methods" autocomplete="off">
     <nav id="method-list" aria-label="Methods"></nav>
   </aside>
 
   <main>
     <div id="navigation-error" class="error" role="alert" hidden></div>
-    <section id="guide" class="card" aria-labelledby="guide-title">
+    <section id="guide" class="card" aria-labelledby="guide-title" hidden>
       <div class="guide-heading">
         <div>
           <p class="eyebrow">Study design</p>
@@ -299,10 +309,11 @@
         </div>
         <button id="guide-reset" type="button" class="secondary">Start over</button>
       </div>
-      <p class="summary">Select the chips that describe your study. Each question says whether to choose one or several.</p>
+      <p class="guide-experimental"><strong>This is an experimental feature.</strong></p>
+      <p class="summary">Select the chips that describe your study. Analyses that fit appear from your first answer, and the list narrows as you answer more.</p>
       <div id="guide-questions"><p class="muted">Loading the study guide…</p></div>
       <fieldset id="guide-requirements" hidden>
-        <legend>Any additional study requirements?<span class="guide-hint">Choose all that apply. These are checked together with your choices above.</span></legend>
+        <legend>Any additional study requirements?<span class="guide-hint">Optional. Choose all that apply: they narrow the analyses listed below.</span></legend>
         <div id="guide-requirement-chips" class="guide-chips"></div>
       </fieldset>
       <section id="guide-recommendation" aria-labelledby="guide-recommendation-title">

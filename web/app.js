@@ -10,7 +10,7 @@ const state = { catalog: null, proc: null, solve: '', fields: new Map(), busy: f
 const schemas = new Map();  // procedure id → its description, so opening a method never waits on a calculation
 const MAX_ROWS = 1000;      // rows of an answer drawn in the table
 let guide;
-let mode = 'guide';
+let mode = 'browse';
 let guidedForm = false;
 
 function el(tag, attrs = {}, ...children) {
@@ -629,7 +629,14 @@ async function boot() {
     });
     const first = parseSelectionHash(location.hash);
     if (known(first.procedure)) await navigate(first, false, false);
-    else if (mode === 'browse') await navigate({ procedure: 'means.two.t', inputs: {} });
+    else if (mode === 'browse') {
+      // the first method, in place of the bare address (not a step of its own in the browser's history)
+      const start = { procedure: 'means.two.t', inputs: {} };
+      if (await openMethod(start)) {  // not navigate(): no focus, so the page stays at its top
+        setMode('browse');
+        history.replaceState(null, '', location.pathname + location.search + selectionHash(start));
+      }
+    }
     $('bench').setAttribute('aria-disabled', 'false');
   } catch (e) {
     $('engine-status').textContent = `The engine did not load: ${e.message}`;

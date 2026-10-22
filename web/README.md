@@ -5,18 +5,23 @@ in the browser. You can search the methods, fill in a form generated from each
 method's description and calculate. Nothing you type leaves the browser, and
 the server only hands out files.
 
-The default **Guide me** view asks study-design questions using chips. Each
-question selects one answer; additional requirements select all that apply.
-**Recommended analysis** stays below the choices. **Use this analysis** opens
-the generated calculator below and applies the selected analysis settings.
-Numerical defaults are example values to review, not assumptions inferred
-from the guide. **Browse all methods** retains the searchable catalog.
+The page opens on **Browse all methods**, the searchable catalog. **Guide me**,
+an experimental feature, asks study-design questions using chips. Each
+question selects one answer; the optional additional requirements select all
+that apply. From the first answer, **Recommended analysis** lists every
+analysis that still fits, narrowed by each further answer and by the
+requirements chosen; any of them opens in the calculator with the settings its
+remaining routes agree on. "I'm unsure" lists what is possible from that
+question on. A completed route shows its recommendation at once, and
+**Use this analysis** opens the generated calculator below with the selected
+analysis settings. Numerical defaults are example values to review, not
+assumptions inferred from the guide.
 
-The guide covers all 66 procedures. Unanswered, unsure, unsupported, and
-incompatible selections do not open a recommended calculator. Changing an
-earlier answer clears dependent choices, retains additional requirements,
-and hides the previous guided form. Requirements are checked together against
-the selected procedure; they do not automatically reroute to another design.
+The guide covers all 66 procedures. Unsupported and incompatible selections do
+not open a recommended calculator. Changing an earlier answer clears dependent
+choices, retains additional requirements, and hides the previous guided form.
+Requirements are checked together against the selected procedure; they do not
+automatically reroute to another design.
 The guide is curated planning guidance, not a general statistical model selector.
 
 `guide-data.js` contains the questions, procedure routes, compatibility lists,
@@ -141,7 +146,8 @@ npm run test:browser
 ```
 
 The first suite checks every route against the real WebAssembly catalog and
-schemas, all-procedure coverage, combined requirements, ancestor resets,
+schemas, all-procedure coverage, the analyses listed after partial answers,
+combined requirements, ancestor resets,
 unknown/conditional presets, and link round trips. The Chromium suite loads
 the actual page and engine, applies every recommendation path, and checks a
 calculation, same-procedure option changes, stale-result protection, keyboard

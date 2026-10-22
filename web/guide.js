@@ -2,6 +2,8 @@ import { guideData } from './guide-data.js?v=dev';
 import { GuideState } from './guide-state.js?v=dev';
 import { prepareSelection } from './selection.js?v=dev';
 
+const SHOWN = 8;  // analyses listed before "Show more"
+
 const el = (tag, className = '', text) => {
   const node = document.createElement(tag);
   node.className = className;
@@ -76,14 +78,80 @@ export function mountGuide(root, { schemas, onChange, onApply }) {
     return fallback;
   }
 
+  const listed = (features) => features.map((f) => f.label.toLowerCase()).join(', ');
+
+  // Opens a selection in the calculator below; a changed answer meanwhile wins over the opening.
+  async function open(selection, button, done) {
+    if (button.getAttribute('aria-disabled') === 'true') return;
+    const started = revision;
+    button.setAttribute('aria-disabled', 'true');
+    try {
+      const opened = await onApply(selection);
+      if (started !== revision) return;
+      if (opened) {
+        applied = selection;
+        done();
+      }
+    } catch (error) {
+      if (started === revision && status) status.textContent = error.message;
+    } finally {
+      if (started === revision) button.setAttribute('aria-disabled', 'false');
+    }
+  }
+
+  // An analysis that fits the answers so far, opened with the settings every route to it agrees on.
+  function candidateItem({ procedure, inputs }) {
+    const entry = guideData.catalog[procedure];
+    const proc = schemas.get(procedure);
+    if (!entry || !proc) return null;
+    let selection = { procedure, inputs };
+    try { prepareSelection(proc, selection); } catch { selection = { procedure, inputs: {} }; }
+    const item = el('li');
+    const button = el('button', 'guide-candidate', analysisName(proc.id, selection.inputs, entry.label));
+    button.type = 'button';
+    button.dataset.procedure = proc.id;
+    button.title = entry.scope_and_checks;
+    button.addEventListener('click', () => open(selection, button, () => {
+      status.textContent = `${button.textContent} is open below. Answer more questions to refine its settings.`;
+    }));
+    item.append(button);
+    return item;
+  }
+
+  function listCandidates(snapshot) {
+    const items = snapshot.candidates.map(candidateItem).filter(Boolean);
+    message(items.length === 1 ? 'One analysis fits your choices so far.' : `${items.length} analyses fit your choices so far.`,
+      snapshot.unsure ? 'Any of these is possible from here. Open one now, or settle this question to narrow the list.'
+        : `Open one now, or answer “${snapshot.node.prompt}” to narrow the list.`);
+    const list = el('ul', 'guide-candidates');
+    list.append(...items.slice(0, SHOWN));
+    result.append(list);
+    if (items.length > SHOWN) {
+      const more = el('details');
+      const rest = el('ul', 'guide-candidates');
+      rest.append(...items.slice(SHOWN));
+      more.append(el('summary', '', `Show ${items.length - SHOWN} more`), rest);
+      result.append(more);
+    }
+    status = el('p', 'muted small');
+    status.setAttribute('role', 'status');
+    result.append(status);
+  }
+
   function present(snapshot) {
     const { node, path, selection } = snapshot;
     result.replaceChildren();
     applyButton = null;
     status = null;
     if (node.type === 'question') {
-      message(snapshot.unsure ? 'The analysis is not yet determined.' : 'Complete the study choices to see a recommendation.',
-        snapshot.unsure ? 'This choice changes the analysis. Clarify the study objective or design before continuing.' : node.prompt);
+      if (snapshot.candidates.length) listCandidates(snapshot);
+      else if (snapshot.wanted.length) {
+        message('No analysis here covers all the additional requirements.',
+          `None of the analyses that fit your choices covers ${listed(snapshot.wanted)}. Remove a requirement or change a choice above.`);
+      } else {
+        message(snapshot.unsure ? 'The analysis is not yet determined.' : 'Answer a question to see the analyses that fit.',
+          snapshot.unsure ? 'This choice changes the analysis. Clarify the study objective or design, or open “Browse all methods”.' : node.prompt);
+      }
       return;
     }
     if (node.type === 'no_matching_calculator') {
@@ -93,10 +161,6 @@ export function mountGuide(root, { schemas, onChange, onApply }) {
     const entry = guideData.catalog[node.procedure_id];
     const proc = schemas.get(node.procedure_id);
     if (!entry || !proc) { message('This procedure is unavailable in the current engine.'); return; }
-    if (!state.extra.size || state.extra.has('unsure')) {
-      message('Confirm the additional study requirements.', 'Choose all that apply, or “None beyond choices above”.');
-      return;
-    }
     if (snapshot.blockers.length) {
       message('No recommendation for the current combination.', `${entry.label} does not cover these additional requirements: ${snapshot.blockers.map((f) => f.label.toLowerCase()).join(', ')}. Revise the study choices to look for a matching design.`);
       return;
@@ -120,30 +184,20 @@ export function mountGuide(root, { schemas, onChange, onApply }) {
     const details = el('details');
     details.append(el('summary', '', 'Inputs needed for this calculation'), el('p', '', entry.inputs_to_request));
     result.append(details);
+    if (!snapshot.wanted.length) {
+      result.append(el('p', 'muted small', `If the study also involves ${listed(guideData.features)}, select it under additional requirements to check that this analysis covers it.`));
+    }
     applyButton = el('button', 'primary', 'Use this analysis');
     applyButton.type = 'button';
     applyButton.dataset.procedure = proc.id;
     status = el('p', 'muted small', 'Your analysis choices will be applied to the calculator below. Review its example values before calculating.');
     status.setAttribute('role', 'status');
     result.append(applyButton, status);
-    applyButton.addEventListener('click', async () => {
-      if (applyButton.getAttribute('aria-disabled') === 'true') return;
-      const started = revision;
-      applyButton.setAttribute('aria-disabled', 'true');
-      try {
-        const opened = await onApply(selection);
-        if (started !== revision) return;
-        if (opened) {
-          applied = selection;
-          applyButton.textContent = 'Reapply this analysis';
-          status.textContent = 'Analysis applied below. Review the study inputs and choose what to calculate.';
-        }
-      } catch (error) {
-        if (started === revision) status.textContent = error.message;
-      } finally {
-        if (started === revision) applyButton.setAttribute('aria-disabled', 'false');
-      }
-    });
+    const button = applyButton;
+    button.addEventListener('click', () => open(selection, button, () => {
+      button.textContent = 'Reapply this analysis';
+      status.textContent = 'Analysis applied below. Review the study inputs and choose what to calculate.';
+    }));
   }
 
   function render(announce) {
@@ -152,7 +206,8 @@ export function mountGuide(root, { schemas, onChange, onApply }) {
     // Preserve the currently focused chip; replacing the whole form loses keyboard focus.
     for (const child of Array.from(host.children)) if (!desired.includes(child)) child.remove();
     desired.forEach((child, i) => { if (host.children[i] !== child) host.insertBefore(child, host.children[i] ?? null); });
-    requirements.hidden = snapshot.node.type !== 'candidate';
+    // optional, and shown from the first answer: they narrow the analyses listed below
+    requirements.hidden = !state.answers.size && !state.extra.size;
     root.querySelectorAll('input[name="guide-extra"]').forEach((input) => { input.checked = state.extra.has(input.value); });
     present(snapshot);
     if (announce) byId('guide-announcement').textContent = `Recommended analysis updated. ${result.firstElementChild?.textContent ?? ''}`;
