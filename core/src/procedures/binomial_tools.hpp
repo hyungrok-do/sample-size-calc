@@ -112,18 +112,19 @@ inline double exact_power_work(double n1, double n2, double p1, double p2, bool 
 }
 
 /// Rough cost of an exact sample-size search for two binomial samples of about
-/// n1 and n2: the cells of the joint window times the power evaluations of the
+/// n1 and n2: the cost of one power evaluation times the power evaluations of the
 /// saw-tooth search in solve::min_n (a scan over 15% of n below the bisection result).
-inline double exact_search_work(double n1, double n2, double p1, double p2) {
-  return exact_power_work(n1, n2, p1, p2) * (std::max(25.0, 0.15 * std::max(n1, n2)) + 40);
+inline double exact_search_work(double n1, double n2, double p1, double p2, bool fisher = false) {
+  return exact_power_work(n1, n2, p1, p2, fisher) * (std::max(25.0, 0.15 * std::max(n1, n2)) + 40);
 }
 
 /// Above this work (a few seconds), exact searches use the normal approximation instead.
 constexpr double EXACT_SEARCH_BUDGET = 2.5e8;
 
 /// Whether a point of the power curves is to use the normal approximation: enumerating every point at the work
-/// of its series' largest one (the work given) would take the curves past the exact search's budget.  A series
-/// thus takes one method throughout, and the answer's notes say when it is the approximation.
+/// of its series' largest one (the work given, at RunContext::curve_last) would take the curves past the exact
+/// search's budget.  A series thus takes one method throughout, and the answer's notes say when it is the
+/// approximation.
 inline bool on_curve_too_long(const RunContext& ctx, double work) {
   if (!(ctx.curve_points > 0 && ctx.curve_points * work > EXACT_SEARCH_BUDGET)) return false;
   if (ctx.curve_approximated) *ctx.curve_approximated = true;

@@ -226,7 +226,7 @@ struct RunContext {
   bool approximate = false;     // simulation procedures: analytic approximation instead of simulating
   Progress* progress = nullptr;  // progress of the scenario being computed (may be null)
   int curve_points = 0;          // a point of the power curves, which take this many runs in all (0: not a curve)
-  double curve_scale = 1;        // the largest point of this one's curve over this one (sizes scale with it)
+  const Scenario* curve_last = nullptr;  // the largest point of this one's curve (a series takes one method)
   std::atomic<bool>* curve_approximated = nullptr;  // set by a curve point that used an approximation instead
   void check() const {
     if (token) token->check();

@@ -668,6 +668,19 @@ def test_a_curve_names_the_input_it_varies():
         assert curve["x_key"] == key and curve["x_with"] == with_, inputs
 
 
+def test_an_exact_curve_takes_one_method_judged_at_its_largest_point():
+    """With N2 given apart from N1 the curve varies N1 alone.  Each point was judged by scaling both groups by the
+    curve's largest N1 over its own, which sent the small sizes (and their huge scaled N2) to the normal
+    approximation while the large ones stayed exact; each point now matches its own exact power."""
+    base = {**base_inputs("prop.two"), "method": "exact", "test": "zpool", "alloc": "sep", "n1": "200",
+            "n2": "400000", "es": "props", "p1": "0.5", "p2": "0.45"}
+    res = ssc.run("prop.two", "power", base, threads=1, power_curve=True)
+    series = next(p for p in res["plots"] if p["kind"] == "curve")["series"][0]
+    for x, y in list(zip(series["x"], series["y"]))[::10]:
+        row = ssc.run("prop.two", "power", {**base, "n1": str(int(x))}, threads=1, power_curve=False)["rows"][0]
+        assert y == pytest.approx(row["power"], abs=1e-12), x
+
+
 def test_an_unknown_choice_is_an_input_error():
     res = run("means.two.t", "power", {**base_inputs("means.two.t"), "alternative": "greater"})
     assert not res["ok"] and "unknown choice 'greater'" in res["input_errors"]["alternative"]

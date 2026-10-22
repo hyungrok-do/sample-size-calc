@@ -209,6 +209,18 @@ TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an
       {R"({"procedure":"prop.cc","solve_for":"n","inputs":{"test":"fisher","m":"100","or":"1.05"}})", ""},
       {R"({"procedure":"diag.paired","solve_for":"n","inputs":{"method":"exact","goal":"se","se1":"0.9","se2":"0.8",)"
        R"("prev":"0.001"}})", ""},
+      // Fisher's test costs more a table than the cells it enumerates: its exact search took 20 s
+      {R"({"procedure":"prop.two","solve_for":"n","options":{"power_curve":false},)"
+       R"("inputs":{"test":"fisher","method":"exact","p1":"0.428","p2":"0.4"}})", ""},
+      // and its search for P1, some 40 exact evaluations at nearly a million a group: 58 s
+      {R"({"procedure":"prop.two","solve_for":"p1","options":{"power_curve":false},)"
+       R"("inputs":{"test":"fisher","method":"exact","n1":"918515","p2":"0.7814"}})", ""},
+      // a noncentral F with an enormous noncentrality: Poisson terms with a shape near 1e25, where the continued
+      // fraction of the incomplete beta cannot converge (it ran to its cap, 2 s a term, for minutes)
+      {R"({"procedure":"means.anova","solve_for":"power","options":{"power_curve":false},)"
+       R"("inputs":{"estype":"f","f":"2e12","k":"2","alloc":"ratio","ratios":"1 0.5","n":"2","alpha":"1e-9"}})", ""},
+      {R"({"procedure":"means.anova","solve_for":"n","options":{"power_curve":false},)"
+       R"("inputs":{"means":"0 1","sigma":"1e-13","alloc":"ratio","ratios":"1 0.5","alpha":"1e-9"}})", ""},
       // 20,000 group-sequential designs with 20 analyses: about 25 minutes of work, solving for the sample size or
       // for the power (each alpha, and each power with β-spending futility, is a design of its own)
       {R"({"procedure":"gs.means","solve_for":"n","inputs":{"looks":"20","alpha":"0.0001 to 0.05 by 0.0000049995",)"
@@ -358,6 +370,17 @@ TEST_CASE("extremes: a NaN integrand ends the adaptive integration at once") {
   // a 0/0 at the midpoint, a node of the first panel, still clears
   const double si = numerics::integrate([](double x) { return std::sin(x) / x; }, -1, 1);
   CHECK(std::fabs(si - 1.8921661407343660) < 1e-13);
+}
+
+TEST_CASE("extremes: the incomplete beta with shapes beyond what its series resolve") {
+  // both shapes large, far from the mean: a tail far below the smallest double (and 1e300 gave 1, not 0)
+  CHECK(stats::pbeta(0.4, 1e300, 1e300, true) == 0);
+  CHECK(stats::pbeta(0.6, 1e300, 1e300, true) == 1);
+  CHECK(stats::pbeta(0.4, 1e7, 1e7, false) == 1);
+  // one shape astronomically larger than the other: the gamma limit (mpmath, 50 digits: 8.0800219368998048e-9)
+  CHECK_CLOSE(stats::pbeta(3e-13, 3315, 1e16, true), 8.0800219368998048e-9, 1e-12, 0);
+  // and the other way round, given the complement exactly (1 − x in doubles would lose its digits)
+  CHECK_CLOSE(stats::pbeta_raw(1 - 3e-13, 1e16, 3315, false, 3e-13), 8.0800219368998048e-9, 1e-12, 0);
 }
 
 TEST_CASE("extremes: binomial, F and beta probabilities at a billion trials agree with R") {

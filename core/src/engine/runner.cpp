@@ -782,7 +782,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   // one curve, which then carries one marker per solution.
   if (curve_ok) {
     struct CurveJob {
-      Scenario sc;
+      Scenario sc, last;  // its scenario, and that of its largest point
       std::string param, key, name;
       std::vector<double> xs, ys;
       std::vector<std::pair<double, double>> markers;
@@ -888,6 +888,8 @@ json::Value run_request(const json::Value& req, Token* token) {
       for (const auto& m : job.markers) grid.insert(m.first);
       job.xs.assign(grid.begin(), grid.end());
       job.ys.assign(job.xs.size(), NAN);
+      job.last = job.sc;
+      job.last.num[job.param] = job.xs.back();
     }
     std::vector<std::pair<std::size_t, std::size_t>> work;
     for (std::size_t j = 0; j < jobs.size(); ++j)
@@ -905,7 +907,7 @@ json::Value run_request(const json::Value& req, Token* token) {
             Scenario sc = job.sc;
             sc.num[job.param] = job.xs[work[w].second];
             RunContext point = curve_ctx;  // a series takes one method throughout: the one its largest point needs
-            if (job.xs[work[w].second] > 0) point.curve_scale = std::max(1.0, job.xs.back() / job.xs[work[w].second]);
+            point.curve_last = &job.last;
             Row r;
             try {
               proc->run(sc, r, point);
