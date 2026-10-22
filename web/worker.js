@@ -4,7 +4,7 @@
 const started = performance.now();
 const variant = new URL(self.location.href).searchParams.get('engine') === 'ssc_web_mt' ? 'ssc_web_mt' : 'ssc_web';
 let loadMs = 0;
-let initialBytes = 0;  // the engine's memory when it started: only growth beyond it counts as a big engine
+let initialBytes = 0;  // the engine's memory when it started (where its heap's size cannot be read)
 
 async function compile() {
   const response = await fetch(new URL(`./engine/${variant}.wasm?v=dev`, import.meta.url));
@@ -100,8 +100,10 @@ const ops = {
           result.rows = result.rows.slice(0, maxRows);
           if (result.dropout?.rows) result.dropout.rows = result.dropout.rows.filter((r) => r._row < maxRows);
         }
-        // the engine's memory never shrinks: the page replaces an engine that a large answer left big
-        return { result, engineMs, memoryBytes: M.HEAP8.buffer.byteLength, initialBytes };
+        // the engine's memory never shrinks: the page replaces an engine that a large answer left big.  The heap it
+        // has used tells, where its memory alone does not: the multi-core engine has 128 MB from the start
+        return { result, engineMs, memoryBytes: M.HEAP8.buffer.byteLength, initialBytes,
+          heapBytes: M._sbrk ? M._sbrk(0) >>> 0 : undefined };
       });
     } finally {
       M._ssc_token_free(token);
