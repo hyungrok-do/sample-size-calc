@@ -167,6 +167,11 @@ try {
   await ready(page);
 
   keptOnline = await stored(page);
+  // WebKit can lose every copy it keeps when the network goes down while the visit's own work is still under way:
+  // about one offline reload in four lost them in CI when the network went down the moment the page was ready,
+  // and none of 16 after a second's wait (an awaited update check of the service worker did not help).  The
+  // network goes down a second after the page is ready, as for someone who goes offline after using it.
+  await page.waitForTimeout(1000);
   down = true;
   await page.reload();
   await ready(page);
