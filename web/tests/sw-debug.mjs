@@ -48,7 +48,7 @@ swap("event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(fresh)).ca
   ".then(() => report('install addAll ok'), (e) => report('install addAll FAILED ' + e)));");
 swap("await self.clients.claim();", "await self.clients.claim(); report('activated, caches ' + JSON.stringify(await caches.keys()));");
 swap("event.waitUntil(caches.open(CACHE).then((cache) => cache.put(key, copy)));",
-  "const put = caches.open(CACHE).then((cache) => cache.put(key, copy)).then(() => report('put ok ' + key.split('/').pop())," +
+  "const put = caches.open(CACHE).then((cache) => cache.put(key, copy)).then(async () => report('put ok ' + key.split('/').pop() + ' caches=' + (await caches.keys()).length)," +
   " (e) => report('put FAILED ' + key.split('/').pop() + ' ' + e));\n" +
   "        try { event.waitUntil(put); } catch (e) { report('waitUntil threw ' + e); }");
 swap("event.respondWith((async () => {", "const short = request.url.split('/').pop(); report('fetch ' + request.mode + ' ' + request.destination + ' ' + short);\n  event.respondWith((async () => {");
@@ -137,6 +137,7 @@ try {
   const browser = await type.launch(launch);
   await session('new context (memory)', await browser.newContext({ serviceWorkers: 'allow' }));
   await browser.close();
+  if (process.env.ONLY_MEMORY) process.exit(0);
   const profile = await mkdtemp(join(tmpdir(), 'ssc-swdebug-'));
   const persistent = await type.launchPersistentContext(profile, { ...launch, serviceWorkers: 'allow' });
   await session('persistent context (disk)', persistent);

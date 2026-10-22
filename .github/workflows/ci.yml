@@ -27,20 +27,18 @@ jobs:
             timeout 300 npx playwright install webkit && break
             if [ "$attempt" = 3 ]; then exit 1; fi
           done
-      - name: Which part of the site test loses the copies
+      - name: A failing offline reload, with the service worker's log
         timeout-minutes: 40
         run: |
           web/assemble.sh "$RUNNER_TEMP/site" "dbg-${GITHUB_SHA::7}"
           cd web
-          for variant in "" nostored nolink noetag nolink,noetag,nostored; do
-            pass=0; fail=0; first=""
-            for run in 1 2 3 4 5; do
-              if out=$(SSC_BROWSER=webkit VARIANT=$variant timeout 240 node tests/site-variant.mjs "$RUNNER_TEMP/site" 2>&1); then
-                pass=$((pass + 1))
-              else
-                fail=$((fail + 1)); [ -z "$first" ] && first=$(echo "$out" | grep -v '^Site:' | head -c 1500)
-              fi
-            done
-            echo "=== variant '${variant:-as is}': $pass passed, $fail failed"
-            [ -n "$first" ] && echo "$first"
+          bad=0
+          for run in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            out=$(SSC_BROWSER=webkit ONLY_MEMORY=1 timeout 240 node tests/sw-debug.mjs "$RUNNER_TEMP/site" 2>&1 | grep -v console.debug)
+            if echo "$out" | grep -q "offline not ready\|did not load\|cache MISS\|put FAILED\|unhandledrejection"; then
+              bad=$((bad + 1)); echo "=== run $run FAILED"; echo "$out" | sed -n '/the third visit/,$p' | cut -c1-400
+            else
+              echo "=== run $run passed"
+            fi
           done
+          echo "=== $bad of 12 failed"
