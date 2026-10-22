@@ -1,9 +1,10 @@
 // What a user can type at the extremes (a ratio of 1e-300, a noncentrality of 1e300, a count beyond a
-// billion) ends at once with an answer or a message, and a long simulation keeps only a block of studies in
-// memory with the same result as keeping them all.
+// billion) ends at once with an answer or a message, Stop ends what takes long, and a long simulation keeps only
+// a block of studies in memory with the same result as keeping them all.
 #include <chrono>
 #include <cmath>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "engine/runner.hpp"
@@ -155,4 +156,93 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
       ::ssc::test::report_failure(std::string(c.procedure) + " " + c.inputs + ": '" + m + "'", __FILE__, __LINE__);
     ::ssc::test::count_check();
   }
+}
+
+TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an answer or a message") {
+  struct Case {
+    const char* request;
+    const char* says;  // part of the message, or "" for an answer
+  };
+  const std::string lists = [] {
+    std::string t;
+    for (int i = 0; i < 50; ++i) t += (i ? ";" : "") + std::string("1 to 10000");
+    return t;
+  }();
+  const std::string shorter = [] {
+    std::string t;
+    for (int i = 0; i < 10; ++i) t += (i ? ";" : "") + std::string("1 to 1000");
+    return t;
+  }();
+  const std::string many = R"({"procedure":"means.two.t","solve_for":"power","inputs":{"mu1":"0.1 to 2.1 by 0.01",)"
+                           R"("mu2":"0 to 1.4 by 0.01"},"options":{"power_curve":false,"max_scenarios":)";
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      // Fisher's test with one proportion near 0: few table totals, each with a wide null distribution (without
+      // the power curve, whose smaller designs are enumerated: each is bounded, and Stop ends them)
+      {R"({"procedure":"prop.two","solve_for":"power","options":{"power_curve":false},)"
+       R"("inputs":{"test":"fisher","es":"or","or1":"1e-9","n1":"10000000"}})", ""},
+      {R"({"procedure":"prop.cc","solve_for":"or","options":{"power_curve":false},)"
+       R"("inputs":{"test":"fisher","ncase":"1000000","m":"100"}})", ""},
+      // a group above 2^31 − 1 is not enumerated (its count is an int)
+      {R"({"procedure":"prop.two","solve_for":"power","inputs":{"alloc":"ratio","n1":"1000000000","r":"3"}})", ""},
+      {R"({"procedure":"prop.two.equiv","solve_for":"power","inputs":{"alloc":"ratio","n1":"1000000000","r":"3"}})", ""},
+      {R"({"procedure":"means.two.repeated","solve_for":"power","inputs":{"struct":"ar1","m":"1000000000"}})", ""},
+      // lists: 10,000 values in all the alternatives, and 1,000,000 over all the scenarios
+      {R"({"procedure":"means.anova","solve_for":"n","inputs":{"means":")" + lists + R"("}})",
+       "too many values in all the lists together"},
+      {R"({"procedure":"means.anova","solve_for":"n","inputs":{"means":")" + shorter +
+           R"(","alpha":"0.01 to 0.2 by 0.001"}})",
+       "Too many values in the lists over all the combinations"},
+      // the option lowers the limit of scenarios and never raises it
+      {many + "1e12}}", "limit 20000"},
+      {many + "-1}}", "limit 1)"},
+      // 20,000 group-sequential designs with 20 analyses: about 25 minutes of work
+      {R"({"procedure":"gs.means","solve_for":"n","inputs":{"looks":"20","alpha":"0.0001 to 0.05 by 0.0000049995",)"
+       R"("power":"0.8 0.9"}})",
+       "designs this long to compute"},
+  };
+  for (const auto& c : cases) {
+    Token token;
+    const auto t0 = std::chrono::steady_clock::now();
+    const json::Value res = run_request(json::parse(c.first), &token);
+    const std::string m = message(res);
+    if (seconds_since(t0) > 5 || (c.second.empty() ? !m.empty() : m.find(c.second) == std::string::npos))
+      ::ssc::test::report_failure(c.first.substr(0, 160) + ": '" + m + "'", __FILE__, __LINE__);
+    ::ssc::test::count_check();
+  }
+  {  // too large to enumerate: the normal approximation, and a note that says so (it used to be a power of 0)
+    Token token;
+    const json::Value res = run_request(json::parse(cases[2].first), &token);
+    const json::Value& row = res.get("rows").elements().at(0);
+    CHECK(row.get("power").as_number(0) > 0.99);
+    CHECK(row.get("_notes").size() == 1);
+  }
+}
+
+TEST_CASE("extremes: Stop ends an exact enumeration on one thread at once") {
+  Token token;
+  std::thread stop([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    token.cancel();
+  });
+  const auto t0 = std::chrono::steady_clock::now();
+  const json::Value res = run_request(
+      json::parse(R"({"procedure":"prop.two","solve_for":"power","options":{"threads":1,"power_curve":false},)"
+                  R"("inputs":{"alternative":"upper","test":"fisher","es":"or","or1":"1e-9","n1":"2000000"}})"),
+      &token);
+  const double took = seconds_since(t0);
+  stop.join();
+  CHECK(res.get("cancelled").as_bool(false));
+  CHECK(took < 1.5);
+}
+
+TEST_CASE("extremes: a request object with many keys is read in linear time") {
+  std::string text = "{";
+  for (int i = 0; i < 200000; ++i) text += "\"k" + std::to_string(i) + "\":1,";
+  text += R"("a":1,"b":2,"a":3})";
+  const auto t0 = std::chrono::steady_clock::now();
+  const json::Value v = json::parse(text);
+  CHECK(seconds_since(t0) < 2);  // about 0.1 s; it was minutes
+  CHECK_EQ(v.size(), static_cast<std::size_t>(200002));
+  CHECK_EQ(v.get("a").as_number(0), 3.0);  // a repeated key keeps its place and takes the last value
+  CHECK_EQ(v.items()[200000].first, std::string("a"));
 }

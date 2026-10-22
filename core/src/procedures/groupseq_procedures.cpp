@@ -455,6 +455,10 @@ const std::vector<std::pair<std::string, std::string>> GS_DEFS = {
     {"E(N|H1), E(N|H0)", "Expected sample size (or events) when H1 / H0 is true, with all stopping rules followed."},
     {"Inflation", "Maximum information relative to the fixed-sample design with the same α and power."}};
 
+// Searching for the size or effect of a design takes about 3.5 ms per analysis (80 ms with 20), against well
+// under 10 ms for most methods: the limit of scenarios counts it so.
+double gs_cost(const Scenario& s) { return s.solve == "power" ? 1 : 1 + s("looks") / 2; }
+
 // ======================================================================= two means
 Procedure gs_means() {
   Procedure p;
@@ -530,6 +534,7 @@ Procedure gs_means() {
   p.curve_param = "n1";
   p.curve_label = "N1 (Maximum, Group 1)";
   p.example_solve = "n";
+  p.cost = gs_cost;
   p.example = {{"looks", "3"}, {"power", "0.9"}, {"mu1", "1"}, {"mu2", "0"}, {"sigma", "2"}};
   return p;
 }
@@ -634,6 +639,7 @@ Procedure gs_props() {
   p.curve_param = "n1";
   p.curve_label = "N1 (Maximum, Group 1)";
   p.example_solve = "n";
+  p.cost = gs_cost;
   p.example = {{"looks", "3"}, {"power", "0.8"}, {"p1", "0.5"}, {"p2", "0.35"}};
   return p;
 }
@@ -751,6 +757,7 @@ Procedure gs_logrank() {
   p.curve_label = "N1 (Maximum, Group 1)";
   p.curve_min = 1;
   p.example_solve = "n";
+  p.cost = gs_cost;
   p.example = {{"looks", "3"}, {"power", "0.8 0.9"}, {"hr", "0.7"}, {"med2", "12"}};
   return p;
 }

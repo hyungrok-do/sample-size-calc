@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
 
 #include "numtext.hpp"
 
@@ -49,6 +50,15 @@ Value& Value::set(const std::string& key, Value v) {
       return kv.second;
     }
   o_.emplace_back(key, std::move(v));
+  return o_.back().second;
+}
+
+Value& Value::append(std::string key, Value v) {
+  if (t_ != Type::Object) {
+    t_ = Type::Object;
+    o_.clear();
+  }
+  o_.emplace_back(std::move(key), std::move(v));
   return o_.back().second;
 }
 
@@ -300,13 +310,23 @@ struct Parser {
         ++i;
         return o;
       }
+      // the keys seen, so that a long object is read in linear time (a repeated key keeps its first place and
+      // takes the last value, as set() does)
+      std::unordered_map<std::string, std::size_t> seen;
       while (true) {
         ws();
         std::string k = str();
         ws();
         if (i >= s.size() || s[i] != ':') fail("expected ':'");
         ++i;
-        o.set(k, value());
+        Value v = value();
+        const auto at = seen.find(k);
+        if (at != seen.end()) {
+          o.member(at->second) = std::move(v);
+        } else {
+          seen.emplace(k, o.size());
+          o.append(std::move(k), std::move(v));
+        }
         ws();
         if (i < s.size() && s[i] == ',') { ++i; continue; }
         if (i < s.size() && s[i] == '}') { ++i; break; }

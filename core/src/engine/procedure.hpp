@@ -269,6 +269,10 @@ struct Procedure {
   // simulation procedures estimate power from simulated studies; with
   // RunContext::approximate they return an analytic approximation instead
   bool simulation = false;
+
+  // the time of one scenario relative to a typical one (unset: 1), when it can be much longer: the scenario
+  // limit then applies to the sum, so that a request accepted is one that ends in reasonable time
+  std::function<double(const Scenario&)> cost;
 };
 
 // ------------------------------------------------------------------ registry

@@ -254,6 +254,7 @@ function setMode(next) {
   $('mode-guide').setAttribute('aria-pressed', String(mode === 'guide'));
   $('mode-browse').setAttribute('aria-pressed', String(mode === 'browse'));
   $('method').hidden = !state.proc || (mode === 'guide' && !guidedForm);
+  if (mode === 'guide') $('navigation-error').hidden = true;  // it was about a method, not the guide
 }
 
 async function navigate(selection, fromGuide = false, push = true) {

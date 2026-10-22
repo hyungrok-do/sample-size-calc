@@ -1,6 +1,7 @@
 // More proportion designs: non-inferiority / superiority / equivalence for two
 // proportions (Farrington–Manning and Miettinen–Nurminen score tests), paired proportions (McNemar),
 // chi-square tests (effect size w) and cluster-randomized proportions.
+#include <limits>
 #include <unordered_map>
 
 #include "procedures/binomial_tools.hpp"
@@ -157,8 +158,12 @@ double tost_power_normal(const NiSpec& L, const NiSpec& U, double n1, double n2,
 
 constexpr double MAX_CELLS = 4e7;
 
-// Exact power of a set of score tests that must all reject (one for NI, two for TOST).
-double fm_power_exact(const std::vector<NiSpec>& tests, int n1, int n2, double p1, double p2, const RunContext& ctx) {
+// Exact power of a set of score tests that must all reject (one for NI, two for TOST); NaN when the
+// enumeration is too large (the callers then use the normal approximation).
+double fm_power_exact(const std::vector<NiSpec>& tests, double n1d, double n2d, double p1, double p2,
+                      const RunContext& ctx) {
+  if (!(n1d >= 0 && n2d >= 0 && n1d + n2d <= std::numeric_limits<int>::max())) return NAN;  // the counts are ints
+  const int n1 = static_cast<int>(n1d), n2 = static_cast<int>(n2d);
   const BinomWindow w1 = binom_window(n1, p1), w2 = binom_window(n2, p2);
   const double cells = static_cast<double>(w1.hi - w1.lo + 1) * (w2.hi - w2.lo + 1);
   if (cells > MAX_CELLS) return NAN;
@@ -179,10 +184,14 @@ double fm_power_exact(const std::vector<NiSpec>& tests, int n1, int n2, double p
     }
     part[k] = w1.pmf[k] * s;
   };
-  if (cells > 1e5 && ctx.threads > 1)
+  if (cells > 1e5 && ctx.threads > 1) {
     parallel_for(nr, ctx.threads, body, ctx.token);
-  else
-    for (std::size_t k = 0; k < nr; ++k) body(k);
+  } else {
+    for (std::size_t k = 0; k < nr; ++k) {
+      if (k % 64 == 0) ctx.check();  // so that Stop ends it
+      body(k);
+    }
+  }
   double s = 0;
   for (double v : part) s += v;
   return stats::clamp01(s);
@@ -374,7 +383,7 @@ Procedure two_prop_ni() {
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
       if (exact) {
-        const double v = fm_power_exact({S}, static_cast<int>(n1), static_cast<int>(n2), p1, p2, ctx);
+        const double v = fm_power_exact({S}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;
       }
@@ -406,9 +415,10 @@ Procedure two_prop_ni() {
     r.set(bkey, S.bound);
     r.set(actual_key(sc), measure(sc, p1, p2));
     r.set("alpha", S.alpha);
-    if (exact && !fell_back)
-      r.set("actual_alpha", fm_power_exact({S}, static_cast<int>(n.n1), static_cast<int>(n.n2),
-                                           std::min(std::max(p10, 1e-9), 1 - 1e-9), p2, ctx));
+    if (exact && !fell_back) {
+      const double size = fm_power_exact({S}, n.n1, n.n2, std::min(std::max(p10, 1e-9), 1 - 1e-9), p2, ctx);
+      if (!std::isnan(size)) r.set("actual_alpha", size);
+    }
     if (fell_back) r.notes.push_back("Samples too large for exact enumeration; the normal approximation was used.");
   };
   p.columns = [](const Scenario& s) {
@@ -549,7 +559,7 @@ Procedure two_prop_equiv() {
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
       if (exact) {
-        const double v = fm_power_exact({L, U}, static_cast<int>(n1), static_cast<int>(n2), p1, p2, ctx);
+        const double v = fm_power_exact({L, U}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;
       }

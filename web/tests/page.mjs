@@ -202,6 +202,15 @@ try {
     assert.equal(await q.isVisible('#method'), true);
     await q.context().close();
   });
+  await check('an address never puts its own words in the error, and the error goes with the guide', async () => {
+    const q = await open(`${base}#prop.two?${encodeURIComponent('Call 555 \u202e now')}=1`);
+    await q.waitForSelector('#navigation-error:not([hidden])', { timeout: 60000 });  // no method opens
+    const text = await q.textContent('#navigation-error');
+    assert.ok(!/Call|555|\u202e/.test(text), text);
+    await q.click('#mode-guide');
+    assert.equal(await q.isVisible('#navigation-error'), false);
+    await q.context().close();
+  });
   await check('a method opens, from the list and the guide, when the browser refuses to change the address', async () => {
     // as Safari does past 100 changes in 10 seconds
     const q = await open(`${base}#prop.two`); await ready(q);

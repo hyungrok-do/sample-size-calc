@@ -147,6 +147,18 @@ try {
   await calculates(page);
   console.log(`Site: second visit — ${isolated ? 'cross-origin isolated' : 'not isolated'}; ${status}`);
 
+  // any other address is answered but not kept, so links cannot fill the site's storage with copies
+  await page.goto(`${url}?utm_source=link#prop.two`);
+  await ready(page);
+  await page.evaluate(() => Promise.all(['engine/ssc_web.wasm?x=1', '?junk=1'].map((a) => fetch(a).then((r) => r.arrayBuffer()))));
+  await page.waitForTimeout(500);
+  const kept = await page.evaluate(async () => {
+    const all = [];
+    for (const name of await caches.keys()) all.push(...(await (await caches.open(name)).keys()).map((r) => new URL(r.url).search));
+    return all;
+  });
+  assert.ok(kept.length && kept.every((q) => q === '' || /^\?(engine=ssc_web(_mt)?&)?v=[^&]+$/.test(q)), `kept: ${kept.join(' ')}`);
+
   down = true;
   await page.reload();
   await ready(page);

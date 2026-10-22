@@ -13,7 +13,10 @@ export function prepareSelection(proc, selection) {
   for (const [key, value] of Object.entries(selection.inputs ?? {})) {
     const p = proc.params.find((p) => p.id === key);
     if (p?.type !== 'select' || !p.options.some((o) => o.value === value)) {
-      throw new Error(`The recommended setting “${key}” is unavailable. Please review the study choices.`);
+      // the name shown comes from the calculator, never from the address, which anyone can write
+      throw new Error(p?.type === 'select'
+        ? `The recommended setting “${p.label}” is unavailable. Please review the study choices.`
+        : 'The address names a setting this calculator does not have. Please review the study choices.');
     }
     values[key] = value;
   }

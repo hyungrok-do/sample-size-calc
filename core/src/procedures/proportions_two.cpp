@@ -5,6 +5,7 @@
 // confidence interval for their difference, and case-control studies:
 // unmatched (the exposure of cases against controls) and matched (Dupont).
 #include <atomic>
+#include <limits>
 #include <mutex>
 
 #include "procedures/binomial_tools.hpp"
@@ -123,16 +124,42 @@ double two_prop_normal(const TwoPropTest& T, double n1, double n2, double p1, do
 }
 
 constexpr double MAX_CELLS = 6e7;
+const char* const FELL_BACK = "The samples are too large for exact enumeration; the normal approximation was used.";
+// Fisher's test also builds the null distribution of every table total: about 7 to 9 times the cells when
+// neither proportion is near 0 or 1, and far more when one is (few totals, each with a wide null distribution)
+constexpr double MAX_FISHER_WORK = 12 * MAX_CELLS;
 
-// Exact power by enumeration over the joint binomial window.
-double two_prop_exact(const TwoPropTest& T, int n1, int n2, double p1, double p2, const RunContext& ctx) {
+// A loop over k = 0..n-1, on the idle workers when it is large (it is nested in the loop over scenarios), and
+// one that Stop can end either way.
+template <class F>
+void enumerate(std::size_t n, double work, const RunContext& ctx, F&& body) {
+  if (work > 2e5 && ctx.threads > 1) {
+    parallel_for(n, ctx.threads, body, ctx.token);
+    return;
+  }
+  for (std::size_t k = 0; k < n; ++k) {
+    if (k % 64 == 0) ctx.check();
+    body(k);
+  }
+}
+
+// Exact power by enumeration over the joint binomial window; NaN when that is too large (the callers then use
+// the normal approximation and say so).
+double two_prop_exact(const TwoPropTest& T, double n1d, double n2d, double p1, double p2, const RunContext& ctx) {
+  // the counts, their totals and the sizes' sum are ints
+  if (!(n1d >= 0 && n2d >= 0 && n1d + n2d <= std::numeric_limits<int>::max())) return NAN;
+  const int n1 = static_cast<int>(n1d), n2 = static_cast<int>(n2d);
   const BinomWindow w1 = binom_window(n1, p1), w2 = binom_window(n2, p2);
   const double cells = static_cast<double>(w1.hi - w1.lo + 1) * (w2.hi - w2.lo + 1);
   if (cells > MAX_CELLS) return NAN;
-  const bool par = cells > 2e5 && ctx.threads > 1;  // nested in the loop over scenarios: the idle workers help
   if (T.test == "fisher") {
     const int tlo = w1.lo + w2.lo, thi = w1.hi + w2.hi;
     const std::size_t nt = static_cast<std::size_t>(thi - tlo + 1);
+    // fisher_region's window is 80 null SDs wide, the widest at the total nearest N/2
+    const double N = n1d + n2d, tm = std::clamp(N / 2, static_cast<double>(tlo), static_cast<double>(thi));
+    const double var = N > 1 ? tm * n1d / N * (N - tm) / N * (N - n1d) / (N - 1) : 0;
+    const double work = static_cast<double>(nt) * (80 * std::sqrt(var) + 41);
+    if (work > MAX_FISHER_WORK) return NAN;
     std::vector<double> part(nt, 0.0);
     auto body = [&](std::size_t k) {
       const int t = tlo + static_cast<int>(k);
@@ -153,10 +180,7 @@ double two_prop_exact(const TwoPropTest& T, int n1, int n2, double p1, double p2
         for (int x1 = A; x1 <= std::min(B, lo - 1); ++x1) s += w1.at(x1) * w2.at(t - x1);
       part[k] = s;
     };
-    if (par)
-      parallel_for(nt, ctx.threads, body, ctx.token);
-    else
-      for (std::size_t k = 0; k < nt; ++k) body(k);
+    enumerate(nt, work, ctx, body);
     double s = 0;
     for (double v : part) s += v;
     return stats::clamp01(s);
@@ -175,10 +199,7 @@ double two_prop_exact(const TwoPropTest& T, int n1, int n2, double p1, double p2
     }
     part[k] = b1 * s;
   };
-  if (par)
-    parallel_for(nr, ctx.threads, body, ctx.token);
-  else
-    for (std::size_t k = 0; k < nr; ++k) body(k);
+  enumerate(nr, cells, ctx, body);
   double s = 0;
   for (double v : part) s += v;
   return stats::clamp01(s);
@@ -297,7 +318,7 @@ Procedure two_props() {
     bool fell_back = false;
     auto power = [&](double n1, double n2, double x) {
       if (exact) {
-        const double pw = two_prop_exact(T, static_cast<int>(n1), static_cast<int>(n2), x, p2, ctx);
+        const double pw = two_prop_exact(T, n1, n2, x, p2, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
       }
@@ -338,9 +359,12 @@ Procedure two_props() {
     r.set("ratio", p1 / p2);
     r.set("or", p1 / (1 - p1) / (p2 / (1 - p2)));
     r.set("alpha", s("alpha"));
-    if (exact && !fell_back)
-      r.set("actual_alpha", two_prop_exact(T, static_cast<int>(n.n1), static_cast<int>(n.n2), p2, p2, ctx));
-    if (fell_back) r.notes.push_back("The samples are too large for exact enumeration; the normal approximation was used.");
+    if (exact && !fell_back) {
+      // the size can need a larger enumeration than the power (when P1 is the more extreme proportion)
+      const double size = two_prop_exact(T, n.n1, n.n2, p2, p2, ctx);
+      if (!std::isnan(size)) r.set("actual_alpha", size);
+    }
+    if (fell_back) r.notes.push_back(FELL_BACK);
   };
   p.columns = [](const Scenario& s) {
     auto c = power_columns(s);
@@ -362,8 +386,8 @@ Procedure two_props() {
                     ", odds ratio " + fnum(r.num("or"), 3) + ") using a " + alt_words(alt(s)) + " " +
                     names.at(s.s("test")) + " at a target significance level of " + fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
-    // the exact size is reported only when power was enumerated (large samples use the normal approximation)
-    const bool enumerated = s.is("method", "exact") && r.has("actual_alpha");
+    // large samples use the normal approximation, and say so in a note
+    const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
     return t + (enumerated ? "; power was computed by exact enumeration." : "; power uses the normal approximation.");
   };
   p.definitions = {{"N1, N2", "Sample sizes of groups 1 and 2."},
@@ -672,7 +696,7 @@ Procedure case_control() {
     bool fell_back = false;
     auto power = [&](double n1, double n2, double x) {
       if (exact) {
-        const double pw = two_prop_exact(T, static_cast<int>(n1), static_cast<int>(n2), x, p0, ctx);
+        const double pw = two_prop_exact(T, n1, n2, x, p0, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
       }
@@ -719,9 +743,12 @@ Procedure case_control() {
     r.set("p0", p0);
     r.set("or", odds_ratio_of(p1, p0));
     r.set("alpha", s("alpha"));
-    if (exact && !fell_back)
-      r.set("actual_alpha", two_prop_exact(T, static_cast<int>(n.n1), static_cast<int>(n.n2), p0, p0, ctx));
-    if (fell_back) r.notes.push_back("The samples are too large for exact enumeration; the normal approximation was used.");
+    if (exact && !fell_back) {
+      // the size can need a larger enumeration than the power (when P1 is the more extreme proportion)
+      const double size = two_prop_exact(T, n.n1, n.n2, p0, p0, ctx);
+      if (!std::isnan(size)) r.set("actual_alpha", size);
+    }
+    if (fell_back) r.notes.push_back(FELL_BACK);
   };
   p.columns = [](const Scenario& s) {
     auto c = power_columns(s);
@@ -744,7 +771,7 @@ Procedure case_control() {
                     alt_words(alt(s)) + " " + names.at(s.s("test")) + " at a target significance level of " +
                     fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
-    const bool enumerated = s.is("method", "exact") && r.has("actual_alpha");
+    const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
     return t + (enumerated ? "; power was computed by exact enumeration." : "; power uses the normal approximation.");
   };
   p.definitions = {{"Cases, Controls", "People with and without the disease; controls = M × cases, rounded up."},

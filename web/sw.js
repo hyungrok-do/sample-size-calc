@@ -12,6 +12,21 @@ const CACHE = 'ssc-dev';
 const FILES = ['./', 'app.js?v=dev', 'engine.js?v=dev', 'worker.js?engine=ssc_web&v=dev', 'engine/ssc_web.mjs?v=dev',
   'engine/ssc_web.wasm?v=dev', 'guide.js?v=dev', 'guide-data.js?v=dev', 'guide-state.js?v=dev', 'selection.js?v=dev',
   'format.js?v=dev'];
+// The only copies kept, each under the one address the page asks for it by: any other address (another query
+// string on a visit, a link to a file with ?x= added) is answered from the network and not stored, so links
+// cannot fill the site's storage with copies.
+const PAGE = new URL('./', self.location).href;
+const KEPT = new Set([...FILES, 'worker.js?engine=ssc_web_mt&v=dev', 'engine/ssc_web_mt.mjs?v=dev',
+  'engine/ssc_web_mt.wasm?v=dev'].map((file) => new URL(file, self.location).href));
+
+function keptAs(request) {
+  const url = new URL(request.url);
+  url.hash = '';
+  if (request.mode !== 'navigate') return KEPT.has(url.href) ? url.href : null;
+  // a visit to the page, whatever its query, is kept as the page; a visit to any other file is not
+  const path = url.origin + url.pathname;
+  return path === PAGE || path === `${PAGE}index.html` ? PAGE : null;
+}
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -42,13 +57,14 @@ self.addEventListener('fetch', (event) => {
     try {
       // the page itself is checked with the server every time: it names the version of every other file
       const response = await (request.mode === 'navigate' ? fetch(request.url, { cache: 'no-cache' }) : fetch(request));
-      if (response.ok) {
+      const key = keptAs(request);
+      if (response.ok && key) {
         const copy = response.clone();
-        event.waitUntil(caches.open(CACHE).then((cache) => cache.put(request, copy)));
+        event.waitUntil(caches.open(CACHE).then((cache) => cache.put(key, copy)));
       }
       return isolated(response);
     } catch (error) {
-      const cached = await caches.match(request, { ignoreSearch: true });
+      const cached = await caches.match(keptAs(request) ?? request, { ignoreSearch: true });
       if (!cached) throw error;
       return isolated(cached);
     }

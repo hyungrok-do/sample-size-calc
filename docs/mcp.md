@@ -107,7 +107,7 @@ sent and stores nothing.
 | `PORT` | 8000 | the port |
 | `SSC_MCP_ALLOWED_HOSTS` | — | the public host name(s), comma-separated: requests for other `Host` headers are refused (DNS-rebinding protection) |
 | `SSC_MCP_TIME_LIMIT` | 60 | seconds per calculation before it is stopped |
-| `SSC_MCP_MAX_SCENARIOS` | 200 | input combinations per request |
+| `SSC_MCP_MAX_SCENARIOS` | 200 | input combinations per request (at most the engine's 20,000) |
 | `SSC_MCP_MAX_REPS` | 5000 | Monte Carlo replicates per scenario |
 | `SSC_MCP_THREADS` | 2 | cores per calculation |
 | `SSC_OPENAI_APPS_CHALLENGE` | — | the token ChatGPT asks to find at `/.well-known/openai-apps-challenge` |

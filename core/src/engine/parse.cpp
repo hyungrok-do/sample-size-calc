@@ -197,7 +197,7 @@ Vectors vectors(const std::string& text, std::size_t max_vectors) {
     res.error = "the text is too long (limit 1,000,000 characters)";
     return res;
   }
-  std::size_t start = 0;
+  std::size_t start = 0, total = 0;
   while (start <= text.size()) {
     std::size_t end = text.find_first_of(";|", start);
     if (end == std::string::npos) end = text.size();
@@ -209,6 +209,12 @@ Vectors vectors(const std::string& text, std::size_t max_vectors) {
       Numbers n = numbers(part);
       if (!n.error.empty()) {
         res.error = n.error;
+        return res;
+      }
+      // the limit of a list of numbers holds for all the alternatives together: each becomes scenarios of its own
+      total += n.values.size();
+      if (total > 10000) {
+        res.error = "too many values in all the lists together (limit 10000)";
         return res;
       }
       res.vectors.push_back(std::move(n.values));

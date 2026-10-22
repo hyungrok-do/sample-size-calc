@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <new>
 #include <string>
 
 #include "engine/procedure.hpp"
@@ -77,6 +78,10 @@ SSC_API char* ssc_run_json(const char* request_json, ssc_token* token) {
     const bool simulated = proc && proc->simulation && !req.get("options").get("approximate").as_bool(false);
     if (simulated || out.size() > (256u << 10)) ssc::memory::release_free_memory();
     return result;
+  } catch (const std::bad_alloc&) {
+    ssc::memory::release_free_memory();
+    return dup_string(error_json("There is not enough memory for this calculation: use fewer combinations of input "
+                                 "values or shorter lists."));
   } catch (const std::exception& e) {
     return dup_string(error_json(e.what()));
   } catch (...) {

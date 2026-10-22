@@ -58,6 +58,8 @@ class Value {
 
   // objects (insertion ordered; set() replaces an existing key)
   Value& set(const std::string& key, Value v);
+  Value& append(std::string key, Value v);  // a key known to be new, without set()'s search
+  Value& member(std::size_t i) { return o_.at(i).second; }  // the value of the i-th key
   const Value* find(const std::string& key) const;
   const Value& get(const std::string& key) const;  // null value if absent
   const std::vector<std::pair<std::string, Value>>& items() const { return o_; }

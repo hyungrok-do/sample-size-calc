@@ -649,7 +649,13 @@ double avg_var_factor(const Scenario& s) {
   const double m = s("m"), rho = s("rho");
   if (s.is("struct", "ar1")) {
     double sum = m;
-    for (int k = 1; k < static_cast<int>(m); ++k) sum += 2 * (m - k) * std::pow(rho, k);
+    if (m <= 1000) {
+      for (int k = 1; k < static_cast<int>(m); ++k) sum += 2 * (m - k) * std::pow(rho, k);
+    } else {
+      // the sum of (m − k)·rho^k in closed form, so that its cost does not grow with m (up to 1e9);
+      // rho ≤ 0.999 keeps 1 − rho away from 0
+      sum += 2 * rho * (m - 1 - m * rho + std::pow(rho, m)) / ((1 - rho) * (1 - rho));
+    }
     return sum / (m * m);
   }
   return (1 + (m - 1) * rho) / m;

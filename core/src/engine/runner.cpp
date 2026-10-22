@@ -16,6 +16,8 @@ namespace ssc {
 
 namespace {
 
+constexpr double MAX_SCENARIOS = 20000;  // combinations of input values in one request
+
 const char* type_name(PType t) {
   switch (t) {
     case PType::Number: return "number";
@@ -259,10 +261,17 @@ json::Value run_request(const json::Value& req, Token* token) {
 
   const json::Value& inputs = req.get("inputs");
   const json::Value& options = req.get("options");
-  const int threads = resolve_threads(static_cast<int>(options.get("threads").as_number(0)));
+  // numbers from the request are clamped as numbers before they become integers (a cast of an out-of-range or
+  // NaN double is undefined)
+  auto option = [&](const char* key, double fallback, double lo, double hi) {
+    const double v = options.get(key).as_number(fallback);
+    return std::isfinite(v) ? std::clamp(std::floor(v), lo, hi) : fallback;
+  };
+  const int threads = resolve_threads(static_cast<int>(option("threads", 0, 0, 4096)));
   const bool want_curve = options.get("power_curve").as_bool(true);
-  const int curve_points = std::max(5, std::min(400, static_cast<int>(options.get("curve_points").as_number(41))));
-  const std::size_t max_scen = static_cast<std::size_t>(options.get("max_scenarios").as_number(20000));
+  const int curve_points = static_cast<int>(option("curve_points", 41, 5, 400));
+  // a caller can lower the limit of scenarios (the MCP server does), never raise it
+  const std::size_t max_scen = static_cast<std::size_t>(option("max_scenarios", MAX_SCENARIOS, 1, MAX_SCENARIOS));
   const bool approximate = proc->simulation && options.get("approximate").as_bool(false);
 
   auto raw = [&](const ParamDef& p) -> std::string {
@@ -435,6 +444,20 @@ json::Value run_request(const json::Value& req, Token* token) {
       return out;
     }
   }
+  // each scenario holds its own copy of the lists, and a row shows them: bound their values over all scenarios
+  std::size_t listed = 0;
+  for (const auto& kv : base.vec) listed += kv.second.size();
+  for (const auto& a : axes) {
+    std::size_t longest = 0;
+    for (const auto& v : a.vecs) longest = std::max(longest, v.size());
+    listed += longest;
+  }
+  if (count > 1 && listed * count > 1000000) {
+    out.set("ok", false);
+    out.set("error", "Too many values in the lists over all the combinations of input values (limit 1,000,000): use "
+                     "fewer combinations or shorter lists.");
+    return out;
+  }
   std::vector<Scenario> scen(count, base);
   std::vector<std::vector<std::size_t>> index(count, std::vector<std::size_t>(axes.size()));
   for (std::size_t i = 0; i < count; ++i) {
@@ -448,6 +471,17 @@ json::Value run_request(const json::Value& req, Token* token) {
         scen[i].vec[axes[k].p->id] = axes[k].vecs[j];
       else
         scen[i].num[axes[k].p->id] = axes[k].nums[j];
+    }
+  }
+
+  if (proc->cost) {
+    double cost = 0;
+    for (const auto& sc : scen) cost += proc->cost(sc);
+    if (cost > static_cast<double>(max_scen)) {
+      out.set("ok", false);
+      out.set("error", "Too many combinations of input values for designs this long to compute (limit about " +
+                           std::to_string(static_cast<long>(static_cast<double>(max_scen) * count / cost)) + " here).");
+      return out;
     }
   }
 
@@ -512,6 +546,14 @@ json::Value run_request(const json::Value& req, Token* token) {
     return out;
   }
 
+  // building a large answer takes time too: Stop ends it
+  auto stopped = [&] {
+    out.set("ok", false);
+    out.set("cancelled", true);
+    out.set("error", "Calculation cancelled.");
+    return out;
+  };
+
   // --- columns ---------------------------------------------------------------
   std::vector<Column> columns = proc->columns ? proc->columns(scen[0]) : std::vector<Column>{};
   // columns without a value in any row (such as the Monte Carlo columns of an approximation) are left out
@@ -533,6 +575,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     columns.push_back({p.id, param_short(p), vec ? "text" : (p.id == "dropout" ? "pct" : (p.integer ? "int" : "num")),
                        p.label});
     for (std::size_t i = 0; i < count; ++i) {
+      if (i % 64 == 0 && token->cancelled()) return stopped();
       if (rows[i].has(p.id)) continue;
       if (vec)
         rows[i].set(p.id, vector_label(axes[k].vecs[index[i][k]]));
@@ -554,6 +597,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   // --- rows ------------------------------------------------------------------
   json::Value rowsj = json::Value::array();
   for (std::size_t i = 0; i < count; ++i) {
+    if (i % 64 == 0 && token->cancelled()) return stopped();
     const Row& r = rows[i];
     json::Value x = json::Value::object();
     for (const auto& kv : r.cells) x.set(kv.first, cell_json(kv.second));

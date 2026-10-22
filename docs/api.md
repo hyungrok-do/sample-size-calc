@@ -62,7 +62,10 @@ Another thread can watch progress and cancel it through the token.
   - `power_curve`: compute power as a function of the sample size for up to
     eight distinct designs.
   - `curve_points`: number of points per curve.
-  - `max_scenarios`: upper limit on the number of scenarios.
+  - `max_scenarios`: a lower limit on the number of scenarios than the engine's
+    own (20,000); it cannot raise it. Group-sequential designs solved for a
+    sample size or an effect count as more than one scenario each (1 + K/2 for
+    K analyses), since each takes longer.
   - `approximate`: for a simulation procedure, return its quick analytic
     approximation instead of simulating (live previews use it); other
     procedures ignore it.

@@ -114,7 +114,8 @@ def run(
     ``threads=0`` uses every hardware thread.  ``approximate=True`` asks a
     simulation procedure for its quick analytic approximation instead of
     running the simulation; other procedures ignore it.  ``max_scenarios``
-    lowers the limit on the number of input combinations (20,000).
+    lowers the limit on the number of input combinations (20,000); it cannot
+    raise it.
     """
     request = {
         "procedure": procedure_id,
