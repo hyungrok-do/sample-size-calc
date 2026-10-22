@@ -271,9 +271,9 @@ struct Procedure {
   // RunContext::approximate they return an analytic approximation instead
   bool simulation = false;
 
-  // the time of one scenario relative to a typical one (unset: 1), when it can be much longer: the scenario
-  // limit then applies to the sum, so that a request accepted is one that ends in reasonable time
-  std::function<double(const Scenario&)> cost;
+  // the time of all the scenarios of a request in units of a typical one (unset: one each), when it can be much
+  // longer: the scenario limit then applies to it, so that a request accepted is one that ends in reasonable time
+  std::function<double(const std::vector<Scenario>&)> cost;
 };
 
 // ------------------------------------------------------------------ registry

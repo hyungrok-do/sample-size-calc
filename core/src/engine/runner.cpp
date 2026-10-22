@@ -17,6 +17,7 @@ namespace ssc {
 namespace {
 
 constexpr double MAX_SCENARIOS = 20000;  // combinations of input values in one request
+constexpr std::size_t MAX_TABLE_ROWS = 1000;  // rows that keep their detail tables (the page draws 1,000 rows)
 
 const char* type_name(PType t) {
   switch (t) {
@@ -243,7 +244,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   const Procedure* proc = find_procedure(pid);
   if (!proc) {
     out.set("ok", false);
-    out.set("error", "unknown procedure: " + pid);
+    out.set("error", "unknown procedure: " + parse::quoted(pid));
     return out;
   }
   out.set("procedure", pid);
@@ -254,7 +255,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     if (so.value == solve) solve_opt = &so;
   if (!solve_opt) {
     out.set("ok", false);
-    out.set("error", "this procedure cannot solve for '" + solve + "'");
+    out.set("error", "this procedure cannot solve for '" + parse::quoted(solve) + "'");
     return out;
   }
   out.set("solve_for", solve);
@@ -334,7 +335,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     std::string list;
     for (const auto& op : u.first->options)
       if (op.visible.eval(lookup)) list += (list.empty() ? "" : ", ") + op.value;
-    errors.set(u.first->id, "unknown choice '" + u.second + "': use one of " + list);
+    errors.set(u.first->id, "unknown choice '" + parse::quoted(u.second) + "': use one of " + list);
     has_errors = true;
   }
   // What the request gives that this calculation does not use, said rather than dropped (a program or a language
@@ -475,8 +476,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   }
 
   if (proc->cost) {
-    double cost = 0;
-    for (const auto& sc : scen) cost += proc->cost(sc);
+    const double cost = proc->cost(scen);
     if (cost > static_cast<double>(max_scen)) {
       out.set("ok", false);
       out.set("error", "Too many combinations of input values for designs this long to compute (limit about " +
@@ -525,6 +525,8 @@ json::Value run_request(const json::Value& req, Token* token) {
               if (nan_cell(r, key))
                 throw CalcError("the answer cannot be computed for these inputs; check for an extreme value");
             if (proc->statement) r.statement = proc->statement(scen[i], r);
+            // 20,000 rows of group-sequential boundaries would take a gigabyte
+            if (i >= MAX_TABLE_ROWS) r.tables.clear();
           } catch (const CalcError& e) {
             r.error = e.what();
           } catch (const Cancelled&) {
@@ -607,7 +609,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     if (!r.notes.empty()) {
       json::Value nn = json::Value::array();
       for (const auto& n : r.notes) nn.push(n);
-      x.set("_notes", nn);
+      x.set("_notes", std::move(nn));
     }
     if (!r.tables.empty()) {
       json::Value tabs = json::Value::array();
@@ -622,21 +624,21 @@ json::Value run_request(const json::Value& req, Token* token) {
           c.set("fmt", k < t.formats.size() ? t.formats[k] : std::string("num"));
           tc.push(c);
         }
-        tj.set("columns", tc);
+        tj.set("columns", std::move(tc));
         json::Value tr = json::Value::array();
         for (const auto& row : t.rows) {
           json::Value rr = json::Value::array();
           for (const auto& cell : row) rr.push(cell_json(cell));
-          tr.push(rr);
+          tr.push(std::move(rr));
         }
-        tj.set("rows", tr);
-        tabs.push(tj);
+        tj.set("rows", std::move(tr));
+        tabs.push(std::move(tj));
       }
-      x.set("_tables", tabs);
+      x.set("_tables", std::move(tabs));
     }
-    rowsj.push(x);
+    rowsj.push(std::move(x));
   }
-  out.set("rows", rowsj);
+  out.set("rows", std::move(rowsj));
 
   // --- dropout-inflated sample sizes ------------------------------------------
   if (!proc->dropout_groups.empty()) {

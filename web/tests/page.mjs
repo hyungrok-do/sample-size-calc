@@ -226,6 +226,16 @@ try {
     await q.waitForFunction(() => !document.getElementById('method').hidden, null, { timeout: 5000 });
     await q.context().close();
   });
+  await check('a field of 100,000 letters is answered at once, its text quoted briefly', async () => {
+    // a page lays out one long word of kerned letters slowly: this took 11 s when the whole text was quoted
+    const q = await open(`${base}#means.two.t`); await ready(q);
+    await q.fill('#in-power', 'W'.repeat(100000));
+    const t0 = Date.now();
+    await q.click('#calc'); await answer(q);
+    const text = await q.textContent('#result .error');
+    assert.ok(Date.now() - t0 < 5000 && text.length < 300, `${Date.now() - t0} ms; ${text.length} characters`);
+    await q.context().close();
+  });
   await check('a long error wraps at phone width, and fields use 16px text (no zoom on iPhones)', async () => {
     const q = await open(`${base}#means.two.t`, { viewport: { width: 320, height: 568 }, deviceScaleFactor: 2 }); await ready(q);
     await q.click('#solve label >> nth=1'); await q.fill('#in-n1', 'x'.repeat(300)); await q.click('#calc'); await answer(q);

@@ -26,6 +26,10 @@ struct Vectors {
 /// The longest input text read (10,000 values need far less).
 constexpr std::size_t MAX_TEXT = 1000000;
 
+/// Text from a request quoted in a message: at most 40 bytes, cut where a character begins (a field can hold
+/// 1,000,000 characters, and a page lays out an unbroken word slowly).
+std::string quoted(const std::string& text);
+
 Numbers numbers(const std::string& text, std::size_t max_values = 10000);
 Vectors vectors(const std::string& text, std::size_t max_vectors = 1000);
 

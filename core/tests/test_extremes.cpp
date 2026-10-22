@@ -200,9 +200,13 @@ TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an
       {R"({"procedure":"prop.cc","solve_for":"n","inputs":{"test":"fisher","m":"100","or":"1.05"}})", ""},
       {R"({"procedure":"diag.paired","solve_for":"n","inputs":{"method":"exact","goal":"se","se1":"0.9","se2":"0.8",)"
        R"("prev":"0.001"}})", ""},
-      // 20,000 group-sequential designs with 20 analyses: about 25 minutes of work
+      // 20,000 group-sequential designs with 20 analyses: about 25 minutes of work, solving for the sample size or
+      // for the power (each alpha, and each power with β-spending futility, is a design of its own)
       {R"({"procedure":"gs.means","solve_for":"n","inputs":{"looks":"20","alpha":"0.0001 to 0.05 by 0.0000049995",)"
        R"("power":"0.8 0.9"}})",
+       "designs this long to compute"},
+      {R"({"procedure":"gs.means","solve_for":"power","inputs":{"looks":"20","alternative":"upper","futility":"beta",)"
+       R"("binding":"binding","alpha":"0.0001 to 0.05 by 0.0000049995","power":"0.8 0.9","n1":"50"}})",
        "designs this long to compute"},
   };
   for (const auto& c : cases) {
@@ -213,6 +217,24 @@ TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an
     if (seconds_since(t0) > 5 || (c.second.empty() ? !m.empty() : m.find(c.second) == std::string::npos))
       ::ssc::test::report_failure(c.first.substr(0, 160) + ": '" + m + "'", __FILE__, __LINE__);
     ::ssc::test::count_check();
+  }
+  {  // typed text is quoted briefly in a message (a page lays out a long unbroken word for seconds)
+    Token token;
+    const json::Value res = run_request(json::parse(R"({"procedure":"means.two.t","solve_for":"n","inputs":{"power":")" +
+                                                    std::string(100000, 'W') + R"("}})"),
+                                        &token);
+    CHECK(res.get("input_errors").get("power").as_string().size() < 100);
+  }
+  {  // detail tables come with the first 1,000 rows only (20,000 rows of boundaries took a gigabyte)
+    Token token;
+    const json::Value res = run_request(
+        json::parse(R"({"procedure":"gs.means","solve_for":"power","options":{"power_curve":false},)"
+                    R"("inputs":{"looks":"3","mu1":"0.002 to 2.4 by 0.002","n1":"50"}})"),
+        &token);
+    const auto& rows = res.get("rows").elements();
+    CHECK_EQ(rows.size(), static_cast<std::size_t>(1200));
+    CHECK(rows.at(999).get("_tables").size() > 0);
+    CHECK(rows.at(1000).find("_tables") == nullptr);
   }
   {  // too large to enumerate: the normal approximation, and a note that says so (it used to be a power of 0)
     Token token;

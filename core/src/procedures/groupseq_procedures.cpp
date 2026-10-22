@@ -2,6 +2,7 @@
 // test, built on the boundary/exit-probability engine in groupseq.cpp.
 #include <map>
 #include <memory>
+#include <set>
 
 #include "procedures/common.hpp"
 #include "procedures/groupseq.hpp"
@@ -185,20 +186,24 @@ DesignPtr cached_design(const std::string& key, const std::function<DesignInfo()
   return cache.get(key, build, [&] { ctx.check(); });
 }
 
-DesignPtr gs_design(const Scenario& s, const RunContext& ctx) {
+// The futility values of a fixed futility rule, one per interim analysis.
+std::vector<double> gs_futility_z(const Scenario& s, std::size_t interims) {
+  std::vector<double> fz = s.v("fz");
+  if (fz.size() == 1 && interims > 1) fz.assign(interims, fz[0]);
+  if (fz.size() != interims)
+    throw CalcError("enter " + std::to_string(interims) +
+                    " futility values (one per interim analysis) or a single value");
+  return fz;
+}
+
+// What a design depends on, as the key of the design cache (and of the cost of a request).
+std::string design_key(const Scenario& s) {
   const auto t = gs_fractions(s);
   const double alpha = s("alpha");
   const bool two = two_sided(s);
   const std::string& b = s.s("boundary");
   const std::string fk = futility_kind(s);
-  std::vector<double> fz;
-  if (fk == "z") {
-    fz = s.v("fz");
-    const std::size_t m = t.size() - 1;
-    if (fz.size() == 1 && m > 1) fz.assign(m, fz[0]);
-    if (fz.size() != m)
-      throw CalcError("enter " + std::to_string(m) + " futility values (one per interim analysis) or a single value");
-  }
+  const std::vector<double> fz = fk == "z" ? gs_futility_z(s, t.size() - 1) : std::vector<double>{};
   const double beta = fk == "beta" ? 1 - s("power") : 0.0;
   if (fk == "beta" && !(1 - beta > alpha)) throw CalcError("the power must exceed alpha");
 
@@ -215,7 +220,18 @@ DesignPtr gs_design(const Scenario& s, const RunContext& ctx) {
            text::format_roundtrip(beta);
   }
   for (double v : fz) key += ":" + text::format_roundtrip(v);
+  return key;
+}
 
+DesignPtr gs_design(const Scenario& s, const RunContext& ctx) {
+  const std::string key = design_key(s);  // which checks the inputs
+  const auto t = gs_fractions(s);
+  const double alpha = s("alpha");
+  const bool two = two_sided(s);
+  const std::string& b = s.s("boundary");
+  const std::string fk = futility_kind(s);
+  const std::vector<double> fz = fk == "z" ? gs_futility_z(s, t.size() - 1) : std::vector<double>{};
+  const double beta = fk == "beta" ? 1 - s("power") : 0.0;
   return cached_design(
       key,
       [&] {
@@ -455,9 +471,24 @@ const std::vector<std::pair<std::string, std::string>> GS_DEFS = {
     {"E(N|H1), E(N|H0)", "Expected sample size (or events) when H1 / H0 is true, with all stopping rules followed."},
     {"Inflation", "Maximum information relative to the fixed-sample design with the same α and power."}};
 
-// Searching for the size or effect of a design takes about 3.5 ms per analysis (80 ms with 20), against well
-// under 10 ms for most methods: the limit of scenarios counts it so.
-double gs_cost(const Scenario& s) { return s.solve == "power" ? 1 : 1 + s("looks") / 2; }
+// The time of a request in units of a typical scenario (a few ms), for the limit of scenarios. Each design is
+// built once: about 3.5 units with 20 analyses, 11 with β-spending futility (whose design depends on the power
+// too); a power from it is quick, and a search for the sample size takes about 3.5 ms per analysis (80 ms with
+// 20 analyses).
+double gs_cost(const std::vector<Scenario>& scenarios) {
+  std::set<std::string> designs;
+  double cost = 0;
+  for (const auto& s : scenarios) {
+    const double looks = s("looks");
+    cost += s.solve == "power" ? 1 : 1 + looks / 2;
+    try {
+      if (designs.insert(design_key(s)).second) cost += futility_kind(s) == "beta" ? 1 + looks / 2 : 1 + looks / 8;
+    } catch (const CalcError&) {
+      // the scenario stops at once with its message
+    }
+  }
+  return cost;
+}
 
 // ======================================================================= two means
 Procedure gs_means() {

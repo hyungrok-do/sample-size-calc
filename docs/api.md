@@ -63,9 +63,10 @@ Another thread can watch progress and cancel it through the token.
     eight distinct designs.
   - `curve_points`: number of points per curve.
   - `max_scenarios`: a lower limit on the number of scenarios than the engine's
-    own (20,000); it cannot raise it. Group-sequential designs solved for a
-    sample size or an effect count as more than one scenario each (1 + K/2 for
-    K analyses), since each takes longer.
+    own (20,000); it cannot raise it. Group-sequential requests count by the
+    time they take: a sample-size search counts 1 + K/2 scenarios for K
+    analyses, and each distinct design 1 + K/8 more (1 + K/2 with β-spending
+    futility).
   - `approximate`: for a simulation procedure, return its quick analytic
     approximation instead of simulating (live previews use it); other
     procedures ignore it.
@@ -117,7 +118,7 @@ Another thread can watch progress and cancel it through the token.
   | `_error` | why this scenario could not be computed; the others are unaffected |
   | `_statement` | a one-paragraph summary of the scenario |
   | `_notes` | remarks specific to this scenario |
-  | `_tables` | extra tables, for example group-sequential boundaries: `{"title", "columns": [{key, label, fmt}], "rows": [[…], …]}` |
+  | `_tables` | extra tables, for example group-sequential boundaries: `{"title", "columns": [{key, label, fmt}], "rows": [[…], …]}`; the first 1,000 rows carry them |
 
 - **Simulation procedures** (`"simulation": true` in the result and the
   schema) estimate power from simulated studies. Their rows add `method`

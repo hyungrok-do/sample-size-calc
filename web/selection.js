@@ -14,7 +14,7 @@ export function prepareSelection(proc, selection) {
     const p = proc.params.find((p) => p.id === key);
     if (p?.type !== 'select' || !p.options.some((o) => o.value === value)) {
       // the name shown comes from the calculator, never from the address, which anyone can write
-      throw new Error(p?.type === 'select'
+      throw new Error(p
         ? `The recommended setting “${p.label}” is unavailable. Please review the study choices.`
         : 'The address names a setting this calculator does not have. Please review the study choices.');
     }

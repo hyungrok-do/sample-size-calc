@@ -71,7 +71,11 @@ SSC_API char* ssc_run_json(const char* request_json, ssc_token* token) {
   if (!request_json) return dup_string(error_json("empty request"));
   try {
     const ssc::json::Value req = ssc::json::parse(request_json);
-    const std::string out = ssc::run_request(req, token ? &token->token : nullptr).dump();
+    ssc::json::Value res = ssc::run_request(req, token ? &token->token : nullptr);
+    // Stop while the answer was put together: writing out a large one takes seconds too
+    if (token && token->token.cancelled() && res.get("ok").as_bool(false))
+      return dup_string(R"({"ok":false,"cancelled":true,"error":"Calculation cancelled."})");
+    const std::string out = res.dump();
     char* result = dup_string(out);
     // a full simulation, or a large result (many scenarios): give the memory it used back to the system
     const ssc::Procedure* proc = ssc::find_procedure(req.get("procedure").as_string());

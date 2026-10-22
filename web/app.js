@@ -411,6 +411,10 @@ function details(rows) {
   return [...parts, box];
 }
 
+// A message as shown: the engine quotes typed text briefly, and this keeps any other long word from costing the
+// page seconds of layout in an error box (which breaks words anywhere).
+const brief = (text) => (text.length > 500 ? `${text.slice(0, 500)}…` : text);
+
 function renderResult(res, engineMs) {
   const out = $('result');
   drawing++;
@@ -419,10 +423,10 @@ function renderResult(res, engineMs) {
   if (!res.ok) {
     const errors = Object.entries(res.input_errors ?? {}).map(([id, m]) => {
       state.fields.get(id)?.input.setAttribute('aria-invalid', 'true');
-      return el('li', {}, el('strong', {}, `${labelOf(id)}: `), m);
+      return el('li', {}, el('strong', {}, `${labelOf(id)}: `), brief(String(m)));
     });
     out.append(el('div', { class: 'error', role: 'alert' },
-      el('p', {}, res.error || 'The inputs need attention.'), errors.length ? el('ul', {}, errors) : null));
+      el('p', {}, brief(res.error || 'The inputs need attention.')), errors.length ? el('ul', {}, errors) : null));
     return;
   }
   const rows = res.rows ?? [];

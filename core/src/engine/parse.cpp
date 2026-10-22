@@ -7,6 +7,13 @@
 
 namespace ssc::parse {
 
+std::string quoted(const std::string& t) {
+  if (t.size() <= 40) return t;
+  std::size_t end = 40;
+  while (end > 0 && (static_cast<unsigned char>(t[end]) & 0xC0) == 0x80) --end;
+  return t.substr(0, end) + "…";
+}
+
 namespace {
 
 // Tokens: numbers and the keywords "to", "by"/"step".
@@ -59,7 +66,7 @@ std::vector<Token> tokenize(const std::string& s, std::size_t max_tokens, std::s
       std::size_t a = i, b = i + 1;
       while (a > 0 && !std::isspace(static_cast<unsigned char>(s[a - 1]))) --a;
       while (b < s.size() && !std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-      err = "could not read '" + s.substr(a, b - a) +
+      err = "could not read '" + quoted(s.substr(a, b - a)) +
             "': write numbers without commas (2500, or 2.5 with a decimal point) and separate several values "
             "with spaces";
       return {};
@@ -94,14 +101,15 @@ std::vector<Token> tokenize(const std::string& s, std::size_t max_tokens, std::s
           (std::isdigit(static_cast<unsigned char>(s[j + 1])) || s[j + 1] == '.')) {
         std::size_t k = j + 1;
         while (k < s.size() && !std::isspace(static_cast<unsigned char>(s[k])) && s[k] != ',') ++k;
-        err = s[j] == '-' ? "could not read '" + s.substr(i, k - i) + "': write a range as '" + s.substr(i, j - i) +
-                                " to " + s.substr(j + 1, k - j - 1) + "', and separate several values with spaces"
-                          : "could not read '" + s.substr(i, k - i) +
+        err = s[j] == '-' ? "could not read '" + quoted(s.substr(i, k - i)) + "': write a range as '" +
+                                quoted(s.substr(i, j - i)) + " to " + quoted(s.substr(j + 1, k - j - 1)) +
+                                "', and separate several values with spaces"
+                          : "could not read '" + quoted(s.substr(i, k - i)) +
                                 "' as a number (separate several values with spaces)";
         return {};
       }
       if (j < s.size() && s[j] == '%') {
-        err = "could not read '" + s.substr(i, j - i + 1) +
+        err = "could not read '" + quoted(s.substr(i, j - i + 1)) +
               "': write the number without '%' (a probability as a decimal, such as 0.8)";
         return {};
       }
@@ -112,7 +120,7 @@ std::vector<Token> tokenize(const std::string& s, std::size_t max_tokens, std::s
     // unreadable chunk
     std::size_t k = i;
     while (k < s.size() && !std::isspace(static_cast<unsigned char>(s[k])) && s[k] != ',') ++k;
-    err = "could not read '" + s.substr(i, k - i) + "' as a number";
+    err = "could not read '" + quoted(s.substr(i, k - i)) + "' as a number";
     return {};
   }
   return out;
@@ -143,7 +151,7 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
   }
   for (std::size_t i = 0; i < toks.size();) {
     if (toks[i].kind != Token::Num) {
-      res.error = "unexpected '" + toks[i].text + "'";
+      res.error = "unexpected '" + quoted(toks[i].text) + "'";
       return res;
     }
     if (i + 1 < toks.size() && toks[i + 1].kind == Token::To) {
