@@ -121,23 +121,28 @@ jobs:
           name: web-engines
           path: web/engine
       - name: Browser
-        timeout-minutes: 16
+        id: browser
+        timeout-minutes: 20
         run: |
           npm ci --prefix web
           cd web
-          # a download that stalls is tried again (once one held the job for half an hour)
+          # the system libraries come through apt, which holds the package lock while
+          # it works, so they install once and only this step's limit bounds them
+          npx playwright install-deps ${{ matrix.browser }}
+          # the browser download alone is tried again when it stalls (once one held
+          # the job for half an hour)
           for attempt in 1 2 3; do
-            timeout 300 npx playwright install --with-deps ${{ matrix.browser }} && break
+            timeout 300 npx playwright install ${{ matrix.browser }} && break
             if [ "$attempt" = 3 ]; then exit 1; fi
-            echo "Installing ${{ matrix.browser }} did not finish in 5 minutes; trying again"
+            echo "Downloading ${{ matrix.browser }} did not finish in 5 minutes; trying again"
           done
       - name: Guide and calculator
         run: cd web && npm run test:browser
       - name: The testers' fixes and responsiveness
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
         run: cd web && npm run test:page
       - name: The site as published
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
         run: |
           web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
           cd web && npm run test:site -- "$RUNNER_TEMP/site"
