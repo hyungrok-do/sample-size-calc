@@ -39,13 +39,17 @@ jobs:
           web/build.sh
       - name: The site
         run: |
-          mkdir -p _site/engine
-          cp web/index.html web/app.js web/engine.js web/worker.js web/sw.js _site/
-          cp web/guide.js web/guide-data.js web/guide-state.js web/selection.js _site/
-          cp web/engine/ssc_web.mjs web/engine/ssc_web.wasm web/engine/ssc_web_mt.mjs web/engine/ssc_web_mt.wasm _site/engine/
-          cp LICENSE THIRD_PARTY_NOTICES.md _site/
-          web/stamp.sh _site "${GITHUB_SHA::12}"
+          web/assemble.sh _site "${GITHUB_SHA::12}"
           ls -lR _site
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test the site before publishing it
+        run: |
+          npm ci --prefix web
+          cd web
+          npx playwright install --with-deps chromium
+          npm run test:site -- ../_site
       - uses: actions/upload-pages-artifact@v3
 
   deploy:

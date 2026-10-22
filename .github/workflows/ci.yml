@@ -74,10 +74,59 @@ jobs:
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           web/build.sh
-      - name: Guide coverage and browser integration
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-engines
+          path: web/engine/
+          retention-days: 3
+      - name: Guide coverage and number formatting
         run: |
           npm ci --prefix web
           cd web
           npx playwright install --with-deps chromium
           npm test
-          npm run test:browser
+      - name: Guide and calculator in Chromium
+        if: ${{ !cancelled() }}
+        run: cd web && npm run test:browser
+      - name: The testers' fixes, responsiveness and engine fallback in Chromium
+        if: ${{ !cancelled() }}
+        run: cd web && npm run test:page
+      - name: The site as published (web/assemble.sh) in Chromium
+        if: ${{ !cancelled() }}
+        run: |
+          web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
+          cd web && npm run test:site -- "$RUNNER_TEMP/site"
+
+  browsers:
+    name: Web page in ${{ matrix.browser }}
+    needs: web
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    env:
+      SSC_BROWSER: ${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-engines
+          path: web/engine
+      - name: Browser
+        run: |
+          npm ci --prefix web
+          cd web && npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Guide and calculator
+        run: cd web && npm run test:browser
+      - name: The testers' fixes and responsiveness
+        if: ${{ !cancelled() }}
+        run: cd web && npm run test:page
+      - name: The site as published
+        if: ${{ !cancelled() }}
+        run: |
+          web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
+          cd web && npm run test:site -- "$RUNNER_TEMP/site"

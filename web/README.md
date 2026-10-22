@@ -141,19 +141,38 @@ After building the web engines, run the frontend checks with Node 24:
 npm ci --prefix web
 cd web
 npx playwright install chromium
-npm test
-npm run test:browser
+npm test                      # the guide's routes and the number formatting (needs python3)
+npm run test:browser          # the guide and calculator in a browser
+npm run test:page             # the testers' fixes, responsiveness, the engine fallback
+./assemble.sh /tmp/site dev-test && npm run test:site -- /tmp/site     # the site as published
 ```
 
-The first suite checks every route against the real WebAssembly catalog and
-schemas, all-procedure coverage, the analyses listed after partial answers,
-combined requirements, ancestor resets,
-unknown/conditional presets, and link round trips. The Chromium suite loads
-the actual page and engine, applies every recommendation path, and checks a
-calculation, same-procedure option changes, stale-result protection, keyboard
-use, direct links/history, mobile/dark layout, and offline reload. CI runs both.
-`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can select an installed Chromium binary;
-`SSC_SCREENSHOTS` optionally saves layout screenshots to a directory.
+`npm test` checks every guide route against the real WebAssembly catalog and
+schemas: all-procedure coverage, the analyses listed after partial answers,
+combined requirements, ancestor resets, unknown/conditional presets, and link
+round trips. It also formats about 10,000 values in each column format on the
+page and with the command line (`python/ssc/formatting.py`), and they must
+agree. `test:browser` loads the actual page and engine, applies every
+recommendation path, and checks a calculation, same-procedure option changes,
+stale-result protection, keyboard use, direct links and history, mobile and dark
+layout, and offline reload. `test:page` serves the page cross-origin isolated
+(the multi-core engine) and checks each fix from the testers' reports, that a
+20,000-scenario answer never stalls the page for long, and that the one-thread
+engine takes over when the multi-core one is missing or its threads never start.
+
+`web/assemble.sh` builds the site exactly as the Pages workflow publishes it.
+`test:site` checks that every file the page can load was published with the
+version in its address, then serves the site the way GitHub Pages does (a
+subpath, no isolation headers, files kept for 10 minutes). It checks a first
+visit, the guide, every core from the second visit, a start without a network,
+and an update that must not mix the new page with older files. The Pages
+workflow runs it before publishing.
+
+CI runs all of these in Chromium, and `test:browser`, `test:page` and
+`test:site` in Firefox and WebKit (Safari's engine) too. `SSC_BROWSER` selects
+`chromium`, `firefox` or `webkit`. `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can
+select an installed Chromium binary, and `SSC_SCREENSHOTS` optionally saves
+layout screenshots to a directory.
 
 The engine's own tests run under Node with the threaded build (some of them
 test the thread pool). They need a build directory of their own, since

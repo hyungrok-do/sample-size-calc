@@ -10,7 +10,8 @@ const CACHE = 'ssc-dev';
 // fetched at installation: the first visit loaded them before this worker could keep a copy (the multi-core
 // engine is kept when it is first used, from the next visit)
 const FILES = ['./', 'app.js?v=dev', 'engine.js?v=dev', 'worker.js?engine=ssc_web&v=dev', 'engine/ssc_web.mjs?v=dev',
-  'engine/ssc_web.wasm?v=dev', 'guide.js?v=dev', 'guide-data.js?v=dev', 'guide-state.js?v=dev', 'selection.js?v=dev'];
+  'engine/ssc_web.wasm?v=dev', 'guide.js?v=dev', 'guide-data.js?v=dev', 'guide-state.js?v=dev', 'selection.js?v=dev',
+  'format.js?v=dev'];
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

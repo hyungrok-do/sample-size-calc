@@ -3,8 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/guide.test.mjs",
-    "test:browser": "node tests/browser.mjs"
+    "test": "node --test tests/guide.test.mjs tests/format.test.mjs",
+    "test:browser": "node tests/browser.mjs",
+    "test:page": "node tests/page.mjs",
+    "test:site": "node tests/site.mjs"
   },
   "devDependencies": {
     "playwright": "1.57.0"

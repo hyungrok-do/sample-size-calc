@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
 import { guideData } from '../guide-data.js';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,10 +20,12 @@ const server = createServer(async (req, res) => {
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}/?engine=single`;
-const browser = await chromium.launch({
+// SSC_BROWSER picks chromium (default), firefox or webkit
+const kind = process.env.SSC_BROWSER ?? 'chromium';
+const browser = await { chromium, firefox, webkit }[kind].launch(kind === 'chromium' ? {
   executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
   args: ['--disable-dev-shm-usage'],
-});
+} : {});
 try {
   const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
@@ -207,7 +209,7 @@ try {
   await offlinePage.evaluate(async () => {
     await navigator.serviceWorker.ready;
     const cache = await caches.open('ssc-dev');
-    const expected = ['guide.js', 'guide-state.js', 'guide-data.js', 'selection.js', 'engine/ssc_web.wasm'];
+    const expected = ['guide.js', 'guide-state.js', 'guide-data.js', 'selection.js', 'format.js', 'engine/ssc_web.wasm'];
     for (const file of expected) {
       if (!await cache.match(new URL(file + '?v=dev', location.href))) throw new Error(`Missing cached asset: ${file}`);
     }
@@ -216,7 +218,7 @@ try {
   await offlinePage.reload();
   await offlinePage.waitForSelector('#guide-questions input', { state: 'attached' });
   await offline.close();
-  console.log('Browser: calculation, same-method options, stale results, keyboard, history, mobile/dark layout, and offline reload passed.');
+  console.log(`Browser: calculation, same-method options, stale results, keyboard, history, mobile/dark layout, and offline reload passed in ${kind}.`);
 } finally {
   await browser.close();
   server.close();
