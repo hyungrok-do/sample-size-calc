@@ -51,12 +51,19 @@ swap("event.waitUntil(caches.open(CACHE).then((cache) => cache.put(key, copy)));
   "const put = caches.open(CACHE).then((cache) => cache.put(key, copy)).then(() => report('put ok ' + key.split('/').pop())," +
   " (e) => report('put FAILED ' + key.split('/').pop() + ' ' + e));\n" +
   "        try { event.waitUntil(put); } catch (e) { report('waitUntil threw ' + e); }");
-swap("} catch (error) {", "} catch (error) { report('fetch failed ' + request.url.split('/').pop() + ' ' + error);");
+swap("event.respondWith((async () => {", "const short = request.url.split('/').pop(); report('fetch ' + request.mode + ' ' + request.destination + ' ' + short);\n  event.respondWith((async () => {");
+swap("const key = keptAs(request);", "const key = keptAs(request); report('net ok ' + response.status + ' ' + short);");
+swap("} catch (error) {\n      const cached = await caches.match(keptAs(request) ?? request, { ignoreSearch: true });",
+  "} catch (error) {\n      report('net failed ' + short + ' ' + error);\n      const cached = await caches.match(keptAs(request) ?? request, { ignoreSearch: true });\n      report((cached ? 'from cache ' : 'cache MISS ') + short + ' caches=' + JSON.stringify(await caches.keys()));");
+swap("self.addEventListener('activate', (event) => {", "self.addEventListener('activate', (event) => { report('activate');");
 files.set('sw.js', Buffer.from(report + sw));
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 const prefix = '/sample-size-calc/';
+let down = false;
+const dropped = [];
 const server = createServer((req, res) => {
+  if (down) { dropped.push(`${req.url} (${req.headers['sec-fetch-dest'] ?? '-'})`); req.socket.destroy(); return; }
   const pathname = new URL(req.url, 'http://localhost').pathname;
   const file = pathname.slice(prefix.length) || 'index.html';
   const body = files.get(file);
@@ -113,6 +120,16 @@ async function session(label, context) {
   await ready();
   await page.waitForTimeout(1500);
   await probe('after the third visit');
+  console.log('  -- the network goes down; reload');
+  down = true;
+  dropped.length = 0;
+  await page.reload().catch((e) => console.log(`  reload failed: ${e.message.split('\n')[0]}`));
+  await page.waitForFunction(() => /ready in|did not load/.test(document.getElementById('engine-status')?.textContent),
+    null, { timeout: 30000 }).catch((e) => console.log(`  offline not ready: ${e.message.split('\n')[0]}`));
+  await page.waitForTimeout(2000);
+  await probe('offline, after the reload');
+  console.log(`  dropped at the server: ${JSON.stringify(dropped)}`);
+  down = false;
   await page.close();
 }
 
