@@ -493,6 +493,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   token->set_total(static_cast<long>(count) * units + static_cast<long>(n_curves) * curve_points);
   std::vector<Row> rows(count);
   std::atomic<bool> tables_dropped{false}, curve_approximated{false};
+  bool curves_drawn = false;
   RunContext ctx{token, threads, approximate, nullptr};
   auto answer_key = [&](const std::string& solve) {
     for (const auto& o : proc->solve_for)
@@ -813,6 +814,7 @@ json::Value run_request(const json::Value& req, Token* token) {
         for (const auto& p : proc->params)
           if (p.id == kv.first && p.type == PType::Number && !job.sc.num.count(p.id)) job.sc.num[p.id] = *d;
       }
+      if (solving_effect && proc->curve_inputs) proc->curve_inputs(job.sc, rows[i]);
       auto alloc = job.sc.sel.find("alloc");
       if (alloc != job.sc.sel.end()) {
         const std::string a = alloc->second;
@@ -926,12 +928,10 @@ json::Value run_request(const json::Value& req, Token* token) {
       out.set("error", "Calculation cancelled.");
       return out;
     }
-    // each answer lies on its curve, whichever way the curve was computed
-    for (auto& job : jobs)
-      for (const auto& m : job.markers)
-        for (std::size_t k = 0; k < job.xs.size(); ++k)
-          if (job.xs[k] == m.first && std::isfinite(m.second)) job.ys[k] = m.second;
+    // each answer is marked at its own power: on its curve when the curve is computed as the answer is, near it
+    // when one of the two is an approximation (the notes say which); a curve takes one method throughout
     if (!jobs.empty()) {
+      curves_drawn = true;
       json::Value pl = json::Value::object();
       pl.set("kind", "curve");
       pl.set("x_key", jobs[0].param);  // the input along the x axis
@@ -988,6 +988,8 @@ json::Value run_request(const json::Value& req, Token* token) {
   if (curve_approximated)
     notes.push("Where enumerating every point of a power curve would take long, the curve uses the normal "
                "approximation; the answers marked on it are those of the table.");
+  if (proc->simulation && !approximate && curves_drawn)
+    notes.push("The power curve comes from the analytic approximation; the simulated answers are marked on it.");
   if (tables_dropped) {
     notes.push("Detail tables are given for the first 1,000 scenarios.");  // MAX_TABLE_ROWS
     out.set("tables_rows", static_cast<double>(MAX_TABLE_ROWS));
@@ -1008,7 +1010,7 @@ json::Value run_request(const json::Value& req, Token* token) {
 json::Value search_json(const std::string& query, std::size_t limit) {
   const search::Result res = search::query(query, limit);
   json::Value o = json::Value::object();
-  o.set("query", query);
+  o.set("query", res.query);
   o.set("corrected", res.corrected);
   o.set("partial", res.partial);
   json::Value hits = json::Value::array();

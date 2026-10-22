@@ -189,6 +189,11 @@ Procedure anova() {
       r.set("sizes", sz);
     }
   };
+  p.curve_inputs = [](Scenario& sc, const Row& r) {  // the solved f, not the means it was solved next to
+    sc.sel["estype"] = "f";
+    sc.num["f"] = r.num("f");
+    sc.num["k"] = r.num("k");
+  };
   p.columns = [](const Scenario& s) {
     auto c = power_columns(s);
     c.push_back(col("n", "n", "int", "Size of each group (or of a group with weight 1)"));

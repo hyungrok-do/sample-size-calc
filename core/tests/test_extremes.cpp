@@ -372,6 +372,19 @@ TEST_CASE("extremes: a NaN integrand ends the adaptive integration at once") {
   CHECK(std::fabs(si - 1.8921661407343660) < 1e-13);
 }
 
+TEST_CASE("extremes: a search reads a long text in part and lists each matched term once") {
+  // a megabyte of description took 1.5 s and 700 MB, and its answer held 3,000,000 matched terms (26 MB)
+  std::string q;
+  for (int i = 0; i < 100000; ++i) q += "odds ratio ";
+  const auto t0 = std::chrono::steady_clock::now();
+  const json::Value res = search_json(q, 20);
+  CHECK(seconds_since(t0) < 1);
+  CHECK(res.get("query").as_string().size() <= 2000);
+  CHECK(res.get("hits").size() == 20);
+  CHECK(res.get("hits").at(0).get("terms").size() <= 2);
+  CHECK(res.dump().size() < 20000);
+}
+
 TEST_CASE("extremes: the incomplete beta with shapes beyond what its series resolve") {
   // both shapes large, far from the mean: a tail far below the smallest double (and 1e300 gave 1, not 0)
   CHECK(stats::pbeta(0.4, 1e300, 1e300, true) == 0);

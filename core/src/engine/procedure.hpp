@@ -256,6 +256,9 @@ struct Procedure {
 
   // power-curve support: vary `curve_param` (a sample-size input) with solve = "power"
   std::string curve_param;
+  // the inputs that make a power run use a solved effect, where carrying the row's values back is not enough
+  // (an effect given another way, say): set on the curve's scenario from the answer's row
+  std::function<void(Scenario&, const Row&)> curve_inputs;
   std::string curve_label;
   double curve_min = 2;
   bool curve_integer = true;

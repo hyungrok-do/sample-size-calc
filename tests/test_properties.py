@@ -681,6 +681,44 @@ def test_an_exact_curve_takes_one_method_judged_at_its_largest_point():
         assert y == pytest.approx(row["power"], abs=1e-12), x
 
 
+ANALYTIC_CURVE_CASES = [(pid, mode) for pid in IDS if not ssc.schema(pid).get("simulation") for mode in modes(pid)]
+
+
+@pytest.mark.parametrize("pid,mode", ANALYTIC_CURVE_CASES, ids=[f"{p}:{m}" for p, m in ANALYTIC_CURVE_CASES])
+def test_a_curve_passes_through_its_answer(pid, mode):
+    """A curve computed as its answer is gives the answer's power at the answer's size.  (Each answer was written
+    into its curve, which hid a curve drawn for the wrong effect and spiked one drawn another way.)"""
+    res = ssc.run(pid, mode, base_inputs(pid), threads=1, power_curve=True)
+    if not res.get("ok") or any("normal approximation; the answers marked" in t for t in res.get("notes", [])):
+        pytest.skip("no curve computed as the answer is")
+    for plot in [p for p in res["plots"] if p["kind"] == "curve"]:
+        for series in plot["series"]:
+            for x, y in series.get("markers", []):
+                if x in series["x"]:
+                    assert series["y"][series["x"].index(x)] == pytest.approx(y, abs=1e-7), (pid, mode, x)
+
+
+def test_a_solved_f_is_the_effect_of_its_curve():
+    """means.anova solved for f drew its curve with the means it was solved next to (0.913 at the answer's n,
+    against 0.800, with unequal groups)."""
+    res = ssc.run("means.anova", "f", {**base_inputs("means.anova"), "alloc": "ratio", "n": "20"}, power_curve=True)
+    series = res["plots"][0]["series"][0]
+    assert series["y"][series["x"].index(20)] == pytest.approx(res["rows"][0]["power"], abs=1e-9)
+    ys = series["y"]
+    assert all(a < b for a, b in zip(ys, ys[1:])), "the curve rises with n"
+
+
+def test_a_simulation_curve_says_it_is_the_approximation():
+    """Simulated answers sit near the curve, which is the analytic approximation; answers from the approximation
+    itself lie on it, and the note is not given."""
+    note = "analytic approximation; the simulated answers"
+    inputs = {**base_inputs("sim.ordinal"), "reps": "100"}
+    res = ssc.run("sim.ordinal", "power", inputs, power_curve=True)
+    assert any(note in t for t in res["notes"])
+    res = ssc.run("sim.ordinal", "power", inputs, power_curve=True, approximate=True)
+    assert not any(note in t for t in res["notes"])
+
+
 def test_an_unknown_choice_is_an_input_error():
     res = run("means.two.t", "power", {**base_inputs("means.two.t"), "alternative": "greater"})
     assert not res["ok"] and "unknown choice 'greater'" in res["input_errors"]["alternative"]

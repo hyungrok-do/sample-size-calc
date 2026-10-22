@@ -25,6 +25,7 @@ struct Hit {
 
 struct Result {
   std::vector<Hit> hits;
+  std::string query;      // the query as read (a long text: its first 2,000 bytes)
   std::string corrected;  // the query with misspelled words replaced ("" when unchanged)
   bool partial = false;   // no procedure matches every word: closest procedures instead
 };
