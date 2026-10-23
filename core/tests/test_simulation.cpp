@@ -519,6 +519,65 @@ TEST_CASE("sim: failures by design are counted apart from numerical ones, and th
   CHECK(std::isnan(simc::other_power(sm, 0, causes)));
   sm.also[3] = 200;
   CHECK_EQ(simc::other_power(sm, 0, causes), 0.25);
+  // nor when it could not be computed in any study, whatever the reason
+  sm.also[0] = 0;
+  sm.also[2] = 300;
+  sm.also[3] = 100;
+  CHECK(std::isnan(simc::other_power(sm, 0, causes)));
+  // one failed study counts, in the singular
+  Row one;
+  one.set("method", "simulation");
+  one.set("failures", 1.0);
+  one.set("failures_why", "a group had no patients left at a visit");
+  CHECK(simc::method_note(one) == " 1 simulated study could not be analyzed and counts as not rejecting (a group had "
+                                  "no patients left at a visit).");
+}
+
+TEST_CASE("sim: the statement says where the other tests of a study failed, and why") {
+  // A test run alongside that could not be computed in nearly all the studies, or in any, read as a plain 0.0%
+  namespace simc = procs::simc;
+  const std::vector<simc::Cause> mine = {{2, simc::Failures::Design, "every outcome fell in one category"}},
+                                 other = {{3, simc::Failures::Design, "one group lay above the other"},
+                                          {4, simc::Failures::Numerical, "the fit did not converge"}};
+  auto row_of = [&](long other_design, long other_numerical) {
+    sim::Summary sm;
+    sm.reps = 200;
+    sm.also[0] = 120;
+    sm.also[1] = 2;
+    sm.also[3] = other_design;
+    sm.also[4] = other_numerical;
+    Row r;
+    r.set("reps", 200.0);
+    simc::put_other(r, sm, "power_a", 0, mine, true);
+    simc::put_other(r, sm, "power_b", 1, other, false);
+    return r;
+  };
+  const std::vector<std::pair<std::string, std::string>> tests = {{"first test", "power_a"},
+                                                                  {"second test", "power_b"}};
+  const Row none = row_of(0, 0);
+  CHECK(!none.has("power_a_failures") && !none.has("power_b_failures"));
+  CHECK(simc::others_sentence(none, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0% and the second test 1.0%.");
+  const Row some = row_of(198, 0);
+  CHECK_EQ(some.num("power_b_failures"), 198.0);
+  CHECK(simc::others_sentence(some, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0% and the second test 1.0%. 198 of the "
+        "200 simulated studies could not be analyzed by the second test and count as not rejecting (one group lay "
+        "above the other).");
+  const Row all = row_of(150, 50);
+  CHECK(std::isnan(all.num("power_b")));
+  CHECK(simc::others_sentence(all, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0%. None of the 200 simulated studies "
+        "could be analyzed by the second test (in 150, one group lay above the other; in 50, the fit did not "
+        "converge), so its power is not given.");
+  const Row broken = row_of(0, 101);
+  CHECK(simc::others_sentence(broken, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0%. 101 of the 200 simulated studies "
+        "could not be analyzed by the second test (the fit did not converge), and as its arithmetic broke down in "
+        "more than half of them, its power is not given.");
+  // an approximation has no other tests
+  Row approx;
+  CHECK(simc::others_sentence(approx, "studies", tests).empty());
 }
 
 TEST_CASE("sim: the other tests of a study count also where its own analysis failed") {

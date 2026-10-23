@@ -15,6 +15,7 @@ schemas:
 """
 from __future__ import annotations
 
+import itertools
 import math
 import os
 import random
@@ -1222,7 +1223,7 @@ def test_a_simulated_study_that_cannot_be_analyzed_says_why():
                 ("sim.winratio", {"n1": "10", "med_d": "600", "med_h": "240", "follow": "1", "accrual": "1"},
                  "every pair of patients tied"),
                 ("sim.glmm.cluster", {"p1": "0.999", "p2": "0.99", "m": "10", "k1": "5"},
-                 "every cluster of a group had the outcome in none or all of its subjects")]
+                 "no subject of a group had the outcome, or every one had it")]
     for pid, inputs, why in expected:
         row = first_row(run(pid, "power", {**inputs, "reps": "200"}, threads=2))
         assert row is not None and row["failures"] > 100 and why in row["failures_why"], (pid, inputs)
@@ -1251,6 +1252,73 @@ def test_the_other_tests_of_a_simulated_study_count_where_its_own_analysis_faile
     pair("sim.mmrm", "analysis", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"}, "mmrm", "completers",
          "power_mmrm", "power_completers")
     pair("sim.ordinal", "test", {"or": "20", "n1": "10", "reps": "400"}, "wald", "lr", "power_wald", "power_lr")
+
+
+def test_the_statement_says_where_the_other_tests_of_a_simulated_study_failed():
+    """A test run alongside that could not be computed in all, or nearly all, of the studies still read as a plain
+    0.0%: the Wald test when every study was separated, and the completers' t-test when 198 of 200 trials had fewer
+    than 2 completers in a group.  The failures of a first visit were said to leave too few patients to estimate its
+    covariances with the earlier visits, which it does not have."""
+    row = first_row(run("sim.ordinal", "power", {"or": "1e30", "test": "lr", "reps": "200"}, threads=2))
+    assert row["power_wald"] is None and row["power_wald_failures"] == 200 and row["failures"] == 0
+    assert ("None of the 200 simulated studies could be analyzed by the Wald test (one group's outcomes all lay at or "
+            "above the other's") in row["_statement"]
+    assert "the Wald test had a power" not in row["_statement"]
+    row = first_row(run("sim.mmrm", "power", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"},
+                        threads=2))
+    assert row["power_completers_failures"] == 198
+    assert ("198 of the 200 simulated trials could not be analyzed by the completers' t-test and count as not "
+            "rejecting (fewer than 2 patients of a group completed the study).") in row["_statement"]
+    assert "power_mmrm_failures" not in row  # the MMRM decides: its failures are the row's own
+    row = first_row(run("sim.mmrm", "power", {"visits": "1", "n1": "3", "drop1": "0.5", "drop2": "0.5",
+                                              "reps": "200"}, threads=2))
+    assert "only one patient of each group was measured at the first visit" in row["failures_why"]
+    assert "earlier visits" not in row["failures_why"]
+
+
+def test_a_cluster_of_one_subject_is_analyzed_by_logistic_regression():
+    """With clusters of one subject the random intercept's SD is not identified; each fit 'succeeded' with the
+    standard error of a ridge of maxima, and the simulated power was 1.5% for an approximation of 96%."""
+    for inputs, approx in (({"p1": "0.3", "p2": "0.2", "k1": "500", "icc": "0"}, 0.957),
+                           ({"p1": "0.5", "p2": "0.2", "k1": "100", "icc": "0.05"}, 0.997),
+                           ({"p1": "0.3", "p2": "0.3", "k1": "100", "icc": "0.05"}, 0.05)):
+        row = first_row(run("sim.glmm.cluster", "power", {**inputs, "m": "1", "test": "z", "reps": "400"}, threads=2))
+        assert row["approx_power"] == pytest.approx(approx, abs=5e-4)
+        assert row["power"] == pytest.approx(approx, abs=4 * math.sqrt(approx * (1 - approx) / 400) + 0.005), inputs
+
+
+def test_the_ordinal_approximation_gives_the_share_of_separated_studies():
+    """The approximation gave 100% for the Wald test where nearly every study is separated and it cannot reject;
+    it now gives the expected share of separated studies, which a sum over every pair of tables confirms."""
+    def separated(p1, n1, p2, n2):
+        k, total = len(p1), 0.0
+        tables = lambda n: [c for c in itertools.product(range(n + 1), repeat=k) if sum(c) == n]
+        prob = lambda c, p: math.factorial(sum(c)) * math.prod(q ** x / math.factorial(x) for q, x in zip(p, c))
+        for c1 in tables(n1):
+            for c2 in tables(n2):
+                used = [j for j in range(k) if c1[j] + c2[j]]
+                if len(used) < 2:
+                    continue
+                g1, g2 = [j for j in range(k) if c1[j]], [j for j in range(k) if c2[j]]
+                if g1[-1] <= g2[0] or g2[-1] <= g1[0]:
+                    total += prob(c1, p1) * prob(c2, p2)
+        return total
+    for p2, odds, n1, r in (("0.5 0.5", 1.8, 5, 1), ("0.2 0.5 0.3", 4, 4, 1.5), ("0.1 0.3 0.4 0.2", 0.2, 3, 2)):
+        res = ssc.run("sim.ordinal", "power", {"p2": p2, "or": str(odds), "n1": str(n1), "r": str(r)},
+                      power_curve=False, approximate=True)
+        q2 = [float(x) for x in p2.split()]
+        cum, below, q1 = 0.0, 0.0, []
+        for j, q in enumerate(q2):
+            cum += q
+            up = 1.0 if j + 1 == len(q2) else 1 / (1 + math.exp(-(math.log(cum / (1 - cum)) - math.log(odds))))
+            q1.append(up - below)
+            below = up
+        expected = separated(q1, n1, q2, math.ceil(r * n1 - 1e-9))
+        assert res["rows"][0]["separated"] == pytest.approx(expected, rel=1e-10), (p2, odds)
+    row = ssc.run("sim.ordinal", "power", {"or": "1e5"}, power_curve=False, approximate=True)["rows"][0]
+    assert row["power"] == 1 and row["separated"] > 0.99
+    assert "In an expected 99.1% of such studies one group's outcomes would all lie at or above" in row["_statement"]
+    assert "separated" not in ssc.run("sim.ordinal", "power", {}, power_curve=False, approximate=True)["rows"][0]
 
 
 def test_an_ordinal_outcome_whose_groups_separate_says_so_both_ways():

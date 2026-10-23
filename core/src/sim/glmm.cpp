@@ -241,10 +241,28 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
   };
   const Rule& r = rule(nodes);
   const std::size_t n = data.size();
+  // σ is not identified when no cluster has more than one subject and the covariate takes at most two values (two
+  // groups): each cluster then enters the likelihood only through its group's population-averaged proportion,
+  // which β and σ trade off along a ridge of maxima, and the standard error of β1 is that of the ridge.  σ is held
+  // at 0 there, which is ordinary logistic regression.
+  bool hold = true;
+  std::vector<double> xs;
+  for (std::size_t i = 0; i < n && hold; ++i) {
+    if (std::find(xs.begin(), xs.end(), data[i].x) == xs.end()) xs.push_back(data[i].x);
+    hold = data[i].m <= 1 && xs.size() <= 2;
+  }
+  // with σ held, its derivatives are left out (its Newton step is then 0)
+  auto pin = [&](double* g, double* h) {
+    if (!hold) return;
+    g[2] = 0;
+    h[2] = h[5] = h[6] = h[7] = 0;
+    h[8] = -1;
+  };
   std::vector<double> modes(n, 0.0), trial_modes(n);
-  double th[3] = {b0, b1, sigma <= 0 ? 0.3 : sigma};
+  double th[3] = {b0, b1, hold ? 0 : (sigma <= 0 ? 0.3 : sigma)};
   double grad[3], hess[9];
   double ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess);
+  pin(grad, hess);
   if (!std::isfinite(ll)) return fail(Failure::Arithmetic);
   bool converged = false;
   for (int it = 0; it < 100 && !converged; ++it) {
@@ -264,6 +282,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
       // remaining error
       for (int i = 0; i < 3; ++i) th[i] += d[i];
       ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess);
+      pin(grad, hess);
       converged = std::isfinite(ll);
       break;
     }
@@ -273,6 +292,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
       for (int i = 0; i < 3; ++i) trial[i] = th[i] + step * d[i];
       std::copy(modes.begin(), modes.end(), trial_modes.begin());
       next = evaluate(data, trial[0], trial[1], trial[2], r, trial_modes, tgrad, thess);
+      pin(tgrad, thess);
       if (std::isfinite(next) && next >= ll) break;
     }
     if (!(std::isfinite(next) && next >= ll)) {
@@ -326,6 +346,7 @@ double marginal_mean(double beta, double sigma) {
 }
 
 double between_variance(double beta, double sigma) {
+  if (sigma == 0) return 0;  // which the quadrature gives only up to rounding
   const Rule& r = rule(40);
   double s = 0, s2 = 0;
   for (std::size_t k = 0; k < r.x.size(); ++k) {

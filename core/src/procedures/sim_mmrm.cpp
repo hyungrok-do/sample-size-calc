@@ -66,8 +66,9 @@ void Stats::add(int g, int k, const double* y) {
 Fit fit(const Stats& s, bool reml, const double* contrast) {
   Fit f;
   const int T = s.visits;
-  auto fail = [&](Failure why) {
+  auto fail = [&](Failure why, int visit = 0) {
     f.failure = why;
+    f.visit = visit;
     return f;
   };
   if (T < 1 || T > TMAX) return fail(Failure::Empty);
@@ -93,8 +94,8 @@ Fit fit(const Stats& s, bool reml, const double* contrast) {
         }
       }
     const int q = t + 2;  // predictors: two group means and t earlier visits
-    if (ng[0] == 0 || ng[1] == 0) return fail(Failure::Empty);
-    if (n - q < 1) return fail(Failure::Few);
+    if (ng[0] == 0 || ng[1] == 0) return fail(Failure::Empty, t + 1);
+    if (n - q < 1) return fail(Failure::Few, t + 1);
     std::array<double, Z * Z> a{};
     std::array<double, Z> rhs{};
     for (int i = 0; i < q; ++i) {
@@ -126,7 +127,7 @@ Fit fit(const Stats& s, bool reml, const double* contrast) {
     double rss = c[(2 + t) * Z + 2 + t];
     for (int i = 0; i < q; ++i) rss -= coef[i] * rhs[i];
     const double denom = reml ? n - 2 : n;
-    if (!(denom > 0)) return fail(Failure::Few);
+    if (!(denom > 0)) return fail(Failure::Few, t + 1);
     resid[t] = std::fmax(rss, 0.0) / denom;
     for (int u = 0; u < t; ++u) beta[t][u] = coef[2 + u];
   }
@@ -269,14 +270,17 @@ double expected_variance(const Design& d, double n1, double n2) {
 enum Analysis { MMRM = 0, COMPLETERS = 1 };
 
 // Bits of sim::Outcome::also: each analysis's rejection (bit MMRM or COMPLETERS), then why an analysis failed.
-constexpr unsigned EMPTY = 2, FEW = 3, ARITHMETIC = 4, NO_COMPLETERS = 5, FLAT_COMPLETERS = 6;
+constexpr unsigned EMPTY = 2, FEW = 3, ARITHMETIC = 4, NO_COMPLETERS = 5, FLAT_COMPLETERS = 6, FEW_FIRST = 7;
 
 const std::vector<simc::Cause>& causes_of(Analysis an) {
   using simc::Failures;
   static const std::vector<simc::Cause> mmrm = {
       {EMPTY, Failures::Design, "a group had no patients left at a visit"},
+      {FEW_FIRST, Failures::Design,
+       "only one patient of each group was measured at the first visit, too few to estimate its variance"},
       {FEW, Failures::Design,
-       "too few patients were left at a visit to estimate its covariances with the earlier visits"},
+       "too few patients were left at a later visit to estimate its variance and its covariances with the earlier "
+       "visits"},
       {ARITHMETIC, Failures::Numerical, "the arithmetic of the MMRM fit broke down"}};
   static const std::vector<simc::Cause> completers = {
       {NO_COMPLETERS, Failures::Design, "fewer than 2 patients of a group completed the study"},
@@ -341,7 +345,9 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
     o.estimate = (f.delta + shift) * d.sd;
     o.se = f.se * d.sd;
   } else {
-    mm_failed = f.failure == mmrm::Failure::Empty ? EMPTY : (f.failure == mmrm::Failure::Few ? FEW : ARITHMETIC);
+    mm_failed = f.failure == mmrm::Failure::Empty ? EMPTY
+                : f.failure == mmrm::Failure::Few   ? (f.visit == 1 ? FEW_FIRST : FEW)
+                                                    : ARITHMETIC;
   }
   o.also = (mm ? 1u : 0u) | (comp ? 2u : 0u) | (mm_failed ? 1u << mm_failed : 0u) |
            (comp_failed ? 1u << comp_failed : 0u);
@@ -352,6 +358,25 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
   }
   o.extra = ccount[0] + ccount[1];
   return o;
+}
+
+/// The correlation as the statement gives it: with fnum's digits, or with all of its digits when those would put it
+/// on or past an end of the open interval from `lowest` to 1 (0.99999 would read as 1, and −0.2499999 at 5
+/// exchangeable visits as the bound −0.25).
+std::string rho_text(double rho, double lowest) {
+  const std::string t = fnum(rho);
+  double shown = 0;
+  return text::parse_double(t, shown) && shown > lowest && shown < 1 ? t : text::format_roundtrip(rho);
+}
+
+/// A share lost by the last visit as a percentage: whole percents, or as many decimals as keep a share between 0
+/// and 1 from reading as 0% or 100%.
+std::string lost_text(double p) {
+  for (int decimals = 0; decimals <= 12; ++decimals) {
+    const std::string t = fpct(p, decimals);
+    if (p <= 0 || p >= 1 || (t != fpct(0, decimals) && t != fpct(1, decimals))) return t;
+  }
+  return text::format_g(100 * p, 3) + "%";
 }
 
 Procedure mmrm_proc() {
@@ -522,8 +547,8 @@ Procedure mmrm_proc() {
       }
       simc::put_summary(s, r, sm, causes_of(an));
       r.set("approx_power", approx(n1));
-      r.set("power_mmrm", simc::other_power(sm, MMRM, causes_of(MMRM)));
-      r.set("power_completers", simc::other_power(sm, COMPLETERS, causes_of(COMPLETERS)));
+      simc::put_other(r, sm, "power_mmrm", MMRM, causes_of(MMRM), an == MMRM);
+      simc::put_other(r, sm, "power_completers", COMPLETERS, causes_of(COMPLETERS), an == COMPLETERS);
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
       if (std::isfinite(sm.mean_extra)) r.set("completers", sm.mean_extra);
     }
@@ -560,12 +585,14 @@ Procedure mmrm_proc() {
                                      ? "a t-test on the patients who complete the study"
                                      : "a mixed model for repeated measures with an unstructured covariance (REML)";
     std::string drop = r.num("drop1") == r.num("drop2")
-                           ? fpct(r.num("drop1"), 0) + " of each group"
-                           : fpct(r.num("drop1"), 0) + " of group 1 and " + fpct(r.num("drop2"), 0) + " of group 2";
+                           ? lost_text(r.num("drop1")) + " of each group"
+                           : lost_text(r.num("drop1")) + " of group 1 and " + lost_text(r.num("drop2")) + " of group 2";
+    // exchangeable correlations must exceed −1/(T − 1), AR(1) ones −1
+    const double lowest = s.is("corr", "ar1") || r.num("visits") < 2 ? -1 : -1 / (r.num("visits") - 1);
     std::string t = "Randomizing " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " patients (total " +
                     fint(r.num("n")) + ") would " + simc::power_phrase(s, r) + " to detect a difference of " +
                     fnum(r.num("delta")) + " at the last of " + fint(r.num("visits")) + " visits (σ = " +
-                    fnum(r.num("sd")) + ", " + corr + fnum(r.num("rho")) + "), with " + drop +
+                    fnum(r.num("sd")) + ", " + corr + rho_text(r.num("rho"), lowest) + "), with " + drop +
                     " lost by the last visit, analyzing with " + analysis + " and a " + alt_words(alt(s)) +
                     " test at α = " + fnum(r.num("alpha")) + ".";
     t += simc::others_sentence(r, "trials", {{"MMRM", "power_mmrm"}, {"completers' t-test", "power_completers"}});
@@ -586,9 +613,9 @@ Procedure mmrm_proc() {
              "Dropout is completely at random. Under missingness at random the MMRM stays unbiased while the "
              "completers' analysis does not; the power differs little.",
              "A trial whose MMRM cannot be fitted (a group with no patients left at a visit, or too few to estimate "
-             "a visit's covariances with the earlier visits) counts as a failed analysis of the MMRM (not "
-             "rejecting), and one with fewer than 2 completers in a group as a failed analysis of the completers' "
-             "t-test.",
+             "a visit's variance and its covariances with the earlier visits) counts as a failed analysis of the "
+             "MMRM (not rejecting), and one with fewer than 2 completers in a group as a failed analysis of the "
+             "completers' t-test.",
              "The quick approximation is the expected generalized least squares variance under the true covariance "
              "and the expected dropout pattern (Lu, Luo & Chen 2008)."};
   p.references = {"Mallinckrodt, C. H., Clark, W. S. & David, S. R. (2001). Accounting for dropout bias using "

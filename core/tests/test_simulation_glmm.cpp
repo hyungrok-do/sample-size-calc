@@ -112,6 +112,27 @@ TEST_CASE("glmm: without overdispersion the fit is the logistic regression") {
   CHECK_CLOSE(f.se_b1, std::sqrt(1 / (100 * 0.25) + 1 / (100 * 0.21)), 1e-6, 0);
 }
 
+TEST_CASE("glmm: clusters of one subject are fitted by logistic regression") {
+  // σ is not identified: β and σ trade off along a ridge of maxima, and the Wald test of β1 took its standard error
+  // from that ridge (a simulated power of 1.5% for 96%).  σ is held at 0, from any starting value.
+  const std::vector<glmm::Cluster> data = {{1, 1, 1, 30}, {1, 1, 0, 70}, {0, 1, 1, 20}, {0, 1, 0, 80}};
+  for (double start : {0.0, 0.8, 3.0}) {
+    const glmm::Fit f = glmm::fit(data, -1, 0.3, start);
+    CHECK(f.ok);
+    CHECK(f.boundary);
+    CHECK_EQ(f.sigma, 0.0);
+    CHECK_CLOSE(f.b0, logit(0.2), 1e-9, 1e-12);
+    CHECK_CLOSE(f.b1, logit(0.3) - logit(0.2), 1e-9, 1e-12);
+    CHECK_CLOSE(f.se_b1, std::sqrt(1 / 30.0 + 1 / 70.0 + 1 / 20.0 + 1 / 80.0), 1e-9, 0);
+  }
+  const json::Value r = first_row(
+      R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"power_curve":false},)"
+      R"("inputs":{"p1":"0.3","p2":"0.2","m":"1","k1":"500","icc":"0","test":"z","reps":"400"}})");
+  CHECK_CLOSE(num(r, "power"), num(r, "approx_power"), 0, 4 * std::sqrt(0.96 * 0.04 / 400));
+  CHECK_EQ(num(r, "icc2"), 0.0);  // which the quadrature left at 7e-16
+  CHECK(r.get("_statement").as_string().find("500 and 500 clusters of 1 subject achieve") == 0);
+}
+
 TEST_CASE("glmm: the fit is a stationary point of the adaptive-quadrature likelihood") {
   std::vector<glmm::Cluster> data;
   sim::Rng rng(8);

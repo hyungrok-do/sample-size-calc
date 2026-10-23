@@ -177,11 +177,31 @@ inline long numerical_failures(const sim::Summary& sm, const std::vector<Cause>&
   return n;
 }
 
+/// Studies whose analysis failed, of the reasons `causes` (a failed analysis sets the bit of one reason).
+inline long failures_of(const sim::Summary& sm, const std::vector<Cause>& causes) {
+  long n = 0;
+  for (const Cause& c : causes) n += sm.also[c.bit];
+  return n;
+}
+
 /// Simulated power of another test run on the same studies (bit `bit` of sim::Outcome::also), whose analysis fails
-/// for the reasons `causes` (such studies count as not rejecting); NaN when the arithmetic broke down in more than
-/// half of them, as put_summary refuses.
+/// for the reasons `causes` (such studies count as not rejecting); NaN when it failed in every study, or when the
+/// arithmetic broke down in more than half of them, as put_summary refuses.
 inline double other_power(const sim::Summary& sm, int bit, const std::vector<Cause>& causes) {
-  return 2 * numerical_failures(sm, causes) > sm.reps ? NAN : sm.also_power(bit);
+  const bool none = sm.reps > 0 && failures_of(sm, causes) == sm.reps;
+  return none || 2 * numerical_failures(sm, causes) > sm.reps ? NAN : sm.also_power(bit);
+}
+
+/// Cells of a test run on the same studies: its power under `key` (other_power) and, where its analysis failed,
+/// the number of those studies and their reasons under key + "_failures" and key + "_why", which others_sentence
+/// reads.  The test that decides the power (`deciding`) leaves those to put_summary's failures and failures_why.
+inline void put_other(Row& r, const sim::Summary& sm, const std::string& key, int bit,
+                      const std::vector<Cause>& causes, bool deciding) {
+  r.set(key, other_power(sm, bit, causes));
+  const long failed = failures_of(sm, causes);
+  if (deciding || failed == 0) return;
+  r.set(key + "_failures", static_cast<double>(failed));
+  r.set(key + "_why", causes_text(sm, causes));
 }
 
 /// Cells of a simulated power estimate.  Studies whose analysis failed count as not rejecting.  No power is given
@@ -255,7 +275,8 @@ inline std::vector<Column> run_columns() {
   using blocks::col;
   return {col("mean_df", "Mean df", "num", "Average degrees of freedom of the simulated studies' tests"),
           col("reps", "Studies", "int", "Number of simulated studies"),
-          col("failures", "Failed Fits", "int", "Simulated studies whose model could not be fitted (not rejecting)"),
+          col("failures", "Failed Fits", "int",
+              "Simulated studies whose analysis failed, as when its model could not be fitted (not rejecting)"),
           col("seed", "Seed", "int", "Random seed")};
 }
 
@@ -274,27 +295,37 @@ inline std::string power_phrase(const Scenario& s, const Row& r) {
 }
 
 /// " On the same simulated trials the MMRM had a power of 80.5% and the completers' t-test 71.5%.": the powers of
-/// the tests named in `tests` (a name and the key of its power each), run on the same `studies`; a test whose power
-/// is not given (other_power) is said so.  Empty in an approximation.
+/// the tests named in `tests` (a name and the key of its power each), run on the same `studies`, then, for each test
+/// whose analysis failed in some of them (put_other), in how many and why, and why a power that is not given
+/// (other_power) is not.  Empty in an approximation.
 inline std::string others_sentence(const Row& r, const std::string& studies,
                                    const std::vector<std::pair<std::string, std::string>>& tests) {
-  std::vector<std::string> given, broken;
+  std::vector<std::string> given;
+  std::string failed_text;
+  const std::string all = grouped(r.num("reps")) + " simulated " + studies;
   for (const auto& t : tests) {
     if (!r.has(t.second)) return "";
-    if (std::isfinite(r.num(t.second)))
+    const double failed = r.has(t.second + "_failures") ? r.num(t.second + "_failures") : 0;
+    const std::string why = " (" + text_of(r, t.second + "_why") + ")";
+    if (std::isfinite(r.num(t.second))) {
       given.push_back(t.first + (given.empty() ? " had a power of " : " ") + blocks::fpct(r.num(t.second)));
-    else
-      broken.push_back(t.first);
+      if (failed > 0)
+        failed_text += " " + grouped(failed) + " of the " + all + " could not be analyzed by the " + t.first +
+                       (failed == 1 ? " and counts" : " and count") + " as not rejecting" + why + ".";
+    } else if (failed >= r.num("reps")) {
+      failed_text += " None of the " + all + " could be analyzed by the " + t.first + why +
+                     ", so its power is not given.";
+    } else {
+      failed_text += " " + grouped(failed) + " of the " + all + " could not be analyzed by the " + t.first + why +
+                     ", and as its arithmetic broke down in more than half of them, its power is not given.";
+    }
   }
   std::string s;
   for (std::size_t i = 0; i < given.size(); ++i)
     s += (i == 0 ? " On the same simulated " + studies + " the " : (i + 1 == given.size() ? " and the " : ", the ")) +
          given[i];
   if (!given.empty()) s += ".";
-  for (const auto& b : broken)
-    s += " The arithmetic of the " + b + " broke down in most of the simulated " + studies +
-         ", so its power is not given.";
-  return s;
+  return s + failed_text;
 }
 
 /// Closing sentences: what the approximation is, or how the simulation compares with it.
@@ -309,7 +340,8 @@ inline std::string method_note(const Row& r) {
   const std::string why = text_of(r, "failures_why");
   if (failed > 0)
     t += " " + blocks::fint(failed) + " simulated " + (failed == 1 ? "study" : "studies") +
-         " could not be analyzed and count as not rejecting" + (why.empty() ? "" : " (" + why + ")") + ".";
+         " could not be analyzed and " + (failed == 1 ? "counts" : "count") + " as not rejecting" +
+         (why.empty() ? "" : " (" + why + ")") + ".";
   return t;
 }
 

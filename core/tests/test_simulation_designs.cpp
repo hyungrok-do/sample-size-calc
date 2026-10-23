@@ -273,6 +273,30 @@ TEST_CASE("ordinal: type I error, Whitehead's approximation and the search") {
   CHECK(num(below_n, "power") < 0.9);
 }
 
+TEST_CASE("ordinal: the approximation gives the expected share of separated studies for the Wald test") {
+  // Whitehead's formula gave 100% where nearly every study is separated and the Wald test cannot reject; the share
+  // is P(max Y1 ≤ min Y2) + P(max Y2 ≤ min Y1) less twice P(every outcome in one category), here against a sum over
+  // every pair of tables
+  auto approx = [](const std::string& inputs) {
+    return first_row(R"({"procedure":"sim.ordinal","solve_for":"power","options":{"approximate":true},"inputs":{)" +
+                     inputs + "}}");
+  };
+  CHECK_CLOSE(num(approx(R"("p2":"0.5 0.5","n1":"5")"), "separated"), 0.16726510438359024, 1e-12, 0);
+  CHECK_CLOSE(num(approx(R"("p2":"0.2 0.5 0.3","or":"4","n1":"4","r":"1.5")"), "separated"), 0.23775891079458425,
+              1e-12, 0);
+  const json::Value far = approx(R"("or":"1e10")");
+  CHECK(num(far, "power") == 1);
+  CHECK(num(far, "separated") > 0.9999);
+  CHECK(far.get("_statement").as_string().find("In nearly all such studies one group's outcomes would all lie at or "
+                                               "above the other's, where the Wald test cannot reject") !=
+        std::string::npos);
+  CHECK(approx(R"("or":"1e5")").get("_statement").as_string().find("In an expected 99.1% of such studies") !=
+        std::string::npos);
+  // not below 1%, nor for the tests that can reject a separated study
+  CHECK(approx("").get("separated").is_null());
+  CHECK(approx(R"("or":"1e10","test":"lr")").get("separated").is_null());
+}
+
 // ------------------------------------------------------------------ repeated measures with dropout (MMRM)
 
 namespace {
@@ -387,8 +411,44 @@ TEST_CASE("mmrm: the fit is the same in combinations of the visits, and says why
     few.add(i % 2, i < 5 ? 4 : 3, y);
   }
   const procs::mmrm::Fit a = procs::mmrm::fit(empty, true), b = procs::mmrm::fit(few, true);
-  CHECK(!a.ok && a.failure == procs::mmrm::Failure::Empty);
-  CHECK(!b.ok && b.failure == procs::mmrm::Failure::Few);
+  CHECK(!a.ok && a.failure == procs::mmrm::Failure::Empty && a.visit == 4);
+  CHECK(!b.ok && b.failure == procs::mmrm::Failure::Few && b.visit == 4);
+  // one patient of each group at the first visit leaves its variance nothing to go on: no earlier visits are
+  // involved, and the statement says so
+  procs::mmrm::Stats first;
+  first.visits = 2;
+  for (int g = 0; g < 2; ++g) {
+    const double y[2] = {0.3 + g, -0.4 * g};
+    first.add(g, 2, y);
+  }
+  const procs::mmrm::Fit c = procs::mmrm::fit(first, true);
+  CHECK(!c.ok && c.failure == procs::mmrm::Failure::Few && c.visit == 1);
+  const json::Value one = first_row(power_request("sim.mmrm", R"("visits":"1","n1":"3","drop1":"0.5","drop2":"0.5",)"
+                                                              R"("reps":"200")"));
+  const std::string why = one.get("failures_why").as_string();
+  CHECK(why.find("only one patient of each group was measured at the first visit, too few to estimate its "
+                 "variance") != std::string::npos);
+  CHECK(why.find("earlier visits") == std::string::npos);
+}
+
+TEST_CASE("mmrm: the statement shows a correlation or a dropout near an end of its range as it is") {
+  // ρ = 0.9999999999993 read "exchangeable correlation 1", outside the open interval allowed, and a dropout of
+  // 0.4% read 0%
+  auto statement = [](const std::string& inputs) {
+    return first_row(R"({"procedure":"sim.mmrm","solve_for":"power","options":{"approximate":true},"inputs":{)" +
+                     inputs + "}}")
+        .get("_statement")
+        .as_string();
+  };
+  CHECK(statement(R"("rho":"0.9999999999993")").find("exchangeable correlation 0.9999999999993)") !=
+        std::string::npos);
+  CHECK(statement(R"("rho":"-0.9999999999999999","corr":"ar1")").find("AR(1) correlation -0.9999999999999999)") !=
+        std::string::npos);
+  CHECK(statement(R"("rho":"-0.2499999")").find("exchangeable correlation -0.2499999)") != std::string::npos);
+  CHECK(statement(R"("rho":"0.6")").find("exchangeable correlation 0.6)") != std::string::npos);
+  CHECK(statement(R"("drop1":"0.004","drop2":"0.9999")").find("with 0.4% of group 1 and 99.99% of group 2 lost") !=
+        std::string::npos);
+  CHECK(statement(R"("drop1":"0.2","drop2":"0.2")").find("with 20% of each group lost") != std::string::npos);
 }
 
 TEST_CASE("mmrm: visits correlated within 1e-12 of 1 or -1 keep their power") {

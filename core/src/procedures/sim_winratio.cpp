@@ -350,22 +350,22 @@ sim::Outcome winratio_study(const Design& d, long n1, long n2, long rep, std::ui
   unsigned wr_failed = ONE_SIDED;
   if (wins > 0 && losses > 0) {
     const double tw = wins / (a1 * a2), tl = losses / (a1 * a2);
-    auto cov = [](const std::vector<double>& x, const std::vector<double>& y, double scale) {
-      const double m = static_cast<double>(x.size());
-      double mx = 0, my = 0, s = 0;
-      for (std::size_t i = 0; i < x.size(); ++i) {
-        mx += x[i];
-        my += y[i];
-      }
-      mx /= m;
-      my /= m;
-      for (std::size_t i = 0; i < x.size(); ++i) s += (x[i] - mx) * (y[i] - my);
-      return s / (m - 1) / (scale * scale) / m;
-    };
-    // per patient: the share of the other group's patients beaten (and lost to)
-    const double vw = cov(w1, w1, a2) + cov(l2, l2, a1), vl = cov(l1, l1, a2) + cov(w2, w2, a1);
-    const double cwl = cov(w1, l1, a2) + cov(l2, w2, a1);
-    const double v = vw / (tw * tw) + vl / (tl * tl) - 2 * cwl / (tw * tl);
+    // The delta-method variance vw/θW² + vl/θL² − 2cwl/(θW θL), from the U-statistic covariance of (θW, θL), is
+    // within each group the variance of a patient's share of the other group beaten over θW less the share lost to
+    // over θL, divided by the group's size.  Times wins · losses / (n1 n2) those are the whole numbers
+    // w · losses − l · wins (exact below 2⁵³, so up to the 200,000 patients allowed), whose mean is 0: their sum of
+    // squares is 0 exactly where the variance is, where the difference of the three rounded terms could fall to or
+    // below 0, or stay just above it and reject.
+    double ss1 = 0, ss2 = 0;
+    for (std::size_t i = 0; i < w1.size(); ++i) {
+      const double e = w1[i] * losses - l1[i] * wins;
+      ss1 += e * e;
+    }
+    for (std::size_t i = 0; i < w2.size(); ++i) {
+      const double e = l2[i] * losses - w2[i] * wins;
+      ss2 += e * e;
+    }
+    const double v = (a1 / (a1 - 1) * ss1 + a2 / (a2 - 1) * ss2) / (wins * losses) / (wins * losses);
     wr_failed = FLAT;
     if (v > 0) {
       wr_failed = 0;
@@ -595,8 +595,8 @@ Procedure winratio() {
       }
       simc::put_summary(s, r, sm, causes_of(test));
       r.set("approx_power", approx(n1));
-      r.set("power_fs", simc::other_power(sm, FS, causes_of(FS)));
-      r.set("power_wr", simc::other_power(sm, WR, causes_of(WR)));
+      simc::put_other(r, sm, "power_fs", FS, causes_of(FS), test == FS);
+      simc::put_other(r, sm, "power_wr", WR, causes_of(WR), test == WR);
       if (std::isfinite(sm.mean_estimate)) r.set("mean_wr", std::exp(sm.mean_estimate));
       if (std::isfinite(sm.mean_extra)) r.set("mean_nb", sm.mean_extra);
     }

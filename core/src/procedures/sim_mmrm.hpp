@@ -34,6 +34,7 @@ enum class Failure {
 struct Fit {
   bool ok = false;
   Failure failure = Failure::None;
+  int visit = 0;     // the visit (1 = the first) at which the fit failed, for Empty and Few
   double delta = 0;  // estimated mean of group 1 minus group 2 at the last visit (or of the combination asked for)
   double se = 0;     // its model-based standard error
   double observed_last = 0;  // patients observed at the last visit

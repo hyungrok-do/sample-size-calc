@@ -36,8 +36,7 @@ double cluster_loglik(double eta, double m, double s, double sigma, int nodes = 
 /// Why a fit failed.
 enum class Failure {
   None,
-  Separation,   // the estimates ran off, as when a group's clusters all have the outcome in none (or all) of their
-                // subjects
+  Separation,   // the estimates ran off, as when no subject of a group (or every one) has the outcome
   Arithmetic,   // the likelihood could not be computed, or Newton's method stopped short of the maximum
   Information,  // the observed information at the maximum is not positive definite: no standard error
 };
@@ -49,10 +48,11 @@ struct Fit {
   double se_b1 = 0;                  // from the observed information
   double loglik = 0;
   int iterations = 0;
-  bool boundary = false;  // σ estimated as 0
+  bool boundary = false;  // σ estimated as 0, or held there
 };
 
-/// Maximum likelihood fit from the starting values (b0, b1, sigma).
+/// Maximum likelihood fit from the starting values (b0, b1, sigma).  With one subject per cluster and two groups, σ
+/// is not identified and is held at 0 (ordinary logistic regression).
 Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, int nodes = 21);
 
 /// E[expit(β + σZ)] for Z ~ N(0, 1): the population-averaged proportion of a cluster-specific β.

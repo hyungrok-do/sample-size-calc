@@ -263,6 +263,28 @@ double win_probability(const Design& d) {
   return w;
 }
 
+/// Probability that a study of n1 and n2 subjects has one group's outcomes all at or above the other's, every
+/// outcome in one category left aside: the separated studies, which the Wald test cannot analyze.
+double separation_probability(const Design& d, double n1, double n2) {
+  // P(max Ya ≤ min Yb) = Σ_j P(max Ya = j) P(Yb ≥ j)^nb, which with (a, b) = (1, 2) and (2, 1) counts the
+  // studies with every outcome in one category twice
+  auto below = [&](const std::array<double, CMAX>& pa, double na, const std::array<double, CMAX>& pb, double nb) {
+    std::array<double, CMAX + 1> above{};  // P(Yb ≥ j)
+    for (int j = d.k - 1; j >= 0; --j) above[j] = above[j + 1] + pb[j];
+    double total = 0, cum = 0, before = 0;
+    for (int j = 0; j < d.k; ++j) {
+      cum += pa[j];
+      const double upto = std::pow(std::fmin(cum, 1.0), na);
+      total += (upto - before) * std::pow(std::fmin(above[j], 1.0), nb);
+      before = upto;
+    }
+    return total;
+  };
+  double single = 0;
+  for (int j = 0; j < d.k; ++j) single += std::pow(d.p1[j], n1) * std::pow(d.p2[j], n2);
+  return std::fmax(0.0, below(d.p1, n1, d.p2, n2) + below(d.p2, n2, d.p1, n1) - 2 * single);
+}
+
 enum Test { WALD = 0, LR = 1, RANKS = 2 };
 
 // Bits of sim::Outcome::also: each test's rejection (bit WALD, LR or RANKS), then why a test could not be computed
@@ -472,6 +494,9 @@ Procedure ordinal() {
     }
     if (ctx.approximate) {
       simc::put_approximation(s, r, approx(n1));
+      // Whitehead's formula leaves out the separated studies, where the Wald test cannot reject
+      const double separated = test == WALD ? separation_probability(d, n1, n2_of(n1)) : 0;
+      if (separated >= 0.01) r.set("separated", separated);
     } else {
       const long reps = static_cast<long>(s("reps"));
       const auto seed = static_cast<std::uint64_t>(s("seed"));
@@ -506,9 +531,9 @@ Procedure ordinal() {
       }
       simc::put_summary(s, r, sm, causes_of(test));
       r.set("approx_power", approx(n1));
-      r.set("power_wald", simc::other_power(sm, WALD, causes_of(WALD)));
-      r.set("power_lr", simc::other_power(sm, LR, causes_of(LR)));
-      r.set("power_mw", simc::other_power(sm, RANKS, causes_of(RANKS)));
+      simc::put_other(r, sm, "power_wald", WALD, causes_of(WALD), test == WALD);
+      simc::put_other(r, sm, "power_lr", LR, causes_of(LR), test == LR);
+      simc::put_other(r, sm, "power_mw", RANKS, causes_of(RANKS), test == RANKS);
       if (std::isfinite(sm.mean_estimate)) r.set("mean_logor", sm.mean_estimate);
       if (sm.also[SEPARATED] > 0) r.set("separated", sm.also_power(SEPARATED));
     }
@@ -536,7 +561,8 @@ Procedure ordinal() {
                    col("power_lr", "Power (LR)", "prob", "Simulated power of the likelihood-ratio test"),
                    col("power_mw", "Power (M–W)", "prob", "Simulated power of the Mann–Whitney test"),
                    col("separated", "Separated", "prob", "Share of studies with complete separation (one group "
-                                                         "entirely above the other)"),
+                                                         "entirely above the other); in an approximation, the "
+                                                         "expected share, given from 1% on"),
                    col("alpha", "Alpha", "alpha")})
       c.push_back(x);
     for (const auto& x : simc::run_columns()) c.push_back(x);
@@ -557,6 +583,12 @@ Procedure ordinal() {
                     " at α = " + fnum(r.num("alpha")) + ".";
     t += simc::others_sentence(r, "studies", {{"Wald test", "power_wald"}, {"likelihood-ratio test", "power_lr"},
                                              {"Mann–Whitney test", "power_mw"}});
+    if (text_of(r, "method") == "approximation" && r.has("separated")) {
+      const std::string share = fpct(r.num("separated"), 1);
+      t += " In " + (share == "100.0%" ? std::string("nearly all") : "an expected " + share + " of") +
+           " such studies one group's outcomes would all lie at or above the other's, where the Wald test cannot "
+           "reject; the approximation leaves this out.";
+    }
     return t + simc::method_note(r);
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
@@ -574,7 +606,8 @@ Procedure ordinal() {
              "can. Such a study counts as a failed analysis of the Wald test (not rejecting), as a study with every "
              "outcome in one category does for every test.",
              "The quick approximation is Whitehead's (1993) formula for a common odds ratio, and Noether's formula "
-             "with the tie correction when group 1's probabilities are given.",
+             "with the tie correction when group 1's probabilities are given. It leaves out separation; for the "
+             "Wald test, the expected share of separated studies is given when it is 1% or more.",
              "Giving group 1's probabilities directly shows the power when the odds are not proportional, for "
              "example when a treatment helps only the most severe patients."};
   p.references = {"Whitehead, J. (1993). Sample size calculations for ordered categorical data. Statistics in "
