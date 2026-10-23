@@ -17,10 +17,116 @@ using namespace blocks;
 // =====================================================================================
 // Farrington–Manning restricted maximum likelihood
 // =====================================================================================
-// Difference: maximize the two-sample binomial likelihood under p1 − p2 = s.
-// Closed-form root of the score cubic (Farrington & Manning 1990), with a
-// golden-section fallback when the trigonometric solution is degenerate.
-void rmle_diff(double ph1, double ph2, double theta, double s, double& pt1, double& pt2) {
+// The difference estimates near 0 or 1, where the closed form below loses their digits: its error is about 1e-16 over
+// the distance to the cubic's nearest other root, which lies at 0 or 1 when the estimate is next to one of them (an
+// estimate of 1e-20 kept none, one of 1e-4 about eight), and when the small numbers of both groups are alike the three
+// roots crowd together (a table with no responses in one group and all in the other, of equal size, at a margin
+// 2.5e-4 from ±1, kept three).  In a frame where the estimate x is that of the smallest of p1, 1 − p1, p2 and 1 − p2
+// (near0: of p1 or p2; the groups, and responses with non-responses, exchanged as needed), the constraint is
+// p2 = x + σ with σ = |s|, so that p2, 1 − x and 1 − p2 = δ − x (δ = 1 − σ) keep their digits too; the score times
+// x(1 − x)p2(1 − p2) is a cubic c0 + c1·x + c2·x² + c3·x³, positive below its root in (0, δ) and negative above it,
+// whose coefficients are taken from each group's proportion u (or v), its complement and its weight in forms that keep
+// their digits (in δ, which is then exact, when σ is above 1/2, where the terms in σ cancelled).  Without responses in
+// x's group (c0 = 0) the root is the smaller one of the quadratic c1 + c2·x + c3·x².  Otherwise Newton's method finds
+// it, kept inside the bracket the signs have shown, from the start x0: one next to the root (`rough` 0), one that is
+// next to it only in absolute terms (1: the closed form's below 1e-4), or one merely above it (2: a bound).  The last
+// two take first a step of x = the root of (c2 + c3·x)·x² + c1·x + c0, the other root of the quadratic falling
+// through 0, which lands next to the root when x lies far below the other numbers; from the closed form, the size of
+// the step after it, c3·x²·|x − x0| / |2(c2 + c3·x0)·x + c1|, says how many Newton steps are still needed (none, when
+// it is below a rounding error; one, below 1e-8, where Newton doubles the digits).  With s near ±1 the other small
+// number is 1 − p2: when that is the smaller, the frame is taken again.
+void diff_small(double ph1, double ph2, double theta, double s, bool near0, double x0, int rough, double& pt1,
+                double& pt2, double& q1, double& q2) {
+  const double sg = std::fabs(s), dl = 1 - sg;
+  for (int frame = 0; frame < 2; ++frame) {
+    const bool g1 = near0 ? s <= 0 : s >= 0;  // whether x is group 1's
+    double u = g1 ? ph1 : ph2, uc = 1 - u, v = g1 ? ph2 : ph1, vc = 1 - v;
+    if (!near0) std::swap(u, uc), std::swap(v, vc);
+    const double wu = g1 ? 1 : theta, wv = g1 ? theta : 1, c0 = wu * u * sg * dl, c3 = wu + wv;
+    double c1, c2;
+    if (sg <= 0.5) {
+      c1 = wu * (u * (dl - sg) - sg * dl) + wv * (v * dl - vc * sg);
+      c2 = -(wu * (u + dl - sg) + wv * (v + dl));
+    } else {
+      const double dw = wv - wu;
+      c1 = dl * (dw + wu * (2 * u + dl)) - (wu * u + wv * vc);
+      c2 = -(dl * (2 * wu + wv) + dw + (wu * u - wv * vc));
+    }
+    double x = std::clamp(x0, 0.0, dl);
+    if (c0 == 0) {
+      x = c1 > 0 ? std::min(2 * c1 / (std::sqrt(std::max(0.0, c2 * c2 - 4 * c1 * c3)) - c2), dl) : 0;
+    } else {
+      int steps = 100;  // Newton's, at most
+      if (rough > 0) {
+        const double b = c2 + c3 * x, d = std::sqrt(std::max(0.0, c1 * c1 - 4 * b * c0));
+        const double y = c1 < 0 ? 2 * c0 / (d - c1) : (b < 0 ? (c1 + d) / (-2 * b) : -1);
+        if (y > 0 && y < dl) {
+          // the step after it, relative to y, is about after / scale
+          const double after = c3 * y * std::fabs(y - x), scale = std::fabs(2 * b * y + c1);
+          if (rough == 1) steps = after <= 2e-16 * scale ? 0 : (after <= 1e-8 * scale ? 1 : 100);
+          x = y;
+        }
+      }
+      double lo = 0, hi = dl;
+      for (int it = 0; it < steps; ++it) {
+        const double g = c0 + x * (c1 + x * (c2 + x * c3));
+        if (g == 0) break;
+        (g > 0 ? lo : hi) = x;
+        double next = x - g / (c1 + x * (2 * c2 + 3 * c3 * x));
+        if (!(next >= lo && next <= hi)) next = 0.5 * (lo + hi);
+        const double step = std::fabs(next - x);
+        x = next;
+        if (step <= 1e-15 * x) break;
+      }
+    }
+    // back from the frame: x and 1 − x for its group, x + σ and δ − x for the other
+    double ex = x, cx = 1 - x, eo = x + sg, co = dl - x;
+    if (!near0) std::swap(ex, cx), std::swap(eo, co);
+    if (g1)
+      pt1 = ex, q1 = cx, pt2 = eo, q2 = co;
+    else
+      pt2 = ex, q2 = cx, pt1 = eo, q1 = co;
+    if (!(dl - x < x)) return;
+    near0 = !near0, x0 = dl - x, rough = 0;
+  }
+}
+
+// Difference: maximize the two-sample binomial likelihood under p1 − p2 = s; q1 and q2 are 1 − pt1 and 1 − pt2.
+// The likelihood is concave in p1 on [max(0, s), min(1, 1 + s)].  Its slope at an end is infinite unless the data
+// leave out the term that makes it so (no responses in group 1 at p1 = 0, say); where such a slope points outward,
+// the maximum is at that end, and the estimates are exact: in a table where every subject responded, at a margin
+// s < 0, p1 = 1 + s and p2 = 1, so that 1 − p1 = −s however small s is (lost to rounding, it left the table no
+// variance, and its numerator −s an infinite statistic).  Otherwise each group alone would put p1 at its own
+// proportion (ph1, or ph2 + s), and the maximum lies between the two: where that bounds an estimate below 1e-4 (or
+// its complement), diff_small finds it directly.  Else the closed-form root of the score cubic (Farrington &
+// Manning 1990), with a golden-section fallback when the trigonometric solution is degenerate (whose maximum
+// diff_small always takes again); diff_small takes again the estimates within 1e-4 of 0 or 1, or within 0.05 for a
+// `single` evaluation (the normal approximation's).  Up to 0.05 the closed form's errors reach about 4e-8 relative in
+// the variance (1e-13 beyond); an enumeration of millions of tables keeps them above 1e-4, where they move a table's
+// statistic by as little, which changes its verdict only if it lies that close to the critical value.
+void rmle_diff(double ph1, double ph2, double theta, double s, double& pt1, double& pt2, double& q1, double& q2,
+               bool single = false) {
+  const double qh1 = 1 - ph1, qh2 = 1 - ph2;
+  auto at = [&](double e1, double c1, double e2, double c2) { pt1 = e1, q1 = c1, pt2 = e2, q2 = c2; };
+  if (s < 0) {
+    const double sg = -s, dl = 1 + s;
+    if (ph1 == 0 && theta * (ph2 * dl - qh2 * sg) <= sg * dl) return at(0, 1, sg, dl);
+    if (qh2 == 0 && ph1 * sg - qh1 * dl + theta * sg * dl >= 0) return at(dl, sg, 1, 0);
+  } else if (s > 0) {
+    const double dl = 1 - s;
+    if (ph2 == 0 && ph1 * dl - qh1 * s <= theta * s * dl) return at(s, dl, 0, 1);
+    if (qh1 == 0 && s * dl + theta * (ph2 * s - qh2 * dl) >= 0) return at(1, 0, dl, s);
+  } else {
+    if (ph1 == 0 && ph2 == 0) return at(0, 1, 0, 1);
+    if (qh1 == 0 && qh2 == 0) return at(1, 0, 1, 0);
+  }
+  // bounds on the smaller of p1 and p2, and on the smaller of their complements (no smaller than the smallest
+  // observed proportion or complement, which is looked at first, so that an ordinary enumeration's tables go on)
+  if (std::min(std::min(ph1, ph2), std::min(qh1, qh2)) < 1e-4) {
+    const double b0 = std::min(std::max(ph1, ph2 + s), std::max(ph1 - s, ph2));
+    const double b1 = std::min(std::max(qh1, qh2 - s), std::max(qh2, qh1 + s));
+    if (std::min(b0, b1) < 1e-4) return diff_small(ph1, ph2, theta, s, b0 <= b1, std::min(b0, b1), 2, pt1, pt2, q1, q2);
+  }
   const double a = 1 + theta;
   const double b = -(1 + theta + ph1 + theta * ph2 + s * (theta + 2));
   const double c = s * s + s * (2 * ph1 + theta + 1) + ph1 + theta * ph2;
@@ -30,8 +136,7 @@ void rmle_diff(double ph1, double ph2, double theta, double s, double& pt1, doub
   bool ok = uu > 0;
   if (ok) {
     const double u = std::copysign(std::sqrt(uu), v);
-    double arg = v / (u * u * u);
-    arg = std::max(-1.0, std::min(1.0, arg));
+    const double arg = std::clamp(v / (u * u * u), -1.0, 1.0);  // no number stays so (and goes to the fallback)
     const double w = (stats::PI + std::acos(arg)) / 3;
     pt1 = 2 * u * std::cos(w) - b / (3 * a);
     pt2 = pt1 - s;
@@ -60,20 +165,35 @@ void rmle_diff(double ph1, double ph2, double theta, double s, double& pt1, doub
         x3 = x2; x2 = x1; f2 = f1; x1 = x3 - g * (x3 - x0); f1 = L(x1);
       }
     }
-    pt1 = 0.5 * (x0 + x3);
-    pt2 = pt1 - s;
+    // its maximum, whose digits are those of a flat top, is a rough start, taken again whatever its size
+    const double e1 = 0.5 * (x0 + x3), e2 = e1 - s;
+    const double m0 = std::min(e1, e2), m1 = std::min(1 - e1, 1 - e2);
+    return diff_small(ph1, ph2, theta, s, m0 <= m1, std::min(m0, m1), 2, pt1, pt2, q1, q2);
   }
+  q1 = 1 - pt1;
+  q2 = 1 - pt2;
+  const double m0 = std::min(pt1, pt2), m1 = std::min(q1, q2), m = std::min(m0, m1);
+  if (m < (single ? 0.05 : 1e-4)) diff_small(ph1, ph2, theta, s, m0 <= m1, m, m < 1e-4 ? 1 : 0, pt1, pt2, q1, q2);
 }
 
-// Ratio: maximize under p1 = phi · p2 (quadratic in p2).
-void rmle_ratio(double ph1, double ph2, double theta, double phi, double& pt1, double& pt2) {
-  const double A = phi * (1 + theta);
-  const double B = -(phi + ph1 + theta + phi * theta * ph2);
-  const double C = ph1 + theta * ph2;
-  const double disc = std::max(0.0, B * B - 4 * A * C);
-  pt2 = (-B - std::sqrt(disc)) / (2 * A);
-  pt2 = std::min(std::max(pt2, 0.0), std::min(1.0, 1 / phi));
+// Ratio: maximize under p1 = phi · p2, the smaller root of A·p2² + B·p2 + C (A = phi(1 + θ),
+// −B = phi(1 + θ·ph2) + ph1 + θ, C = ph1 + θ·ph2), taken as 2C/(−B + √D): (−B − √D)/(2A) cancelled to 0 once 4AC
+// was below a rounding error of B² (phi below about 1e-16, or above 1e16 with a small P2), leaving the table no
+// variance.  D = B² − 4AC = e² + K with e = phi(1 + θ·ph2) − ph1 − θ (in the form that keeps its digits with phi and
+// the proportions near 1) and K = 4·phi·θ(1 − ph1)(1 − ph2), and 1 − pt2 and 1 − pt1 are (√D + e + 2θ(1 − ph2)) and
+// (√D − e + 2·phi(1 − ph1)) over −B + √D, sums of terms that are not negative once √D ± e, where it would cancel, is
+// K/(√D ∓ e).
+void rmle_ratio(double ph1, double ph2, double theta, double phi, double& pt1, double& pt2, double& q1, double& q2) {
+  const double qh1 = 1 - ph1, qh2 = 1 - ph2;
+  const double up = phi * (1 + theta * ph2), vp = ph1 + theta;     // −B = up + vp
+  const double e = (phi - ph1) + theta * ((phi - 1) * ph2 - qh2);  // up − vp
+  const double K = 4 * phi * theta * qh1 * qh2, d = std::sqrt(e * e + K);
+  const double dpe = e >= 0 ? d + e : K / (d - e), dme = e <= 0 ? d - e : K / (d + e);
+  const double inv = 1 / (up + vp + d);
+  pt2 = 2 * (ph1 + theta * ph2) * inv;
+  q2 = (dpe + 2 * theta * qh2) * inv;
   pt1 = phi * pt2;
+  q1 = (dme + 2 * phi * qh1) * inv;
 }
 
 // Odds ratio: maximize under p1/(1 − p1) = psi · p2/(1 − p2).  The score equations keep the expected number of
@@ -128,15 +248,15 @@ double diff_of(double x, double qx, double y, double qy) {
   return std::max(x, y) <= std::max(qx, qy) ? x - y : qy - qx;
 }
 
-Score fm_score(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
+// `single`: an evaluation of its own, not one of an enumeration's tables (rmle_diff refines more of its estimates).
+Score fm_score(const NiSpec& S, double ph1, double ph2, double n1, double n2, bool single = false) {
   const double theta = n2 / n1;
-  double pt1, pt2;
+  double pt1, pt2, q1, q2;
   if (S.scale == Scale::Ratio) {
-    rmle_ratio(ph1, ph2, theta, S.bound, pt1, pt2);
-    return {ph1 - S.bound * ph2, pt1 * (1 - pt1) / n1 + S.bound * S.bound * pt2 * (1 - pt2) / n2, 1, -S.bound};
+    rmle_ratio(ph1, ph2, theta, S.bound, pt1, pt2, q1, q2);
+    return {ph1 - S.bound * ph2, pt1 * q1 / n1 + S.bound * S.bound * pt2 * q2 / n2, 1, -S.bound};
   }
   if (S.scale == Scale::Odds) {
-    double q1, q2;
     rmle_odds(ph1, ph2, theta, S.bound, pt1, pt2, q1, q2);
     const double a = n1 * pt1 * q1, b = n2 * pt2 * q2;  // each group's information
     // the numerator; below 1e-6 it is taken again from the group whose numbers are the smaller, proportions or
@@ -153,14 +273,21 @@ Score fm_score(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
     const double inv = 1 / (a + b);            // one division for the three terms (paid at every table enumerated)
     return {num, a * b * inv / (n1 * n1), b * inv, -a * inv * theta};
   }
-  rmle_diff(ph1, ph2, theta, S.bound, pt1, pt2);
-  return {ph1 - ph2 - S.bound, pt1 * (1 - pt1) / n1 + pt2 * (1 - pt2) / n2, 1, -1};
+  rmle_diff(ph1, ph2, theta, S.bound, pt1, pt2, q1, q2, single);
+  const double var0 = pt1 * q1 / n1 + pt2 * q2 / n2;
+  if (std::fabs(S.bound) <= 0.5) return {ph1 - ph2 - S.bound, var0, 1, -1};
+  // with D0 near ±1, ph1 − ph2 and D0 can cancel where the variance is tiny, and the rounding error of ph1 − ph2 was
+  // then the whole numerator: it is added back (with |D0| up to 1/2, where they cancel the variance is not tiny, or
+  // ph1 − ph2 is exact)
+  const double t = ph1 - ph2, z = t - ph1, err = (ph1 - (t - z)) - (ph2 + z);
+  return {(t - S.bound) + err, var0, 1, -1};
 }
 
-// Score statistic for observed proportions.
+// Score statistic for observed proportions.  A table with no variance at the boundary (restricted estimates all 0
+// or 1, which only a table whose numerator is 0 has) carries no information and never rejects.
 double fm_z(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
   const Score c = fm_score(S, ph1, ph2, n1, n2);
-  if (!(c.var0 > 0)) return c.num == 0 ? 0.0 : std::copysign(INFINITY, c.num);
+  if (!(c.var0 > 0)) return 0;
   return c.num / std::sqrt(c.var0);
 }
 
@@ -168,7 +295,7 @@ double fm_z(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
 // proportions, and the critical value its variance at the boundary.
 double fm_power_normal(const NiSpec& S, double n1, double n2, double p1, double p2) {
   using namespace stats;
-  const Score c = fm_score(S, p1, p2, n1, n2);
+  const Score c = fm_score(S, p1, p2, n1, n2, true);
   const double v1 = c.g1 * c.g1 * p1 * (1 - p1) / n1 + c.g2 * c.g2 * p2 * (1 - p2) / n2;
   const double z = qnorm(S.alpha, false);
   return pnorm(((S.upper ? c.num : -c.num) - z * std::sqrt(c.var0)) / std::sqrt(v1));
@@ -179,7 +306,7 @@ double fm_power_normal(const NiSpec& S, double n1, double n2, double p1, double 
 // same estimate; on the ratio and odds-ratio scales they are jointly normal.
 double tost_power_normal(const NiSpec& L, const NiSpec& U, double n1, double n2, double p1, double p2) {
   using namespace stats;
-  const Score l = fm_score(L, p1, p2, n1, n2), u = fm_score(U, p1, p2, n1, n2);
+  const Score l = fm_score(L, p1, p2, n1, n2, true), u = fm_score(U, p1, p2, n1, n2, true);
   const double w1 = p1 * (1 - p1) / n1, w2 = p2 * (1 - p2) / n2;
   const double sl = std::sqrt(l.g1 * l.g1 * w1 + l.g2 * l.g2 * w2), su = std::sqrt(u.g1 * u.g1 * w1 + u.g2 * u.g2 * w2);
   const double z = qnorm(L.alpha, false);
@@ -197,14 +324,15 @@ constexpr double MAX_CELLS = 4e7;
 constexpr double FM_CELL_COST = 7;
 
 // Exact power of a set of score tests that must all reject (one for NI, two for TOST); NaN when the
-// enumeration is too large (the callers then use the normal approximation).
+// enumeration is too large (the callers then use the normal approximation).  q1, when given, is 1 − p1 (for a P1 that
+// rounds to 1).
 double fm_power_exact(const std::vector<NiSpec>& tests, double n1d, double n2d, double p1, double p2,
-                      const RunContext& ctx) {
+                      const RunContext& ctx, double q1 = NAN) {
   // the counts are ints (binom_window computes n + 1); their sums are taken as doubles
   constexpr double most = std::numeric_limits<int>::max() - 1.0;
   if (!(n1d >= 0 && n2d >= 0 && n1d <= most && n2d <= most)) return NAN;
   const int n1 = static_cast<int>(n1d), n2 = static_cast<int>(n2d);
-  const BinomWindow w1 = binom_window(n1, p1), w2 = binom_window(n2, p2);
+  const BinomWindow w1 = binom_window_pq(n1, p1, std::isnan(q1) ? 1 - p1 : q1), w2 = binom_window(n2, p2);
   const double cells = static_cast<double>(w1.hi - w1.lo + 1) * (w2.hi - w2.lo + 1);
   if (cells > MAX_CELLS) return NAN;
   std::vector<double> zc;
@@ -264,6 +392,24 @@ double p1_at(Scale sc, double bound, double p2) {
   return p2 + bound;
 }
 
+// 1 − P1 on that boundary: by subtraction up to P1 = 1/2; beyond, where it keeps the digits P1 lost to rounding (an
+// odds ratio of 1e20 puts P1 a rounding error from 1, a difference of 1 − 1e-13 from P2 = 1e-14 leaves 1 − P1 three
+// digits of 1e-13), from the odds, or as 1 − P1 (exact) less the rounding error of P1 = P2 + D0 or R0 × P2 (exact as
+// well, by the sum's error-free transformation or a fused multiply-add)
+double q1_at(Scale sc, double bound, double p2) {
+  const double p1 = p1_at(sc, bound, p2);
+  if (p1 <= 0.5) return 1 - p1;
+  if (sc == Scale::Odds) return (1 - p2) / (1 - p2 + bound * p2);
+  double err;
+  if (sc == Scale::Ratio) {
+    err = std::fma(bound, p2, -p1);
+  } else {
+    const double z = p1 - p2;
+    err = (p2 - (p1 - z)) + (bound - z);
+  }
+  return (1 - p1) - err;
+}
+
 // The comparison of P1 with P2 on a scale.
 double measure(Scale sc, double p1, double p2) {
   if (sc == Scale::Ratio) return p1 / p2;
@@ -271,10 +417,15 @@ double measure(Scale sc, double p1, double p2) {
   return p1 - p2;
 }
 
-// The actual value on a scale: the odds ratio itself when it was given (recomputed from a P1 near 1, it would lose
-// its digits with 1 − P1), otherwise the comparison of the proportions.
+// The actual value on a scale: the effect itself when it was given on that scale, otherwise the comparison of the
+// proportions.  Recomputed from P1, a given effect carries P1's rounding: an odds ratio loses its digits with 1 − P1
+// near 1, and a difference of 1e-20 added to P2 = 0.5 is lost altogether (it was refused as lying outside an
+// alternative D > 1e-25).
 double actual_measure(const Scenario& s, Scale sc, double p1, double p2) {
-  return sc == Scale::Odds && s.is("es", "or") ? s("or1") : measure(sc, p1, p2);
+  if (sc == Scale::Odds && s.is("es", "or")) return s("or1");
+  if (sc == Scale::Ratio && s.is("es", "ratio")) return s("r1");
+  if (sc == Scale::Diff && s.is("es", "diff")) return s("d1");
+  return measure(sc, p1, p2);
 }
 
 // Result keys and words for each scale: the boundary, the actual value, the quantity.
@@ -422,7 +573,7 @@ Procedure two_prop_ni() {
     const NiSpec S{sc, s(bkey), s.is("h1", "upper"), s("alpha")};
     const double p2 = s("p2"), p1 = p1_from(s, p2);
     // P1 on the boundary of H0; with an odds ratio it always lies between 0 and 1, though it may round to 1 (only
-    // the exact size uses it, kept below 1)
+    // the exact size uses it, with 1 − P1 from q1_at)
     const double p10 = p1_at(sc, S.bound, p2);
     if (sc != Scale::Odds && !(p10 > 0 && p10 < 1))
       throw CalcError("the boundary of the null hypothesis, P1 = " + fnum(p10) +
@@ -474,7 +625,8 @@ Procedure two_prop_ni() {
     r.set(actual_key(sc), actual_measure(s, sc, p1, p2));
     r.set("alpha", S.alpha);
     if (exact && !fell_back && !ctx.curve_points) {  // a curve uses only the power
-      const double size = fm_power_exact({S}, n.n1, n.n2, std::min(std::max(p10, 1e-9), 1 - 1e-9), p2, ctx);
+      // at the boundary itself (P1 was kept within 1e-9 of 0 and 1: a size of 4e-9 where it is 3e-30)
+      const double size = fm_power_exact({S}, n.n1, n.n2, p10, p2, ctx, q1_at(sc, S.bound, p2));
       if (!std::isnan(size)) r.set("actual_alpha", size);
     }
     if (fell_back) r.notes.push_back("Samples too large for exact enumeration; the normal approximation was used.");
@@ -701,17 +853,26 @@ SSC_REGISTER(two_prop_equiv);
 // =====================================================================================
 }  // namespace
 
-double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCache& cache, const RunContext& ctx) {
+double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCache& cache, const RunContext& ctx,
+                     double q10, double q01) {
   using namespace stats;
   using namespace blocks;
-  const double psi = p10 + p01, delta = p10 - p01, alpha = s("alpha");
+  // ψ of 1 can come out a rounding error above it from P10 and P01 (an odds ratio of 9e-5)
+  const double psi = std::min(1.0, p10 + p01), delta = p10 - p01, alpha = s("alpha");
   const Alt a = alt(s);
   if (s.is("method", "normal")) {  // Connor (1987)
-    const double sd1 = std::sqrt(psi - delta * delta);
+    // ψ − (P10 − P01)², the variance of a pair's difference, as P10(1 − P10) + P01(1 − P01) + 2·P10·P01, terms that
+    // are not negative: by subtraction it cancelled to 0 once P10 rounded to 1 (ψ = 1 and an odds ratio of 1e16 or
+    // more), which made the power no number, or 100% (min(1, no number)) when its numerator was 0 too
+    if (std::isnan(q10)) q10 = 1 - p10;
+    if (std::isnan(q01)) q01 = 1 - p01;
+    const double sd1 = std::sqrt(p10 * q10 + p01 * q01 + 2 * p10 * p01);
     const double rn = std::sqrt(static_cast<double>(n));
     if (a == Alt::Two) {
       const double z = qnorm(half_alpha(alpha), false);
-      return std::min(1.0, pnorm((rn * delta - z * std::sqrt(psi)) / sd1) + pnorm((-rn * delta - z * std::sqrt(psi)) / sd1));
+      const double sd0 = std::sqrt(psi);
+      const double pw = pnorm((rn * delta - z * sd0) / sd1) + pnorm((-rn * delta - z * sd0) / sd1);
+      return pw > 1 ? 1.0 : pw;  // no number stays so
     }
     const double z = qnorm(alpha, false);
     return pnorm(((a == Alt::Upper ? 1 : -1) * rn * delta - z * std::sqrt(psi)) / sd1);
@@ -816,16 +977,20 @@ Procedure mcnemar() {
           .show(when(is("es", {"or"}))),
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    double p10, p01;
+    double p10, p01, q10 = NAN, q01 = NAN;
     if (s.is("es", "or")) {
+      // with 1 − P10 and 1 − P01 in the forms that keep their digits (P10 rounds to 1 at ψ = 1 and an odds ratio of
+      // 1e16); ψ is at most 1 by its range, though P10 + P01 can round above it
       const double psi = s("psi"), o = s("orr");
       p10 = psi * o / (1 + o);
       p01 = psi / (1 + o);
+      q10 = (1 + o * (1 - psi)) / (1 + o);
+      q01 = (o + (1 - psi)) / (1 + o);
     } else {
       p10 = s("p10");
       p01 = s("p01");
+      if (!(p10 + p01 <= 1)) throw CalcError("P10 + P01 cannot exceed 1");
     }
-    if (!(p10 + p01 <= 1)) throw CalcError("P10 + P01 cannot exceed 1");
     if (p10 == p01) throw CalcError("P10 equals P01; there is no effect");
     const Alt a = alt(s);
     McNemarCache cache;
@@ -843,7 +1008,8 @@ Procedure mcnemar() {
       o.monotone = s.is("method", "normal");
       o.hi = n_max;
       n = static_cast<int>(solve::min_n(
-          [&](double x) { return mcnemar_power(s, static_cast<int>(x), p10, p01, cache, ctx); }, s("power"), o, &ctx));
+          [&](double x) { return mcnemar_power(s, static_cast<int>(x), p10, p01, cache, ctx, q10, q01); },
+          s("power"), o, &ctx));
     } else {
       if (!s.is("method", "normal") && s("n") > n_max)
         throw CalcError("the exact test is computed for up to 1,000,000 pairs; use the normal approximation for "
@@ -851,10 +1017,10 @@ Procedure mcnemar() {
       n = static_cast<int>(s("n"));
     }
     r.set("n", n);
-    put_power(s, r, mcnemar_power(s, n, p10, p01, cache, ctx));
+    put_power(s, r, mcnemar_power(s, n, p10, p01, cache, ctx, q10, q01));
     r.set("p10", p10);
     r.set("p01", p01);
-    r.set("psi", p10 + p01);
+    r.set("psi", std::min(1.0, p10 + p01));
     r.set("delta", p10 - p01);
     r.set("orr", p10 / p01);
     r.set("alpha", s("alpha"));
@@ -1098,7 +1264,11 @@ Procedure cluster_props() {
     const double alpha = s("alpha"), m = s("m"), icc = s("icc"), kr = s("kr"), p1 = s("p1"), p2 = s("p2");
     const double de = 1 + (m - 1) * icc;
     const Alt a = alt(s);
+    // k1 × the cluster ratio rounded up, where a product within 1e-9 above a whole number counts as that number (100
+    // clusters at a ratio of 1.1 make 110.00000000000001, 110 clusters): one of 1e-9 or less leaves group 2 none
     auto k2_of = [&](double k1) { return std::ceil(kr * k1 - 1e-9); };
+    const char* const no_clusters =
+        "the cluster ratio is too small: group 2 would have no clusters (k1 × the cluster ratio is 1e-9 or less)";
     auto P = [&](double k1) {
       const double k2 = k2_of(k1);
       const double n1 = k1 * m, n2 = k2 * m;
@@ -1119,15 +1289,12 @@ Procedure cluster_props() {
       if ((a == Alt::Upper && (p1 - p2) < 0) || (a == Alt::Lower && (p1 - p2) > 0))
         throw CalcError("P1 − P2 has the sign opposite to the one-sided alternative");
       solve::NSearch o;
-      o.lo = solve::first_whole([&](double x) { return k2_of(x) >= 1; }, 1, o.hi,
-                                "the cluster ratio is too small: group 2 would have no clusters");
+      o.lo = solve::first_whole([&](double x) { return k2_of(x) >= 1; }, 1, o.hi, no_clusters);
       o.guess = z_factor(alpha, s("power"), a) * de * (p1 * (1 - p1) + p2 * (1 - p2) / kr) / (m * (p1 - p2) * (p1 - p2)) + 1;
       k1 = solve::min_n(P, s("power"), o, &ctx);
     } else {
       k1 = s("k1");
-      if (k2_of(k1) < 1)
-        throw CalcError("the cluster ratio is too small: group 2 would have no clusters (k1 × the cluster ratio, "
-                        "rounded up)");
+      if (k2_of(k1) < 1) throw CalcError(no_clusters);
     }
     const double k2 = k2_of(k1);
     r.set("k1", k1);

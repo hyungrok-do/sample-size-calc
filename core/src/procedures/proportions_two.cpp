@@ -467,10 +467,18 @@ struct DiffCi {
   double width;
 };
 
+// R × N1 rounded up, where a product within 1e-9 above a whole number counts as that number: one of 1e-9 or less
+// leaves group 2 no subjects, which is refused (its interval was 0/0, no number, pressed by the limits' clamps into
+// −1 to 1, a width of 2, presented as an answer)
+double ci_n2(const Scenario& s, double n1) { return std::ceil(s("r") * n1 - 1e-9); }
+const char* const CI_NO_GROUP_2 =
+    "the allocation ratio is too small: group 2 would have no subjects (R × N1 is 1e-9 or less)";
+
 DiffCi diff_ci_at(const Scenario& s, double n1) {
   const double p1 = s("p1"), p2 = s("p2");
   DiffCi c;
-  c.n2 = std::ceil(s("r") * n1 - 1e-9);
+  c.n2 = ci_n2(s, n1);
+  if (!(c.n2 >= 1)) throw CalcError(CI_NO_GROUP_2);
   c.ci = diff_ci(s.s("method"), n1, n1 * p1, c.n2, c.n2 * p2, s("conf"), s.is("sides", "two"));
   if (s.is("sides", "two"))
     c.width = c.ci.hi - c.ci.lo;
@@ -561,9 +569,9 @@ Procedure two_props_ci() {
       const double p1 = s("p1"), p2 = s("p2");
       const double e = two ? target / 2 : target;
       solve::NSearch o;
-      o.lo = 1;
-      o.guess = std::ceil(z * z * (p1 * (1 - p1) + p2 * (1 - p2) / s("r")) / (e * e));
       o.hi = 1e8;
+      o.lo = solve::first_whole([&](double x) { return ci_n2(s, x) >= 1; }, 1, o.hi, CI_NO_GROUP_2);
+      o.guess = std::ceil(z * z * (p1 * (1 - p1) + p2 * (1 - p2) / s("r")) / (e * e));
       o.goal = "the target width";
       // a one-sided bound at or beyond the estimate is a degenerate size; a two-sided interval at a confidence near
       // 0 closes on the estimate itself (a width of 0, or a rounding error either side of it) at every size
@@ -723,6 +731,8 @@ Procedure case_control() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     ExactSearch search;
+    // M × cases rounded up, where a product within 1e-9 above a whole number counts as that number (one of 1e-9 or
+    // less leaves no controls, where rounding up alone would make 1)
     auto controls = [&](double cases) { return std::ceil(m * cases - 1e-9); };
     auto power = [&](double n1, double n2, double x) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
@@ -751,6 +761,8 @@ Procedure case_control() {
                        ((p1 - p0) * (p1 - p0));
       if (exact && exact_search_work(g, m * g, p1, p0, T.test == "fisher") > EXACT_SEARCH_BUDGET)
         exact = false, fell_back = true;
+      // the search starts where both groups have 2 (in the words of this procedure, not of a two-group allocation)
+      if (controls(1e7) < 2) throw CalcError("M is too small: even 10000000 cases would have fewer than 2 controls");
       Scenario t = s;  // the two-group search with controls = M × cases
       t.sel["alloc"] = "ratio";
       t.num["r"] = m;
@@ -760,7 +772,7 @@ Procedure case_control() {
       });
     } else {
       n = {s("ncase"), controls(s("ncase"))};
-      if (!(n.n2 >= 1)) throw CalcError("M is too small: there would be no controls (M × cases, rounded up)");
+      if (!(n.n2 >= 1)) throw CalcError("M is too small: there would be no controls (M × cases is 1e-9 or less)");
       if (s.solve == "power") {
         p1 = s.is("es", "p1") ? s("p1") : case_exposure(s("or"), p0);
       } else {
@@ -851,7 +863,9 @@ struct Matched {
 };
 
 Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
-  const double p1 = case_exposure(odds_ratio, p0), q1 = 1 - p1, q0 = 1 - p0;
+  // 1 − P1 and 1 − e below in the forms that keep their digits when the odds ratio is large (from about 1e16 they
+  // rounded to 0: the variance under H1 was 0, and the conditional exposure pm no number)
+  const double q0 = 1 - p0, p1 = case_exposure(odds_ratio, p0), q1 = q0 / (q0 + odds_ratio * p0);
   // exposure of a control given that its case is exposed (plus) or not (minus)
   const double pp = p0 + phi * std::sqrt(q1 * p0 * q0 / p1), pm = p0 - phi * std::sqrt(p1 * p0 * q0 / q1);
   if (!(pp >= 0 && pp <= 1 && pm >= 0 && pm <= 1))
@@ -865,7 +879,7 @@ Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
     const double e = t * odds_ratio / (t * odds_ratio + M - t + 1), e0 = t / (M + 1.0);
     mo.delta += pt * (e - e0);
     mo.v0 += pt * e0 * (1 - e0);
-    mo.v1 += pt * e * (1 - e);
+    mo.v1 += pt * e * (M - t + 1) / (t * odds_ratio + M - t + 1);
   }
   return mo;
 }
