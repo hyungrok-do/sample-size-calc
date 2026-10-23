@@ -87,7 +87,7 @@ double pgamma_raw(double x, double a, bool lower) {
       if (term < sum * 1e-17) break;
     }
     const double pl = pre * sum;
-    return lower ? std::fmin(pl, 1.0) : std::fmax(1.0 - pl, 0.0);
+    return lower ? clamp01(pl) : clamp01(1.0 - pl);  // a NaN stays NaN (std::fmin(x, 1.0) gives 1)
   }
   const double pre = a * dpois_raw(a, x);  // x^a e^{−x} / Γ(a)
   if (pre == 0) return lower ? 1.0 : 0.0;
@@ -108,7 +108,7 @@ double pgamma_raw(double x, double a, bool lower) {
     if (std::fabs(del - 1.0) < 1e-16) break;
   }
   const double qu = pre * h;
-  return lower ? std::fmax(1.0 - qu, 0.0) : std::fmin(qu, 1.0);
+  return lower ? clamp01(1.0 - qu) : clamp01(qu);
 }
 
 double dgamma_std(double x, double a) {

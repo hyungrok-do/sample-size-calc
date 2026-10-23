@@ -41,4 +41,9 @@ Rmst restricted_mean(const std::vector<Obs>& sorted, long n1, long n2, double ta
 /// whose points are shared between up to `threads` threads (the same result on any number).
 double mvn_probability(int m, const double* a, const double* b, const double* r, int threads = 1);
 
+/// P(X ∉ (a, b)) = 1 − P(a < X < b), also where it is far below the lattice's error: the sum over j of the
+/// probability that X_j is the first variable outside its limits, each computed with X_j first, so that its tail
+/// is a factor of full relative precision (and the rest is to about 1e-5 of the term).
+double mvn_outside(int m, const double* a, const double* b, const double* r, int threads = 1);
+
 }  // namespace ssc::procs::nph

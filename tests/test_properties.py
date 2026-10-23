@@ -748,6 +748,42 @@ def test_a_median_of_about_zero_has_every_subject_with_the_event():
     assert not row.get("_error") and "nan" not in row["_statement"], row
 
 
+def test_maxcombo_at_a_small_alpha():
+    """MaxCombo's critical value and power came from 1 − P(every statistic below c), which the lattice computes
+    to about 1e-5: from an alpha of about 1e-3 the critical value fell short, its sample size dropped below that of
+    the best of its four tests on its own (6182 against 6188 at 1e-30), and a study's power at 1e-30 was 0."""
+    base = {**base_inputs("sim.surv.nph"), "alternative": "two"}
+
+    def approx(solve, inputs):
+        return first_row(ssc.run("sim.surv.nph", solve, {**base, **inputs}, power_curve=False, approximate=True))
+
+    for alpha in ("1e-4", "1e-30"):
+        best = min(approx("n", {"alpha": alpha, "test": "fh", "rho": r, "gamma": g})["n"]
+                   for r, g in (("0", "0"), ("0", "1"), ("1", "0"), ("1", "1")))
+        assert approx("n", {"alpha": alpha, "test": "maxcombo"})["n"] >= best, alpha
+    assert approx("power", {"alpha": "1e-30", "test": "maxcombo"})["power"] > 0
+    # with no effect, the power is the level
+    row = approx("power", {"alpha": "1e-30", "test": "maxcombo", "hr1": "1", "hr2": "1"})
+    assert row["power"] == pytest.approx(1e-30, rel=1e-6), row
+
+
+def test_maxcombo_where_the_tail_computation_takes_over():
+    """The two ways of computing MaxCombo's probability of leaving the box are blended between 0.005 and 0.02.  When
+    the level, the power and the p-value each switched by their own value at 0.01, the power fell as alpha rose
+    (0.33087 at 0.009999, 0.33054 at 0.01), and with no effect it was not alpha just below 0.01."""
+    base = {**base_inputs("sim.surv.nph"), "alternative": "two", "test": "maxcombo"}
+
+    def power(inputs):
+        return first_row(ssc.run("sim.surv.nph", "power", {**base, **inputs}, power_curve=False,
+                                 approximate=True))["power"]
+
+    alphas = ("0.0049", "0.005", "0.0051", "0.0099", "0.009999", "0.01", "0.0101", "0.0199", "0.02", "0.0201")
+    powers = [power({"alpha": a}) for a in alphas]
+    assert powers == sorted(powers), list(zip(alphas, powers))
+    for a in ("0.004", "0.009999", "0.012", "0.019", "0.03"):
+        assert power({"alpha": a, "hr1": "1", "hr2": "1"}) == pytest.approx(float(a), rel=1e-6), a
+
+
 def test_hazards_whose_sum_overflows_keep_their_share_of_events():
     """With event and dropout hazards of 1e308 each, their sum overflowed and the event probability came out 1
     (half the answer).  Such hazards are refused; up to the largest allowed, 1e30, the share of events is that of
@@ -1032,6 +1068,47 @@ def test_a_group_sequential_design_at_a_small_alpha(pid, solve, alpha):
     which left its drift unbracketed ("the answer cannot be computed")."""
     row = first_row(run(pid, solve, {**base_inputs(pid), "alpha": alpha}))
     assert row and row["inflation"] == pytest.approx(1, abs=1e-3), row
+
+
+@pytest.mark.parametrize("pid", ["gs.means", "gs.props", "gs.logrank"])
+def test_power_family_spending_with_a_tiny_exponent(pid):
+    """Below a ρ of about 1e-16, t^ρ rounds to 1, and α·t^ρ − α·s^ρ to 0, as if all of alpha were spent at the first
+    analysis; the later analyses spend about α·ρ·ln(t/s), at boundaries far out that carry most of the power when the
+    first analysis has little information.  References: the two-analysis design integrated with scipy (quad, relative
+    error 1e-12).  Spent as rounded, '1e-4 1' with ρ = 1e-30 gave an inflation of 10000, and '0.01 1' with 1e-17 one
+    of 100."""
+    base = {**base_inputs(pid), "boundary": "power", "power": "0.8", "alpha": "0.05", "alternative": "two"}
+    rows = [first_row(run(pid, "n", {**base, "looks": "3", "spacing": "equal", "rho": rho}))
+            for rho in ("1e-15", "1e-16", "1e-30")]
+    assert all(r and r["n"] == rows[0]["n"] for r in rows), rows
+    assert all(r["inflation"] == pytest.approx(3, rel=1e-4) for r in rows), rows  # the first analysis's own power
+    for tfrac, rho, inflation in (("0.01 1", "1e-17", 11.414589), ("1e-4 1", "1e-30", 19.556845),
+                                  ("0.05 1", "1e-15", 9.489303)):
+        row = first_row(run(pid, "n", {**base, "looks": "2", "spacing": "custom", "tfrac": tfrac, "rho": rho}))
+        assert row and row["inflation"] == pytest.approx(inflation, rel=1e-5), (tfrac, rho, row)
+
+
+def test_flat_spending_functions_with_many_analyses():
+    """Twenty analyses of a nearly flat spending function: the power family with ρ = 1e-30 and Hwang–Shih–DeCani with
+    γ = 40.  References: recursive integration with Simpson's rule on 2000 uniform intervals per analysis and the
+    increments taken without cancellation (inflation 16.887305 and 7.494518).  With rounded increments they were 20
+    (N 2512 for 2122) and 7.5079; with the grid of an alpha of 0.05 (r = 32), 16.867 (N 2120)."""
+    base = {**base_inputs("gs.means"), "power": "0.8", "alpha": "0.05", "alternative": "two", "looks": "20",
+            "spacing": "equal"}
+    for extra, inflation in (({"boundary": "power", "rho": "1e-30"}, 16.887305),
+                             ({"boundary": "hsd", "gamma": "40"}, 7.494518)):
+        row = first_row(run("gs.means", "n", {**base, **extra}))
+        assert row and row["inflation"] == pytest.approx(inflation, rel=1e-5), (extra, row)
+
+
+def test_group_sequential_analyses_close_together_at_a_small_alpha():
+    """Analyses closer than 20 equally spaced ones narrow the step from one to the next: below an alpha of 1e-8 such
+    designs keep the grid of r = 128, as before the grid was graded (with 64, N was 2 more than with r = 256 here)."""
+    base = {"stat": "pooled", "alpha": "1e-9", "spacing": "custom"}
+    for extra, n in (({"looks": "3", "tfrac": "0.98 0.99 1", "boundary": "wt_obf"}, 2100),
+                     ({"looks": "5", "tfrac": "0.2 0.4 0.6 0.999 1", "boundary": "hsd", "gamma": "-4"}, 2114)):
+        row = first_row(run("gs.props", "n", {**base, **extra}))
+        assert row and row["n"] == n, (extra, row)
 
 
 @pytest.mark.parametrize("pid,solve,scale,fixed", [

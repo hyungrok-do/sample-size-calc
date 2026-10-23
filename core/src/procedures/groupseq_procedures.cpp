@@ -223,25 +223,30 @@ std::string design_key(const Scenario& s) {
   return key;
 }
 
+gs::Efficacy gs_efficacy(const Scenario& s) {
+  const std::string& b = s.s("boundary");
+  gs::Efficacy eff;
+  if (b == "wt_obf" || b == "wt_pocock" || b == "wt") {
+    eff.kind = gs::Efficacy::Kind::WangTsiatis;
+    eff.delta = b == "wt_obf" ? 0.0 : (b == "wt_pocock" ? 0.5 : s("wtdelta"));
+  } else {
+    eff.spend = gs::alpha_spending(b, s("alpha"), two_sided(s), spending_param(b, s, "rho", "gamma"));
+  }
+  return eff;
+}
+
 DesignPtr gs_design(const Scenario& s, const RunContext& ctx) {
   const std::string key = design_key(s);  // which checks the inputs
   const auto t = gs_fractions(s);
   const double alpha = s("alpha");
   const bool two = two_sided(s);
-  const std::string& b = s.s("boundary");
   const std::string fk = futility_kind(s);
   const std::vector<double> fz = fk == "z" ? gs_futility_z(s, t.size() - 1) : std::vector<double>{};
   const double beta = fk == "beta" ? 1 - s("power") : 0.0;
   return cached_design(
       key,
       [&] {
-        gs::Efficacy eff;
-        if (b == "wt_obf" || b == "wt_pocock" || b == "wt") {
-          eff.kind = gs::Efficacy::Kind::WangTsiatis;
-          eff.delta = b == "wt_obf" ? 0.0 : (b == "wt_pocock" ? 0.5 : s("wtdelta"));
-        } else {
-          eff.spend = gs::alpha_spending(b, alpha, two, spending_param(b, s, "rho", "gamma"));
-        }
+        const gs::Efficacy eff = gs_efficacy(s);
         gs::Futility fut;
         if (fk == "beta") {
           const std::string& bs = s.s("bspend");
@@ -389,7 +394,7 @@ void gs_report(const Scenario& s, Row& r, const DesignInfo& info, double eta, do
     cum += p1;
     std::vector<Cell> row = {Cell(static_cast<double>(k + 1)), Cell(p1)};
     if (fut) row.push_back(Cell(e1.fut[k]));
-    row.push_back(Cell(cum));
+    row.push_back(Cell(stats::clamp01(cum)));  // the quadrature's error can take it past 1, as the power (exit_probs)
     row.push_back(Cell(e0.up[k] + e0.lo[k]));
     if (fut) row.push_back(Cell(e0.fut[k]));
     sp.rows.push_back(std::move(row));
@@ -478,12 +483,20 @@ const std::vector<std::pair<std::string, std::string>> GS_DEFS = {
 // The time of a request in units of a typical scenario (a few ms), for the limit of scenarios. Each design is
 // built once: about 3.5 units with 20 analyses, 11 with β-spending futility (whose design depends on the power
 // too); a power from it is quick, and a search for the sample size takes about 3.5 ms per analysis (80 ms with
-// 20 analyses).  The work grows with the square of the grid's r, which is finer for a tiny alpha.
+// 20 analyses).  The work grows with the square of the grid's r, which is finer for a tiny alpha (see
+// gs::grid_resolution).
 double gs_cost(const std::vector<Scenario>& scenarios) {
   std::set<std::string> designs;
   double cost = 0;
   for (const auto& s : scenarios) {
-    const double looks = s("looks"), grid = gs::grid_resolution(s("alpha")) / 32.0, w = grid * grid;
+    const double looks = s("looks");
+    double w = 1;
+    try {
+      const double grid = gs::grid_resolution(s("alpha"), gs_fractions(s), gs_efficacy(s)) / 32.0;
+      w = grid * grid;
+    } catch (const CalcError&) {
+      // the scenario stops at once with its message
+    }
     cost += w * (s.solve == "power" ? 1 : 1 + looks / 2);
     try {
       if (designs.insert(design_key(s)).second)
