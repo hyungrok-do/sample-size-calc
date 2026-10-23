@@ -253,6 +253,47 @@ TEST_CASE("lmm: REML of a balanced random-intercept design equals the ANOVA esti
   CHECK_CLOSE(w.df, 2 * k - 2, 1e-4, 0);
 }
 
+TEST_CASE("lmm: Satterthwaite's degrees of freedom keep their digits with clusters of many subjects") {
+  // equal clusters with a positive estimate of the cluster variance: the test is the t-test on the cluster means,
+  // with 2k − 2 degrees of freedom exactly.  With 10⁷ subjects a cluster the criterion is about 10⁸, and its
+  // rounding swamped the differences in D its Hessian is taken from: 15% off on average, 39% at worst; with an ICC
+  // of 10⁻⁶ besides, the steps took the cluster variance to 0 and back
+  const int k = 4;
+  const double cases[][2] = {{20, 0.05}, {1e5, 0.05}, {1e7, 0.05}, {1e7, 1e-6}};  // subjects a cluster, ICC
+  for (const auto& cs : cases) {
+    const double m = cs[0], icc = cs[1];
+    double worst = 0;
+    int interior = 0;
+    for (int rep = 0; rep < 40; ++rep) {
+      sim::Rng rng(7, static_cast<std::uint64_t>(rep));
+      lmm::Data d;
+      d.p = 2;
+      d.q = 1;
+      d.arms.resize(2);
+      for (int g = 0; g < 2; ++g) {
+        lmm::Arm& arm = d.arms[g];
+        arm.x[0] = 1, arm.x[1] = g == 0 ? 1 : 0;
+        arm.sizes.push_back({m});
+        lmm::Arm::Size& sz = arm.sizes[0];
+        for (int c = 0; c < k; ++c) {
+          const double mean = std::sqrt(icc) * rng.normal() + std::sqrt((1 - icc) / m) * rng.normal();
+          sz.count += 1, sz.b += mean, sz.bb += mean * mean, sz.yy += (1 - icc) * rng.chisq(m - 1);
+        }
+      }
+      const double theta0 = std::sqrt(icc / (1 - icc)), c[2] = {0, 1};
+      const lmm::Fit f = lmm::fit(d, &theta0);
+      CHECK(f.ok);
+      if (f.boundary) continue;
+      ++interior;
+      const lmm::Wald w = lmm::wald(d, f, c, 0, 0);
+      CHECK(!w.fallback);
+      worst = std::fmax(worst, std::fabs(w.df / (2 * k - 2) - 1));
+    }
+    CHECK(interior >= 20);
+    CHECK(worst < 1e-3);
+  }
+}
+
 TEST_CASE("lmm: clusters kept by arm and size fit as their patterns do, to the bit") {
   // a cluster-randomized study with sizes that vary (a few shared, most of their own), as one Pattern per arm and
   // size in the order the sizes first appear, and as the same sizes in two Arms

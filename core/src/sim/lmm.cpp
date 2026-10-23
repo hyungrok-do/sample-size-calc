@@ -279,6 +279,8 @@ struct Gls {
   double logdet_k = 0;  // Σ log |K| = log |V*|
   double logdet_m = 0;  // log |X'V*⁻¹X|
   double rss = 0;       // (y − Xβ̂)'V*⁻¹(y − Xβ̂)
+  double within = 0;    // y'V*⁻¹y within the clusters, Σ y'(I − P)y, which does not depend on G, and between them,
+  double between = 0;   // Σ b'Wb
 };
 
 /// For a cluster with Z'Z = A (pt.zz, with A⁺, rank and determinant): W = K⁻¹ A, the between-cluster part of V*⁻¹
@@ -312,6 +314,7 @@ bool gls(const Data& d, const double* g, Gls& w, double det_g = std::numeric_lim
   std::fill(w.v, w.v + p, 0.0);
   double s = 0;
   w.logdet_k = 0;
+  w.within = w.between = 0;
   if (q == 2) {
     const double det_entries = g[0] * g[3] - g[1] * g[2];
     if (!std::isfinite(det_g) || std::fabs(det_entries) > 1e-8 * std::fabs(g[0] * g[3])) det_g = det_entries;
@@ -344,6 +347,8 @@ bool gls(const Data& d, const double* g, Gls& w, double det_g = std::numeric_lim
     for (int i = 0; i < q; ++i)
       for (int j = 0; j < q; ++j) tr += wm[i * q + j] * pt.bb[j * q + i];
     s += pt.yy + tr;
+    w.within += pt.yy;
+    w.between += tr;
   }
   // the same sums for clusters by arm and size: Z'Z = n, C = x and nothing of X within the cluster
   for (const Arm& arm : d.arms) {
@@ -361,6 +366,8 @@ bool gls(const Data& d, const double* g, Gls& w, double det_g = std::numeric_lim
         w.v[a] += wc[a] * sz.b;
       }
       s += sz.yy + wm * sz.bb;
+      w.within += sz.yy;
+      w.between += wm * sz.bb;
     }
   }
   for (int a = 0; a < p; ++a)
@@ -394,6 +401,19 @@ double profiled(const Data& d, const double* theta, Gls& w) {
   if (!gls(d, g, w) || !(w.rss > 0)) return std::numeric_limits<double>::infinity();
   const double r = d.observations() - d.p;
   return r * (1 + LOG_2PI + std::log(w.rss / r)) + w.logdet_k + w.logdet_m;
+}
+
+/// The REML criterion at (σ², G) in two parts: the one that depends on σ² alone, r (log 2π + log σ²) +
+/// Σ y'(I − P)y / σ², which is nearly all of it when the clusters have many observations, and the rest.  False where
+/// criterion() is NaN.
+bool criterion_parts(const Data& d, double sigma2, const double* g, double det_g, double* parts) {
+  Gls w;
+  if (!(sigma2 > 0) || !gls(d, g, w, det_g) || !(w.rss > 0)) return false;
+  double vb = 0;
+  for (int a = 0; a < d.p; ++a) vb += w.v[a] * w.beta[a];
+  parts[0] = (d.observations() - d.p) * (LOG_2PI + std::log(sigma2)) + w.within / sigma2;
+  parts[1] = w.logdet_k + w.logdet_m + (w.between - vb) / sigma2;
+  return true;
 }
 
 /// Brent's minimization of f on [a, b] (Brent 1973, "localmin").
@@ -653,6 +673,10 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     for (const Pattern& pt : d.patterns) tt += pt.count * pt.zz[3], nn += pt.count * pt.zz[0];
     if (tt > 0 && nn > 0) tau = std::sqrt(tt / nn);
   }
+  // clusters of more than 100 observations on average (n̄) take the criterion in two parts and a random intercept's
+  // step floor from n̄ (below); smaller ones keep the steps and differences they had, to the bit
+  const double nbar = d.observations() / d.clusters();
+  const bool large = nbar > 100;
   auto satterthwaite = [&](int k, const double* phi, Vary vary, double shift) {
     const bool full = q == 2 && vary == Vary::Full;
     auto unpack = [&](const double* x, double& sigma2, double* g, double& det_g) {
@@ -677,10 +701,13 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
       g[3] = d11 / sigma2;
       det_g = (d00 * d11 - d01 * d01) / sigma2 / sigma2;
     };
-    auto crit = [&](const double* x) {
+    auto crit = [&](const double* x, double* parts) {
       double sigma2, g[QMAX * QMAX], det_g;
       unpack(x, sigma2, g, det_g);
-      return criterion(d, sigma2, g, det_g);
+      if (!large)
+        parts[0] = criterion(d, sigma2, g, det_g), parts[1] = 0;
+      else if (!criterion_parts(d, sigma2, g, det_g, parts))
+        parts[0] = parts[1] = std::numeric_limits<double>::quiet_NaN();
     };
     auto cvar = [&](const double* x) {
       double sigma2, g[QMAX * QMAX], det_g, cov[PMAX * PMAX];
@@ -697,15 +724,19 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     const double unit[4] = {1, 1, q == 2 ? tau : 1, tau * tau};
     // a variance's step is relative to itself (a step relative to the other variance as well would be most of it
     // when that one is 10⁴ times larger), the covariance's to the geometric mean of the two variances, and w's to
-    // its length
+    // its length, with a floor of 10⁻² σ² for a variance near 0.  A random intercept alone shows in V = σ² I + σb² J
+    // from σb² of about σ²/n, so with clusters of more than 100 observations on average its floor is σ²/n̄: with 10⁷
+    // subjects a cluster and an ICC of 10⁻⁶, steps of 10⁻⁶ σ² took σb² to 0 and back, and the degrees of freedom
+    // came out 3 to 40 times too large where the Hessian was positive definite at all
     double h[4];
+    const double least = q == 1 && large ? s2 / nbar : 1e-2 * s2;
     const double dscale = full ? std::sqrt(std::fabs(phi[1] * phi[3] * unit[3])) : 0;
     const double length = vary == Vary::Rank1 && k > 1 ? std::hypot(phi[1], phi[2] * tau) : 0;
     for (int j = 0; j < k; ++j) {
       const double size = std::fabs(phi[j]) * unit[j];
       h[j] = j == 0                    ? 1e-4 * s2
              : vary == Vary::Rank1 ? 1e-4 * (length + 1e-1 * std::sqrt(s2)) / unit[j]
-                                   : 1e-4 * ((full && j == 2 ? size + dscale : 2 * size) + 1e-2 * s2) / unit[j];
+                                   : 1e-4 * ((full && j == 2 ? size + dscale : 2 * size) + least) / unit[j];
     }
     // the derivatives are taken in units of the steps and of V, each a power of 2 (hs = h 2^e, V 2^m), which keeps
     // every product and quotient below exact to the last bit and away from under- and overflow: h², and V², pass
@@ -713,28 +744,36 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     double hess[16], grad[4], x[4], hs[4];
     for (int j = 0; j < k; ++j) hs[j] = std::ldexp(h[j], -std::ilogb(h[j]));
     const int m = var > 0 ? -std::ilogb(var) : 0;
-    const double f0 = crit(phi);
-    bool ok = std::isfinite(f0) && var > 0;
+    // with large clusters the criterion's two parts (criterion_parts) are differenced each on its own: in the
+    // directions of D, and across, the part that depends on σ² alone is the same at every point and drops out exactly,
+    // where in the whole criterion its rounding swamped the differences (with 10⁷ subjects a cluster, degrees of
+    // freedom 10 to 15% off and Hessians that were not positive definite; 2 · 10⁻⁵ off with 1,000)
+    double f0[2], fp[2], fm[2], fpp[2], fpm[2], fmp[2], fmm[2];
+    crit(phi, f0);
+    bool ok = std::isfinite(f0[0] + f0[1]) && var > 0;
     for (int a = 0; a < k && ok; ++a) {
       std::copy(phi, phi + k, x);
       x[a] = phi[a] + h[a];
-      const double fp = crit(x), vp = cvar(x);
+      crit(x, fp);
+      const double vp = cvar(x);
       x[a] = phi[a] - h[a];
-      const double fm = crit(x), vm = cvar(x);
-      hess[a * k + a] = (fp - 2 * f0 + fm) / (hs[a] * hs[a]);
+      crit(x, fm);
+      const double vm = cvar(x);
+      hess[a * k + a] = ((fp[0] - 2 * f0[0] + fm[0]) + (fp[1] - 2 * f0[1] + fm[1])) / (hs[a] * hs[a]);
       grad[a] = std::ldexp(vp - vm, m) / (2 * hs[a]);
       for (int b = 0; b < a; ++b) {
-        double fpp, fpm, fmp, fmm;
         std::copy(phi, phi + k, x);
         x[a] = phi[a] + h[a], x[b] = phi[b] + h[b];
-        fpp = crit(x);
+        crit(x, fpp);
         x[b] = phi[b] - h[b];
-        fpm = crit(x);
+        crit(x, fpm);
         x[a] = phi[a] - h[a];
-        fmm = crit(x);
+        crit(x, fmm);
         x[b] = phi[b] + h[b];
-        fmp = crit(x);
-        hess[a * k + b] = hess[b * k + a] = (fpp - fpm - fmp + fmm) / (4 * hs[a] * hs[b]);
+        crit(x, fmp);
+        const double cross = large ? ((fpp[0] - fpm[0]) - (fmp[0] - fmm[0])) + ((fpp[1] - fpm[1]) - (fmp[1] - fmm[1]))
+                                   : fpp[0] - fpm[0] - fmp[0] + fmm[0];
+        hess[a * k + b] = hess[b * k + a] = cross / (4 * hs[a] * hs[b]);
       }
       ok = std::isfinite(hess[a * k + a]) && std::isfinite(grad[a]);
     }

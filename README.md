@@ -291,7 +291,8 @@ to use a library in another location.
   mixed-model fits reproduce the ANOVA estimates of a balanced
   random-intercept design, the two-stage analysis of complete random-slope
   data and a dense REML likelihood with dropout; Satterthwaite's degrees of
-  freedom are exact where theory says so. The logistic mixed model's
+  freedom are exact where theory says so, also with clusters of ten million
+  subjects. The logistic mixed model's
   quadrature matches a brute-force integral; its fit is a stationary point of
   the likelihood, also with clusters of a million subjects, single-subject
   clusters and very large ICCs, recovers a large between-cluster SD without

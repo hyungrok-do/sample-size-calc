@@ -1134,6 +1134,20 @@ def test_mixed_model_simulations_do_not_depend_on_the_units():
     assert years["power"] == days["power"] and years["mean_df"] == pytest.approx(days["mean_df"], rel=1e-4)
 
 
+def test_satterthwaites_degrees_of_freedom_keep_their_digits_with_large_clusters():
+    """With equal clusters and a positive estimate of the cluster variance the test is the t-test on the cluster
+    means, with k1 + k2 − 2 degrees of freedom.  With 10⁷ subjects a cluster the REML criterion is about 10⁸, and its
+    rounding swamped the differences its Hessian is taken from (the mean was 6.73 for 6); with an ICC of 10⁻⁶
+    besides, the steps took the cluster variance to 0 and back, and 57 of 200 studies of 60 and 30 such clusters
+    fell back to the fixed degrees of freedom."""
+    base = {**base_inputs("sim.lmm.cluster"), "df": "satterthwaite", "k1": "4", "m": "1e7", "cv": "0", "icc": "0.05",
+            "reps": "200", "seed": "7"}
+    assert first_row(run("sim.lmm.cluster", "power", base, threads=2))["mean_df"] == pytest.approx(6, rel=1e-3)
+    row = first_row(run("sim.lmm.cluster", "power", {**base, "k1": "60", "kr": "0.5", "cv": "1e-3", "icc": "1e-6",
+                                                      "mu1": "0", "sigma": "3"}, threads=2))
+    assert "df_fallbacks" not in row
+
+
 def simulate_and_approximate(pid: str, inputs: Dict[str, str]):
     sim = first_row(ssc.run(pid, "power", inputs, threads=2, power_curve=False))
     approx = first_row(ssc.run(pid, "power", inputs, power_curve=False, approximate=True))
