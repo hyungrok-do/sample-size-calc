@@ -33,16 +33,26 @@ double loglik(const std::vector<Cluster>& data, double b0, double b1, double sig
 /// Log of ∫ exp(s(η + σz) − m log(1 + e^(η+σz))) φ(z) dz for one cluster, by adaptive quadrature.
 double cluster_loglik(double eta, double m, double s, double sigma, int nodes = 21);
 
+/// Why a fit failed.
+enum class Failure {
+  None,
+  Separation,   // the estimates ran off, as when no subject of a group (or every one) has the outcome
+  Arithmetic,   // the likelihood could not be computed, or Newton's method stopped short of the maximum
+  Information,  // the observed information at the maximum is not positive definite: no standard error
+};
+
 struct Fit {
   bool ok = false;
+  Failure failure = Failure::None;
   double b0 = 0, b1 = 0, sigma = 0;  // σ ≥ 0
   double se_b1 = 0;                  // from the observed information
   double loglik = 0;
   int iterations = 0;
-  bool boundary = false;  // σ estimated as 0
+  bool boundary = false;  // σ estimated as 0, or held there
 };
 
-/// Maximum likelihood fit from the starting values (b0, b1, sigma).
+/// Maximum likelihood fit from the starting values (b0, b1, sigma).  With one subject per cluster and two groups, σ
+/// is not identified and is held at 0 (ordinary logistic regression).
 Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, int nodes = 21);
 
 /// E[expit(β + σZ)] for Z ~ N(0, 1): the population-averaged proportion of a cluster-specific β.

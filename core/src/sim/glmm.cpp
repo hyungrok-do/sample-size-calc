@@ -234,13 +234,36 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
   // fixed over several steps does not work for large clusters: each cluster's integrand is then so
   // narrow that the estimates cannot move away from the nodes.)
   Fit out;
+  auto fail = [&](Failure why) {
+    out.ok = false;
+    out.failure = why;
+    return out;
+  };
   const Rule& r = rule(nodes);
   const std::size_t n = data.size();
+  // σ is not identified when no cluster has more than one subject and the covariate takes at most two values (two
+  // groups): each cluster then enters the likelihood only through its group's population-averaged proportion,
+  // which β and σ trade off along a ridge of maxima, and the standard error of β1 is that of the ridge.  σ is held
+  // at 0 there, which is ordinary logistic regression.
+  bool hold = true;
+  std::vector<double> xs;
+  for (std::size_t i = 0; i < n && hold; ++i) {
+    if (std::find(xs.begin(), xs.end(), data[i].x) == xs.end()) xs.push_back(data[i].x);
+    hold = data[i].m <= 1 && xs.size() <= 2;
+  }
+  // with σ held, its derivatives are left out (its Newton step is then 0)
+  auto pin = [&](double* g, double* h) {
+    if (!hold) return;
+    g[2] = 0;
+    h[2] = h[5] = h[6] = h[7] = 0;
+    h[8] = -1;
+  };
   std::vector<double> modes(n, 0.0), trial_modes(n);
-  double th[3] = {b0, b1, sigma <= 0 ? 0.3 : sigma};
+  double th[3] = {b0, b1, hold ? 0 : (sigma <= 0 ? 0.3 : sigma)};
   double grad[3], hess[9];
   double ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess);
-  if (!std::isfinite(ll)) return out;
+  pin(grad, hess);
+  if (!std::isfinite(ll)) return fail(Failure::Arithmetic);
   bool converged = false;
   for (int it = 0; it < 100 && !converged; ++it) {
     ++out.iterations;
@@ -252,13 +275,14 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
       for (int i = 0; i < 3; ++i) neg[4 * i] += lambda;
       solved = solve_spd(neg, grad, d, 3);
     }
-    if (!solved) return out;
+    if (!solved) return fail(Failure::Arithmetic);
     const double decrement = grad[0] * d[0] + grad[1] * d[1] + grad[2] * d[2];
     if (decrement < 1e-12 * (1 + std::fabs(ll))) {
       // a last Newton step: too small for the log-likelihood to show its gain, it still squares the
       // remaining error
       for (int i = 0; i < 3; ++i) th[i] += d[i];
       ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess);
+      pin(grad, hess);
       converged = std::isfinite(ll);
       break;
     }
@@ -268,6 +292,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
       for (int i = 0; i < 3; ++i) trial[i] = th[i] + step * d[i];
       std::copy(modes.begin(), modes.end(), trial_modes.begin());
       next = evaluate(data, trial[0], trial[1], trial[2], r, trial_modes, tgrad, thess);
+      pin(tgrad, thess);
       if (std::isfinite(next) && next >= ll) break;
     }
     if (!(std::isfinite(next) && next >= ll)) {
@@ -280,9 +305,9 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     std::copy(thess, thess + 9, hess);
     modes.swap(trial_modes);
     ll = next;
-    if (std::fabs(th[1]) > 30 || std::fabs(th[0]) > 50) return out;  // separation: the estimates run off
+    if (std::fabs(th[1]) > 30 || std::fabs(th[0]) > 50) return fail(Failure::Separation);  // the estimates run off
   }
-  if (!converged) return out;
+  if (!converged) return fail(Failure::Arithmetic);
   out.ok = true;
   out.b0 = th[0];
   out.b1 = th[1];
@@ -301,20 +326,14 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     double t[3] = {th[0], th[1], th[2]}, gj[3], hj[9];
     t[j] += h;
     std::copy(modes.begin(), modes.end(), trial_modes.begin());
-    if (!std::isfinite(evaluate(data, t[0], t[1], t[2], r, trial_modes, gj, hj))) {
-      out.ok = false;
-      return out;
-    }
+    if (!std::isfinite(evaluate(data, t[0], t[1], t[2], r, trial_modes, gj, hj))) return fail(Failure::Information);
     for (int i = 0; i < 3; ++i) info[3 * i + j] = -(gj[i] - grad[i]) / h;
   }
   for (int i = 0; i < 3; ++i)  // symmetrize
     for (int j = 0; j < i; ++j) info[3 * i + j] = info[3 * j + i] = 0.5 * (info[3 * i + j] + info[3 * j + i]);
   double e1[3] = {0, 1, 0}, col[3];
   const bool full = !out.boundary && solve_spd(info, e1, col, 3);
-  if (!full && !solve_spd(info, e1, col, 2)) {
-    out.ok = false;
-    return out;
-  }
+  if (!full && !solve_spd(info, e1, col, 2)) return fail(Failure::Information);
   out.se_b1 = std::sqrt(std::max(col[1], 0.0));
   return out;
 }
@@ -327,6 +346,7 @@ double marginal_mean(double beta, double sigma) {
 }
 
 double between_variance(double beta, double sigma) {
+  if (sigma == 0) return 0;  // which the quadrature gives only up to rounding
   const Rule& r = rule(40);
   double s = 0, s2 = 0;
   for (std::size_t k = 0; k < r.x.size(); ++k) {

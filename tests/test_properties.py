@@ -15,6 +15,7 @@ schemas:
 """
 from __future__ import annotations
 
+import itertools
 import math
 import os
 import random
@@ -1462,6 +1463,141 @@ def test_a_simulation_whose_studies_fail_by_design_still_has_a_power():
     assert res["rows"][0].get("_error") == ("the simulated power cannot be computed: none of the 200 simulated "
                                             "studies could be analyzed (each had no wins or no losses, so no finite "
                                             "win ratio)")
+
+
+def test_a_simulated_study_that_cannot_be_analyzed_says_why():
+    """Each failed analysis tells why, and the failures the design brings are counted apart from those of the
+    arithmetic.  An MMRM whose visits were correlated within 1e-12 of 1 failed in its arithmetic in most studies,
+    and was given a power of 4% to 17% where it is near 80%, or refused because "the model needs patients of both
+    groups measured at every visit", though every patient was; an ordinal outcome all in one category was said to
+    lie beyond the other group's; and trials in which every pair tied counted without a word."""
+    row = first_row(run("sim.mmrm", "power", {"rho": "0.9999999999995", "reps": "400"}, threads=2))
+    assert row["failures"] == 0
+    assert row["power"] == pytest.approx(row["approx_power"], abs=4 * math.sqrt(0.8 * 0.2 / 400))
+    expected = [("sim.mmrm", {"drop1": "0.994", "visits": "2", "n1": "10"}, "a group had no patients left at a visit"),
+                ("sim.mmrm", {"drop1": "0.994", "visits": "2", "n1": "10", "analysis": "completers"},
+                 "fewer than 2 patients of a group completed the study"),
+                ("sim.winratio", {"n1": "10", "med_d": "600", "med_h": "240", "follow": "1", "accrual": "1"},
+                 "every pair of patients tied"),
+                ("sim.glmm.cluster", {"p1": "0.999", "p2": "0.99", "m": "10", "k1": "5"},
+                 "no subject of a group had the outcome, or every one had it")]
+    for pid, inputs, why in expected:
+        row = first_row(run(pid, "power", {**inputs, "reps": "200"}, threads=2))
+        assert row is not None and row["failures"] > 100 and why in row["failures_why"], (pid, inputs)
+        assert f"could not be analyzed and count as not rejecting ({row['failures_why']})." in row["_statement"]
+    for test in ("wald", "mw"):
+        res = run("sim.ordinal", "power", {"p2": "0.999999 0.000001", "n1": "5", "test": test, "reps": "200"},
+                  threads=2)
+        assert res["rows"][0]["_error"] == ("the simulated power cannot be computed: none of the 200 simulated studies "
+                                            "could be analyzed (every outcome fell in one category)")
+    res = run("sim.winratio", "power", {"test": "fs", "tier2": "none", "med_d": "1e9", "follow": "1", "n1": "20",
+                                        "reps": "200"}, threads=2)
+    assert res["rows"][0]["_error"].endswith("could be analyzed (every pair of patients tied)")
+
+
+def test_the_other_tests_of_a_simulated_study_count_where_its_own_analysis_failed():
+    """The tests run alongside on the same simulated studies counted as not rejecting wherever the analysis that
+    decides the power failed: with the win ratio deciding, 5 patients a group and hazard ratios of 0.1, the
+    Finkelstein–Schoenfeld test had 2.75% on the very trials on which it has 28.75% when it decides."""
+    def pair(pid, key, inputs, first, second, power_first, power_second):
+        a = first_row(run(pid, "power", {**inputs, key: first}, threads=2))
+        b = first_row(run(pid, "power", {**inputs, key: second}, threads=2))
+        assert a["failures"] > 0, (pid, inputs)
+        assert a[power_second] == b["power"] and b[power_first] == a["power"], (pid, inputs, a, b)
+    pair("sim.winratio", "test", {"n1": "5", "hr_d": "0.1", "hr_h": "0.1", "reps": "400"}, "wr", "fs",
+         "power_wr", "power_fs")
+    pair("sim.mmrm", "analysis", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"}, "mmrm", "completers",
+         "power_mmrm", "power_completers")
+    pair("sim.ordinal", "test", {"or": "20", "n1": "10", "reps": "400"}, "wald", "lr", "power_wald", "power_lr")
+
+
+def test_the_statement_says_where_the_other_tests_of_a_simulated_study_failed():
+    """A test run alongside that could not be computed in all, or nearly all, of the studies still read as a plain
+    0.0%: the Wald test when every study was separated, and the completers' t-test when 198 of 200 trials had fewer
+    than 2 completers in a group.  The failures of a first visit were said to leave too few patients to estimate its
+    covariances with the earlier visits, which it does not have."""
+    row = first_row(run("sim.ordinal", "power", {"or": "1e30", "test": "lr", "reps": "200"}, threads=2))
+    assert row["power_wald"] is None and row["power_wald_failures"] == 200 and row["failures"] == 0
+    assert ("None of the 200 simulated studies could be analyzed by the Wald test (one group's outcomes all lay at or "
+            "above the other's") in row["_statement"]
+    assert "the Wald test had a power" not in row["_statement"]
+    row = first_row(run("sim.mmrm", "power", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"},
+                        threads=2))
+    assert row["power_completers_failures"] == 198
+    assert ("198 of the 200 simulated trials could not be analyzed by the completers' t-test and count as not "
+            "rejecting (fewer than 2 patients of a group completed the study).") in row["_statement"]
+    assert "power_mmrm_failures" not in row  # the MMRM decides: its failures are the row's own
+    row = first_row(run("sim.mmrm", "power", {"visits": "1", "n1": "3", "drop1": "0.5", "drop2": "0.5",
+                                              "reps": "200"}, threads=2))
+    assert "only one patient of each group was measured at the first visit" in row["failures_why"]
+    assert "earlier visits" not in row["failures_why"]
+
+
+def test_a_cluster_of_one_subject_is_analyzed_by_logistic_regression():
+    """With clusters of one subject the random intercept's SD is not identified; each fit 'succeeded' with the
+    standard error of a ridge of maxima, and the simulated power was 1.5% for an approximation of 96%."""
+    for inputs, approx in (({"p1": "0.3", "p2": "0.2", "k1": "500", "icc": "0"}, 0.957),
+                           ({"p1": "0.5", "p2": "0.2", "k1": "100", "icc": "0.05"}, 0.997),
+                           ({"p1": "0.3", "p2": "0.3", "k1": "100", "icc": "0.05"}, 0.05)):
+        row = first_row(run("sim.glmm.cluster", "power", {**inputs, "m": "1", "test": "z", "reps": "400"}, threads=2))
+        assert row["approx_power"] == pytest.approx(approx, abs=5e-4)
+        assert row["power"] == pytest.approx(approx, abs=4 * math.sqrt(approx * (1 - approx) / 400) + 0.005), inputs
+
+
+def test_the_ordinal_approximation_gives_the_share_of_separated_studies():
+    """The approximation gave 100% for the Wald test where nearly every study is separated and it cannot reject;
+    it now gives the expected share of separated studies, which a sum over every pair of tables confirms."""
+    def separated(p1, n1, p2, n2):
+        k, total = len(p1), 0.0
+        tables = lambda n: [c for c in itertools.product(range(n + 1), repeat=k) if sum(c) == n]
+        prob = lambda c, p: math.factorial(sum(c)) * math.prod(q ** x / math.factorial(x) for q, x in zip(p, c))
+        for c1 in tables(n1):
+            for c2 in tables(n2):
+                used = [j for j in range(k) if c1[j] + c2[j]]
+                if len(used) < 2:
+                    continue
+                g1, g2 = [j for j in range(k) if c1[j]], [j for j in range(k) if c2[j]]
+                if g1[-1] <= g2[0] or g2[-1] <= g1[0]:
+                    total += prob(c1, p1) * prob(c2, p2)
+        return total
+    for p2, odds, n1, r in (("0.5 0.5", 1.8, 5, 1), ("0.2 0.5 0.3", 4, 4, 1.5), ("0.1 0.3 0.4 0.2", 0.2, 3, 2)):
+        res = ssc.run("sim.ordinal", "power", {"p2": p2, "or": str(odds), "n1": str(n1), "r": str(r)},
+                      power_curve=False, approximate=True)
+        q2 = [float(x) for x in p2.split()]
+        cum, below, q1 = 0.0, 0.0, []
+        for j, q in enumerate(q2):
+            cum += q
+            up = 1.0 if j + 1 == len(q2) else 1 / (1 + math.exp(-(math.log(cum / (1 - cum)) - math.log(odds))))
+            q1.append(up - below)
+            below = up
+        expected = separated(q1, n1, q2, math.ceil(r * n1 - 1e-9))
+        assert res["rows"][0]["separated"] == pytest.approx(expected, rel=1e-10), (p2, odds)
+    row = ssc.run("sim.ordinal", "power", {"or": "1e5"}, power_curve=False, approximate=True)["rows"][0]
+    assert row["power"] == 1 and row["separated"] > 0.99
+    assert "In an expected 99.1% of such studies one group's outcomes would all lie at or above" in row["_statement"]
+    assert "separated" not in ssc.run("sim.ordinal", "power", {}, power_curve=False, approximate=True)["rows"][0]
+
+
+def test_an_ordinal_outcome_whose_groups_separate_says_so_both_ways():
+    """With odds ratios from 1e5 to 1e30, or 1e-10 to 1e-5, nearly every simulated study has one group at or above
+    the other, where the Wald test cannot reject: the power was 0 against an approximation of 1, with no failure
+    and no word (only odds ratios of 1e-20 and below, whose group 1 rounds to one category, were refused).  Such
+    studies are now failed analyses of the Wald test, and the row says why; the likelihood-ratio test is
+    unaffected.  The category probabilities are limited to 0 to 1."""
+    for odds in ("1e10", "1e30", "1e-5", "1e-10"):
+        res = run("sim.ordinal", "power", {"or": odds, "reps": "200"}, threads=2)
+        assert "could be analyzed (one group's outcomes all lay at or above the other's" in res["rows"][0]["_error"]
+    row = first_row(run("sim.ordinal", "power", {"or": "1e5", "reps": "200"}, threads=2))
+    assert row["failures"] > 190 and row["separated"] == row["failures"] / 200
+    assert "one group's outcomes all lay at or above the other's" in row["_statement"]
+    row = first_row(run("sim.ordinal", "power", {"or": "1e30", "test": "lr", "reps": "200"}, threads=2))
+    assert row["power"] == 1 and row["failures"] == 0
+    for text, message in (("-1e-30 0.5 0.5", "values must be at least 0"), ("0.5 1e-31 0.5", "values must be 0 or "
+                          "at least 1e-30"), ("1.5 0.5", "values must be at most 1")):
+        res = run("sim.ordinal", "power", {"p2": text, "reps": "200"})
+        assert res["input_errors"]["p2"] == message
+        res = run("sim.ordinal", "power", {"effect": "probs", "p1": text, "p2": "0.5 0.5", "reps": "200"})
+        assert res["input_errors"]["p1"] == message
 
 
 def test_visits_close_together_far_from_time_zero_keep_what_they_tell():

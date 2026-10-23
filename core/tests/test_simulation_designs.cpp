@@ -273,6 +273,30 @@ TEST_CASE("ordinal: type I error, Whitehead's approximation and the search") {
   CHECK(num(below_n, "power") < 0.9);
 }
 
+TEST_CASE("ordinal: the approximation gives the expected share of separated studies for the Wald test") {
+  // Whitehead's formula gave 100% where nearly every study is separated and the Wald test cannot reject; the share
+  // is P(max Y1 ≤ min Y2) + P(max Y2 ≤ min Y1) less twice P(every outcome in one category), here against a sum over
+  // every pair of tables
+  auto approx = [](const std::string& inputs) {
+    return first_row(R"({"procedure":"sim.ordinal","solve_for":"power","options":{"approximate":true},"inputs":{)" +
+                     inputs + "}}");
+  };
+  CHECK_CLOSE(num(approx(R"("p2":"0.5 0.5","n1":"5")"), "separated"), 0.16726510438359024, 1e-12, 0);
+  CHECK_CLOSE(num(approx(R"("p2":"0.2 0.5 0.3","or":"4","n1":"4","r":"1.5")"), "separated"), 0.23775891079458425,
+              1e-12, 0);
+  const json::Value far = approx(R"("or":"1e10")");
+  CHECK(num(far, "power") == 1);
+  CHECK(num(far, "separated") > 0.9999);
+  CHECK(far.get("_statement").as_string().find("In nearly all such studies one group's outcomes would all lie at or "
+                                               "above the other's, where the Wald test cannot reject") !=
+        std::string::npos);
+  CHECK(approx(R"("or":"1e5")").get("_statement").as_string().find("In an expected 99.1% of such studies") !=
+        std::string::npos);
+  // not below 1%, nor for the tests that can reject a separated study
+  CHECK(approx("").get("separated").is_null());
+  CHECK(approx(R"("or":"1e10","test":"lr")").get("separated").is_null());
+}
+
 // ------------------------------------------------------------------ repeated measures with dropout (MMRM)
 
 namespace {
@@ -335,6 +359,111 @@ TEST_CASE("mmrm: the REML fit equals nlme::gls with REML, and is exact with comp
   const procs::mmrm::Fit c = procs::mmrm::fit(st, true);
   CHECK_CLOSE(c.delta, m1 - m2, 1e-12, 1e-12);
   CHECK_CLOSE(c.se, std::sqrt(ss / 18 * (0.1 + 0.1)), 1e-10, 0);
+}
+
+TEST_CASE("mmrm: the fit is the same in combinations of the visits, and says why it fails") {
+  // y = Le with L lower triangular: the fit of e asked for the combination in L's last row is the fit of y at the
+  // last visit, since each visit's regression on the earlier ones changes with them.  With visits correlated
+  // within 1e-13 of 1, y's sums of squares keep too few digits of the visits' differences and its fit fails.
+  for (double rho : {0.6, 1 - 1e-13}) {
+    const int T = 4;
+    double l[T][T] = {};
+    for (int j = 0; j < T; ++j) {  // Cholesky factor of the exchangeable correlation
+      double v = 1;
+      for (int k = 0; k < j; ++k) v -= l[j][k] * l[j][k];
+      l[j][j] = std::sqrt(v);
+      for (int i = j + 1; i < T; ++i) {
+        double w = rho;
+        for (int k = 0; k < j; ++k) w -= l[i][k] * l[j][k];
+        l[i][j] = w / l[j][j];
+      }
+    }
+    procs::mmrm::Stats se, sy;
+    se.visits = sy.visits = T;
+    for (int i = 1; i <= 40; ++i) {
+      const int g = i <= 20 ? 0 : 1, k = 1 + (i * 7) % 4;
+      double e[T], y[T] = {};
+      for (int t = 0; t < T; ++t) e[t] = std::sin(2.3 * i + 0.9 * t * t) + 0.3 * std::cos(1.7 * i * (t + 1));
+      for (int t = 0; t < T; ++t)
+        for (int c = 0; c <= t; ++c) y[t] += l[t][c] * e[c];
+      se.add(g, k, e);
+      sy.add(g, k, y);
+    }
+    const procs::mmrm::Fit fe = procs::mmrm::fit(se, true, l[T - 1]), fy = procs::mmrm::fit(sy, true);
+    CHECK(fe.ok);
+    if (rho == 0.6) {
+      CHECK(fy.ok);
+      CHECK_CLOSE(fe.delta, fy.delta, 1e-12, 1e-14);
+      CHECK_CLOSE(fe.se, fy.se, 1e-12, 0);
+      CHECK_EQ(fe.observed_last, fy.observed_last);
+    } else {
+      CHECK(!fy.ok && fy.failure == procs::mmrm::Failure::Arithmetic);
+    }
+  }
+  // a group with nobody left at the last visit, and 5 patients there where the regression on the group and 3
+  // earlier visits needs 6
+  procs::mmrm::Stats empty, few;
+  empty.visits = few.visits = 4;
+  for (int i = 0; i < 20; ++i) {
+    double y[4];
+    for (int t = 0; t < 4; ++t) y[t] = std::sin(1.9 * i + 1.3 * t);
+    empty.add(i % 2, i % 2 == 0 ? 4 : 3, y);
+    few.add(i % 2, i < 5 ? 4 : 3, y);
+  }
+  const procs::mmrm::Fit a = procs::mmrm::fit(empty, true), b = procs::mmrm::fit(few, true);
+  CHECK(!a.ok && a.failure == procs::mmrm::Failure::Empty && a.visit == 4);
+  CHECK(!b.ok && b.failure == procs::mmrm::Failure::Few && b.visit == 4);
+  // one patient of each group at the first visit leaves its variance nothing to go on: no earlier visits are
+  // involved, and the statement says so
+  procs::mmrm::Stats first;
+  first.visits = 2;
+  for (int g = 0; g < 2; ++g) {
+    const double y[2] = {0.3 + g, -0.4 * g};
+    first.add(g, 2, y);
+  }
+  const procs::mmrm::Fit c = procs::mmrm::fit(first, true);
+  CHECK(!c.ok && c.failure == procs::mmrm::Failure::Few && c.visit == 1);
+  const json::Value one = first_row(power_request("sim.mmrm", R"("visits":"1","n1":"3","drop1":"0.5","drop2":"0.5",)"
+                                                              R"("reps":"200")"));
+  const std::string why = one.get("failures_why").as_string();
+  CHECK(why.find("only one patient of each group was measured at the first visit, too few to estimate its "
+                 "variance") != std::string::npos);
+  CHECK(why.find("earlier visits") == std::string::npos);
+}
+
+TEST_CASE("mmrm: the statement shows a correlation or a dropout near an end of its range as it is") {
+  // ρ = 0.9999999999993 read "exchangeable correlation 1", outside the open interval allowed, and a dropout of
+  // 0.4% read 0%
+  auto statement = [](const std::string& inputs) {
+    return first_row(R"({"procedure":"sim.mmrm","solve_for":"power","options":{"approximate":true},"inputs":{)" +
+                     inputs + "}}")
+        .get("_statement")
+        .as_string();
+  };
+  CHECK(statement(R"("rho":"0.9999999999993")").find("exchangeable correlation 0.9999999999993)") !=
+        std::string::npos);
+  CHECK(statement(R"("rho":"-0.9999999999999999","corr":"ar1")").find("AR(1) correlation -0.9999999999999999)") !=
+        std::string::npos);
+  CHECK(statement(R"("rho":"-0.2499999")").find("exchangeable correlation -0.2499999)") != std::string::npos);
+  CHECK(statement(R"("rho":"0.6")").find("exchangeable correlation 0.6)") != std::string::npos);
+  CHECK(statement(R"("drop1":"0.004","drop2":"0.9999")").find("with 0.4% of group 1 and 99.99% of group 2 lost") !=
+        std::string::npos);
+  CHECK(statement(R"("drop1":"0.2","drop2":"0.2")").find("with 20% of each group lost") != std::string::npos);
+}
+
+TEST_CASE("mmrm: visits correlated within 1e-12 of 1 or -1 keep their power") {
+  // The fits of the outcomes failed there (4% to 17% where the power is near 80%, or none analyzed at all); the
+  // trials are now fitted in independent combinations of the visits, the same simulated errors whatever ρ.  The
+  // approximation, which inverted the visits' information, drifted from 1 − 1e-14 on and gave α at 1 − 1.1e-16.
+  const json::Value near = first_row(power_request("sim.mmrm", R"("rho":"0.99999999999","reps":"200")"));
+  for (const char* inputs :
+       {R"("rho":"0.9999999999993")", R"("rho":"0.9999999999999999")", R"("rho":"0.9999999999999999","corr":"ar1")",
+        R"("rho":"-0.9999999999999999","corr":"ar1")"}) {
+    const json::Value r = first_row(power_request("sim.mmrm", std::string(inputs) + R"(,"reps":"200")"));
+    CHECK_EQ(num(r, "failures"), 0.0);
+    CHECK_EQ(num(r, "power"), num(near, "power"));
+    CHECK_CLOSE(num(r, "approx_power"), num(near, "approx_power"), 1e-9, 0);
+  }
 }
 
 TEST_CASE("mmrm: without dropout the MMRM is the t-test; with dropout it agrees with the expected GLS variance") {

@@ -136,17 +136,28 @@ Another thread can watch progress and cancel it through the token.
   (`"simulation"` or `"approximation"`), and for a simulation `power_lo` and
   `power_hi` (95% Wilson interval), `power_se` (Monte Carlo standard error),
   `approx_power` (the analytic approximation), `reps`, `seed`, `failures`
-  (studies whose model could not be fitted, counted as not rejecting; when
-  none could be, the row has an `_error` instead of a power, and so it has
-  when more than half could not be in the simulations whose analyses fail
-  only when the arithmetic breaks down: the longitudinal, cluster and
-  stepped-wedge mixed models and the two-sample tests on skewed or
-  heavy-tailed data; a longitudinal study whose subjects leave the model
-  without an estimate, as heavy dropout with few subjects can, counts as
-  failed without withholding the power) and `mean_df`, with `df_fallbacks`
+  (studies whose analysis failed, as when its model could not be fitted,
+  counted as not rejecting; when none could be analyzed, the row has an
+  `_error` instead of a power, and so it has when more than half could not
+  be in the simulations whose analyses fail only when the arithmetic breaks
+  down: the longitudinal, cluster and stepped-wedge mixed models and the
+  two-sample tests on skewed or heavy-tailed data. A longitudinal study whose
+  subjects leave the model without an estimate, as heavy dropout with few
+  subjects can, counts as failed without withholding the power. The MMRM,
+  GLMM, ordinal and win-ratio simulations count failures that the design
+  brings, such as a group with no patients left at a visit, apart from those
+  of the arithmetic, which alone are held to that rule, and say why in
+  `failures_why`, as their statements do) and `mean_df`, with `df_fallbacks`
   when some of the mixed models' studies could not have Satterthwaite's
   degrees of freedom and used the fixed ones instead (the statement says
-  how many). Columns
+  how many). The MMRM, GLMM, ordinal and win-ratio simulations that
+  run other tests on the same studies give each one's power (`power_mmrm`,
+  `power_wald`, …; `null` when that test could not be computed in any study,
+  or its arithmetic broke down in more than half), and for a test other than
+  the one chosen whose analysis failed in some studies, their number and
+  reasons in `<key>_failures` and `<key>_why` (`power_wald_failures`). For
+  the ordinal Wald test an approximation gives `separated`, the expected
+  share of separated studies, when it is 1% or more. Columns
   without a value in any row are left out, so an approximation has no Monte
   Carlo columns. The result reports
   `"approximate": true` for an approximation. Results depend only on the seed:

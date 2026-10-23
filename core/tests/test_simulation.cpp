@@ -765,6 +765,140 @@ TEST_CASE("sim: a power is refused only when no study was analyzed, or the arith
         "an extreme value");
 }
 
+TEST_CASE("sim: failures by design are counted apart from numerical ones, and the messages say why") {
+  // An MMRM fit once failed in its arithmetic with visits correlated within 1e-12 of 1, and the run was then
+  // given a power of 4% to 17% for about 80%, or refused because "the model needs patients of both groups
+  // measured at every visit", though everyone was
+  namespace simc = procs::simc;
+  Scenario s;
+  s.solve = "power";
+  s.num["seed"] = 1;
+  const std::vector<simc::Cause> causes = {{2, simc::Failures::Design, "a group had no patients left at a visit"},
+                                           {3, simc::Failures::Numerical, "the arithmetic of the fit broke down"}};
+  auto outcome = [&](long design, long numerical, Row& r) {
+    sim::Summary sm;
+    sm.reps = 400;
+    sm.failures = design + numerical;
+    sm.also[2] = design;
+    sm.also[3] = numerical;
+    sm = sim::with_rejections(sm, 0);
+    try {
+      simc::put_summary(s, r, sm, causes);
+    } catch (const CalcError& e) {
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  Row a, b, c, d, e;
+  CHECK(outcome(390, 0, a).empty());
+  CHECK(procs::text_of(a, "failures_why") == "a group had no patients left at a visit");
+  CHECK(outcome(199, 200, b).empty());
+  CHECK(procs::text_of(b, "failures_why") ==
+        "in 199, a group had no patients left at a visit; in 200, the arithmetic of the fit broke down");
+  CHECK(outcome(0, 201, c) ==
+        "the simulated power cannot be computed: 201 of the 400 simulated studies could not be analyzed (the "
+        "arithmetic of the fit broke down); check for an extreme value");
+  CHECK(outcome(400, 0, d) ==
+        "the simulated power cannot be computed: none of the 400 simulated studies could be analyzed (a group had "
+        "no patients left at a visit)");
+  CHECK(outcome(0, 0, e).empty() && !e.has("failures_why"));
+  // the share of rejections of another test counts the studies whose own analysis failed as not rejecting; when
+  // its arithmetic broke down in most of them, it is not given
+  sim::Summary sm;
+  sm.reps = 400;
+  sm.also[0] = 100;
+  sm.also[3] = 201;
+  CHECK(std::isnan(simc::other_power(sm, 0, causes)));
+  sm.also[3] = 200;
+  CHECK_EQ(simc::other_power(sm, 0, causes), 0.25);
+  // nor when it could not be computed in any study, whatever the reason
+  sm.also[0] = 0;
+  sm.also[2] = 300;
+  sm.also[3] = 100;
+  CHECK(std::isnan(simc::other_power(sm, 0, causes)));
+  // one failed study counts, in the singular
+  Row one;
+  one.set("method", "simulation");
+  one.set("failures", 1.0);
+  one.set("failures_why", "a group had no patients left at a visit");
+  CHECK(simc::method_note(one) == " 1 simulated study could not be analyzed and counts as not rejecting (a group had "
+                                  "no patients left at a visit).");
+}
+
+TEST_CASE("sim: the statement says where the other tests of a study failed, and why") {
+  // A test run alongside that could not be computed in nearly all the studies, or in any, read as a plain 0.0%
+  namespace simc = procs::simc;
+  const std::vector<simc::Cause> mine = {{2, simc::Failures::Design, "every outcome fell in one category"}},
+                                 other = {{3, simc::Failures::Design, "one group lay above the other"},
+                                          {4, simc::Failures::Numerical, "the fit did not converge"}};
+  auto row_of = [&](long other_design, long other_numerical) {
+    sim::Summary sm;
+    sm.reps = 200;
+    sm.also[0] = 120;
+    sm.also[1] = 2;
+    sm.also[3] = other_design;
+    sm.also[4] = other_numerical;
+    Row r;
+    r.set("reps", 200.0);
+    simc::put_other(r, sm, "power_a", 0, mine, true);
+    simc::put_other(r, sm, "power_b", 1, other, false);
+    return r;
+  };
+  const std::vector<std::pair<std::string, std::string>> tests = {{"first test", "power_a"},
+                                                                  {"second test", "power_b"}};
+  const Row none = row_of(0, 0);
+  CHECK(!none.has("power_a_failures") && !none.has("power_b_failures"));
+  CHECK(simc::others_sentence(none, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0% and the second test 1.0%.");
+  const Row some = row_of(198, 0);
+  CHECK_EQ(some.num("power_b_failures"), 198.0);
+  CHECK(simc::others_sentence(some, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0% and the second test 1.0%. 198 of the "
+        "200 simulated studies could not be analyzed by the second test and count as not rejecting (one group lay "
+        "above the other).");
+  const Row all = row_of(150, 50);
+  CHECK(std::isnan(all.num("power_b")));
+  CHECK(simc::others_sentence(all, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0%. None of the 200 simulated studies "
+        "could be analyzed by the second test (in 150, one group lay above the other; in 50, the fit did not "
+        "converge), so its power is not given.");
+  const Row broken = row_of(0, 101);
+  CHECK(simc::others_sentence(broken, "studies", tests) ==
+        " On the same simulated studies the first test had a power of 60.0%. 101 of the 200 simulated studies "
+        "could not be analyzed by the second test (the fit did not converge), and as its arithmetic broke down in "
+        "more than half of them, its power is not given.");
+  // an approximation has no other tests
+  Row approx;
+  CHECK(simc::others_sentence(approx, "studies", tests).empty());
+}
+
+TEST_CASE("sim: the other tests of a study count also where its own analysis failed") {
+  // sim::simulate leaves out what a failed study holds: the win ratio's companion test, run on the same trials,
+  // had a power of 2.75% for 28.75% when most win ratios were infinite
+  namespace simc = procs::simc;
+  Token token;
+  const RunContext ctx{&token, 2, false, nullptr};
+  const sim::Summary sm = simc::simulate_tests(
+      1000,
+      [](long rep) {
+        sim::Outcome o;
+        o.failed = rep % 4 != 0;  // three studies in four fail, the others reject
+        o.reject = !o.failed;
+        o.estimate = o.failed ? NAN : 1.0;
+        o.also = (rep % 2 == 0 ? 1u : 0u) | (o.failed ? 4u : 0u);  // the other test rejects in every second study
+        return o;
+      },
+      ctx);
+  CHECK_EQ(sm.reps, 1000L);
+  CHECK_EQ(sm.failures, 750L);
+  CHECK_EQ(sm.rejections, 250L);
+  CHECK_EQ(sm.power, 0.25);
+  CHECK_EQ(sm.also_power(0), 0.5);
+  CHECK_EQ(sm.also[2], 750L);
+  CHECK_EQ(sm.also[simc::FAILED_BIT], 0L);
+  CHECK_EQ(sm.mean_estimate, 1.0);
+}
+
 TEST_CASE("sim: quick approximations equal the closed-form procedures") {
   const json::Value a = first_row(
       R"({"procedure":"sim.lmm.cluster","solve_for":"power","options":{"approximate":true},)"
