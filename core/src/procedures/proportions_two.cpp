@@ -380,7 +380,8 @@ Procedure two_props() {
     r.set("p2", p2);
     r.set("diff", p1 - p2);
     r.set("ratio", p1 / p2);
-    r.set("or", p1 / (1 - p1) / (p2 / (1 - p2)));
+    // a given odds ratio as given: recomputed from a P1 near 1, it would lose its digits with 1 − P1
+    r.set("or", s.solve != "p1" && s.is("es", "or") ? s("or1") : p1 / (1 - p1) / (p2 / (1 - p2)));
     r.set("alpha", s("alpha"));
     if (exact && !fell_back && !ctx.curve_points) {  // a curve uses only the power
       // the size can need a larger enumeration than the power (when P1 is the more extreme proportion)
@@ -786,7 +787,9 @@ Procedure case_control() {
     r.set("m", m);
     r.set("p1", p1);
     r.set("p0", p0);
-    r.set("or", odds_ratio_of(p1, p0));
+    // a given odds ratio as given: recomputed from a P1 near 1, it would lose its digits with 1 − P1 (and be
+    // infinite once P1 rounds to 1)
+    r.set("or", s.solve != "or" && s.is("es", "or") ? s("or") : odds_ratio_of(p1, p0));
     r.set("alpha", s("alpha"));
     if (exact && !fell_back && !ctx.curve_points) {  // a curve uses only the power
       // the size can need a larger enumeration than the power (when P1 is the more extreme proportion)

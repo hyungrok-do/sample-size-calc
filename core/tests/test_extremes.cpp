@@ -240,6 +240,32 @@ TEST_CASE("extremes: cluster sizes at a CV whose square underflows are all the m
   CHECK(sizes.grid() == std::vector<double>{20});
 }
 
+TEST_CASE("extremes: odds-ratio limits far from 1 never lower the power, and an empty group 2 is refused") {
+  auto power = [](const std::string& procedure, const std::string& inputs) {
+    return run(procedure, "power", "{" + inputs + "}").get("rows").elements().at(0).get("power").as_number(NAN);
+  };
+  // the restricted estimates took the root of the wrong sign once a limit was some 10^13 from 1, and 1 − P1 lost
+  // its digits: an upper limit of 10^15 gave 0% power, though widening a limit can never lower it
+  for (const char* method : {"normal", "exact"}) {
+    const std::string common =
+        std::string(R"("scale":"or","p1":"0.6","p2":"0.6","n1":"100","method":")") + method + "\"";
+    const double upper = power("prop.two.equiv", common + R"(,"orl":"0.67","oru":"1e6")");
+    const double lower = power("prop.two.equiv", common + R"(,"orl":"1e-6","oru":"1.5")");
+    CHECK(upper > 0.4 && lower > 0.4);
+    for (const char* limit : {"1e13", "1e15", "1e30"})
+      CHECK_CLOSE(power("prop.two.equiv", common + R"(,"orl":"0.67","oru":")" + limit + "\""), upper, 1e-9, 0);
+    for (const char* limit : {"1e-20", "1e-30"})
+      CHECK_CLOSE(power("prop.two.equiv", common + R"(,"orl":")" + limit + R"(","oru":"1.5")"), lower, 1e-9, 0);
+    // a margin whose boundary P1 rounds to 1 was refused
+    const double ni = power("prop.two.ni", common + R"(,"h1":"lower","or0":"1e8")");
+    CHECK(ni > 0.99);
+    CHECK_CLOSE(power("prop.two.ni", common + R"(,"h1":"lower","or0":"1e30")"), ni, 1e-9, 0);
+  }
+  // a cluster ratio that leaves group 2 no clusters gave a power of 100%
+  const std::string empty = message(run("prop.two.cluster", "power", R"({"k1":"10","kr":"1e-12"})"));
+  CHECK(empty.find("group 2 would have no clusters") != std::string::npos);
+}
+
 TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an answer or a message") {
   struct Case {
     const char* request;
