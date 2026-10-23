@@ -1248,7 +1248,7 @@ def test_robust_and_multiarm_simulations_do_not_depend_on_where_the_means_lie():
 def test_satterthwaite_degrees_of_freedom_with_a_residual_sd_far_below_the_random_slopes():
     """With random slopes 10⁸⁰ residual SDs apart over the follow-up, the squares of the finite-difference steps
     passed below the smallest double, and every study fell back to N − 2 degrees of freedom without a word."""
-    base = {"n1": "10", "dropout": "0.5", "sd1": "1e30", "duration": "1e30", "delta": "2e30", "reps": "200"}
+    base = {"n1": "10", "dropout": "0.5", "sd1": "5e29", "duration": "1e30", "delta": "1e30", "reps": "200"}
     rows = [first_row(run("sim.lmm.longitudinal", "power", {**base, "sde": sde}, threads=2))
             for sde in ("1e-20", "1e-30")]
     assert rows[0]["mean_df"] == pytest.approx(rows[1]["mean_df"], rel=1e-5) and rows[0]["mean_df"] < 17, rows
