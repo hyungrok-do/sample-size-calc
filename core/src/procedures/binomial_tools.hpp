@@ -35,9 +35,12 @@ inline BinomWindow binom_window_pq(int n, double p, double q, double tail = 1e-1
     return w;
   }
   int lo = 0, hi = n;
-  if (n > 50) {
+  if (n > 50 && p < 1) {
     lo = static_cast<int>(std::max(0.0, qbinom(tail, n, p) - 1));
     hi = static_cast<int>(std::min<double>(n, qbinom(1 - tail, n, p) + 1));
+  } else if (n > 50) {  // p rounds to 1: the window of n − Y, Y binomial with q (with p, it held only n − 1 and n)
+    lo = n - static_cast<int>(std::min<double>(n, qbinom(1 - tail, n, q) + 1));
+    hi = n - static_cast<int>(std::max(0.0, qbinom(tail, n, q) - 1));
   }
   w.lo = lo;
   w.hi = hi;
