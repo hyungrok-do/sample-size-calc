@@ -1,5 +1,6 @@
 // Cochran–Armitage test for a linear trend in proportions, and stepped-wedge
 // cluster-randomized designs (Hussey & Hughes).
+#include <algorithm>
 #include <sstream>
 
 #include "procedures/common.hpp"
@@ -144,6 +145,9 @@ Procedure trend() {
     const Trend t = trend_setup(s);
     const double alpha = s("alpha");
     const Alt a = alt(s);
+    // a tiny relative size leaves its group without a subject (n times the size, rounded up, is 0)
+    const auto lightest = std::min_element(t.w.begin(), t.w.end()) - t.w.begin() + 1;
+    auto filled = [&](double x) { return std::ceil(x * t.w[lightest - 1] - 1e-9) >= 1; };
     double n;
     if (s.solve == "n") {
       const double dir = trend_direction(t);
@@ -151,10 +155,16 @@ Procedure trend() {
       if ((a == Alt::Upper && dir < 0) || (a == Alt::Lower && dir > 0))
         throw CalcError("the trend in the proportions runs opposite to the one-sided alternative");
       solve::NSearch o;
-      o.lo = 2;
+      o.lo = solve::first_whole(filled, 2, o.hi,
+                                ("the relative size of group " + std::to_string(lightest) +
+                                 " is too small: the group would have too few subjects")
+                                    .c_str());
       n = solve::min_n([&](double x) { return trend_power(t, x, alpha, a); }, s("power"), o, &ctx);
     } else {
       n = s("n");
+      if (!filled(n))
+        throw CalcError("group " + std::to_string(lightest) +
+                        " would have no subjects (n × its relative size, rounded up); each group needs at least 1");
     }
     const auto ni = trend_sizes(t, n);
     double total = 0;

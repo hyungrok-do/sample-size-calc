@@ -478,15 +478,16 @@ const std::vector<std::pair<std::string, std::string>> GS_DEFS = {
 // The time of a request in units of a typical scenario (a few ms), for the limit of scenarios. Each design is
 // built once: about 3.5 units with 20 analyses, 11 with β-spending futility (whose design depends on the power
 // too); a power from it is quick, and a search for the sample size takes about 3.5 ms per analysis (80 ms with
-// 20 analyses).
+// 20 analyses).  The work grows with the square of the grid's r, which is finer for a tiny alpha.
 double gs_cost(const std::vector<Scenario>& scenarios) {
   std::set<std::string> designs;
   double cost = 0;
   for (const auto& s : scenarios) {
-    const double looks = s("looks");
-    cost += s.solve == "power" ? 1 : 1 + looks / 2;
+    const double looks = s("looks"), grid = gs::grid_resolution(s("alpha")) / 32.0, w = grid * grid;
+    cost += w * (s.solve == "power" ? 1 : 1 + looks / 2);
     try {
-      if (designs.insert(design_key(s)).second) cost += futility_kind(s) == "beta" ? 1 + looks / 2 : 1 + looks / 8;
+      if (designs.insert(design_key(s)).second)
+        cost += w * (futility_kind(s) == "beta" ? 1 + looks / 2 : 1 + looks / 8);
     } catch (const CalcError&) {
       // the scenario stops at once with its message
     }

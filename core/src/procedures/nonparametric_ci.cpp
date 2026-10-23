@@ -284,6 +284,8 @@ Procedure kruskal() {
     const double sigma = s("sigma"), alpha = s("alpha"), are = are_of(s);
     const double f2 = ss / k / (sigma * sigma);
     if (!(f2 > 0)) throw CalcError("the group means are all equal");
+    if (!std::isfinite(f2))
+      throw CalcError("the effect size is too large to compute with (σ is tiny next to the spread of the means)");
     auto P = [&](double n) {
       const double ne = n * are, N = ne * k;
       const double df2 = N - k;
@@ -466,6 +468,7 @@ CiMean ci_mean(const Scenario& s, double se_factor, double df, double target) {
 }
 
 void run_ci_mean(const Scenario& s, Row& r, RunContext& ctx, bool two_groups) {
+  if (!s.is("sides", "two")) check_one_sided_conf(s("conf"));
   const double gamma = s.get("tolprob", 0);
   auto factor = [&](double n) {
     if (!two_groups) return std::sqrt(1 / n);
@@ -597,7 +600,7 @@ Procedure ci_one_mean() {
   };
   p.statement = [](const Scenario& s, const Row& r) {
     return "A sample of " + fint(r.num("n")) + " gives a " + (s.is("sides", "two") ? "two-sided " : "one-sided ") +
-           fpct(r.num("conf"), 0) + " confidence interval for the mean with a half-width of " + fnum(r.num("e")) +
+           level_text(r.num("conf")) + " confidence interval for the mean with a half-width of " + fnum(r.num("e")) +
            " when the standard deviation is " + fnum(r.num("sigma")) + tolerance_words(s, r) + ".";
   };
   p.definitions = {{"E", "Distance from the sample mean to a confidence limit (half the width of a two-sided interval)."},
@@ -634,7 +637,7 @@ Procedure ci_two_means() {
   };
   p.statement = [](const Scenario& s, const Row& r) {
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " give a " +
-           (s.is("sides", "two") ? "two-sided " : "one-sided ") + fpct(r.num("conf"), 0) +
+           (s.is("sides", "two") ? "two-sided " : "one-sided ") + level_text(r.num("conf")) +
            " confidence interval for the difference in means with a half-width of " + fnum(r.num("e")) +
            " when the common standard deviation is " + fnum(r.num("sigma")) + tolerance_words(s, r) + ".";
   };

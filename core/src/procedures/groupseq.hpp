@@ -55,8 +55,15 @@ struct Design {
   bool two_sided = false;
   bool binding = false;
   double eta_design = NAN;  // drift under which beta-spending futility boundaries were derived
+  int grid = 32;            // r of the grid its probabilities are computed on (see grid_resolution)
   bool has_futility() const { return !a.empty(); }
 };
+
+/// The grid's r for a design at level alpha: 32, as Jennison & Turnbull advise, and 128 below an alpha of 1e-8,
+/// whose boundaries lie so far out that the sparse tails of the coarser grid lose the accuracy of the last one
+/// (with 20 analyses its error grew tenfold at 1e-12, and at 1e-20 the last nominal level exceeded alpha and N
+/// was 2 short; with 128 the boundaries keep the accuracy of 32 at ordinary levels down to an alpha of 1e-30).
+int grid_resolution(double alpha);
 
 struct ExitProbs {
   std::vector<double> up;   // P(stop at analysis k by crossing +b_k)
@@ -70,17 +77,17 @@ struct ExitProbs {
 /// one-sided design; beta-spending futility needs alpha-spending efficacy
 /// boundaries and solves for the drift at which the total beta is spent
 /// (stored in eta_design).  `check` (optional) is called between expensive
-/// steps and may throw to cancel.
+/// steps and may throw to cancel.  r = 0 takes grid_resolution(alpha).
 Design make_design(const std::vector<double>& t, double alpha, bool two_sided, const Efficacy& eff,
-                   const Futility& fut, const std::function<void()>& check = {}, int r = 32);
+                   const Futility& fut, const std::function<void()>& check = {}, int r = 0);
 
 /// Exit probabilities under drift eta.  `scale` multiplies every boundary (a
 /// statistic whose standard deviation under H1 differs from 1 can be handled by
-/// scaling its boundaries by 1/SD and its drift by 1/SD).
-ExitProbs exit_probs(const Design& d, double eta, double scale = 1, int r = 32);
+/// scaling its boundaries by 1/SD and its drift by 1/SD).  r = 0 takes the design's grid.
+ExitProbs exit_probs(const Design& d, double eta, double scale = 1, int r = 0);
 
 /// Drift giving the requested overall power (rejection in the direction of the
 /// drift); boundaries are multiplied by `scale` as in exit_probs.
-double drift_for_power(const Design& d, double power, double scale = 1, int r = 32);
+double drift_for_power(const Design& d, double power, double scale = 1, int r = 0);
 
 }  // namespace ssc::gs

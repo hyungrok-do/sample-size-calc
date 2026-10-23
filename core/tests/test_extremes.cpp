@@ -230,6 +230,51 @@ TEST_CASE("extremes: an effect on a tiny scale is solved to the tolerance relati
     auto power = [&](double x) { return stats::pnorm(x / scale - 2.5); };
     CHECK_CLOSE(solve::solve_increasing(power, 0.5, 0, scale, 1e9 * scale, 1e-12), 2.5 * scale, 1e-9, 0);
   }
+  // a tolerance from the bracket (here 1e4 times the root) left the fourth digit wrong; relative to the root, the
+  // answer is the same at every scale
+  for (double scale : {1e-10, 1.0, 1e10}) {
+    auto power = [&](double x) { return stats::pnorm(x / scale - 2.5); };
+    CHECK_CLOSE(solve::solve_increasing(power, 0.5, 0, 1e4 * scale, 1e9 * scale, 1e-12) / scale, 2.5, 1e-11, 0);
+  }
+  // from a null value far from 0 the tolerance is relative to the distance from it
+  auto power = [](double x) { return stats::pnorm((x - 1e6) / 1e-3 - 2.5); };
+  CHECK_CLOSE(solve::solve_increasing(power, 0.5, 1e6, 1e6 + 1e-3, 1e7, 1e-12) - 1e6, 2.5e-3, 1e-6, 0);
+  CHECK_CLOSE(solve::solve_decreasing([](double x) { return stats::pnorm((1e6 - x) / 1e-3 - 2.5); }, 0.5, 1e6,
+                                      1e6 - 1e-3, 0, 1e-12) - 1e6, -2.5e-3, 1e-6, 0);
+}
+
+TEST_CASE("extremes: an effect that a large value next to it rounds away is refused") {
+  CHECK_EQ(solve::offset(1e6, 0.5, "μ1", "μ2"), 1e6 + 0.5);
+  CHECK_EQ(solve::offset(0, 1e-300, "μ1", "μ2"), 1e-300);
+  for (double x0 : {1e16, -1e17, 1e10}) {
+    bool refused = false;
+    try {
+      solve::offset(x0, 0.9, "μ1", "μ2", true);
+    } catch (const CalcError& e) {
+      refused = std::string(e.what()).find("μ1 cannot be told apart from μ2 = ") == 0;
+    }
+    CHECK(refused);
+  }
+  // the search itself, from a null value whose neighbors are coarser than the effect
+  auto power = [](double x) { return stats::pnorm((x - 0.9999999999999) / 1e-17 - 2.5); };
+  bool refused = false;
+  try {
+    solve::solve_increasing(power, 0.5, 0.9999999999999, 0.99999999999995, 1 - 1e-16, 1e-12, "ρ1", "ρ0");
+  } catch (const CalcError& e) {
+    refused = std::string(e.what()).find("ρ1 cannot be told apart from ρ0 = 0.9999999999999") == 0;
+  }
+  CHECK(refused);
+}
+
+TEST_CASE("extremes: the correlation's distribution on Fisher's scale") {
+  for (double r : {-0.9, 0.0, 0.3, 0.95})
+    for (double rho : {-0.5, 0.0, 0.6})
+      CHECK_EQ(stats::pcorr_z(std::atanh(r), 20, std::atanh(rho), false), stats::pcorr(r, 20, rho, false));
+  // near 1, where the doubles next to the critical values are too coarse, the tail on Fisher's scale depends on
+  // the distance from ζ alone, as ρ = tanh ζ nears 1 (the same at ζ = 10 and ζ = 14)
+  CHECK_CLOSE(stats::pcorr_z(14.5, 50, 14, false), stats::pcorr_z(10.5, 50, 10, false), 1e-7, 0);
+  CHECK_EQ(stats::pcorr_z(INFINITY, 50, 14, false), 0.0);
+  CHECK_EQ(stats::pcorr_z(-INFINITY, 50, 14, false), 1.0);
 }
 
 TEST_CASE("extremes: cluster sizes at a CV whose square underflows are all the mean") {

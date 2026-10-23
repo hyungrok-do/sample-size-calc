@@ -928,21 +928,32 @@ Procedure chisq() {
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double alpha = s("alpha");
+    // a test on df degrees of freedom compares at least df + 1 categories, each of which needs a subject (a huge w
+    // otherwise gave a total sample size of 1)
+    auto check_n = [&](double n, double df) {
+      if (n < df + 1)
+        throw CalcError("N must be at least " + fint(df + 1) + ": a chi-square test on " + fint(df) +
+                        (df == 1 ? " degree" : " degrees") + " of freedom compares at least " + fint(df + 1) +
+                        " categories");
+    };
     double df = 0, w = 0, n;
     if (s.solve == "w") {
       df = s("df");
       n = s("n");
+      check_n(n, df);
       w = solve::solve_increasing([&](double x) { return chisq_power(n, x, df, alpha); }, s("power"), 1e-9, 0.3, 1e6);
     } else {
       w = chisq_w(s, df);
       if (!(w > 0)) throw CalcError("the effect size w is zero");
+      if (!std::isfinite(w * w)) throw CalcError("the effect size w is too large to compute with");
       if (s.solve == "n") {
         solve::NSearch o;
-        o.lo = 1;
+        o.lo = df + 1;
         o.guess = (z_factor(alpha, s("power"), Alt::Two) + 2 * (df - 1)) / (w * w);
         n = solve::min_n([&](double x) { return chisq_power(x, w, df, alpha); }, s("power"), o, &ctx);
       } else {
         n = s("n");
+        check_n(n, df);
       }
     }
     r.set("n", n);

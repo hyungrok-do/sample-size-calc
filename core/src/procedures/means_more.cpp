@@ -85,9 +85,10 @@ Procedure ancova() {
       if (!(n.n1 + n.n2 - 2 - q > 0)) throw CalcError("the number of covariates must be less than N − 2");
       const double sign = a == Alt::Lower ? -1.0 : 1.0;
       const double se = sigma * std::sqrt((1 - r2) * (1 / n.n1 + 1 / n.n2));
-      mu1 = mu2 + sign * solve::solve_increasing(
-                             [&](double d) { return ancova_power(n.n1, n.n2, sign * d, sigma, r2, q, alpha, a); },
-                             s("power"), 0, se, 1e6 * se, 1e-12, "μ1");
+      const double d = solve::solve_increasing(
+          [&](double dd) { return ancova_power(n.n1, n.n2, sign * dd, sigma, r2, q, alpha, a); }, s("power"), 0, se,
+          1e6 * se, 1e-12, "μ1");
+      mu1 = solve::offset(mu2, sign * d, "μ1", "μ2", true);
     } else {
       mu1 = s("mu1");
       const double diff = mu1 - mu2;

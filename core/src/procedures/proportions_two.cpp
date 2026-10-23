@@ -404,10 +404,11 @@ Procedure two_props() {
                                                              {"zpoolcc", "continuity-corrected z-test"},
                                                              {"fisher", "Fisher's exact test"}};
     std::string t = "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
-                    " to detect a difference between the group proportions P1 = " + fnum(r.num("p1")) + " and P2 = " +
-                    fnum(r.num("p2")) + " (difference " + fnum(r.num("diff")) + ", ratio " + fnum(r.num("ratio"), 3) +
-                    ", odds ratio " + fnum(r.num("or"), 3) + ") using a " + alt_words(alt(s)) + " " +
-                    names.at(s.s("test")) + " at a target significance level of " + fnum(r.num("alpha"));
+                    " to detect a difference between the group proportions P1 = " + fnum_fine(r.num("p1")) +
+                    " and P2 = " + fnum_fine(r.num("p2")) + " (difference " + fnum(r.num("diff")) + ", ratio " +
+                    fnum(r.num("ratio"), 3) + ", odds ratio " + fnum(r.num("or"), 3) + ") using a " +
+                    alt_words(alt(s)) + " " + names.at(s.s("test")) + " at a target significance level of " +
+                    fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
     // large samples use the normal approximation, and say so in a note
     const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
@@ -550,6 +551,7 @@ Procedure two_props_ci() {
           .hint("The proportion you expect to observe in group 2, between 0 and 1."),
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    if (!s.is("sides", "two")) check_one_sided_conf(s("conf"));
     double n1;
     if (s.solve == "n") {
       const double target = s("width");
@@ -600,7 +602,7 @@ Procedure two_props_ci() {
         {"ac", "Agresti–Caffo"}, {"wald", "Wald"}, {"waldcc", "continuity-corrected Wald"}};
     const bool two = s.is("sides", "two");
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " give a " +
-           (two ? "two-sided " : "one-sided ") + fpct(r.num("conf"), 0) + " " + names.at(s.s("method")) +
+           (two ? "two-sided " : "one-sided ") + level_text(r.num("conf")) + " " + names.at(s.s("method")) +
            " confidence interval for the difference of two proportions " +
            (two ? "with a width of " : "whose bound lies at a distance of ") + fnum(r.num("width")) +
            " when the observed proportions equal " + fnum(r.num("p1")) + " and " + fnum(r.num("p2")) + ".";

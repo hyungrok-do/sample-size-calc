@@ -111,6 +111,9 @@ double bvn_upper(double h, double k, double r);
 /// Exact distribution of the Pearson correlation of n bivariate normal pairs with correlation rho.
 double dcorr(double r, double n, double rho);
 double pcorr(double x, double n, double rho, bool lower = true);
+/// pcorr on Fisher's scale: P(atanh r ≤ z) for ρ = tanh ζ, which keeps its accuracy for correlations so near ±1
+/// that the doubles next to them are too coarse (those next to 1 − 1e-14 are a hundredth of 1e-14 apart).
+double pcorr_z(double z, double n, double zeta, bool lower = true);
 
 double pbvnorm(double h, double k, double r);
 

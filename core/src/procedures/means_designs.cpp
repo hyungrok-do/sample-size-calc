@@ -1,6 +1,8 @@
 // Designs for means beyond two parallel groups: one-way ANOVA, 2×2 crossover
 // (difference and bioequivalence ratio), cluster-randomized and
 // repeated-measures comparisons.
+#include <algorithm>
+
 #include "procedures/common.hpp"
 #include "procedures/integrals.hpp"
 
@@ -151,24 +153,35 @@ Procedure anova() {
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double alpha = s("alpha");
+    // a tiny allocation ratio leaves its group without a subject (n times the ratio, rounded up, is 0)
+    const auto w = anova_weights(s, anova_k(s));
+    const auto lightest = std::min_element(w.begin(), w.end()) - w.begin() + 1;
+    auto filled = [&](double n) { return std::ceil(n * w[lightest - 1] - 1e-9) >= 1; };
     AnovaDesign d;
     if (s.solve == "n") {
-      d = anova_design(s, 2);
-      if (!(d.f > 0)) throw CalcError("the group means are all equal; there is no effect to detect");
       solve::NSearch o;
-      o.lo = 2;
+      o.lo = solve::first_whole(filled, 2, o.hi,
+                                ("the allocation ratio of group " + std::to_string(lightest) +
+                                 " is too small: the group would have too few subjects")
+                                    .c_str());
+      d = anova_design(s, o.lo);
+      if (!(d.f > 0)) throw CalcError("the group means are all equal; there is no effect to detect");
       o.guess = (z_factor(alpha, s("power"), Alt::Two) + 2.0 * (d.k - 1)) / (d.k * d.f * d.f) + 1;
       const double n = solve::min_n([&](double x) { return anova_power(anova_design(s, x), alpha); }, s("power"), o, &ctx);
       d = anova_design(s, n);
       r.set("n", n);
-    } else if (s.solve == "power") {
-      d = anova_design(s, s("n"));
-      r.set("n", s("n"));
     } else {
       const double n = s("n");
-      const double f = solve::solve_increasing([&](double ff) { return anova_power(anova_design(s, n, ff), alpha); },
-                                               s("power"), 1e-9, 0.25, 1e6, 1e-12, "the effect size f");
-      d = anova_design(s, n, f);
+      if (!filled(n))
+        throw CalcError("group " + std::to_string(lightest) +
+                        " would have no subjects (n × its allocation ratio, rounded up); each group needs at least 1");
+      if (s.solve == "power") {
+        d = anova_design(s, n);
+      } else {
+        const double f = solve::solve_increasing([&](double ff) { return anova_power(anova_design(s, n, ff), alpha); },
+                                                 s("power"), 1e-9, 0.25, 1e6, 1e-12, "the effect size f");
+        d = anova_design(s, n, f);
+      }
       r.set("n", n);
     }
     double N = 0;
@@ -592,6 +605,7 @@ Procedure cluster_means() {
         const double sign = a == Alt::Lower ? -1 : 1;
         diff = sign * solve::solve_increasing([&](double d) { return P(k1, sign * d); }, s("power"), 0, sigma,
                                               1e9 * sigma);
+        solve::offset(s("mu2"), diff, "μ1", "μ2", true);
       }
     }
     const double k2 = k2_of(k1);
@@ -757,6 +771,7 @@ Procedure repeated() {
         const double sign = a == Alt::Lower ? -1 : 1;
         diff = sign * solve::solve_increasing([&](double d) { return P(n.n1, n.n2, sign * d); }, s("power"), 0, sigma,
                                               1e9 * sigma);
+        solve::offset(s("mu2"), diff, "μ1", "μ2", true);
       }
     }
     put_two_group(r, n);

@@ -1155,3 +1155,115 @@ def test_inputs_the_calculation_does_not_use_are_reported():
     assert res["replaced_choices"] == {"alloc": {"given": "sep", "used": "equal"}}
     res = run("means.two.t", "n", {"mu1": "0.5"})
     assert not {"ignored_inputs", "unknown_inputs", "replaced_choices"} & set(res)
+
+
+@pytest.mark.parametrize("pid,solve,scale,size", [
+    ("means.one.t", "mu1", "sigma", {"n": "1e8"}), ("means.two.t", "mu1", "sigma", {"n1": "1e8"}),
+    ("reg.slope", "b1", "sigma", {"n": "1e8"}), ("means.two.cluster", "mu1", "sigma", {"k1": "1e7"})])
+def test_an_effect_found_with_a_large_sample_scales_with_the_sd(pid, solve, scale, size):
+    """The search's tolerance came from the bracket (the SD), far above the effect for a large N: at an SD of 1e-6
+    and N = 1e8 the detectable mean was 2.804e-10 at 80.1% power, for 2.802e-10."""
+    base = {**base_inputs(pid), **size, scale: "1"}
+    unit = first_row(run(pid, solve, base))[solve]
+    for sd in (1e-6, 1e-4, 1e3):
+        row = first_row(run(pid, solve, {**base, scale: repr(sd)}))
+        assert row[solve] / sd == pytest.approx(unit, rel=1e-10) and row["power"] == pytest.approx(0.8, abs=1e-10)
+
+
+@pytest.mark.parametrize("pid,solve,key,base_key,sds", [
+    ("means.one.t", "mu1", "mu1", "mu0", ["sigma"]), ("means.paired.t", "mud", "mud", "mud0", ["sd1", "sd2"]),
+    ("means.two.t", "mu1", "mu1", "mu2", ["sigma"]), ("means.two.welch", "mu1", "mu1", "mu2", ["sd1", "sd2"]),
+    ("means.two.repeated", "mu1", "mu1", "mu2", ["sigma"]), ("means.two.ancova", "mu1", "mu1", "mu2", ["sigma"]),
+    ("means.two.cluster", "mu1", "mu1", "mu2", ["sigma"]), ("reg.slope", "b1", "b1", "b0", ["sigma"])])
+def test_an_effect_lost_next_to_a_large_value_is_refused(pid, solve, key, base_key, sds):
+    """μ2 = 1e16 keeps nothing of a difference of 0.9: μ1 rounded back to μ2, and the answer claimed 80% power
+    (or reported 5% or 100%) for a difference of 0."""
+    base = base_inputs(pid)
+    for big in ("1e16", "-1e17", "1e30"):
+        msg = run(pid, solve, {**base, base_key: big})["rows"][0].get("_error", "")
+        assert "cannot be told apart from" in msg and "lost to rounding" in msg, (big, msg)
+    msg = run(pid, solve, {**base, base_key: "1e6", **{sd: "1e-30" for sd in sds}})["rows"][0].get("_error", "")
+    assert "cannot be told apart from" in msg, msg
+    # a large value that still carries the difference gives the answer it gives at 0
+    zero = first_row(run(pid, solve, {**base, base_key: "0"}))
+    row = first_row(run(pid, solve, {**base, base_key: "1e6"}))
+    assert row[key] - 1e6 == pytest.approx(zero[key], rel=1e-6)
+    assert row["power"] == pytest.approx(zero["power"], abs=1e-6)
+
+
+def test_effects_next_to_a_correlation_near_one():
+    """ρ1 next to ρ0 near 1: the search ended at 1 − 1e-9, below ρ0 (an answer below ρ0, or 'the power must exceed
+    the significance level'), the critical values stopped at 1 − 1e-12 (4 subjects for 100% power), and the
+    statement printed both as 1."""
+    base = base_inputs("corr.one")
+    for k in (11, 13, 15):
+        # as ρ nears 1 the power depends on the distance in Fisher's z alone: that of the doubles given (those next
+        # to 1 − 1e-14 are a hundredth of 1e-14 apart), repeated at ρ0 = 1 − 1e-8
+        rho0 = 1 - 10.0 ** -k
+        rho1 = math.tanh(math.atanh(rho0) + 0.4)
+        dz = math.atanh(rho1) - math.atanh(rho0)
+        row = first_row(run("corr.one", "power", {**base, "rho0": repr(rho0), "rho1": repr(rho1), "n": "50"}))
+        ref = first_row(run("corr.one", "power", {**base, "rho0": repr(1 - 1e-8), "n": "50",
+                                                  "rho1": repr(math.tanh(math.atanh(1 - 1e-8) + dz))}))
+        assert row["power"] == pytest.approx(ref["power"], abs=1e-7), (k, row, ref)
+        assert first_row(run("corr.one", "n", {**base, "rho0": repr(rho0), "rho1": repr(rho1)}))["n"] > 4
+    row = first_row(run("corr.one", "rho1", {**base, "rho0": "0.999999", "n": "50"}))
+    assert 0.999999 < row["rho1"] < 1 and row["power"] == pytest.approx(0.8, abs=1e-6)
+    assert "ρ1 = 0.9999996 when the null correlation is ρ0 = 0.999999" in row["_statement"]
+    for rho0, alt in (("0.9999999999999", "two"), ("0.9999999999999999", "upper"), ("-0.99999999999", "lower")):
+        msg = run("corr.one", "rho1", {**base, "rho0": rho0, "alternative": alt})["rows"][0].get("_error", "")
+        assert msg.startswith("ρ1 cannot be told apart from ρ0"), (rho0, msg)
+    row = first_row(run("agree.icc", "rho1", {**base_inputs("agree.icc"), "rho0": "0.999999"}))
+    assert row["power"] == pytest.approx(0.8, abs=1e-9) and "of 0.9999996 when" in row["_statement"]
+    msg = run("agree.icc", "rho1", {**base_inputs("agree.icc"), "rho0": "0.9999999999"})["rows"][0]["_error"]
+    assert msg.startswith("ρ1 cannot be told apart from ρ0 = 0.9999999999"), msg
+
+
+def test_a_confidence_level_is_shown_with_its_digits():
+    for pid, conf, says in (("means.one.ci", "0.999", "99.9%"), ("means.two.ci", "0.975", "97.5%"),
+                            ("corr.ci", "0.9999999999999", "99.99999999999%"), ("prop.one.ci", "0.95", "95%"),
+                            ("prop.two.ci", "0.5", "50%")):
+        stmt = first_row(run(pid, "n", {**base_inputs(pid), "conf": conf}))["_statement"]
+        assert " " + says + " " in stmt, stmt
+
+
+@pytest.mark.parametrize("pid,side", [("means.one.ci", "one"), ("means.two.ci", "one"), ("prop.one.ci", "lower"),
+                                      ("prop.two.ci", "upper")])
+def test_a_one_sided_interval_needs_a_confidence_above_one_half(pid, side):
+    """At 50% or less a one-sided bound lies on the estimate or on the wrong side: half-widths of 0 or −2.3e14, or
+    'the target width cannot be reached'."""
+    for solve in ("n", "width"):
+        for conf in ("0.5", "0.01", "1e-15"):
+            msg = run(pid, solve, {**base_inputs(pid), "sides": side, "conf": conf})["rows"][0].get("_error", "")
+            assert msg.startswith("a one-sided interval needs a confidence level above 0.5"), (solve, conf, msg)
+    assert first_row(run(pid, "n", {**base_inputs(pid), "sides": side, "conf": "0.6"}))
+
+
+def test_degenerate_effect_sizes_and_sizes_are_refused():
+    """A total of 1 subject for a chi-square test on 2 degrees of freedom; a group the allocation leaves empty."""
+    base = base_inputs("prop.chisq")
+    for w in ("1e15", "1e30"):
+        assert first_row(run("prop.chisq", "n", {**base, "w": w, "df": "2"}))["n"] == 3
+    msg = run("prop.chisq", "power", {**base, "n": "2", "df": "2"})["rows"][0]["_error"]
+    assert msg == "N must be at least 3: a chi-square test on 2 degrees of freedom compares at least 3 categories"
+    for pid, key, weights in (("means.anova", "ratios", "1 1 1e-20"), ("prop.trend", "weights", "1 1 1 1e-20")):
+        base = {**base_inputs(pid), "alloc": "ratio", key: weights}
+        msg = run(pid, "n", base)["rows"][0]["_error"]
+        assert "is too small: the group would have too few subjects" in msg, msg
+        msg = run(pid, "power", base)["rows"][0]["_error"]
+        assert "would have no subjects" in msg and "each group needs at least 1" in msg, msg
+
+
+@pytest.mark.parametrize("bound", ["obf", "wt_obf", "pocock", "hsd"])
+@pytest.mark.parametrize("alt", ["two", "upper"])
+def test_group_sequential_boundaries_at_the_smallest_alpha(bound, alt):
+    """At an α of 1e-20 to 1e-30 the boundaries lost accuracy: the final nominal p exceeded α and the inflation
+    factor dropped below 1."""
+    for looks in ("5", "10"):
+        for alpha in (1e-20, 1e-30):
+            row = first_row(run("gs.means", "n", {**base_inputs("gs.means"), "boundary": bound, "alternative": alt,
+                                                 "looks": looks, "alpha": repr(alpha)}))
+            table = row["_tables"][0]
+            keys = [c["key"] for c in table["columns"]]
+            p = table["rows"][-1][keys.index("p")] * (2 if alt == "two" else 1)
+            assert p <= alpha and row["inflation"] >= 1, (looks, alpha, p / alpha, row["inflation"])

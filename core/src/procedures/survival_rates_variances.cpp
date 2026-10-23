@@ -608,10 +608,10 @@ Procedure one_poisson() {
         auto f = [&](double x) { return one_pois_eval(s, n, x).power; };
         const double target = s("power");
         if (up) {
-          lam1 = solve::solve_increasing(f, target, lam0, 2 * lam0, 1e12 * lam0, 1e-12, "λ1");
+          lam1 = solve::solve_increasing(f, target, lam0, 2 * lam0, 1e12 * lam0, 1e-12, "λ1", "λ0");
         } else {
           if (f(1e-300) < target) throw CalcError("the target power cannot be reached with this N for any λ1 < λ0");
-          lam1 = solve::solve_decreasing(f, target, lam0, lam0 / 2, 1e-300, 1e-12, "λ1");
+          lam1 = solve::solve_decreasing(f, target, lam0, lam0 / 2, 1e-300, 1e-12, "λ1", "λ0");
         }
       }
     }

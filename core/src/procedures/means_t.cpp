@@ -26,9 +26,9 @@ double one_mean_power(const Scenario& s, double n, double diff, double sigma) {
 }
 
 // Solve for N / power / the detectable difference, given the null value m0
-// and alternative m1 (both on the same scale), and SD sigma.
+// and alternative m1 (both on the same scale, with symbols m0_sym and m1_sym), and SD sigma.
 void run_one_mean(const Scenario& s, Row& r, RunContext& ctx, double m0, const std::string& m1_key, double sigma,
-                  double min_n) {
+                  double min_n, const char* m1_sym, const char* m0_sym) {
   const Alt a = alt(s);
   if (s.solve == "n") {
     const double m1 = s(m1_key);
@@ -58,7 +58,7 @@ void run_one_mean(const Scenario& s, Row& r, RunContext& ctx, double m0, const s
                                              0, sigma, 1e9 * sigma, 1e-12, "the mean difference");
     r.set("n", n);
     put_power(s, r, one_mean_power(s, n, sign * d, sigma));
-    r.set(m1_key, m0 + sign * d);
+    r.set(m1_key, solve::offset(m0, sign * d, m1_sym, m0_sym, true));
   }
 }
 
@@ -104,7 +104,7 @@ Procedure one_sample() {
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double sigma = s("sigma");
-    run_one_mean(s, r, ctx, s("mu0"), "mu1", sigma, 2);
+    run_one_mean(s, r, ctx, s("mu0"), "mu1", sigma, 2, "μ1", "μ0");
     const double m0 = s("mu0"), m1 = r.num("mu1");
     r.set("mu0", m0);
     r.set("delta", m1 - m0);
@@ -234,7 +234,7 @@ Procedure paired() {
     } else {
       sdd = s("sdd");
     }
-    run_one_mean(s, r, ctx, s("mud0"), "mud", sdd, 2);
+    run_one_mean(s, r, ctx, s("mud0"), "mud", sdd, 2, "μD", "μD0");
     r.set("mud0", s("mud0"));
     r.set("sdd", sdd);
     r.set("es", (r.num("mud") - s("mud0")) / sdd);
@@ -342,7 +342,7 @@ void run_two_means(const Scenario& s, Row& r, RunContext& ctx, bool welch) {
     }
     put_two_group(r, n);
     put_power(s, r, two_mean_power(s, n.n1, n.n2, sign * d, welch));
-    r.set("mu1", mu2 + sign * d);
+    r.set("mu1", solve::offset(mu2, sign * d, "μ1", "μ2", true));
   }
   r.set("mu2", mu2);
   r.set("delta", r.num("mu1") - mu2);
