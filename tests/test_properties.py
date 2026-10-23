@@ -938,7 +938,8 @@ def test_an_input_too_small_to_compute_with_is_named():
     ("means.two.t", "power", {"mu1": "-1e31"}, "mu1", "values must be 0 or between 1e-30 and 1e30 in size"),
     ("means.two.t", "n", {"dropout": "0 1e-31"}, "dropout", "values must be 0 or at least 1e-30"),
     ("means.two.t", "power", {"sigma": "1e-31 to 1 by 0.5"}, "sigma", "values must be between 1e-30 and 1e30"),
-    # each end of a range as typed, as it would be alone: one its values do not reach, one tidied to 1e-30
+    # each end of a range as typed, as it would be alone: one its values do not reach, and a start kept as typed
+    # (rounded to 12 digits, it would be 1e-30)
     ("means.two.t", "power", {"mu1": "0 to 1.5e30 by 1e30"}, "mu1", "values must be 0 or between 1e-30 and 1e30 in size"),
     ("means.two.t", "power", {"mu1": "9.9999999999999e-31 to 9.9999999999999e-31"}, "mu1",
      "values must be 0 or between 1e-30 and 1e30 in size"),
@@ -978,6 +979,29 @@ def test_a_range_that_crosses_0_has_0_among_its_values(pid, inputs, key):
     res = run(pid, "power", {**base_inputs(pid), **inputs})
     assert res["ok"] and len(res["rows"]) == 7 and res["rows"][3][key] == 0, res
     assert all("_error" not in r for r in res["rows"]), res
+
+
+@pytest.mark.parametrize("pid,solve,inputs,says", [
+    # the start of a range, and its end where the steps reach it, as typed: checked as each would be alone (rounded to
+    # 12 digits, 5.0000000000001 was 5 and 0.99999999999999 was 1)
+    ("sim.lmm.cluster", "power", {"cv": "5.0000000000001 to 5.0000000000001"}, {"cv": "values must be at most 5"}),
+    ("means.two.t", "power", {"n1": "10.0000000000001 to 12"}, {"n1": "values must be whole numbers"}),
+    ("means.two.t", "power", {"mu1": "0.5 to 0.9999999999999 by 0.4999999999999", "mu2": "1"}, [0.5, 0.9999999999999]),
+    ("means.two.t", "n", {"power": "0.99999999999999 to 0.99999999999999"}, [0.99999999999999]),
+    ("means.two.t", "n", {"power": "0.5 to 1 by 0.2"}, [0.5, 0.7, 0.9]),  # an end the steps do not reach is no value
+    # a range that ends at 0 has 0 among its values, whichever side the rounding noise of the sum fell on (0.9 - 3 *
+    # 0.3 is 1.1e-16, 0.3 - 3 * 0.1 is -5.6e-17)
+    ("means.two.t", "n", {"alpha": "0.9 to 0 by 0.3"}, {"alpha": "values must be greater than 0"}),
+    ("means.two.t", "n", {"alpha": "0.3 to 0 by 0.1"}, {"alpha": "values must be greater than 0"}),
+    ("means.two.t", "n", {"dropout": "0.9 to 0 by 0.3"}, [0.9, 0.6, 0.3, 0]),
+])
+def test_the_ends_of_a_range_are_values_as_typed(pid, solve, inputs, says):
+    res = run(pid, solve, {**base_inputs(pid), **inputs})
+    if isinstance(says, dict):
+        assert not res["ok"] and res["input_errors"] == says, res
+    else:
+        key = next(iter(inputs))
+        assert res["ok"] and [r.get("target_" + key, r.get(key)) for r in res["rows"]] == says, res
 
 
 def test_a_list_of_group_means_that_crosses_0_is_computed():

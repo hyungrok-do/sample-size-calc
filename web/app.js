@@ -458,6 +458,9 @@ function renderResult(res, engineMs) {
   if (res.notes?.length) out.append(el('ul', { class: 'notes' }, res.notes.map((n) => el('li', {}, n))));
 }
 
+// A scenario that ran out of memory (the engine's message for it)
+const outOfMemory = (row) => row._error?.startsWith('there is not enough memory') ?? false;
+
 async function calculate(event) {
   event?.preventDefault();
   if (state.busy || !state.proc) return;
@@ -469,14 +472,23 @@ async function calculate(event) {
   setBusy(true, state.proc.simulation ? 'Simulating…' : 'Calculating…');
   // the answer goes only under the form it was computed from (not one opened or reset since)
   const asked = () => state.form === form && state.solve === request.solve_for;
-  for (let attempt = 0; ; attempt++) {
+  let restarted = false;
+  for (;;) {
     try {
       const { result, engineMs } = await engine.run(request, MAX_ROWS);
+      // the multi-core engine simulates several studies at once, and they share its 2 GB: a scenario that ran out of
+      // memory there may fit with one study at a time, as on the one-thread engine
+      if (result.threads > 1 && !request.options.threads && result.rows?.some(outOfMemory) && asked()) {
+        setBusy(true, 'Calculating again with one thread…');
+        request.options.threads = 1;
+        continue;
+      }
       setBusy(false, '');
       if (asked()) renderResult(result, engineMs);
     } catch (e) {
       // the multi-core engine stopped: once more, on the one-thread engine that replaced it
-      if (e.crashed && e.retry && attempt === 0 && asked()) {
+      if (e.crashed && e.retry && !restarted && asked()) {
+        restarted = true;
         setBusy(true, 'Calculating again with one thread…');
         continue;
       }

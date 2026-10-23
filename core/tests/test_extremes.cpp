@@ -203,7 +203,8 @@ TEST_CASE("extremes: values beyond 1e-30 and 1e30 in size are refused, in the te
       {"means.two.t", "power", R"({"mu1":"0.5 1e-31"})", "mu1", "values must be 0 or between 1e-30 and 1e30 in size"},
       {"means.two.t", "n", R"({"dropout":"0 1e-31"})", "dropout", "values must be 0 or at least 1e-30"},
       {"means.two.t", "power", R"({"sigma":"1e-31 to 1 by 0.5"})", "sigma", "values must be between 1e-30 and 1e30"},
-      // the ends of a range as typed, as each would be alone: one the values do not reach, and one tidied to 1e-30
+      // the ends of a range as typed, as each would be alone: one the values do not reach, and a start kept as typed
+      // (rounded to 12 digits, it would be 1e-30)
       {"means.two.t", "power", R"({"mu1":"0 to 1.5e30 by 1e30"})", "mu1",
        "values must be 0 or between 1e-30 and 1e30 in size"},
       {"means.two.t", "power", R"({"mu1":"9.9999999999999e-31 to 9.9999999999999e-31"})", "mu1",

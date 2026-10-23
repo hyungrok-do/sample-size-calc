@@ -93,18 +93,22 @@ worker always checks the page itself with the server.
 - An answer can have up to 20,000 scenarios. The page shows the first 1,000,
   drawing a hundred rows per frame. With 20,000 scenarios, the page's longest
   pause is about 0.1 s, against 8.5 s when every row was drawn at once.
-- The one-thread engine uses about 21 MB, and 37 MB for the largest simulated
-  study it allows. Simulations keep only a block of studies at a time. The
+- The one-thread engine uses about 21 MB for most calculations. Simulations
+  keep only a block of studies at a time, though one study of a very large
+  design (hundreds of thousands of clusters) can need a gigabyte or more. The
   multi-core engine starts with 128 MB of shared memory, more than the largest
   answer needs (20,000 scenarios: 100 MB), because Safari's engine (WebKit)
   stopped it the first time its shared memory had to grow. WebAssembly memory
   never shrinks, so after an answer that grows the engine beyond its start
   (and beyond 64 MB), the page replaces the engine once it is idle and online.
 - A scenario that needs more memory than the engine can have (2 GB) says so
-  in its row. If the engine stops during a calculation (it traps, or has no
-  memory left even for an answer), the page starts a fresh one at once. After
-  the multi-core engine, it uses the one-thread engine for the rest of the
-  visit and runs the calculation again; otherwise it explains what happened.
+  in its row. The multi-core engine simulates several studies at once, and
+  they share its 2 GB: after such a row, the page runs the calculation again
+  with one study at a time, as the one-thread engine does. If the engine
+  stops during a calculation (it traps, or has no memory left even for an
+  answer), the page starts a fresh one at once. After the multi-core engine,
+  it uses the one-thread engine for the rest of the visit and runs the
+  calculation again; otherwise it explains what happened.
 - No leaks were found:
   - The engine's allocated memory is identical after every round of all
     methods, the error cases and requests the engine refuses.

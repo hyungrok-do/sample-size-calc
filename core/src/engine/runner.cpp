@@ -425,8 +425,8 @@ json::Value run_request(const json::Value& req, Token* token) {
           err = check_value(v);
           if (!err.empty()) break;
         }
-      // so does each end of a range as typed, as it would alone, though the values need not include it (tidied, a
-      // start of 9.9999999999999e-31 is 1e-30)
+      // so does each end of a range as typed, even one the steps do not reach ('0 to 1.5e30 by 1e30' stops at
+      // 1e30), though only that rule: an input's own limits hold for the values (power '0.5 to 1 by 0.2')
       for (double v : r.ends)
         if (err.empty() && outside(v)) err = size_rule(p);
       if (!err.empty()) {
@@ -522,7 +522,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   const long units = proc->simulation && !approximate ? 1000 : 1;  // progress steps per scenario
   token->set_total(static_cast<long>(count) * units + static_cast<long>(n_curves) * curve_points);
   std::vector<Row> rows(count);
-  std::atomic<bool> tables_dropped{false}, curve_approximated{false};
+  std::atomic<bool> tables_dropped{false}, curve_approximated{false}, curve_out_of_memory{false};
   bool curves_drawn = false;
   RunContext ctx{token, threads, approximate, nullptr};
   auto answer_key = [&](const std::string& solve) {
@@ -971,6 +971,8 @@ json::Value run_request(const json::Value& req, Token* token) {
             } catch (const CalcError&) {
             } catch (const Cancelled&) {
               throw;
+            } catch (const std::bad_alloc&) {
+              curve_out_of_memory = true;  // a point left out, as any that cannot be computed, but said
             } catch (const std::exception&) {
             }
             token->add_done();
@@ -1044,6 +1046,8 @@ json::Value run_request(const json::Value& req, Token* token) {
                "approximation; the answers marked on it are those of the table.");
   if (proc->simulation && !approximate && curves_drawn)
     notes.push("The power curve comes from the analytic approximation; the simulated answers are marked on it.");
+  if (curve_out_of_memory)
+    notes.push("Some points of the power curve are left out: there was not enough memory to compute them.");
   if (tables_dropped) {
     notes.push("Detail tables are given for the first 1,000 scenarios.");  // MAX_TABLE_ROWS
     out.set("tables_rows", static_cast<double>(MAX_TABLE_ROWS));

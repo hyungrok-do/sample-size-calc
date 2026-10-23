@@ -340,6 +340,15 @@ try {
       assert.match(await q.textContent('#engine-status'), /1 thread/);
       await q.context().close();
     });
+    await check('a scenario out of memory on the multi-core engine is calculated again with one study at a time', async () => {
+      // the studies it simulates at once share its memory; given the row that says there was not enough
+      const memoryRow = "{ _error: 'there is not enough memory to compute the answer for these inputs' }";
+      const q = await changedWorker((source) => source.replace('const result = JSON.parse(text);',
+        `const result = JSON.parse(text);\n        if (request.inputs?.mu1 === '13.13' && variant === 'ssc_web_mt' && !request.options.threads) Object.assign(result, { threads: 4, rows: [${memoryRow}] });`));
+      assert.ok(await q.$('#result .statement'), (await q.textContent('#result')).slice(0, 120));
+      assert.doesNotMatch(await q.textContent('#timing'), /threads/, 'the answer of one thread');
+      await q.context().close();
+    });
     await fallBack('without the multi-core engine file, the one-thread engine calculates', (c) =>
       c.route('**/engine/ssc_web_mt.wasm*', (r) => r.fulfill({ status: 404, body: '' })), 30000);
     const glue = await readFile(resolve(web, 'engine/ssc_web_mt.mjs'), 'utf8');
