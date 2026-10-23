@@ -5,9 +5,11 @@ import { readFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, firefox, webkit } from 'playwright';
+import { warnIfOtherSources } from './engine-source.mjs';
 import { guideData } from '../guide-data.js';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+warnIfOtherSources();
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 // down: the server drops every connection, as when the network is gone (portable, unlike each browser's emulation)
 let down = false;

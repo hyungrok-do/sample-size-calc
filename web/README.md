@@ -93,15 +93,20 @@ worker always checks the page itself with the server.
 - An answer can have up to 20,000 scenarios. The page shows the first 1,000,
   drawing a hundred rows per frame. With 20,000 scenarios, the page's longest
   pause is about 0.1 s, against 8.5 s when every row was drawn at once.
-- The one-thread engine uses about 21 MB, and 37 MB for the largest simulated
-  study it allows. Simulations keep only a block of studies at a time. The
+- The one-thread engine uses about 21 MB for most calculations. Simulations
+  keep only a block of studies at a time, though one study of a very large
+  design (hundreds of thousands of clusters) can need a gigabyte or more. The
   multi-core engine starts with 128 MB of shared memory, more than the largest
   answer needs (20,000 scenarios: 100 MB), because Safari's engine (WebKit)
   stopped it the first time its shared memory had to grow. WebAssembly memory
   never shrinks, so after an answer that grows the engine beyond its start
   (and beyond 64 MB), the page replaces the engine once it is idle and online.
-- If the engine stops during a calculation (it traps, for example when out of
-  memory), the page starts a fresh one at once. After the multi-core engine,
+- A scenario that needs more memory than the engine can have (2 GB) says so
+  in its row. The multi-core engine simulates several studies at once, and
+  they share its 2 GB: after such a row, the page runs the calculation again
+  with one study at a time, as the one-thread engine does. If the engine
+  stops during a calculation (it traps, or has no memory left even for an
+  answer), the page starts a fresh one at once. After the multi-core engine,
   it uses the one-thread engine for the rest of the visit and runs the
   calculation again; otherwise it explains what happened.
 - No leaks were found:
@@ -173,6 +178,12 @@ subpath, no isolation headers, files kept for 10 minutes). It checks a first
 visit, the guide, every core from the second visit, a start without a network,
 and an update that must not mix the new page with older files. The Pages
 workflow runs it before publishing.
+
+`web/build.sh` writes the sources it built the engines from to
+`web/engine/source.txt`: the commit, and a hash of the changes from it to the
+engine's files that git tracks. `npm test`, `test:browser` and `test:page`
+warn when the engines were built from other sources than the ones beside them,
+since they then test another engine.
 
 CI runs all of these in Chromium, and `test:browser`, `test:page` and
 `test:site` in Firefox and WebKit (Safari's engine) too. `SSC_BROWSER` selects

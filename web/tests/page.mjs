@@ -8,8 +8,10 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, firefox, webkit } from 'playwright';
+import { warnIfOtherSources } from './engine-source.mjs';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+warnIfOtherSources();
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 const isolation = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' };
 const server = createServer(async (req, res) => {
@@ -242,6 +244,22 @@ try {
     assert.ok(Date.now() - t0 < 5000 && text.length < 300, `${Date.now() - t0} ms; ${text.length} characters`);
     await q.context().close();
   });
+  await check('a field holds one character past the engine\'s limit of 200,000', async () => {
+    const q = await open(`${base}#means.two.t`); await ready(q);
+    await q.fill('#in-power', 'W'.repeat(300000));
+    assert.equal((await q.inputValue('#in-power')).length, 200001);
+    await q.context().close();
+  });
+  await check('a corrected search is shown briefly', async () => {
+    // the correction of a 2,000-character search filled the method list with a note hundreds of lines tall
+    const q = await open(`${base}#means.two.t`); await ready(q);
+    await q.fill('#search', 'propotion '.repeat(200));
+    await q.waitForFunction(() => /Showing results for/.test(document.querySelector('#method-list p')?.textContent ?? ''),
+      null, { timeout: 30000 });
+    const note = await q.textContent('#method-list p');
+    assert.ok(note.length < 240 && note.endsWith('…”'), `${note.length} characters: ${note.slice(0, 60)}…`);
+    await q.context().close();
+  });
   await check('a long error wraps at phone width, and fields use 16px text (no zoom on iPhones)', async () => {
     const q = await open(`${base}#means.two.t`, { viewport: { width: 320, height: 568 }, deviceScaleFactor: 2 }); await ready(q);
     await q.click('#solve label >> nth=1'); await q.fill('#in-n1', 'x'.repeat(300)); await q.click('#calc'); await answer(q);
@@ -282,11 +300,10 @@ try {
         return `one thread after ${((Date.now() - started) / 1000).toFixed(1)} s`;
       });
     }
-    // a worker whose engine traps on one input, as an engine out of memory does (only the multi-core one, or both)
-    async function crashing(onlyMultiCore) {
+    // the worker changed by `edit`, and a calculation with μ1 = 13.13
+    async function changedWorker(edit) {
       const source = await readFile(resolve(web, 'worker.js'), 'utf8');
-      const trap = `if (request.inputs?.mu1 === '13.13'${onlyMultiCore ? " && variant === 'ssc_web_mt'" : ''}) throw new WebAssembly.RuntimeError('unreachable');`;
-      const body = source.replace('run: (M, { request, maxRows = Infinity }) => {', `run: (M, { request, maxRows = Infinity }) => {\n    ${trap}`);
+      const body = edit(source);
       assert.notEqual(body, source);
       const context = await browser.newContext({ serviceWorkers: 'block' });
       await context.route('**/worker.js*', (r) => r.fulfill({ body, contentType: 'text/javascript', headers: isolation }));
@@ -295,6 +312,11 @@ try {
       await q.goto(`${base}#means.two.t`); await ready(q);
       await q.click('#solve label >> nth=1'); await q.fill('#in-mu1', '13.13'); await q.click('#calc'); await answer(q);
       return q;
+    }
+    // a worker whose engine traps on that input, as an engine out of memory does (only the multi-core one, or both)
+    function crashing(onlyMultiCore) {
+      const trap = `if (request.inputs?.mu1 === '13.13'${onlyMultiCore ? " && variant === 'ssc_web_mt'" : ''}) throw new WebAssembly.RuntimeError('unreachable');`;
+      return changedWorker((source) => source.replace('run: (M, { request, maxRows = Infinity }) => {', `run: (M, { request, maxRows = Infinity }) => {\n    ${trap}`));
     }
     await check('when the multi-core engine stops, the calculation runs again on one thread', async () => {
       const q = await crashing(true);
@@ -308,6 +330,23 @@ try {
       await q.waitForFunction(() => /ready in/.test(document.getElementById('engine-status').textContent));
       await q.fill('#in-mu1', '1'); await q.click('#calc'); await answer(q);
       assert.ok(await q.$('#result .statement'), 'a fresh engine answers');
+      await q.context().close();
+    });
+    await check('a multi-core engine without the memory for any answer, even a message, is replaced by one thread', async () => {
+      // its answer is no text at all (ssc_run_json returns NULL)
+      const q = await changedWorker((source) => source.replace('take(M, M._ssc_run_json(p, token))',
+        "take(M, request.inputs?.mu1 === '13.13' && variant === 'ssc_web_mt' ? 0 : M._ssc_run_json(p, token))"));
+      assert.ok(await q.$('#result .statement'), (await q.textContent('#result')).slice(0, 120));
+      assert.match(await q.textContent('#engine-status'), /1 thread/);
+      await q.context().close();
+    });
+    await check('a scenario out of memory on the multi-core engine is calculated again with one study at a time', async () => {
+      // the studies it simulates at once share its memory; given the row that says there was not enough
+      const memoryRow = "{ _error: 'there is not enough memory to compute the answer for these inputs' }";
+      const q = await changedWorker((source) => source.replace('const result = JSON.parse(text);',
+        `const result = JSON.parse(text);\n        if (request.inputs?.mu1 === '13.13' && variant === 'ssc_web_mt' && !request.options.threads) Object.assign(result, { threads: 4, rows: [${memoryRow}] });`));
+      assert.ok(await q.$('#result .statement'), (await q.textContent('#result')).slice(0, 120));
+      assert.doesNotMatch(await q.textContent('#timing'), /threads/, 'the answer of one thread');
       await q.context().close();
     });
     await fallBack('without the multi-core engine file, the one-thread engine calculates', (c) =>

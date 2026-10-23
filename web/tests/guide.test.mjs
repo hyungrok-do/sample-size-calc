@@ -4,7 +4,9 @@ import createEngine from '../engine/ssc_web.mjs';
 import { guideData } from '../guide-data.js';
 import { GuideState } from '../guide-state.js';
 import { prepareSelection, selectionHash, parseSelectionHash } from '../selection.js';
+import { warnIfOtherSources } from './engine-source.mjs';
 
+warnIfOtherSources();
 const M = await createEngine();
 function take(ptr) {
   try { return JSON.parse(M.UTF8ToString(ptr)); } finally { M._ssc_free(ptr); }

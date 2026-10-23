@@ -953,6 +953,11 @@ def test_the_rule_for_the_number_of_controls_is_said_in_every_mode():
     ("means.two.t", "power", {"mu1": "-1e31"}, "mu1", "values must be 0 or between 1e-30 and 1e30 in size"),
     ("means.two.t", "n", {"dropout": "0 1e-31"}, "dropout", "values must be 0 or at least 1e-30"),
     ("means.two.t", "power", {"sigma": "1e-31 to 1 by 0.5"}, "sigma", "values must be between 1e-30 and 1e30"),
+    # each end of a range as typed, as it would be alone: one its values do not reach, and a start kept as typed
+    # (rounded to 12 digits, it would be 1e-30)
+    ("means.two.t", "power", {"mu1": "0 to 1.5e30 by 1e30"}, "mu1", "values must be 0 or between 1e-30 and 1e30 in size"),
+    ("means.two.t", "power", {"mu1": "9.9999999999999e-31 to 9.9999999999999e-31"}, "mu1",
+     "values must be 0 or between 1e-30 and 1e30 in size"),
     ("corr.one", "n", {"rho1": "-1e-40"}, "rho1", "values must be 0 or at least 1e-30 in size"),
     ("prop.two.equiv", "n", {"dl": "-1e-31"}, "dl", "values must be at least 1e-30 in size"),
     ("prop.two.equiv", "n", {"scale": "or", "oru": "1e31"}, "oru", "values must be at most 1e30"),
@@ -973,6 +978,49 @@ def test_values_at_the_size_limits_are_allowed():
     assert res["ok"] and first_row(res), res
     # counts keep their own limit of a billion
     res = run("corr.one", "power", {**base_inputs("corr.one"), "n": "1000000000"})
+    assert res["ok"] and first_row(res), res
+
+
+@pytest.mark.parametrize("pid,inputs,key", [
+    ("means.two.t", {"mu1": "-0.3 to 0.3 by 0.1"}, "mu1"),
+    ("means.two.t", {"mu1": "-3e-15 to 3e-15 by 1e-15", "sigma": "2e-15"}, "mu1"),
+    ("means.two.t", {"mu1": "0.3e-29 to -0.3e-29 by 1e-30"}, "mu1"),
+    ("means.crossover", {"delta": "-3e-15 to 3e-15 by 1e-15"}, "delta"),
+])
+def test_a_range_that_crosses_0_has_0_among_its_values(pid, inputs, key):
+    """Where a range crosses 0, a + k * step leaves rounding noise: the label 5.55111512313e-17 for '-0.3 to 0.3 by
+    0.1', and 3.9e-31 for '-3e-15 to 3e-15 by 1e-15', which was refused as below 1e-30 though the user typed no such
+    value.  A value within a billionth of a step of 0 is 0."""
+    res = run(pid, "power", {**base_inputs(pid), **inputs})
+    assert res["ok"] and len(res["rows"]) == 7 and res["rows"][3][key] == 0, res
+    assert all("_error" not in r for r in res["rows"]), res
+
+
+@pytest.mark.parametrize("pid,solve,inputs,says", [
+    # the start of a range, and its end where the steps reach it, as typed: checked as each would be alone (rounded to
+    # 12 digits, 5.0000000000001 was 5 and 0.99999999999999 was 1)
+    ("sim.lmm.cluster", "power", {"cv": "5.0000000000001 to 5.0000000000001"}, {"cv": "values must be at most 5"}),
+    ("means.two.t", "power", {"n1": "10.0000000000001 to 12"}, {"n1": "values must be whole numbers"}),
+    ("means.two.t", "power", {"mu1": "0.5 to 0.9999999999999 by 0.4999999999999", "mu2": "1"}, [0.5, 0.9999999999999]),
+    ("means.two.t", "n", {"power": "0.99999999999999 to 0.99999999999999"}, [0.99999999999999]),
+    ("means.two.t", "n", {"power": "0.5 to 1 by 0.2"}, [0.5, 0.7, 0.9]),  # an end the steps do not reach is no value
+    # a range that ends at 0 has 0 among its values, whichever side the rounding noise of the sum fell on (0.9 - 3 *
+    # 0.3 is 1.1e-16, 0.3 - 3 * 0.1 is -5.6e-17)
+    ("means.two.t", "n", {"alpha": "0.9 to 0 by 0.3"}, {"alpha": "values must be greater than 0"}),
+    ("means.two.t", "n", {"alpha": "0.3 to 0 by 0.1"}, {"alpha": "values must be greater than 0"}),
+    ("means.two.t", "n", {"dropout": "0.9 to 0 by 0.3"}, [0.9, 0.6, 0.3, 0]),
+])
+def test_the_ends_of_a_range_are_values_as_typed(pid, solve, inputs, says):
+    res = run(pid, solve, {**base_inputs(pid), **inputs})
+    if isinstance(says, dict):
+        assert not res["ok"] and res["input_errors"] == says, res
+    else:
+        key = next(iter(inputs))
+        assert res["ok"] and [r.get("target_" + key, r.get(key)) for r in res["rows"]] == says, res
+
+
+def test_a_list_of_group_means_that_crosses_0_is_computed():
+    res = run("means.anova", "n", {**base_inputs("means.anova"), "means": "-3e-15 to 3e-15 by 1e-15", "sigma": "1e-15"})
     assert res["ok"] and first_row(res), res
 
 

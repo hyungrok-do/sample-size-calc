@@ -4,6 +4,7 @@
 // engine behavior that does not depend on reference values: thread-count
 // invariance, cancellation and input validation.
 #include <fstream>
+#include <new>
 #include <sstream>
 
 #include "engine/parse.hpp"
@@ -108,6 +109,40 @@ TEST_CASE("procedures: input validation and errors") {
   CHECK_EQ(grid.get("rows").size(), std::size_t{10});
 }
 
+TEST_CASE("procedures: a scenario without the memory it needs says so") {
+  // a procedure of the test's own whose scenario at x = 2 cannot have the memory it asks for, as one past the 2 GB of
+  // the page's engine cannot
+  Procedure memory;
+  memory.id = "test.memory";
+  memory.name = "Memory";
+  memory.solve_for = {{"power", "Power", "", ""}};
+  memory.params = {num("x", "X", "1"), num("n", "N", "10")};
+  memory.curve_param = "n";  // and so are the points of its power curve past n = 15
+  memory.run = [](const Scenario& s, Row& r, RunContext&) {
+    if (s("x") == 2 || s("n") > 15) throw std::bad_alloc();
+    r.set("power", 0.5);
+  };
+  registry().push_back(&memory);
+  const json::Value res =
+      run(R"({"procedure":"test.memory","solve_for":"power","inputs":{"x":"1 2"},"options":{"power_curve":false}})");
+  const json::Value curve =
+      run(R"({"procedure":"test.memory","solve_for":"power","inputs":{"x":"1"},"options":{"power_curve":true}})");
+  registry().pop_back();
+  CHECK(res.get("ok").as_bool(false));
+  CHECK_EQ(res.get("rows").size(), std::size_t{2});
+  CHECK(res.get("rows").at(0).find("_error") == nullptr);
+  CHECK_EQ(res.get("rows").at(1).get("_error").as_string(),
+           std::string("there is not enough memory to compute the answer for these inputs"));
+  CHECK(res.get("notes").size() == 0);
+  CHECK(curve.get("ok").as_bool(false));
+  CHECK(curve.get("rows").at(0).find("_error") == nullptr);
+  CHECK_EQ(curve.get("notes").at(0).as_string(),
+           std::string("Some points of the power curve are left out: there was not enough memory to compute them."));
+  const json::Value& xs = curve.get("plots").at(0).get("series").at(0).get("x");
+  CHECK(xs.size() > 0);
+  for (const auto& x : xs.elements()) CHECK(x.as_number(NAN) <= 15);
+}
+
 TEST_CASE("procedures: typed and pasted numbers") {
   auto message = [](const std::string& mu1) {
     const json::Value r = run(R"({"procedure":"means.two.t","solve_for":"n","inputs":{"mu1":")" + mu1 + R"("}})");
@@ -128,10 +163,28 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK_EQ(first_mu1("0.75\u00a0"), 0.75);
   CHECK_EQ(first_mu1("\u2009 0.25\u202f"), 0.25);
   // a long text is refused before it is read; the limit counts characters, not bytes
-  CHECK(message(std::string(1000001, '1')).find("too long") != std::string::npos);
+  CHECK(message(std::string(200001, '1')).find("too long") != std::string::npos);
   std::string accents;
-  for (int i = 0; i < 600000; ++i) accents += "\u00e9";
+  for (int i = 0; i < 200000; ++i) accents += "\u00e9";
   CHECK(message(accents).find("too long") == std::string::npos);
+  // a range that crosses or reaches 0 has 0 among its values, not the rounding noise of a + k * step, at any scale
+  // (0.9 - 3 * 0.3 is 1.1e-16, 0.3 - 3 * 0.1 is -5.6e-17)
+  CHECK_EQ(parse::numbers("-0.3 to 0.3 by 0.1").values.at(3), 0.0);
+  CHECK_EQ(parse::numbers("-3e-15 to 3e-15 by 1e-15").values.at(3), 0.0);
+  CHECK_EQ(parse::numbers("0.3e-29 to -0.3e-29 by 1e-30").values.at(3), 0.0);
+  CHECK_EQ(parse::numbers("0.9 to 0 by 0.3").values.at(3), 0.0);
+  CHECK_EQ(parse::numbers("0.3 to 0 by 0.1").values.at(3), 0.0);
+  // its start is kept as typed, and so is its end where the steps reach it, while the values between are rounded to
+  // 12 digits; both ends as typed are kept besides, reached or not
+  CHECK_EQ(parse::numbers("1e-12 to 1 by 0.5").values.at(0), 1e-12);
+  CHECK(parse::numbers("0.99999999999999 to 0.99999999999999").values == std::vector<double>({0.99999999999999}));
+  CHECK(parse::numbers("0.1234567890123456 to 1 by 0.5").values ==
+        std::vector<double>({0.1234567890123456, 0.623456789012}));
+  CHECK(parse::numbers("0.9 to 0.99999999999999 by 0.09999999999999").values ==
+        std::vector<double>({0.9, 0.99999999999999}));
+  CHECK(parse::numbers("0 to 0.3 by 0.1").values == std::vector<double>({0, 0.1, 0.2, 0.3}));
+  CHECK(parse::numbers("0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
+  CHECK(parse::vectors("1 2; 0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
   // characters that would act on the message are written out: a right-to-left override, a joiner, NUL, a
   // combining mark
   const std::string rlo = message("\u202e0.5");

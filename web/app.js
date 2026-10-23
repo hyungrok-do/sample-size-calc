@@ -83,6 +83,13 @@ function renderList(hits, note) {
   }
 }
 
+// The start of a text shown in a note, at most `max` characters (a search can hold 2,000, and its corrected
+// spelling more)
+function clip(text, max = 200) {
+  const chars = [...text];  // whole characters: an emoji is not cut in half
+  return chars.length > max ? `${chars.slice(0, max).join('').trimEnd()}…` : text;
+}
+
 let searchTimer = 0;
 let searchSeq = 0;
 let searchedWhileBusy = false;
@@ -106,7 +113,7 @@ async function search() {
   }
   try {
     const { value } = await engine.call('search', { query, limit: 20 });
-    if (seq === searchSeq) renderList(value.hits, value.corrected ? `Showing results for “${value.corrected}”` : '');
+    if (seq === searchSeq) renderList(value.hits, value.corrected ? `Showing results for “${clip(value.corrected)}”` : '');
   } catch {
     // stopped: the next keystroke searches again
   }
@@ -172,10 +179,11 @@ function field(p, initial = p.default ?? '') {
   else if (p.type === 'bool') input = el('input', { id, type: 'checkbox', checked: initial === 'true', onchange: refresh });
   else {
     // one character past the engine's limit: a longer text is still refused with its message (not cut short
-    // without a word), and the page never lays out several million characters
+    // without a word), and the page lays out no more than that in a field (a form of fields of a million
+    // characters each took seconds to show again, and up to 2 GB)
     input = el('input', {
       id, type: 'text', value: initial, autocomplete: 'off', spellcheck: 'false', inputmode: inputmode(p),
-      maxlength: 1000001, oninput: () => input.removeAttribute('aria-invalid'),
+      maxlength: 200001, oninput: () => input.removeAttribute('aria-invalid'),
     });
   }
   // two lines of help, all of it on a click (and on hover, and for screen readers): it never grows by itself
@@ -450,6 +458,9 @@ function renderResult(res, engineMs) {
   if (res.notes?.length) out.append(el('ul', { class: 'notes' }, res.notes.map((n) => el('li', {}, n))));
 }
 
+// A scenario that ran out of memory (the engine's message for it)
+const outOfMemory = (row) => row._error?.startsWith('there is not enough memory') ?? false;
+
 async function calculate(event) {
   event?.preventDefault();
   if (state.busy || !state.proc) return;
@@ -461,14 +472,23 @@ async function calculate(event) {
   setBusy(true, state.proc.simulation ? 'Simulating…' : 'Calculating…');
   // the answer goes only under the form it was computed from (not one opened or reset since)
   const asked = () => state.form === form && state.solve === request.solve_for;
-  for (let attempt = 0; ; attempt++) {
+  let restarted = false;
+  for (;;) {
     try {
       const { result, engineMs } = await engine.run(request, MAX_ROWS);
+      // the multi-core engine simulates several studies at once, and they share its 2 GB: a scenario that ran out of
+      // memory there may fit with one study at a time, as on the one-thread engine
+      if (result.threads > 1 && !request.options.threads && result.rows?.some(outOfMemory) && asked()) {
+        setBusy(true, 'Calculating again with one thread…');
+        request.options.threads = 1;
+        continue;
+      }
       setBusy(false, '');
       if (asked()) renderResult(result, engineMs);
     } catch (e) {
       // the multi-core engine stopped: once more, on the one-thread engine that replaced it
-      if (e.crashed && e.retry && attempt === 0 && asked()) {
+      if (e.crashed && e.retry && !restarted && asked()) {
+        restarted = true;
         setBusy(true, 'Calculating again with one thread…');
         continue;
       }

@@ -77,6 +77,7 @@ SSC_API char* ssc_run_json(const char* request_json, ssc_token* token) {
       return dup_string(R"({"ok":false,"cancelled":true,"error":"Calculation cancelled."})");
     const std::string out = res.dump();
     char* result = dup_string(out);
+    if (!result) throw std::bad_alloc();  // no room for the copy: the message below, rather than no answer at all
     // a full simulation, or a large result (many scenarios): give the memory it used back to the system
     const ssc::Procedure* proc = ssc::find_procedure(req.get("procedure").as_string());
     const bool simulated = proc && proc->simulation && !req.get("options").get("approximate").as_bool(false);

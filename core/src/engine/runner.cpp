@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <new>
 #include <set>
 
 #include "engine/blocks.hpp"
@@ -397,6 +398,10 @@ json::Value run_request(const json::Value& req, Token* token) {
       continue;
     }
     const std::string text = raw(p);
+    // other than 0, a number that is not a count lies within the sizes
+    auto outside = [&](double v) {
+      return !p.integer && v != 0 && !(std::fabs(v) >= MIN_SIZE && std::fabs(v) <= MAX_SIZE);
+    };
     auto check_value = [&](double v) -> std::string {
       if (!std::isfinite(v)) return "values must be finite numbers";
       if (p.integer && v != std::floor(v)) return "values must be whole numbers";
@@ -405,7 +410,7 @@ json::Value run_request(const json::Value& req, Token* token) {
         return std::string("values must be ") + (p.min_open ? "greater than " : "at least ") + bound(p.min);
       if (p.max_open ? !(v < p.max) : !(v <= p.max))
         return std::string("values must be ") + (p.max_open ? "less than " : "at most ") + bound(p.max);
-      if (!p.integer && v != 0 && !(std::fabs(v) >= MIN_SIZE && std::fabs(v) <= MAX_SIZE)) return size_rule(p);
+      if (outside(v)) return size_rule(p);
       // a count (subjects, clusters, levels ...) up to a billion stays exact in the integer arithmetic of the
       // exact methods; no study needs more
       if (p.integer && v > 1e9) return "values must be at most 1,000,000,000";
@@ -420,6 +425,10 @@ json::Value run_request(const json::Value& req, Token* token) {
           err = check_value(v);
           if (!err.empty()) break;
         }
+      // so does each end of a range as typed, even one the steps do not reach ('0 to 1.5e30 by 1e30' stops at
+      // 1e30), though only that rule: an input's own limits hold for the values (power '0.5 to 1 by 0.2')
+      for (double v : r.ends)
+        if (err.empty() && outside(v)) err = size_rule(p);
       if (!err.empty()) {
         errors.set(p.id, err);
         has_errors = true;
@@ -436,6 +445,8 @@ json::Value run_request(const json::Value& req, Token* token) {
         for (const auto& vv : r.vectors)
           for (double v : vv)
             if (err.empty()) err = check_value(v);
+      for (double v : r.ends)
+        if (err.empty() && outside(v)) err = size_rule(p);
       if (!err.empty()) {
         errors.set(p.id, err);
         has_errors = true;
@@ -511,7 +522,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   const long units = proc->simulation && !approximate ? 1000 : 1;  // progress steps per scenario
   token->set_total(static_cast<long>(count) * units + static_cast<long>(n_curves) * curve_points);
   std::vector<Row> rows(count);
-  std::atomic<bool> tables_dropped{false}, curve_approximated{false};
+  std::atomic<bool> tables_dropped{false}, curve_approximated{false}, curve_out_of_memory{false};
   bool curves_drawn = false;
   RunContext ctx{token, threads, approximate, nullptr};
   auto answer_key = [&](const std::string& solve) {
@@ -575,6 +586,10 @@ json::Value run_request(const json::Value& req, Token* token) {
             r.error = e.what();
           } catch (const Cancelled&) {
             throw;
+          } catch (const std::bad_alloc&) {
+            // a study, table or enumeration larger than the memory left (the page's engine has at most 2 GB): said
+            // as it is, not as an extreme value
+            r.error = "there is not enough memory to compute the answer for these inputs";
           } catch (const std::exception& e) {
             // a numerical routine gave up (a root it could not bracket, a series that did not converge): at the
             // inputs' extremes, as the stress sweeps show
@@ -956,6 +971,8 @@ json::Value run_request(const json::Value& req, Token* token) {
             } catch (const CalcError&) {
             } catch (const Cancelled&) {
               throw;
+            } catch (const std::bad_alloc&) {
+              curve_out_of_memory = true;  // a point left out, as any that cannot be computed, but said
             } catch (const std::exception&) {
             }
             token->add_done();
@@ -1029,6 +1046,8 @@ json::Value run_request(const json::Value& req, Token* token) {
                "approximation; the answers marked on it are those of the table.");
   if (proc->simulation && !approximate && curves_drawn)
     notes.push("The power curve comes from the analytic approximation; the simulated answers are marked on it.");
+  if (curve_out_of_memory)
+    notes.push("Some points of the power curve are left out: there was not enough memory to compute them.");
   if (tables_dropped) {
     notes.push("Detail tables are given for the first 1,000 scenarios.");  // MAX_TABLE_ROWS
     out.set("tables_rows", static_cast<double>(MAX_TABLE_ROWS));
