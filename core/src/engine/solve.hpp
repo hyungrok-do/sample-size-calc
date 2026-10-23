@@ -145,43 +145,67 @@ double min_n_staying(F&& ok, NSearch o, const RunContext* ctx = nullptr) {
   }
 }
 
+/// x0 + d, the value of an effect found as its distance d from x0, the value of no effect or of the other group
+/// (μ1 = μ2 + d).  Numbers as large as x0 lie apart by a step that grows with them, and next to a large x0 the sum
+/// keeps few of d's digits or none (μ2 = 1e16 keeps nothing of a difference of 0.9: μ1 rounds back to μ2), so that
+/// the answer would stand for another effect than the one whose power is reported: it is refused unless the step
+/// there is at most a millionth of d.  `what` and `from` name the two values (μ1 and μ2); `shift` says that only
+/// their difference matters, so that they can be measured from a reference nearer to them.
+inline double offset(double x0, double d, const std::string& what, const std::string& from, bool shift = false) {
+  const double x = x0 + d, step = std::nextafter(std::fabs(x), HUGE_VAL) - std::fabs(x);
+  if (!(std::fabs(d) >= 1e6 * step))
+    throw CalcError(what + " cannot be told apart from " + from + " = " + text::format_roundtrip(x0) +
+                    ": the difference" + (d != 0 ? " of " + text::format_g(std::fabs(d), 4) : std::string()) +
+                    " it needs is lost to rounding at a value of that size" +
+                    (shift ? "; measure the values from a nearby reference instead (" + from + " = 0, for example)"
+                           : ""));
+  return x;
+}
+
 /// Root of f(x) = target for f increasing on [a, ...); f(a) < target expected.
-/// The upper end b is doubled (relative to a) until f(b) ≥ target or b_max.
+/// The upper end b is doubled (relative to a) until f(b) ≥ target or b_max; tol is relative to the root's
+/// distance from a, the value of no effect, which `from` names (the answer is refused when it cannot be told apart
+/// from a, as by offset()).
 template <class F>
 double solve_increasing(F&& f, double target, double a, double b, double b_max, double tol = 1e-10,
-                        const char* what = "the effect size") {
+                        const char* what = "the effect size", const char* from = "the value of no effect") {
   b_max = std::fmin(b_max, std::numeric_limits<double>::max());  // 1e9·σ overflows for σ = 1e300
   b = std::fmin(b, b_max);
-  double fa = f(a) - target;
+  // the search is for the distance t from x0 = a, so that tol is relative to the effect, not to the value (an ICC of
+  // 0.9999996 against one of 0.999999), and does not depend on the units of the inputs: a tolerance taken from the
+  // bracket (the SD) left the fourth digit wrong when the root lies far below it (the mean difference for an N of
+  // 1e8), and one absolute below 1 left it wrong for an SD of 1e-8
+  const double x0 = a;
+  auto g = [&](double t) { return f(x0 + t) - target; };
+  double ta = 0, tb = b - x0;
+  const double t_max = b_max - x0;
+  double fa = g(ta);
   if (fa >= 0)  // a is no effect: the power there is the significance level
     throw CalcError("the target power must exceed the power with no effect (the significance level)");
-  double fb = f(b) - target;
+  double fb = g(tb);
   int guard = 0;
   while (fb < 0) {
-    if (b >= b_max || ++guard > 200)
+    if (tb >= t_max || ++guard > 200)
       throw CalcError(std::string("the target power cannot be reached for any admissible value of ") + what);
-    const double width = b - a;
-    a = b;
+    const double width = tb - ta;
+    ta = tb;
     fa = fb;
-    b = std::fmin(b_max, a + 2 * width + 1e-12 * std::fabs(a) + 1e-300);
-    fb = f(b) - target;
+    tb = std::fmin(t_max, ta + 2 * width + 1e-12 * std::fabs(ta) + 1e-300);
+    fb = g(tb);
   }
   if (std::isnan(fa) || std::isnan(fb))  // the power is undefined there (an overflow at extreme inputs)
     throw CalcError(std::string("the power is undefined for some values of ") + what +
                     "; check for an extreme value among the inputs");
-  // tol is absolute below 1 and relative above; for a root so small that tol would exceed a millionth of it (the
-  // mean difference for an SD of 1e-8), it is relative there too, or the answer would be the first value tried
-  const double size = std::fmax(std::fabs(a), std::fabs(b));
-  const double scale = size < 1e6 * tol ? size : std::fmax(1.0, std::fabs(b));
-  return numerics::brent([&](double x) { return f(x) - target; }, a, b, fa, fb, tol * scale);
+  return offset(x0, numerics::brent(g, ta, tb, fa, fb, 0, 300, tol), what, from);
 }
 
 /// Root of f(x) = target for f decreasing on [a, b] (e.g. power vs. a quantity
 /// that must shrink); expands b downwards towards b_min.
 template <class F>
 double solve_decreasing(F&& f, double target, double a, double b, double b_min, double tol = 1e-10,
-                        const char* what = "the effect size") {
-  return solve_increasing([&](double x) { return f(-x); }, target, -a, -b, -b_min, tol, what) * -1;
+                        const char* what = "the effect size", const char* from = "the value of no effect") {
+  const double t = solve_increasing([&](double x) { return f(a - x); }, target, 0, a - b, a - b_min, tol, what);
+  return offset(a, -t, what, from);
 }
 
 }  // namespace ssc::solve

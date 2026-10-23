@@ -10,9 +10,10 @@
 
 namespace ssc::numerics {
 
-/// Brent's method (zeroin): root of f in [a, b] given f(a), f(b) of opposite sign.
+/// Brent's method (zeroin): root of f in [a, b] given f(a), f(b) of opposite sign, to within tol + rtol·|root|.
 template <class F>
-double brent(F&& f, double a, double b, double fa, double fb, double tol = 1e-12, int max_iter = 300) {
+double brent(F&& f, double a, double b, double fa, double fb, double tol = 1e-12, int max_iter = 300,
+             double rtol = 0) {
   if (fa == 0) return a;
   if (fb == 0) return b;
   if ((fa > 0) == (fb > 0)) throw std::domain_error("root is not bracketed");
@@ -31,7 +32,7 @@ double brent(F&& f, double a, double b, double fa, double fb, double tol = 1e-12
       fb = fc;
       fc = fa;
     }
-    const double tol1 = 2 * stats::DBL_EPSILON_ * std::fabs(b) + 0.5 * tol;
+    const double tol1 = 2 * stats::DBL_EPSILON_ * std::fabs(b) + 0.5 * tol + 0.5 * rtol * std::fabs(b);
     const double xm = 0.5 * (c - b);
     if (std::fabs(xm) <= tol1 || fb == 0) return b;
     if (std::fabs(e) >= tol1 && std::fabs(fa) > std::fabs(fb)) {

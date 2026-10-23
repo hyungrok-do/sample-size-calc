@@ -63,7 +63,7 @@ double log_cosh(double x) {
 // for very large n.
 struct ZDensity {
   double n, zeta, lcz, k0;
-  ZDensity(double n_, double rho) : n(n_), zeta(std::atanh(rho)) {
+  ZDensity(double n_, double zeta_) : n(n_), zeta(zeta_) {
     lcz = log_cosh(zeta);
     k0 = std::log(n - 2) - lgamma_diff(n - 1, 0.5) - LN_SQRT_2PI - 0.5 * lcz;
   }
@@ -79,7 +79,7 @@ struct ZDensity {
 double dcorr(double r, double n, double rho) {
   if (std::isnan(r) || !(n > 2) || !(std::fabs(rho) < 1)) return NaN;
   if (r <= -1 || r >= 1) return 0;
-  return ZDensity(n, rho)(std::atanh(r)) / ((1 - r) * (1 + r));
+  return ZDensity(n, std::atanh(rho))(std::atanh(r)) / ((1 - r) * (1 + r));
 }
 
 double pcorr(double x, double n, double rho, bool lower) {
@@ -87,8 +87,14 @@ double pcorr(double x, double n, double rho, bool lower) {
   if (x <= -1) return lower ? 0.0 : 1.0;
   if (x >= 1) return lower ? 1.0 : 0.0;
   if (std::fabs(rho) == 1) return (x >= rho) == lower ? 1.0 : 0.0;  // r = ρ almost surely
-  const ZDensity g(n, rho);
-  const double zx = std::atanh(x), zm = std::atanh(rho);
+  return pcorr_z(std::atanh(x), n, std::atanh(rho), lower);
+}
+
+double pcorr_z(double zx, double n, double zm, bool lower) {
+  if (std::isnan(zx) || std::isnan(zm) || !(n > 2)) return NaN;
+  if (std::isinf(zm)) return (zx >= zm) == lower ? 1.0 : 0.0;  // ρ = ±1: r = ρ almost surely
+  if (std::isinf(zx)) return (zx > 0) == lower ? 1.0 : 0.0;
+  const ZDensity g(n, zm);
   const double s = 1 / std::sqrt(std::max(n - 3, 1.0));
   // integrate from z(x) outwards, through the bulk if it lies on that side,
   // until the density is negligible

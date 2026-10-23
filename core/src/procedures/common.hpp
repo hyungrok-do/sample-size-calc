@@ -60,6 +60,36 @@ inline double z_factor(double alpha, double power, Alt alt) {
   return (za + zb) * (za + zb);
 }
 
+/// fnum, with the decimals it takes not to show a fraction as the whole number next to it (a correlation of
+/// 0.9999996, not 1).
+inline std::string fnum_fine(double x) {
+  std::string t = blocks::fnum(x);
+  for (int d = 5; d <= 16 && x != std::floor(x) && t.find_first_of(".e") == std::string::npos; ++d)
+    t = blocks::fnum(x, d);
+  return t;
+}
+
+/// A level such as a confidence as a percentage with the digits it takes: 95%, 97.5%, 99.9% (not 100%), and up to
+/// ten significant digits, more only when ten would show a level below 1 as 100%.
+inline std::string level_text(double p) {
+  const double x = 100 * p;
+  std::string t;
+  for (int d = x >= 1 ? static_cast<int>(std::log10(x)) + 1 : 1; d <= 17; ++d) {  // at least the whole digits
+    t = text::format_g(x, d);
+    double back;
+    if (d >= 10 ? !(p < 1 && t == "100") : text::parse_double(t, back) && back == x) break;
+  }
+  return t + "%";
+}
+
+/// A one-sided interval's bound lies beyond the estimate only at a confidence above 50%: at 50% it is the estimate
+/// and below it lies on the wrong side, so that its distance from the estimate is no precision to plan for.
+inline void check_one_sided_conf(double conf) {
+  if (!(conf > 0.5))
+    throw CalcError("a one-sided interval needs a confidence level above 0.5 (at 0.5 or below, its bound lies on "
+                    "the estimate or on the wrong side of it)");
+}
+
 /// "two-sided" / "one-sided (upper)" etc. for summary statements.
 inline std::string alt_words(Alt a) {
   return a == Alt::Two ? "two-sided" : "one-sided";

@@ -88,9 +88,13 @@ Procedure icc() {
       const double target = s("power");
       const bool up = a != Alt::Lower;
       auto P = [&](double x) { return icc_power(n, k, rho0, x, alpha, a); };
-      const double lo_lim = -1 / (k - 1) + 1e-9;
-      rho1 = up ? solve::solve_increasing(P, target, rho0, rho0 + 0.5 * (1 - rho0), 1 - 1e-9, 1e-11, "ρ1")
-                : solve::solve_decreasing(P, target, rho0, rho0 - 0.5 * (rho0 - lo_lim), lo_lim, 1e-11, "ρ1");
+      // the search reaches the last ICCs below 1 and above −1/(k − 1) (where 1 + (k − 1)ρ is still positive), so
+      // that a ρ0 within 1e-9 of either keeps room for ρ1
+      const double hi_lim = std::nextafter(1.0, 0.0);
+      double lo_lim = -1 / (k - 1);
+      while (!(1 + (k - 1) * lo_lim > 0)) lo_lim = std::nextafter(lo_lim, 0.0);
+      rho1 = up ? solve::solve_increasing(P, target, rho0, rho0 + 0.5 * (1 - rho0), hi_lim, 1e-11, "ρ1", "ρ0")
+                : solve::solve_decreasing(P, target, rho0, rho0 - 0.5 * (rho0 - lo_lim), lo_lim, 1e-11, "ρ1", "ρ0");
     } else {
       rho1 = s("rho1");
       if (!(rho1 > -1 / (k - 1))) throw CalcError("ρ1 must exceed −1/(k − 1)");
@@ -127,9 +131,9 @@ Procedure icc() {
   };
   p.statement = [](const Scenario& s, const Row& r) {
     return "A sample of " + fint(r.num("n")) + " subjects, each rated " + fint(r.num("k")) + " times, " +
-           achieves_singular(s, r) + " to detect an intraclass correlation of " + fnum(r.num("rho1")) +
-           " when the value under the null hypothesis is " + fnum(r.num("rho0")) + ", using a " + alt_words(alt(s)) +
-           " F-test at significance level α = " + fnum(r.num("alpha")) + ".";
+           achieves_singular(s, r) + " to detect an intraclass correlation of " + fnum_fine(r.num("rho1")) +
+           " when the value under the null hypothesis is " + fnum_fine(r.num("rho0")) + ", using a " +
+           alt_words(alt(s)) + " F-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"N", "Number of subjects."},
                    {"k", "Number of raters (or repeated measurements) per subject."},

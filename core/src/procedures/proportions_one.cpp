@@ -242,7 +242,7 @@ Procedure one_prop() {
         {"zp0cc", "continuity-corrected z-test using P0"}, {"zphatcc", "continuity-corrected z-test using P̂"}};
     std::string t = "A sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) +
                     " to detect a difference of " + fnum(r.num("diff")) + " between the null proportion P0 = " +
-                    fnum(r.num("p0")) + " and the actual proportion P1 = " + fnum(r.num("p1")) + " using a " +
+                    fnum_fine(r.num("p0")) + " and the actual proportion P1 = " + fnum_fine(r.num("p1")) + " using a " +
                     alt_words(alt(s)) + " " + names.at(s.s("test")) + " with a target significance level of " +
                     fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual significance level " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
@@ -339,6 +339,7 @@ Procedure one_prop_ci() {
                 "when you are unsure."),
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
+    if (!s.is("sides", "two")) check_one_sided_conf(s("conf"));
     double n;
     if (s.solve == "n") {
       const double target = s("width");
@@ -384,7 +385,7 @@ Procedure one_prop_ci() {
         {"ac", "Agresti–Coull"}, {"jeffreys", "Jeffreys"}, {"wald", "Wald"}};
     const bool two = s.is("sides", "two");
     return "A sample of " + fint(r.num("n")) + " gives a " + (two ? "two-sided " : "one-sided ") +
-           fpct(r.num("conf"), 0) + " " + names.at(s.s("method")) + " confidence interval " +
+           level_text(r.num("conf")) + " " + names.at(s.s("method")) + " confidence interval " +
            (two ? "with a width of " : "whose bound lies at a distance of ") + fnum(r.num("width")) +
            " when the observed proportion equals " + fnum(r.num("p")) + ".";
   };

@@ -350,6 +350,8 @@ void check_spent(const std::vector<double>& inc) {
 
 }  // namespace
 
+int grid_resolution(double alpha) { return alpha < 1e-8 ? 128 : 32; }
+
 Design make_design(const std::vector<double>& t, double alpha, bool two_sided, const Efficacy& eff,
                    const Futility& fut, const std::function<void()>& check, int r) {
   check_t(t);
@@ -367,6 +369,7 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
   d.t = t;
   d.two_sided = two_sided;
   d.binding = futility && fut.binding;
+  d.grid = r = r > 0 ? r : grid_resolution(alpha);
   d.b.assign(K, INFINITY);
   d.alpha_spent.assign(K, 0.0);
   const std::vector<double>* az = futility && fut.kind == Futility::Kind::Fixed && d.binding ? &fut.z : nullptr;
@@ -391,6 +394,7 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
 }
 
 ExitProbs exit_probs(const Design& d, double eta, double scale, int r) {
+  if (r <= 0) r = d.grid;
   const std::size_t K = d.t.size();
   ExitProbs e;
   e.up.assign(K, 0.0);
@@ -419,6 +423,7 @@ ExitProbs exit_probs(const Design& d, double eta, double scale, int r) {
 }
 
 double drift_for_power(const Design& d, double power, double scale, int r) {
+  if (r <= 0) r = d.grid;
   auto f = [&](double eta) { return exit_probs(d, eta, scale, r).reject - power; };
   const double side = d.two_sided ? d.alpha_spent.back() / 2 : d.alpha_spent.back();
   const double zp = qnorm(power);
