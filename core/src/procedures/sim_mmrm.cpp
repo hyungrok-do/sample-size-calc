@@ -63,10 +63,14 @@ void Stats::add(int g, int k, const double* y) {
   }
 }
 
-Fit fit(const Stats& s, bool reml) {
+Fit fit(const Stats& s, bool reml, const double* contrast) {
   Fit f;
   const int T = s.visits;
-  if (T < 1 || T > TMAX) return f;
+  auto fail = [&](Failure why) {
+    f.failure = why;
+    return f;
+  };
+  if (T < 1 || T > TMAX) return fail(Failure::Empty);
   // --- the regression of each visit on the group and the earlier visits, over the patients observed at it
   // z = (group 1, group 2, y1, …, yt); C = Σ z z'
   constexpr int Z = TMAX + 2;
@@ -89,7 +93,8 @@ Fit fit(const Stats& s, bool reml) {
         }
       }
     const int q = t + 2;  // predictors: two group means and t earlier visits
-    if (ng[0] == 0 || ng[1] == 0 || n - q < 1) return f;
+    if (ng[0] == 0 || ng[1] == 0) return fail(Failure::Empty);
+    if (n - q < 1) return fail(Failure::Few);
     std::array<double, Z * Z> a{};
     std::array<double, Z> rhs{};
     for (int i = 0; i < q; ++i) {
@@ -101,7 +106,7 @@ Fit fit(const Stats& s, bool reml) {
     for (int j = 0; j < q; ++j) {
       double v = a[j * Z + j];
       for (int k = 0; k < j; ++k) v -= l[j * Z + k] * l[j * Z + k];
-      if (!(v > 1e-12 * std::fmax(1.0, a[j * Z + j]))) return f;
+      if (!(v > 1e-12 * std::fmax(1.0, a[j * Z + j]))) return fail(Failure::Arithmetic);
       l[j * Z + j] = std::sqrt(v);
       for (int i = j + 1; i < q; ++i) {
         double w = a[i * Z + j];
@@ -121,7 +126,7 @@ Fit fit(const Stats& s, bool reml) {
     double rss = c[(2 + t) * Z + 2 + t];
     for (int i = 0; i < q; ++i) rss -= coef[i] * rhs[i];
     const double denom = reml ? n - 2 : n;
-    if (!(denom > 0)) return f;
+    if (!(denom > 0)) return fail(Failure::Few);
     resid[t] = std::fmax(rss, 0.0) / denom;
     for (int u = 0; u < t; ++u) beta[t][u] = coef[2 + u];
   }
@@ -138,7 +143,7 @@ Fit fit(const Stats& s, bool reml) {
   }
   // --- generalized least squares for each group's means: the leading blocks of Σ⁻¹ come from M = L⁻¹
   std::array<double, TMAX * TMAX> lch{}, m{};
-  if (!cholesky(sigma.data(), T, lch.data())) return f;
+  if (!cholesky(sigma.data(), T, lch.data())) return fail(Failure::Arithmetic);
   for (int j = 0; j < T; ++j) {  // M = L⁻¹, lower triangular
     m[j * TMAX + j] = 1 / lch[j * TMAX + j];
     for (int i = j + 1; i < T; ++i) {
@@ -147,7 +152,13 @@ Fit fit(const Stats& s, bool reml) {
       m[i * TMAX + j] = v / lch[i * TMAX + i];
     }
   }
-  double var_last[2] = {0, 0};
+  // the combination of the visits' means compared (the last visit: c = e_T), and its variance c' info⁻¹ c by group
+  std::array<double, TMAX> c{};
+  if (contrast)
+    std::copy(contrast, contrast + T, c.begin());
+  else
+    c[T - 1] = 1;
+  double var_diff[2] = {0, 0};
   for (int g = 0; g < 2; ++g) {
     std::array<double, TMAX * TMAX> info{};
     std::array<double, TMAX> rhs{};
@@ -167,19 +178,19 @@ Fit fit(const Stats& s, bool reml) {
         }
     }
     std::array<double, TMAX * TMAX> li{};
-    if (!cholesky(info.data(), T, li.data())) return f;
+    if (!cholesky(info.data(), T, li.data())) return fail(Failure::Arithmetic);
     std::array<double, TMAX> mu = rhs;
     chol_solve(li.data(), T, mu.data());
     for (int t = 0; t < T; ++t) f.mu[g][t] = mu[t];
-    std::array<double, TMAX> e{};
-    e[T - 1] = 1;
+    std::array<double, TMAX> e = c;
     chol_solve(li.data(), T, e.data());
-    var_last[g] = e[T - 1];
+    for (int t = 0; t < T; ++t) var_diff[g] += c[t] * e[t];
   }
-  f.delta = f.mu[0][T - 1] - f.mu[1][T - 1];
-  f.se = std::sqrt(var_last[0] + var_last[1]);
+  for (int t = 0; t < T; ++t) f.delta += c[t] * (f.mu[0][t] - f.mu[1][t]);
+  f.se = std::sqrt(var_diff[0] + var_diff[1]);
   f.sigma = sigma;
   f.ok = f.se > 0;
+  if (!f.ok) f.failure = Failure::Arithmetic;
   return f;
 }
 
@@ -237,68 +248,51 @@ Design design_of(const Scenario& s) {
 }
 
 /// Expected variance of the difference at the last visit with n1 and n2 patients, in units of σ²: the inverse of
-/// the expected GLS information Σ_k n π_k E_k' Σ_kk⁻¹ E_k under the true covariance and dropout pattern.
+/// the expected GLS information Σ_k n π_k E_k' Σ_kk⁻¹ E_k under the true covariance and dropout pattern.  In the
+/// errors e = L⁻¹y (Σ = LL') the visits are independent with variance 1, and the information on each visit's mean
+/// is n times the probability of being observed there; the last visit's mean is the combination Σ_t L_Tt e_t, so
+/// its variance is Σ_t L_Tt² / (n P(observed at visit t)).  (Inverting the information of the visits themselves
+/// lost every digit once the correlation was within about 10⁻¹⁵ of 1.)
 double expected_variance(const Design& d, double n1, double n2) {
   const int T = d.visits;
-  mmrm::Stats st;
-  st.visits = T;
   double v = 0;
   for (int g = 0; g < 2; ++g) {
     const double n = g == 0 ? n1 : n2;
-    // the GLS information depends only on the counts: build it from expected counts with zero responses
-    std::array<double, TMAX * TMAX> info{}, m{}, lch = d.chol;
-    for (int j = 0; j < T; ++j) {
-      m[j * TMAX + j] = 1 / lch[j * TMAX + j];
-      for (int i = j + 1; i < T; ++i) {
-        double w = 0;
-        for (int k = j; k < i; ++k) w -= lch[i * TMAX + k] * m[k * TMAX + j];
-        m[i * TMAX + j] = w / lch[i * TMAX + i];
-      }
+    for (int t = 0; t < T; ++t) {
+      const double l = d.chol[(T - 1) * TMAX + t];
+      v += l * l / (n * d.retained(g, t + 1));
     }
-    for (int k = 1; k <= T; ++k) {
-      const double pk = d.retained(g, k) - (k < T ? d.retained(g, k + 1) : 0);
-      if (pk <= 0) continue;
-      for (int a = 0; a < k; ++a)
-        for (int b = 0; b <= a; ++b) {
-          double w = 0;
-          for (int c = a; c < k; ++c) w += m[c * TMAX + a] * m[c * TMAX + b];
-          info[a * TMAX + b] += n * pk * w;
-          if (a != b) info[b * TMAX + a] += n * pk * w;
-        }
-    }
-    // [info⁻¹]_TT by Cholesky
-    std::array<double, TMAX * TMAX> l{};
-    for (int j = 0; j < T; ++j) {
-      double w = info[j * TMAX + j];
-      for (int k = 0; k < j; ++k) w -= l[j * TMAX + k] * l[j * TMAX + k];
-      if (!(w > 0)) return INFINITY;
-      l[j * TMAX + j] = std::sqrt(w);
-      for (int i = j + 1; i < T; ++i) {
-        double x = info[i * TMAX + j];
-        for (int k = 0; k < j; ++k) x -= l[i * TMAX + k] * l[j * TMAX + k];
-        l[i * TMAX + j] = x / l[j * TMAX + j];
-      }
-    }
-    std::array<double, TMAX> e{};
-    e[T - 1] = 1;
-    for (int i = 0; i < T; ++i) {
-      for (int k = 0; k < i; ++k) e[i] -= l[i * TMAX + k] * e[k];
-      e[i] /= l[i * TMAX + i];
-    }
-    for (int i = T - 1; i >= 0; --i) {
-      for (int k = i + 1; k < T; ++k) e[i] -= l[k * TMAX + i] * e[k];
-      e[i] /= l[i * TMAX + i];
-    }
-    v += e[T - 1];
   }
   return v;
 }
 
 enum Analysis { MMRM = 0, COMPLETERS = 1 };
 
+// Bits of sim::Outcome::also: each analysis's rejection (bit MMRM or COMPLETERS), then why an analysis failed.
+constexpr unsigned EMPTY = 2, FEW = 3, ARITHMETIC = 4, NO_COMPLETERS = 5, FLAT_COMPLETERS = 6;
+
+const std::vector<simc::Cause>& causes_of(Analysis an) {
+  using simc::Failures;
+  static const std::vector<simc::Cause> mmrm = {
+      {EMPTY, Failures::Design, "a group had no patients left at a visit"},
+      {FEW, Failures::Design,
+       "too few patients were left at a visit to estimate its covariances with the earlier visits"},
+      {ARITHMETIC, Failures::Numerical, "the arithmetic of the MMRM fit broke down"}};
+  static const std::vector<simc::Cause> completers = {
+      {NO_COMPLETERS, Failures::Design, "fewer than 2 patients of a group completed the study"},
+      {FLAT_COMPLETERS, Failures::Numerical, "the completers' outcomes had no spread"}};
+  return an == MMRM ? mmrm : completers;
+}
+
 sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64_t seed, Analysis an, bool z,
                         double alpha, Alt a) {
   const int T = d.visits;
+  // The MMRM is fitted to the errors e = L⁻¹y, whose visits are independent with variance 1, rather than to the
+  // outcomes y = Le: its fit is unchanged when each visit is replaced by a combination of itself and the earlier
+  // visits (L⁻¹ is lower triangular, so a patient's observed visits stay observed, and the regression of each visit
+  // on the earlier ones changes with them), and the difference at the last visit is that of the combination given
+  // by L's last row.  With visits correlated within about 10⁻¹² of 1, their differences in y kept too few digits
+  // in the sums of squares, and the fits failed.
   mmrm::Stats st;
   st.visits = T;
   double csum[2] = {0, 0}, css[2] = {0, 0}, ccount[2] = {0, 0};
@@ -307,7 +301,7 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
     Rng rng(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(g + 1));
     const double ldrop = d.drop[g] > 0 ? std::log1p(-d.drop[g]) : 0;
     for (long i = 0; i < n[g]; ++i) {
-      double e[TMAX], y[TMAX];
+      double e[TMAX];
       for (int t = 0; t < T; ++t) e[t] = rng.normal();
       const double u = rng.uniform();
       // the last visit observed: retained through visit t when u ≤ (1 − dropout)^(t/T)
@@ -316,15 +310,12 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
         const double last = std::floor(T * std::log(u) / ldrop + 1e-12);
         k = last >= T ? T : static_cast<int>(last);
       }
-      for (int t = 0; t < T; ++t) {
-        double v = 0;
-        for (int c = 0; c <= t; ++c) v += d.chol[t * TMAX + c] * e[c];
-        y[t] = v;
-      }
-      if (k >= 1) st.add(g, k, y);
+      if (k >= 1) st.add(g, k, e);
       if (k == T) {
-        csum[g] += y[T - 1];
-        css[g] += y[T - 1] * y[T - 1];
+        double y = 0;  // the outcome at the last visit
+        for (int c = 0; c < T; ++c) y += d.chol[(T - 1) * TMAX + c] * e[c];
+        csum[g] += y;
+        css[g] += y * y;
         ccount[g] += 1;
       }
     }
@@ -333,22 +324,28 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
   const double shift = d.delta / d.sd;  // the difference at the last visit, left out of the simulated outcomes
   // completers: pooled t-test at the last visit
   bool comp = false;
+  unsigned comp_failed = NO_COMPLETERS;
   if (ccount[0] >= 2 && ccount[1] >= 2) {
     const double m1 = csum[0] / ccount[0], m2 = csum[1] / ccount[1];
     const double ss = css[0] - ccount[0] * m1 * m1 + css[1] - ccount[1] * m2 * m2, df = ccount[0] + ccount[1] - 2;
     const double se = std::sqrt(ss / df * (1 / ccount[0] + 1 / ccount[1]));
+    comp_failed = se > 0 ? 0u : FLAT_COMPLETERS;
     comp = se > 0 && simc::p_value(simc::t_stat(m1 - m2 + shift, se), z ? INFINITY : df, a) < alpha;
   }
-  const mmrm::Fit f = mmrm::fit(st, true);
+  const mmrm::Fit f = mmrm::fit(st, true, &d.chol[(T - 1) * TMAX]);
   bool mm = false;
+  unsigned mm_failed = 0;
   if (f.ok) {
     o.df = z ? INFINITY : f.observed_last - 2;
     mm = o.df > 0 && simc::p_value(simc::t_stat(f.delta + shift, f.se), o.df, a) < alpha;
     o.estimate = (f.delta + shift) * d.sd;
     o.se = f.se * d.sd;
+  } else {
+    mm_failed = f.failure == mmrm::Failure::Empty ? EMPTY : (f.failure == mmrm::Failure::Few ? FEW : ARITHMETIC);
   }
-  o.also = (mm ? 1u : 0u) | (comp ? 2u : 0u);
-  if (an == MMRM && !f.ok) {
+  o.also = (mm ? 1u : 0u) | (comp ? 2u : 0u) | (mm_failed ? 1u << mm_failed : 0u) |
+           (comp_failed ? 1u << comp_failed : 0u);
+  if (an == MMRM ? !f.ok : comp_failed != 0) {
     o.failed = true;
   } else {
     o.reject = an == MMRM ? mm : comp;
@@ -506,8 +503,8 @@ Procedure mmrm_proc() {
       auto power_at = [&](double m1, long R, double p0, double p1) {
         simc::check_study_size((m1 + n2_of(m1)) * d.visits, "measurements");
         const long k1 = static_cast<long>(m1), k2 = static_cast<long>(n2_of(m1));
-        return sim::simulate(R, [&](long rep) { return mmrm_study(d, k1, k2, rep, seed, an, z, alpha, a); }, ctx,
-                             p0, p1);
+        return simc::simulate_tests(
+            R, [&](long rep) { return mmrm_study(d, k1, k2, rep, seed, an, z, alpha, a); }, ctx, p0, p1);
       };
       sim::Summary sm;
       if (s.solve == "n") {
@@ -523,11 +520,10 @@ Procedure mmrm_proc() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm, simc::Failures::Design,
-                        "the model needs patients of both groups measured at every visit");
+      simc::put_summary(s, r, sm, causes_of(an));
       r.set("approx_power", approx(n1));
-      r.set("power_mmrm", sm.also_power(MMRM));
-      r.set("power_completers", sm.also_power(COMPLETERS));
+      r.set("power_mmrm", simc::other_power(sm, MMRM, causes_of(MMRM)));
+      r.set("power_completers", simc::other_power(sm, COMPLETERS, causes_of(COMPLETERS)));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
       if (std::isfinite(sm.mean_extra)) r.set("completers", sm.mean_extra);
     }
@@ -572,9 +568,7 @@ Procedure mmrm_proc() {
                     fnum(r.num("sd")) + ", " + corr + fnum(r.num("rho")) + "), with " + drop +
                     " lost by the last visit, analyzing with " + analysis + " and a " + alt_words(alt(s)) +
                     " test at α = " + fnum(r.num("alpha")) + ".";
-    if (r.has("power_mmrm") && std::isfinite(r.num("power_mmrm")))
-      t += " On the same simulated trials the MMRM had a power of " + fpct(r.num("power_mmrm")) +
-           " and the completers' t-test " + fpct(r.num("power_completers")) + ".";
+    t += simc::others_sentence(r, "trials", {{"MMRM", "power_mmrm"}, {"completers' t-test", "power_completers"}});
     return t + simc::method_note(r);
   };
   p.definitions = {{"N1, N2", "Number of patients randomized to each group; N = N1 + N2."},
@@ -591,6 +585,10 @@ Procedure mmrm_proc() {
              "for these designs; software such as the mmrm R package or SAS PROC MIXED gives similar power.",
              "Dropout is completely at random. Under missingness at random the MMRM stays unbiased while the "
              "completers' analysis does not; the power differs little.",
+             "A trial whose MMRM cannot be fitted (a group with no patients left at a visit, or too few to estimate "
+             "a visit's covariances with the earlier visits) counts as a failed analysis of the MMRM (not "
+             "rejecting), and one with fewer than 2 completers in a group as a failed analysis of the completers' "
+             "t-test.",
              "The quick approximation is the expected generalized least squares variance under the true covariance "
              "and the expected dropout pattern (Lu, Luo & Chen 2008)."};
   p.references = {"Mallinckrodt, C. H., Clark, W. S. & David, S. R. (2001). Accounting for dropout bias using "

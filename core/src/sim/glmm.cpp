@@ -234,13 +234,18 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
   // fixed over several steps does not work for large clusters: each cluster's integrand is then so
   // narrow that the estimates cannot move away from the nodes.)
   Fit out;
+  auto fail = [&](Failure why) {
+    out.ok = false;
+    out.failure = why;
+    return out;
+  };
   const Rule& r = rule(nodes);
   const std::size_t n = data.size();
   std::vector<double> modes(n, 0.0), trial_modes(n);
   double th[3] = {b0, b1, sigma <= 0 ? 0.3 : sigma};
   double grad[3], hess[9];
   double ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess);
-  if (!std::isfinite(ll)) return out;
+  if (!std::isfinite(ll)) return fail(Failure::Arithmetic);
   bool converged = false;
   for (int it = 0; it < 100 && !converged; ++it) {
     ++out.iterations;
@@ -252,7 +257,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
       for (int i = 0; i < 3; ++i) neg[4 * i] += lambda;
       solved = solve_spd(neg, grad, d, 3);
     }
-    if (!solved) return out;
+    if (!solved) return fail(Failure::Arithmetic);
     const double decrement = grad[0] * d[0] + grad[1] * d[1] + grad[2] * d[2];
     if (decrement < 1e-12 * (1 + std::fabs(ll))) {
       // a last Newton step: too small for the log-likelihood to show its gain, it still squares the
@@ -280,9 +285,9 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     std::copy(thess, thess + 9, hess);
     modes.swap(trial_modes);
     ll = next;
-    if (std::fabs(th[1]) > 30 || std::fabs(th[0]) > 50) return out;  // separation: the estimates run off
+    if (std::fabs(th[1]) > 30 || std::fabs(th[0]) > 50) return fail(Failure::Separation);  // the estimates run off
   }
-  if (!converged) return out;
+  if (!converged) return fail(Failure::Arithmetic);
   out.ok = true;
   out.b0 = th[0];
   out.b1 = th[1];
@@ -301,20 +306,14 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     double t[3] = {th[0], th[1], th[2]}, gj[3], hj[9];
     t[j] += h;
     std::copy(modes.begin(), modes.end(), trial_modes.begin());
-    if (!std::isfinite(evaluate(data, t[0], t[1], t[2], r, trial_modes, gj, hj))) {
-      out.ok = false;
-      return out;
-    }
+    if (!std::isfinite(evaluate(data, t[0], t[1], t[2], r, trial_modes, gj, hj))) return fail(Failure::Information);
     for (int i = 0; i < 3; ++i) info[3 * i + j] = -(gj[i] - grad[i]) / h;
   }
   for (int i = 0; i < 3; ++i)  // symmetrize
     for (int j = 0; j < i; ++j) info[3 * i + j] = info[3 * j + i] = 0.5 * (info[3 * i + j] + info[3 * j + i]);
   double e1[3] = {0, 1, 0}, col[3];
   const bool full = !out.boundary && solve_spd(info, e1, col, 3);
-  if (!full && !solve_spd(info, e1, col, 2)) {
-    out.ok = false;
-    return out;
-  }
+  if (!full && !solve_spd(info, e1, col, 2)) return fail(Failure::Information);
   out.se_b1 = std::sqrt(std::max(col[1], 0.0));
   return out;
 }

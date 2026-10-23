@@ -49,7 +49,10 @@ PoFit po_fit(const double* group1, const double* group2, int k) {
     const double c = n[0][j] + n[1][j];
     f.loglik0 += c * std::log(c / total);
   }
-  if (m < 2 || n1 == 0 || n2 == 0) return f;
+  if (m < 2 || n1 == 0 || n2 == 0) {
+    f.single = true;
+    return f;
+  }
   // separation: one group entirely at or above the other (overlapping in one category at most); the estimate
   // is infinite and the likelihood's supremum is the two groups' own multinomials
   int first[2] = {m, m}, last[2] = {-1, -1};
@@ -262,6 +265,24 @@ double win_probability(const Design& d) {
 
 enum Test { WALD = 0, LR = 1, RANKS = 2 };
 
+// Bits of sim::Outcome::also: each test's rejection (bit WALD, LR or RANKS), then why a test could not be computed
+// (SEPARATED is also the share of separated studies).
+constexpr unsigned SINGLE = 3, SEPARATED = 4, NO_FIT = 5;
+
+const std::vector<simc::Cause>& causes_of(Test test) {
+  using simc::Failures;
+  static const simc::Cause single{SINGLE, Failures::Design, "every outcome fell in one category"};
+  static const simc::Cause no_fit{NO_FIT, Failures::Numerical, "the proportional odds fit did not converge"};
+  static const std::vector<simc::Cause> wald = {
+      single,
+      {SEPARATED, Failures::Design,
+       "one group's outcomes all lay at or above the other's, where the estimate is infinite and the Wald test "
+       "cannot reject, though the likelihood-ratio and Mann–Whitney tests can"},
+      no_fit};
+  static const std::vector<simc::Cause> lr = {single, no_fit}, ranks = {single};
+  return test == WALD ? wald : (test == LR ? lr : ranks);
+}
+
 sim::Outcome ordinal_study(const Design& d, long n1, long n2, long rep, std::uint64_t seed, Test test, double alpha,
                            Alt a) {
   Table2 t{};
@@ -282,6 +303,7 @@ sim::Outcome ordinal_study(const Design& d, long n1, long n2, long rep, std::uin
   }
   sim::Outcome o;
   const ordinal::PoFit f = ordinal::po_fit(t[0].data(), t[1].data(), d.k);
+  const unsigned fit_failed = f.ok ? 0u : (f.single ? SINGLE : NO_FIT);
   bool wald = false, lr = false;
   if (f.ok) {
     if (!f.separated) {
@@ -303,15 +325,18 @@ sim::Outcome ordinal_study(const Design& d, long n1, long n2, long rep, std::uin
     before += c;
   }
   const bool ranks = simc::rank_sum_p(r1 - a1 * (a1 + 1) / 2, a1, a2, ties, a) < alpha;
-  o.also = (wald ? 1u : 0u) | (lr ? 2u : 0u) | (ranks ? 4u : 0u);
-  if (test == RANKS) {
-    o.reject = ranks;
-  } else if (!f.ok) {
+  // every outcome in one category leaves the ranks no variance, as it leaves the model nothing to fit; separation
+  // leaves the Wald test no finite estimate
+  unsigned failed = fit_failed;
+  if (test == RANKS) failed = f.single ? SINGLE : 0u;
+  if (test == WALD && f.separated) failed = SEPARATED;
+  o.also = (wald ? 1u : 0u) | (lr ? 2u : 0u) | (ranks ? 4u : 0u) | (fit_failed ? 1u << fit_failed : 0u) |
+           (f.separated ? 1u << SEPARATED : 0u);
+  if (failed != 0) {
     o.failed = true;
   } else {
-    o.reject = test == WALD ? wald : lr;
+    o.reject = test == WALD ? wald : (test == LR ? lr : ranks);
   }
-  o.extra = f.separated ? 1 : 0;
   return o;
 }
 
@@ -363,6 +388,7 @@ Procedure ordinal() {
       vec("p2", "Category Probabilities of Group 2 (Lowest First)", "0.2 0.25 0.25 0.2 0.1")
           .grp(G_EFFECT)
           .sym("P2")
+          .range(0, 1)
           .hint("The share of group 2 (e.g. the control) in each category, from the lowest to the highest, adding "
                 "up to 1; from 2 to 20 categories."),
       select("effect", "Treatment Effect",
@@ -385,6 +411,7 @@ Procedure ordinal() {
       vec("p1", "Category Probabilities of Group 1 (Lowest First)", "0.1 0.2 0.3 0.25 0.15")
           .grp(G_EFFECT)
           .sym("P1")
+          .range(0, 1)
           .hint("The share of group 1 (e.g. the treatment) in each category, from the lowest to the highest, adding "
                 "up to 1.")
           .show(when(is("effect", {"probs"}))),
@@ -451,8 +478,8 @@ Procedure ordinal() {
       auto power_at = [&](double m1, long R, double p0, double p1) {
         simc::check_study_size(m1 + n2_of(m1), "subjects");
         const long k1 = static_cast<long>(m1), k2 = static_cast<long>(n2_of(m1));
-        return sim::simulate(R, [&](long rep) { return ordinal_study(d, k1, k2, rep, seed, test, alpha, a); }, ctx,
-                             p0, p1);
+        return simc::simulate_tests(
+            R, [&](long rep) { return ordinal_study(d, k1, k2, rep, seed, test, alpha, a); }, ctx, p0, p1);
       };
       sim::Summary sm;
       if (s.solve == "n") {
@@ -477,14 +504,13 @@ Procedure ordinal() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm, simc::Failures::Design,
-                        "the model could not be fitted, as when one group's outcomes all lie beyond the other's");
+      simc::put_summary(s, r, sm, causes_of(test));
       r.set("approx_power", approx(n1));
-      r.set("power_wald", sm.also_power(WALD));
-      r.set("power_lr", sm.also_power(LR));
-      r.set("power_mw", sm.also_power(RANKS));
+      r.set("power_wald", simc::other_power(sm, WALD, causes_of(WALD)));
+      r.set("power_lr", simc::other_power(sm, LR, causes_of(LR)));
+      r.set("power_mw", simc::other_power(sm, RANKS, causes_of(RANKS)));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_logor", sm.mean_estimate);
-      if (std::isfinite(sm.mean_extra) && sm.mean_extra > 0) r.set("separated", sm.mean_extra);
+      if (sm.also[SEPARATED] > 0) r.set("separated", sm.also_power(SEPARATED));
     }
     put_two_group(r, {n1, n2_of(n1)});
     std::vector<double> p1(d.p1.begin(), d.p1.begin() + d.k), p2(d.p2.begin(), d.p2.begin() + d.k);
@@ -529,10 +555,8 @@ Procedure ordinal() {
                     fint(r.num("n")) + ") " + simc::power_phrase(s, r) + " to detect " + effect +
                     " over " + fint(r.num("k")) + " ordered categories, using a " + alt_words(alt(s)) + " " + test +
                     " at α = " + fnum(r.num("alpha")) + ".";
-    if (r.has("power_wald") && std::isfinite(r.num("power_wald")))
-      t += " On the same simulated studies the Wald test had a power of " + fpct(r.num("power_wald")) +
-           ", the likelihood-ratio test " + fpct(r.num("power_lr")) + " and the Mann–Whitney test " +
-           fpct(r.num("power_mw")) + ".";
+    t += simc::others_sentence(r, "studies", {{"Wald test", "power_wald"}, {"likelihood-ratio test", "power_lr"},
+                                             {"Mann–Whitney test", "power_mw"}});
     return t + simc::method_note(r);
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
@@ -547,7 +571,8 @@ Procedure ordinal() {
              "falls in are merged away.",
              "With separation (every subject of one group at or above every subject of the other) the estimate "
              "is infinite: the Wald test then cannot reject, while the likelihood-ratio and Mann–Whitney tests "
-             "can.",
+             "can. Such a study counts as a failed analysis of the Wald test (not rejecting), as a study with every "
+             "outcome in one category does for every test.",
              "The quick approximation is Whitehead's (1993) formula for a common odds ratio, and Noether's formula "
              "with the tie correction when group 1's probabilities are given.",
              "Giving group 1's probabilities directly shows the power when the odds are not proportional, for "

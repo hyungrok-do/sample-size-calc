@@ -135,7 +135,11 @@ Another thread can watch progress and cancel it through the token.
   when more than half could not be in the simulations whose analyses fail
   only when the arithmetic breaks down: the longitudinal, cluster and
   stepped-wedge mixed models and the two-sample tests on skewed or
-  heavy-tailed data) and `mean_df`. Columns
+  heavy-tailed data. The MMRM, GLMM, ordinal and win-ratio simulations
+  count failures that the design brings, such as a group with no patients
+  left at a visit, apart from those of the arithmetic, which alone are held
+  to that rule, and say why in `failures_why`, as their statements do) and
+  `mean_df`. Columns
   without a value in any row are left out, so an approximation has no Monte
   Carlo columns. The result reports
   `"approximate": true` for an approximation. Results depend only on the seed:

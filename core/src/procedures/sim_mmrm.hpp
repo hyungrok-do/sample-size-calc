@@ -23,9 +23,18 @@ struct Stats {
   void add(int g, int k, const double* y);
 };
 
+/// Why a fit failed.
+enum class Failure {
+  None,
+  Empty,       // a group had no patients at a visit
+  Few,         // fewer patients at a visit than its regression on the group and the earlier visits needs
+  Arithmetic,  // a pivot of a factorization was not positive: the arithmetic broke down
+};
+
 struct Fit {
   bool ok = false;
-  double delta = 0;  // estimated mean of group 1 minus group 2 at the last visit
+  Failure failure = Failure::None;
+  double delta = 0;  // estimated mean of group 1 minus group 2 at the last visit (or of the combination asked for)
   double se = 0;     // its model-based standard error
   double observed_last = 0;  // patients observed at the last visit
   std::array<std::array<double, TMAX>, 2> mu{};  // estimated means by group and visit
@@ -36,7 +45,8 @@ struct Fit {
 /// data the likelihood factors into regressions of each visit on the earlier ones (Anderson 1957), which
 /// give the covariance matrix in closed form; the means are then the generalized least squares estimates.
 /// REML divides each regression's residual sum of squares by its patients minus 2 (the group means), which
-/// is exact REML with complete data.
-Fit fit(const Stats& s, bool reml = true);
+/// is exact REML with complete data.  `contrast`, if given, asks for the difference between the groups in the
+/// combination Σ c_t μ_t of the visits' means instead of the last visit's.
+Fit fit(const Stats& s, bool reml = true, const double* contrast = nullptr);
 
 }  // namespace ssc::procs::mmrm

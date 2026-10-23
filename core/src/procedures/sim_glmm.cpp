@@ -75,6 +75,22 @@ GlmmDesign glmm_design(const Scenario& s) {
   return d;
 }
 
+// Bits of sim::Outcome::also: why a study's fit failed.
+constexpr unsigned SEPARATED = 0, RAN_OFF = 1, ARITHMETIC = 2, NO_SE = 3;
+
+const std::vector<simc::Cause>& causes() {
+  using simc::Failures;
+  static const std::vector<simc::Cause> c = {
+      {SEPARATED, Failures::Design,
+       "every cluster of a group had the outcome in none or all of its subjects, so the odds ratio had no finite "
+       "estimate"},
+      {RAN_OFF, Failures::Design, "the estimates grew without bound"},
+      {ARITHMETIC, Failures::Numerical, "the fit did not converge"},
+      {NO_SE, Failures::Numerical,
+       "the fit gave no standard error (its information matrix was not positive definite)"}};
+  return c;
+}
+
 /// Expected weight of a cluster, size / (p(1 − p)(1 + (size − 1)ρ)), over the size distribution.
 double expected_weight(const GlmmDesign& d, double p, double icc) {
   double w = 0;
@@ -113,7 +129,21 @@ sim::Outcome glmm_study(const GlmmDesign& d, long k1, long k2, long rep, std::ui
   sim::Outcome o;
   const glmm::Fit f = glmm::fit(data, d.b0, d.b1, d.sigma);
   if (!f.ok || !(f.se_b1 > 0)) {
+    // a group whose clusters all have the outcome in none of their subjects, or in all, leaves the odds ratio no
+    // finite estimate, whichever way the fit then ends
+    bool none[2] = {true, true}, all[2] = {true, true};
+    for (const glmm::Cluster& c : data) {
+      const int g = c.x == 1 ? 0 : 1;
+      none[g] = none[g] && c.s == 0;
+      all[g] = all[g] && c.s == c.m;
+    }
+    const bool separated = none[0] || all[0] || none[1] || all[1];
     o.failed = true;
+    const glmm::Failure why = f.ok ? glmm::Failure::Information : f.failure;
+    o.also = 1u << (separated                              ? SEPARATED
+                    : why == glmm::Failure::Separation  ? RAN_OFF
+                    : why == glmm::Failure::Information ? NO_SE
+                                                        : ARITHMETIC);
     return o;
   }
   o.estimate = f.b1;
@@ -240,7 +270,7 @@ Procedure glmm_cluster() {
       auto power_at = [&](double c1, long R, double p0, double p1_) {
         simc::check_study_size(c1 + k2_of(c1), "clusters");
         const long n1 = static_cast<long>(c1), n2 = static_cast<long>(k2_of(c1));
-        return sim::simulate(
+        return simc::simulate_tests(
             R, [&](long rep) { return glmm_study(d, n1, n2, rep, seed, z, alpha, a); }, ctx, p0, p1_);
       };
       sim::Summary sm;
@@ -257,8 +287,7 @@ Procedure glmm_cluster() {
       } else {
         sm = power_at(k1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm, simc::Failures::Design,
-                        "the model could not be fitted, as when every cluster of a group has the same outcome");
+      simc::put_summary(s, r, sm, causes());
       r.set("approx_power", approx(k1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_logor", sm.mean_estimate);
     }
@@ -327,9 +356,10 @@ Procedure glmm_cluster() {
              "reference distribution). Set P1 = P2 to see the type I error of your design.",
              "The SD of the random intercept may be at most 6 on the logit scale (a latent ICC of 0.92): beyond "
              "it, clusters are almost all-or-none and the Wald test breaks down.",
-             "Studies whose fit does not converge (for example when every cluster of a group has the same outcome) "
-             "count as not rejecting and are reported as failed fits; when no study can be fitted, no simulated power "
-             "is given.",
+             "Studies whose fit fails count as not rejecting and are reported as failed fits, with the reason: "
+             "every cluster of a group with the outcome in none or all of its subjects (no finite odds ratio), or a "
+             "fit that did not converge. No simulated power is given when no study could be fitted, or when fits "
+             "did not converge in more than half of them.",
              "The quick approximation compares the population-averaged proportions with each cluster weighted by "
              "size / (p(1 − p)(1 + (size − 1)ρ)), averaged over the size distribution."};
   p.references = {"Li, P. & Redden, D. T. (2015). Comparing denominator degrees of freedom approximations for the "

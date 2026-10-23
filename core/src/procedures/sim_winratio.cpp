@@ -286,6 +286,20 @@ Probabilities cached_pair_probabilities(const Design& d) {
 
 enum Test { FS = 0, WR = 1 };
 
+// Bits of sim::Outcome::also: each test's rejection (bit FS or WR), then why a test could not be computed.
+constexpr unsigned TIED = 2, BALANCED = 3, ONE_SIDED = 4, FLAT = 5;
+
+const std::vector<simc::Cause>& causes_of(Test test) {
+  using simc::Failures;
+  static const std::vector<simc::Cause> fs = {
+      {TIED, Failures::Design, "every pair of patients tied"},
+      {BALANCED, Failures::Design, "every patient won as often as lost, so the permutation variance was 0"}};
+  static const std::vector<simc::Cause> wr = {
+      {ONE_SIDED, Failures::Design, "each had no wins or no losses, so no finite win ratio"},
+      {FLAT, Failures::Design, "the win ratio's standard error was 0"}};
+  return test == FS ? fs : wr;
+}
+
 sim::Outcome winratio_study(const Design& d, long n1, long n2, long rep, std::uint64_t seed, Test test, double alpha,
                             Alt a) {
   // per study, freed with it (nothing outlives the simulation)
@@ -307,10 +321,11 @@ sim::Outcome winratio_study(const Design& d, long n1, long n2, long rep, std::ui
   l1.resize(static_cast<std::size_t>(n1));
   w2.resize(static_cast<std::size_t>(n2));
   l2.resize(static_cast<std::size_t>(n2));
-  double wins = 0, losses = 0;
+  double wins = 0, losses = 0, decided = 0;
   for (long k = 0; k < n; ++k) {
     const auto i = static_cast<std::size_t>(k);
     u[i] = counts.win[0][i] + counts.win[1][i] - counts.loss[0][i] - counts.loss[1][i];
+    decided += counts.win[0][i] + counts.win[1][i];
     if (k < n1) {
       w1[i] = counts.win[1][i];
       l1[i] = counts.loss[1][i];
@@ -327,10 +342,12 @@ sim::Outcome winratio_study(const Design& d, long n1, long n2, long rep, std::ui
   double uu = 0;
   for (double x : u) uu += x * x;
   const double var_t = a1 * a2 / (nn * (nn - 1)) * uu;
+  const unsigned fs_failed = var_t > 0 ? 0u : (decided == 0 ? TIED : BALANCED);
   const bool fs = var_t > 0 && simc::p_value((wins - losses) / std::sqrt(var_t), INFINITY, a) < alpha;
   // win ratio: log(θW/θL) with the U-statistic covariance of (θW, θL)
   bool wr = false;
   double logwr = NAN, se = NAN;
+  unsigned wr_failed = ONE_SIDED;
   if (wins > 0 && losses > 0) {
     const double tw = wins / (a1 * a2), tl = losses / (a1 * a2);
     auto cov = [](const std::vector<double>& x, const std::vector<double>& y, double scale) {
@@ -349,15 +366,18 @@ sim::Outcome winratio_study(const Design& d, long n1, long n2, long rep, std::ui
     const double vw = cov(w1, w1, a2) + cov(l2, l2, a1), vl = cov(l1, l1, a2) + cov(w2, w2, a1);
     const double cwl = cov(w1, l1, a2) + cov(l2, w2, a1);
     const double v = vw / (tw * tw) + vl / (tl * tl) - 2 * cwl / (tw * tl);
+    wr_failed = FLAT;
     if (v > 0) {
+      wr_failed = 0;
       logwr = std::log(tw / tl);
       se = std::sqrt(v);
       wr = simc::p_value(logwr / se, INFINITY, a) < alpha;
     }
   }
-  o.also = (fs ? 1u : 0u) | (wr ? 2u : 0u);
-  if (test == WR && !std::isfinite(logwr)) {
-    o.failed = true;  // no wins or no losses: the win ratio is 0 or infinite
+  o.also = (fs ? 1u : 0u) | (wr ? 2u : 0u) | (fs_failed ? 1u << fs_failed : 0u) |
+           (wr_failed ? 1u << wr_failed : 0u);
+  if ((test == FS ? fs_failed : wr_failed) != 0) {
+    o.failed = true;  // no variance, or no wins or no losses (the win ratio is 0 or infinite)
   } else {
     o.reject = test == FS ? fs : wr;
   }
@@ -556,8 +576,8 @@ Procedure winratio() {
       auto power_at = [&](double m1, long R, double p0, double p1) {
         simc::check_study_size(m1 + n2_of(m1), "patients", 2e5);  // O(N log N), about 0.5 s there
         const long k1 = static_cast<long>(m1), k2 = static_cast<long>(n2_of(m1));
-        return sim::simulate(R, [&](long rep) { return winratio_study(d, k1, k2, rep, seed, test, alpha, a); },
-                             ctx, p0, p1);
+        return simc::simulate_tests(
+            R, [&](long rep) { return winratio_study(d, k1, k2, rep, seed, test, alpha, a); }, ctx, p0, p1);
       };
       sim::Summary sm;
       if (s.solve == "n") {
@@ -573,10 +593,10 @@ Procedure winratio() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm, simc::Failures::Design, "each had no wins or no losses, so no finite win ratio");
+      simc::put_summary(s, r, sm, causes_of(test));
       r.set("approx_power", approx(n1));
-      r.set("power_fs", sm.also_power(FS));
-      r.set("power_wr", sm.also_power(WR));
+      r.set("power_fs", simc::other_power(sm, FS, causes_of(FS)));
+      r.set("power_wr", simc::other_power(sm, WR, causes_of(WR)));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_wr", std::exp(sm.mean_estimate));
       if (std::isfinite(sm.mean_extra)) r.set("mean_nb", sm.mean_extra);
     }
@@ -633,9 +653,8 @@ Procedure winratio() {
                     " of the pairs won, " + fpct(r.num("ploss")) + " lost and " + fpct(r.num("ptie")) +
                     " tied) for the hierarchical composite of " + comp + ", using a " + alt_words(alt(s)) + " " + test +
                     " at α = " + fnum(r.num("alpha")) + ".";
-    if (r.has("power_fs") && std::isfinite(r.num("power_fs")))
-      t += " On the same simulated trials the Finkelstein–Schoenfeld test had a power of " + fpct(r.num("power_fs")) +
-           " and the win ratio test " + fpct(r.num("power_wr")) + ".";
+    t += simc::others_sentence(r, "trials",
+                               {{"Finkelstein–Schoenfeld test", "power_fs"}, {"win ratio test", "power_wr"}});
     return t + simc::method_note(r);
   };
   p.definitions = {{"N1, N2", "Number of patients in the treatment and control groups; N = N1 + N2."},
@@ -654,7 +673,8 @@ Procedure winratio() {
              "pair of patients in the trial (both groups pooled). The comparisons are counted exactly by sorting "
              "(O(N log N)) rather than pair by pair, so large trials simulate quickly.",
              "The win ratio's standard error is the two-sample U-statistic (delta-method) estimate; a trial with no "
-             "wins or no losses has no finite win ratio and counts as a failed analysis for that test.",
+             "wins or no losses has no finite win ratio and counts as a failed analysis for that test, as a trial "
+             "in which every pair ties does for the Finkelstein–Schoenfeld test.",
              "The expected win, loss and tie probabilities, and the quick approximation (Yu & Ganju 2022), come "
              "from 200,000 simulated pairs drawn from a fixed stream."};
   p.references = {"Pocock, S. J., Ariti, C. A., Collier, T. J. & Wang, D. (2012). The win ratio: a new approach to "

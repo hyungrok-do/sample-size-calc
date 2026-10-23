@@ -337,6 +337,75 @@ TEST_CASE("mmrm: the REML fit equals nlme::gls with REML, and is exact with comp
   CHECK_CLOSE(c.se, std::sqrt(ss / 18 * (0.1 + 0.1)), 1e-10, 0);
 }
 
+TEST_CASE("mmrm: the fit is the same in combinations of the visits, and says why it fails") {
+  // y = Le with L lower triangular: the fit of e asked for the combination in L's last row is the fit of y at the
+  // last visit, since each visit's regression on the earlier ones changes with them.  With visits correlated
+  // within 1e-13 of 1, y's sums of squares keep too few digits of the visits' differences and its fit fails.
+  for (double rho : {0.6, 1 - 1e-13}) {
+    const int T = 4;
+    double l[T][T] = {};
+    for (int j = 0; j < T; ++j) {  // Cholesky factor of the exchangeable correlation
+      double v = 1;
+      for (int k = 0; k < j; ++k) v -= l[j][k] * l[j][k];
+      l[j][j] = std::sqrt(v);
+      for (int i = j + 1; i < T; ++i) {
+        double w = rho;
+        for (int k = 0; k < j; ++k) w -= l[i][k] * l[j][k];
+        l[i][j] = w / l[j][j];
+      }
+    }
+    procs::mmrm::Stats se, sy;
+    se.visits = sy.visits = T;
+    for (int i = 1; i <= 40; ++i) {
+      const int g = i <= 20 ? 0 : 1, k = 1 + (i * 7) % 4;
+      double e[T], y[T] = {};
+      for (int t = 0; t < T; ++t) e[t] = std::sin(2.3 * i + 0.9 * t * t) + 0.3 * std::cos(1.7 * i * (t + 1));
+      for (int t = 0; t < T; ++t)
+        for (int c = 0; c <= t; ++c) y[t] += l[t][c] * e[c];
+      se.add(g, k, e);
+      sy.add(g, k, y);
+    }
+    const procs::mmrm::Fit fe = procs::mmrm::fit(se, true, l[T - 1]), fy = procs::mmrm::fit(sy, true);
+    CHECK(fe.ok);
+    if (rho == 0.6) {
+      CHECK(fy.ok);
+      CHECK_CLOSE(fe.delta, fy.delta, 1e-12, 1e-14);
+      CHECK_CLOSE(fe.se, fy.se, 1e-12, 0);
+      CHECK_EQ(fe.observed_last, fy.observed_last);
+    } else {
+      CHECK(!fy.ok && fy.failure == procs::mmrm::Failure::Arithmetic);
+    }
+  }
+  // a group with nobody left at the last visit, and 5 patients there where the regression on the group and 3
+  // earlier visits needs 6
+  procs::mmrm::Stats empty, few;
+  empty.visits = few.visits = 4;
+  for (int i = 0; i < 20; ++i) {
+    double y[4];
+    for (int t = 0; t < 4; ++t) y[t] = std::sin(1.9 * i + 1.3 * t);
+    empty.add(i % 2, i % 2 == 0 ? 4 : 3, y);
+    few.add(i % 2, i < 5 ? 4 : 3, y);
+  }
+  const procs::mmrm::Fit a = procs::mmrm::fit(empty, true), b = procs::mmrm::fit(few, true);
+  CHECK(!a.ok && a.failure == procs::mmrm::Failure::Empty);
+  CHECK(!b.ok && b.failure == procs::mmrm::Failure::Few);
+}
+
+TEST_CASE("mmrm: visits correlated within 1e-12 of 1 or -1 keep their power") {
+  // The fits of the outcomes failed there (4% to 17% where the power is near 80%, or none analyzed at all); the
+  // trials are now fitted in independent combinations of the visits, the same simulated errors whatever ρ.  The
+  // approximation, which inverted the visits' information, drifted from 1 − 1e-14 on and gave α at 1 − 1.1e-16.
+  const json::Value near = first_row(power_request("sim.mmrm", R"("rho":"0.99999999999","reps":"200")"));
+  for (const char* inputs :
+       {R"("rho":"0.9999999999993")", R"("rho":"0.9999999999999999")", R"("rho":"0.9999999999999999","corr":"ar1")",
+        R"("rho":"-0.9999999999999999","corr":"ar1")"}) {
+    const json::Value r = first_row(power_request("sim.mmrm", std::string(inputs) + R"(,"reps":"200")"));
+    CHECK_EQ(num(r, "failures"), 0.0);
+    CHECK_EQ(num(r, "power"), num(near, "power"));
+    CHECK_CLOSE(num(r, "approx_power"), num(near, "approx_power"), 1e-9, 0);
+  }
+}
+
 TEST_CASE("mmrm: without dropout the MMRM is the t-test; with dropout it agrees with the expected GLS variance") {
   const json::Value c = first_row(power_request("sim.mmrm", R"("drop1":"0","drop2":"0","n1":"60","reps":"4000")"));
   CHECK_EQ(num(c, "power_mmrm"), num(c, "power_completers"));

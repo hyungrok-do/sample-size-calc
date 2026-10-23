@@ -8,6 +8,8 @@ constexpr int CMAX = 20;  // categories
 struct PoFit {
   bool ok = false;
   bool separated = false;  // complete separation: the estimate is infinite
+  bool single = false;     // every outcome in one category (or a group without subjects): nothing to fit; a fit
+                           // that is not ok otherwise did not converge
   double beta = 0, se = 0, loglik = 0, loglik0 = 0;
 };
 
