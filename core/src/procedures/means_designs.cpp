@@ -1,8 +1,6 @@
 // Designs for means beyond two parallel groups: one-way ANOVA, 2×2 crossover
 // (difference and bioequivalence ratio), cluster-randomized and
 // repeated-measures comparisons.
-#include <algorithm>
-
 #include "procedures/common.hpp"
 #include "procedures/integrals.hpp"
 
@@ -41,13 +39,20 @@ int anova_k(const Scenario& s) {
   return k;
 }
 
+// n × w rounded up, with a slack for the rounding of the product (20 × 1.1 is 22.000000000000004) that is relative
+// below 1: an absolute one of 1e-9 left a group with n × w of 1e-9 or less without subjects
+double group_size(double n, double w) {
+  const double x = n * w;
+  return std::ceil(x - 1e-9 * std::fmin(1.0, x));
+}
+
 // effect-size multiplier `scale` stretches the means about their mean (for solving the effect)
 AnovaDesign anova_design(const Scenario& s, double n, double scale_f = NAN) {
   const int k = anova_k(s);
   const auto w = anova_weights(s, k);
   AnovaDesign d;
   d.k = k;
-  for (double wi : w) d.sizes.push_back(std::ceil(n * wi - 1e-9));
+  for (double wi : w) d.sizes.push_back(group_size(n, wi));
   double N = 0;
   for (double x : d.sizes) N += x;
   if (s.is("estype", "f")) {
@@ -58,11 +63,14 @@ AnovaDesign anova_design(const Scenario& s, double n, double scale_f = NAN) {
   }
   const auto& mu = s.v("means");
   const double sigma = s("sigma");
+  // from the differences from the first mean: a mean of the means themselves rounds when they are large next to
+  // their spread (or to σ), and equal means of 0.1 with σ = 1e-30, or of 1e30 with σ = 1, showed an effect of
+  // f = 1e13 that is not there
   double mbar = 0;
-  for (int i = 0; i < k; ++i) mbar += d.sizes[i] * mu[i];
+  for (int i = 0; i < k; ++i) mbar += d.sizes[i] * (mu[i] - mu[0]);
   mbar /= N;
   double ss = 0;
-  for (int i = 0; i < k; ++i) ss += d.sizes[i] * (mu[i] - mbar) * (mu[i] - mbar);
+  for (int i = 0; i < k; ++i) ss += d.sizes[i] * (mu[i] - mu[0] - mbar) * (mu[i] - mu[0] - mbar);
   double sm = std::sqrt(ss / N);
   if (std::isfinite(scale_f)) {  // rescale to the requested f
     sm = scale_f * sigma;
@@ -153,17 +161,10 @@ Procedure anova() {
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double alpha = s("alpha");
-    // a tiny allocation ratio leaves its group without a subject (n times the ratio, rounded up, is 0)
-    const auto w = anova_weights(s, anova_k(s));
-    const auto lightest = std::min_element(w.begin(), w.end()) - w.begin() + 1;
-    auto filled = [&](double n) { return std::ceil(n * w[lightest - 1] - 1e-9) >= 1; };
     AnovaDesign d;
     if (s.solve == "n") {
       solve::NSearch o;
-      o.lo = solve::first_whole(filled, 2, o.hi,
-                                ("the allocation ratio of group " + std::to_string(lightest) +
-                                 " is too small: the group would have too few subjects")
-                                    .c_str());
+      o.lo = 2;
       d = anova_design(s, o.lo);
       if (!(d.f > 0)) throw CalcError("the group means are all equal; there is no effect to detect");
       o.guess = (z_factor(alpha, s("power"), Alt::Two) + 2.0 * (d.k - 1)) / (d.k * d.f * d.f) + 1;
@@ -172,14 +173,11 @@ Procedure anova() {
       r.set("n", n);
     } else {
       const double n = s("n");
-      if (!filled(n))
-        throw CalcError("group " + std::to_string(lightest) +
-                        " would have no subjects (n × its allocation ratio, rounded up); each group needs at least 1");
       if (s.solve == "power") {
         d = anova_design(s, n);
       } else {
         const double f = solve::solve_increasing([&](double ff) { return anova_power(anova_design(s, n, ff), alpha); },
-                                                 s("power"), 1e-9, 0.25, 1e6, 1e-12, "the effect size f");
+                                                 s("power"), 1e-9, 0.25, 1e30, 1e-12, "the effect size f");
         d = anova_design(s, n, f);
       }
       r.set("n", n);
@@ -327,7 +325,8 @@ Procedure crossover_diff() {
         d = s("delta");
       } else {
         const double sign = a == Alt::Lower ? -1 : 1;
-        d = sign * solve::solve_increasing([&](double dd) { return P(n, sign * dd); }, s("power"), 0, sw, 1e9 * sw);
+        d = sign * solve::solve_increasing([&](double dd) { return P(n, sign * dd); }, s("power"), 0, sw,
+                                           std::fmax(1e9 * sw, solve::BOUND_SPAN));
       }
     }
     r.set("n", n);
@@ -604,8 +603,8 @@ Procedure cluster_means() {
       } else {
         const double sign = a == Alt::Lower ? -1 : 1;
         diff = sign * solve::solve_increasing([&](double d) { return P(k1, sign * d); }, s("power"), 0, sigma,
-                                              1e9 * sigma);
-        solve::offset(s("mu2"), diff, "μ1", "μ2", true);
+                                              std::fmax(1e9 * sigma, solve::BOUND_SPAN));
+        solve::offset(s("mu2"), diff, [&](double d) { return P(k1, d); }, s("power"), "μ1", "μ2", true);
       }
     }
     const double k2 = k2_of(k1);
@@ -643,7 +642,7 @@ Procedure cluster_means() {
     return fint(r.num("k1")) + " and " + fint(r.num("k2")) + " clusters of " + fnum(r.num("m")) +
            " subjects (" + fint(r.num("n")) + " in total) " + pw + " to detect a difference of " +
            fnum(r.num("delta")) + " between the means (σ = " + fnum(r.num("sigma")) + ", ICC = " +
-           fnum(r.num("icc")) + ", design effect " + fnum(r.num("de")) + ") with a " + alt_words(alt(s)) + " " +
+           fnum_fine(r.num("icc")) + ", design effect " + fnum(r.num("de")) + ") with a " + alt_words(alt(s)) + " " +
            (s.is("test", "z") ? "z-test" : "t-test") + " at α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"k1, k2", "Number of clusters randomized to each group."},
@@ -770,8 +769,8 @@ Procedure repeated() {
       } else {
         const double sign = a == Alt::Lower ? -1 : 1;
         diff = sign * solve::solve_increasing([&](double d) { return P(n.n1, n.n2, sign * d); }, s("power"), 0, sigma,
-                                              1e9 * sigma);
-        solve::offset(s("mu2"), diff, "μ1", "μ2", true);
+                                              std::fmax(1e9 * sigma, solve::BOUND_SPAN));
+        solve::offset(s("mu2"), diff, [&](double d) { return P(n.n1, n.n2, d); }, s("power"), "μ1", "μ2", true);
       }
     }
     put_two_group(r, n);
@@ -798,7 +797,7 @@ Procedure repeated() {
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + ", each subject measured " +
            fint(r.num("m")) + " times, " + achieves(s, r) + " to detect a difference of " +
            fnum(r.num("mu1") - r.num("mu2")) + " in the time-averaged means when σ = " + fnum(r.num("sigma")) +
-           " and the correlation between measurements is " + fnum(r.num("rho")) + " (" +
+           " and the correlation between measurements is " + fnum_fine(r.num("rho")) + " (" +
            (s.is("struct", "ar1") ? "AR(1)" : "compound symmetry") + "), using a " + alt_words(alt(s)) + " test at α = " +
            fnum(r.num("alpha")) + ".";
   };

@@ -85,10 +85,10 @@ Procedure ancova() {
       if (!(n.n1 + n.n2 - 2 - q > 0)) throw CalcError("the number of covariates must be less than N − 2");
       const double sign = a == Alt::Lower ? -1.0 : 1.0;
       const double se = sigma * std::sqrt((1 - r2) * (1 / n.n1 + 1 / n.n2));
-      const double d = solve::solve_increasing(
-          [&](double dd) { return ancova_power(n.n1, n.n2, sign * dd, sigma, r2, q, alpha, a); }, s("power"), 0, se,
-          1e6 * se, 1e-12, "μ1");
-      mu1 = solve::offset(mu2, sign * d, "μ1", "μ2", true);
+      auto power = [&](double dd) { return ancova_power(n.n1, n.n2, dd, sigma, r2, q, alpha, a); };
+      const double d = solve::solve_increasing([&](double dd) { return power(sign * dd); }, s("power"), 0, se,
+                                               std::fmax(1e6 * se, solve::BOUND_SPAN), 1e-12, "μ1");
+      mu1 = solve::offset(mu2, sign * d, power, s("power"), "μ1", "μ2", true);
     } else {
       mu1 = s("mu1");
       const double diff = mu1 - mu2;
@@ -109,8 +109,8 @@ Procedure ancova() {
         n = two_group_n(s);
       }
     }
-    put_two_group(r, n);
     if (!(n.n1 + n.n2 - 2 - q > 0)) throw CalcError("the number of covariates must be less than N − 2");
+    put_two_group(r, n);
     put_power(s, r, ancova_power(n.n1, n.n2, mu1 - mu2, sigma, r2, q, alpha, a));
     r.set("mu1", mu1);
     r.set("mu2", mu2);
@@ -175,22 +175,32 @@ Factorial factorial(const Scenario& s) {
   if (static_cast<int>(m.size()) != f.a * f.b)
     throw CalcError("enter " + std::to_string(f.a * f.b) + " cell means (" + std::to_string(f.a) + " rows of " +
                     std::to_string(f.b) + ")");
+  // from the differences from the first cell: means of the cell means themselves round when the means are large
+  // next to their spread, and six equal cells of 0.1 with σ = 1e-30 showed effects that are not there
   std::vector<double> ra(f.a, 0.0), cb(f.b, 0.0);
-  double grand = 0;
+  double grand = 0, top = 0;
   for (int i = 0; i < f.a; ++i)
     for (int j = 0; j < f.b; ++j) {
-      const double v = m[static_cast<std::size_t>(i * f.b + j)];
+      const double v = m[static_cast<std::size_t>(i * f.b + j)] - m[0];
       ra[i] += v / f.b;
       cb[j] += v / f.a;
       grand += v / (f.a * f.b);
+      top = std::fmax(top, std::fabs(m[static_cast<std::size_t>(i * f.b + j)]));
     }
   for (int i = 0; i < f.a; ++i) f.ssa += (ra[i] - grand) * (ra[i] - grand);
   for (int j = 0; j < f.b; ++j) f.ssb += (cb[j] - grand) * (cb[j] - grand);
   for (int i = 0; i < f.a; ++i)
     for (int j = 0; j < f.b; ++j) {
-      const double g = m[static_cast<std::size_t>(i * f.b + j)] - ra[i] - cb[j] + grand;
+      const double g = m[static_cast<std::size_t>(i * f.b + j)] - m[0] - ra[i] - cb[j] + grand;
       f.ssab += g * g;
     }
+  // an effect no larger than the rounding of the means as typed is none (0.1 0.2 0.3 0.4 are additive, but as
+  // doubles they leave an interaction of 3e-17, which is 3e13 times σ = 1e-30): each effect is a sum of the cells
+  // with weights of at most 4 in all, and each cell is off by up to half the spacing of the doubles at its size
+  const double off = 4 * std::numeric_limits<double>::epsilon() * top;
+  if (f.ssa <= f.a * off * off) f.ssa = 0;
+  if (f.ssb <= f.b * off * off) f.ssb = 0;
+  if (f.ssab <= f.a * f.b * off * off) f.ssab = 0;
   return f;
 }
 
@@ -284,6 +294,8 @@ Procedure anova2() {
     };
     double n;
     if (s.solve == "n") {
+      if (f.ssa == 0 && f.ssb == 0 && f.ssab == 0)
+        throw CalcError("the cell means are all equal; there is no effect to detect");
       if ((goal == "A" && !hasA) || (goal == "B" && !hasB) || (goal == "AB" && !hasAB) ||
           (goal == "all" && !(hasA || hasB || hasAB)))
         throw CalcError("the cell means have no effect of the chosen kind");
@@ -437,9 +449,10 @@ Procedure rm_anova() {
       const auto& mu = s.v("means");
       m = static_cast<double>(mu.size());
       if (m < 2) throw CalcError("enter at least two means");
+      // from the differences from the first mean, as in the two-way ANOVA
       double mean = 0, ss = 0;
-      for (double v : mu) mean += v / m;
-      for (double v : mu) ss += (v - mean) * (v - mean);
+      for (double v : mu) mean += (v - mu[0]) / m;
+      for (double v : mu) ss += (v - mu[0] - mean) * (v - mu[0] - mean);
       f = std::sqrt(ss / m) / s("sigma");
       if (!(f > 0)) throw CalcError("the means are all equal; there is no effect to detect");
     }
@@ -477,7 +490,7 @@ Procedure rm_anova() {
   p.statement = [](const Scenario& s, const Row& r) {
     return "A sample of " + fint(r.num("n")) + " subjects, each measured " + fint(r.num("m")) + " times, " +
            achieves_singular(s, r) + " to detect differences among the means with effect size f = " +
-           fnum(r.num("f"), 4) + ", assuming a correlation of " + fnum(r.num("rho")) +
+           fnum(r.num("f"), 4) + ", assuming a correlation of " + fnum_fine(r.num("rho")) +
            " between measurements and a sphericity correction ε = " + fnum(r.num("eps")) +
            ", using the repeated-measures F-test at α = " + fnum(r.num("alpha")) + ".";
   };
@@ -637,7 +650,8 @@ Procedure slopes() {
       } else {
         const double sign = a == Alt::Lower ? -1 : 1;
         delta = sign * solve::solve_increasing([&](double d) { return slopes_power(s, n.n1, n.n2, sign * d); },
-                                               s("power"), 0, sd, 1e9 * sd, 1e-12, "the slope difference");
+                                               s("power"), 0, sd, std::fmax(1e9 * sd, solve::BOUND_SPAN), 1e-12,
+                                               "the slope difference");
       }
     }
     put_two_group(r, n);

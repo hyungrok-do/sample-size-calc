@@ -277,10 +277,12 @@ Procedure kruskal() {
     const auto& mu = s.v("means");
     const int k = static_cast<int>(mu.size());
     if (k < 2) throw CalcError("enter at least two group means");
+    // from the differences from the first mean: a mean of the means themselves rounds when they are large next to
+    // their spread, and leaves a spread that is not there
     double mbar = 0;
-    for (double m : mu) mbar += m / k;
+    for (double m : mu) mbar += (m - mu[0]) / k;
     double ss = 0;
-    for (double m : mu) ss += (m - mbar) * (m - mbar);
+    for (double m : mu) ss += (m - mu[0] - mbar) * (m - mu[0] - mbar);
     const double sigma = s("sigma"), alpha = s("alpha"), are = are_of(s);
     const double f2 = ss / k / (sigma * sigma);
     if (!(f2 > 0)) throw CalcError("the group means are all equal");
@@ -574,7 +576,7 @@ std::vector<ParamDef> ci_mean_params(bool two) {
 std::string tolerance_words(const Scenario& s, const Row& r) {
   if (!(s.solve == "n" && s.get("tolprob", 0) > 0 && std::isfinite(r.num("prob")))) return "";
   return "; the half-width is at most " + fnum(r.num("target_e")) + " with probability " + power_text(r.num("prob")) +
-         " (target " + fnum(100 * s("tolprob")) + "%)";
+         " (target " + level_text(s("tolprob")) + ")";
 }
 
 Procedure ci_one_mean() {

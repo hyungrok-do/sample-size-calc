@@ -304,15 +304,29 @@ TEST_CASE("extremes: an effect on a tiny scale is solved to the tolerance relati
 TEST_CASE("extremes: an effect that a large value next to it rounds away is refused") {
   CHECK_EQ(solve::offset(1e6, 0.5, "μ1", "μ2"), 1e6 + 0.5);
   CHECK_EQ(solve::offset(0, 1e-300, "μ1", "μ2"), 1e-300);
-  for (double x0 : {1e16, -1e17, 1e10}) {
-    bool refused = false;
+  // next to 1e10 the difference keeps six digits (0.89999962), more than the four shown
+  CHECK_EQ(solve::offset(1e10, 0.9, "μ1", "μ2", true), 1e10 + 0.9);
+  auto refusal = [](auto&& f) {
     try {
-      solve::offset(x0, 0.9, "μ1", "μ2", true);
+      f();
     } catch (const CalcError& e) {
-      refused = std::string(e.what()).find("μ1 cannot be told apart from μ2 = ") == 0;
+      return std::string(e.what());
     }
-    CHECK(refused);
+    return std::string();
+  };
+  // nothing of it is kept next to 1e16 (0 or 2), and three digits next to 1e13 (0.90039)
+  for (double x0 : {1e16, -1e17, 1e13}) {
+    const std::string m = refusal([&] { solve::offset(x0, 0.9, "μ1", "μ2", true); });
+    CHECK(m.find("μ1 cannot be told apart from μ2 = ") == 0);
+    CHECK((m.find("is lost to rounding") != std::string::npos) == (x0 != 1e13));
+    CHECK(m.find("measure the values from a nearby reference instead (μ2 = 0, for example)") != std::string::npos);
   }
+  // next to 1e11 it keeps five digits (0.89999390), but a power that steep is far from the target there
+  auto steep = [](double d) { return stats::pnorm((d - 0.9) / 1e-6); };
+  auto gentle = [](double d) { return stats::pnorm(d - 0.9); };
+  const std::string m = refusal([&] { solve::offset(1e11, 0.9, steep, 0.5, "μ1", "μ2"); });
+  CHECK(m.find("μ1 cannot be placed next to μ2") == 0);
+  CHECK_EQ(solve::offset(1e11, 0.9, gentle, 0.5, "μ1", "μ2"), 1e11 + 0.9);
   // the search itself, from a null value whose neighbors are coarser than the effect
   auto power = [](double x) { return stats::pnorm((x - 0.9999999999999) / 1e-17 - 2.5); };
   bool refused = false;
@@ -320,6 +334,60 @@ TEST_CASE("extremes: an effect that a large value next to it rounds away is refu
     solve::solve_increasing(power, 0.5, 0.9999999999999, 0.99999999999995, 1 - 1e-16, 1e-12, "ρ1", "ρ0");
   } catch (const CalcError& e) {
     refused = std::string(e.what()).find("ρ1 cannot be told apart from ρ0 = 0.9999999999999") == 0;
+  }
+  CHECK(refused);
+}
+
+TEST_CASE("extremes: a search for an effect never reaches past its last admissible value") {
+  // ρ0 + (last − ρ0) rounds to 1 for many ρ0, where the power was taken as 1 (a false bracket: ρ1 = 1 at 100%)
+  const double last = std::nextafter(1.0, 0.0);
+  bool beyond = false;
+  auto power = [&](double x) {
+    beyond = beyond || x > last;
+    return x < 1 ? 0.05 + 0.5 * (x - 0.3) : 1.0;
+  };
+  bool unreachable = false;
+  try {
+    solve::solve_increasing(power, 0.6, 0.3, 0.65, last, 1e-11, "ρ1", "ρ0");
+  } catch (const CalcError& e) {
+    unreachable = std::string(e.what()) == "the target power cannot be reached for any admissible value of ρ1";
+  }
+  CHECK(unreachable && !beyond);
+  // and below: 0.3 − (0.3 − first) lands on the singular point, where 1 + 3ρ = 0
+  const double first = std::nextafter(-1.0 / 3, 0.0);
+  auto lower = [&](double x) {
+    beyond = beyond || x < first;
+    return 1 + 3 * x > 0 ? 0.05 + 0.1 * (0.3 - x) : 1.0;
+  };
+  unreachable = false;
+  try {
+    solve::solve_decreasing(lower, 0.5, 0.3, 0.0, first, 1e-11, "ρ1", "ρ0");
+  } catch (const CalcError& e) {
+    unreachable = std::string(e.what()) == "the target power cannot be reached for any admissible value of ρ1";
+  }
+  CHECK(unreachable && !beyond);
+}
+
+TEST_CASE("extremes: an answer on doubles too coarse for the root is the first that reaches the target") {
+  // a power that moves by 1e-6 from one double to the next above 0.75 (whose doubles lie 1.1e-16 apart)
+  const double x0 = 0.75, step = std::nextafter(x0, 1.0) - x0;
+  auto power = [&](double x) { return 0.8 + 1e-6 * ((x - x0) / step - 0.4); };
+  const double last = std::nextafter(1.0, 0.0);
+  // from a few doubles to either side, the first double whose power reaches 0.8 (the target lies 0.4 of a step past
+  // x0: x0 itself falls short by 4e-7, which a power shown to four decimals would hide, but the next one reaches it)
+  for (int off : {-5, -1, 0, 1, 5}) {
+    double x = x0;
+    for (int i = 0; i < std::abs(off); ++i) x = std::nextafter(x, off < 0 ? 0.0 : 1.0);
+    CHECK_EQ(solve::reach(power, x, last, true, 0.8, "ρ1", "unreachable"), std::nextafter(x0, 1.0));
+  }
+  // a target between two doubles whose powers both miss it by more than the precision shown
+  auto steep = [&](double x) { return 0.8 + 1e-3 * ((x - x0) / step - 0.5); };
+  bool refused = false;
+  try {
+    solve::reach(steep, x0, last, true, 0.8, "ρ1", "unreachable");
+  } catch (const CalcError& e) {
+    const std::string m = e.what();
+    refused = m.find("the power cannot be brought to the target at any ρ1 that can be stored") == 0;
   }
   CHECK(refused);
 }

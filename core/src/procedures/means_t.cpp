@@ -2,6 +2,7 @@
 // independent means.  Power is computed exactly from the noncentral t
 // distribution: for a t statistic with ν degrees of freedom and noncentrality
 // λ = δ/SE, power = P(T'_{ν,λ} > t_{1−α}) (+ the lower tail when two-sided).
+#include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 
 namespace ssc::procs {
@@ -54,11 +55,13 @@ void run_one_mean(const Scenario& s, Row& r, RunContext& ctx, double m0, const s
     const double sign = a == Alt::Lower ? -1 : 1;
     const double target = s("power");
     if (target <= s("alpha")) throw CalcError("the power must exceed alpha");
-    const double d = solve::solve_increasing([&](double dd) { return one_mean_power(s, n, sign * dd, sigma); }, target,
-                                             0, sigma, 1e9 * sigma, 1e-12, "the mean difference");
+    auto power = [&](double dd) { return one_mean_power(s, n, dd, sigma); };
+    const double d = solve::solve_increasing([&](double dd) { return power(sign * dd); }, target, 0, sigma,
+                                             std::fmax(1e9 * sigma, solve::BOUND_SPAN), 1e-12, "the mean difference");
+    const double m1 = solve::offset(m0, sign * d, power, target, m1_sym, m0_sym, true);
     r.set("n", n);
-    put_power(s, r, one_mean_power(s, n, sign * d, sigma));
-    r.set(m1_key, solve::offset(m0, sign * d, m1_sym, m0_sym, true));
+    put_power(s, r, power(sign * d));
+    r.set(m1_key, m1);
   }
 }
 
@@ -125,9 +128,10 @@ Procedure one_sample() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [m0, m1] = fnum_apart(r.num("mu0"), r.num("mu1"));
     return "A sample size of " + fint(r.num("n")) + " subjects " + achieves_singular(s, r) +
-           " to detect a difference of " + fnum(r.num("delta")) + " between the null mean μ0 = " +
-           fnum(r.num("mu0")) + " and the actual mean μ1 = " + fnum(r.num("mu1")) +
+           " to detect a difference of " + fnum(r.num("delta")) + " between the null mean μ0 = " + m0 +
+           " and the actual mean μ1 = " + m1 +
            ", assuming a standard deviation of " + fnum(r.num("sigma")) + ", with a " + alt_words(alt(s)) +
            " one-sample " + (s.is("test", "z") ? "z-test" : "t-test") + " at significance level α = " +
            fnum(r.num("alpha")) + ".";
@@ -252,8 +256,9 @@ Procedure paired() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
-    return fint(r.num("n")) + " pairs " + achieves(s, r) + " to detect a mean paired difference of μD = " +
-           fnum(r.num("mud")) + " (null value " + fnum(r.num("mud0")) + ") when the SD of the differences is " +
+    const auto [d1, d0] = fnum_apart(r.num("mud"), r.num("mud0"));
+    return fint(r.num("n")) + " pairs " + achieves(s, r) + " to detect a mean paired difference of μD = " + d1 +
+           " (null value " + d0 + ") when the SD of the differences is " +
            fnum(r.num("sdd")) + ", using a " + alt_words(alt(s)) + " paired " +
            (s.is("test", "z") ? "z-test" : "t-test") + " with α = " + fnum(r.num("alpha")) + ".";
   };
@@ -332,7 +337,8 @@ void run_two_means(const Scenario& s, Row& r, RunContext& ctx, bool welch) {
     double d;
     if (var_sum >= stats::DBL_MIN_) {
       const double scale = std::sqrt(var_sum);
-      d = solve::solve_increasing(power, s("power"), 0, scale, 1e9 * scale, 1e-12, "the mean difference");
+      d = solve::solve_increasing(power, s("power"), 0, scale, std::fmax(1e9 * scale, solve::BOUND_SPAN), 1e-12,
+                                  "the mean difference");
     } else {
       // the variances underflow for SDs below about 1e-154 (their scale of 0 would leave nothing to search): the
       // difference is then found in units of the SDs
@@ -340,9 +346,11 @@ void run_two_means(const Scenario& s, Row& r, RunContext& ctx, bool welch) {
       d = unit * solve::solve_increasing([&](double u) { return power(u * unit); }, s("power"), 0, 1, 1e9, 1e-12,
                                          "the mean difference");
     }
+    const double mu1 = solve::offset(mu2, sign * d, [&](double dd) { return power(sign * dd); }, s("power"), "μ1",
+                                     "μ2", true);
     put_two_group(r, n);
     put_power(s, r, two_mean_power(s, n.n1, n.n2, sign * d, welch));
-    r.set("mu1", solve::offset(mu2, sign * d, "μ1", "μ2", true));
+    r.set("mu1", mu1);
   }
   r.set("mu2", mu2);
   r.set("delta", r.num("mu1") - mu2);
@@ -439,9 +447,10 @@ Procedure two_sample(bool welch) {
     std::string sd = welch ? "standard deviations of " + fnum(r.num("sd1")) + " (group 1) and " + fnum(r.num("sd2")) +
                                  " (group 2)"
                            : "a common standard deviation of " + fnum(r.num("sigma"));
+    const auto [m1, m2] = fnum_apart(r.num("mu1"), r.num("mu2"));
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " (total " +
            fint(r.num("n")) + ") " + achieves(s, r) + " to detect a difference of " + fnum(r.num("delta")) +
-           " between the group means (μ1 = " + fnum(r.num("mu1")) + ", μ2 = " + fnum(r.num("mu2")) + ") with " + sd +
+           " between the group means (μ1 = " + m1 + ", μ2 = " + m2 + ") with " + sd +
            ", using a " + alt_words(alt(s)) + " " +
            (s.is("test", "z") ? "z-test" : (welch ? "Welch t-test" : "pooled two-sample t-test")) +
            " at significance level α = " + fnum(r.num("alpha")) + ".";

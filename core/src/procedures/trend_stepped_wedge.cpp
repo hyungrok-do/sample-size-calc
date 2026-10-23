@@ -1,6 +1,5 @@
 // Cochran–Armitage test for a linear trend in proportions, and stepped-wedge
 // cluster-randomized designs (Hussey & Hughes).
-#include <algorithm>
 #include <sstream>
 
 #include "procedures/common.hpp"
@@ -45,24 +44,29 @@ Trend trend_setup(const Scenario& s) {
   return t;
 }
 
+// n times the relative size, rounded up, with a slack for the rounding of the product (20 × 1.1 is
+// 22.000000000000004) that is relative below 1: an absolute one of 1e-9 left a group with n × w of 1e-9 or less
+// without subjects
 std::vector<double> trend_sizes(const Trend& t, double n) {
   std::vector<double> ni;
-  for (double w : t.w) ni.push_back(std::ceil(n * w - 1e-9));
+  for (double w : t.w) ni.push_back(std::ceil(n * w - 1e-9 * std::fmin(1.0, n * w)));
   return ni;
 }
 
 // The direction of the trend: the sign of Σ wᵢ(dᵢ − d̄)pᵢ with the relative group sizes w (0: no linear trend).
+// Here and in the power the scores are taken from the first one (dᵢ − d₁): a mean of the scores themselves rounds
+// when they are large next to their spread, and leaves a trend that is not there.
 double trend_direction(const Trend& t) {
   double W = 0, dbar = 0;
   for (std::size_t i = 0; i < t.w.size(); ++i) {
     W += t.w[i];
-    dbar += t.w[i] * t.d[i];
+    dbar += t.w[i] * (t.d[i] - t.d[0]);
   }
   dbar /= W;
   double e = 0, scale = 0;
   for (std::size_t i = 0; i < t.w.size(); ++i) {
-    e += t.w[i] * (t.d[i] - dbar) * t.p[i];
-    scale += t.w[i] * std::abs(t.d[i] - dbar);
+    e += t.w[i] * (t.d[i] - t.d[0] - dbar) * t.p[i];
+    scale += t.w[i] * std::abs(t.d[i] - t.d[0] - dbar);
   }
   return std::abs(e) <= 1e-12 * scale ? 0.0 : e;
 }
@@ -73,14 +77,14 @@ double trend_power(const Trend& t, double n, double alpha, Alt a) {
   double N = 0, dbar = 0, pbar = 0;
   for (std::size_t i = 0; i < ni.size(); ++i) {
     N += ni[i];
-    dbar += ni[i] * t.d[i];
+    dbar += ni[i] * (t.d[i] - t.d[0]);
     pbar += ni[i] * t.p[i];
   }
   dbar /= N;
   pbar /= N;
   double e = 0, v0 = 0, v1 = 0;
   for (std::size_t i = 0; i < ni.size(); ++i) {
-    const double dd = t.d[i] - dbar;
+    const double dd = t.d[i] - t.d[0] - dbar;
     e += ni[i] * dd * t.p[i];
     v0 += ni[i] * dd * dd;
     v1 += ni[i] * dd * dd * t.p[i] * (1 - t.p[i]);
@@ -145,9 +149,6 @@ Procedure trend() {
     const Trend t = trend_setup(s);
     const double alpha = s("alpha");
     const Alt a = alt(s);
-    // a tiny relative size leaves its group without a subject (n times the size, rounded up, is 0)
-    const auto lightest = std::min_element(t.w.begin(), t.w.end()) - t.w.begin() + 1;
-    auto filled = [&](double x) { return std::ceil(x * t.w[lightest - 1] - 1e-9) >= 1; };
     double n;
     if (s.solve == "n") {
       const double dir = trend_direction(t);
@@ -155,16 +156,10 @@ Procedure trend() {
       if ((a == Alt::Upper && dir < 0) || (a == Alt::Lower && dir > 0))
         throw CalcError("the trend in the proportions runs opposite to the one-sided alternative");
       solve::NSearch o;
-      o.lo = solve::first_whole(filled, 2, o.hi,
-                                ("the relative size of group " + std::to_string(lightest) +
-                                 " is too small: the group would have too few subjects")
-                                    .c_str());
+      o.lo = 2;
       n = solve::min_n([&](double x) { return trend_power(t, x, alpha, a); }, s("power"), o, &ctx);
     } else {
       n = s("n");
-      if (!filled(n))
-        throw CalcError("group " + std::to_string(lightest) +
-                        " would have no subjects (n × its relative size, rounded up); each group needs at least 1");
     }
     const auto ni = trend_sizes(t, n);
     double total = 0;

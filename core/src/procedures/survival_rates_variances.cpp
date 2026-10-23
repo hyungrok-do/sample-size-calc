@@ -1,5 +1,6 @@
 // Survival (logrank test with accrual and follow-up), rates (Poisson and
 // negative binomial) and variances (chi-square and F tests).
+#include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 
 namespace ssc::procs {
@@ -608,7 +609,8 @@ Procedure one_poisson() {
         auto f = [&](double x) { return one_pois_eval(s, n, x).power; };
         const double target = s("power");
         if (up) {
-          lam1 = solve::solve_increasing(f, target, lam0, 2 * lam0, 1e12 * lam0, 1e-12, "λ1", "λ0");
+          // as far as a rate inside the accepted inputs (1e30) and at least 1e12·λ0
+          lam1 = solve::solve_increasing(f, target, lam0, 2 * lam0, std::fmax(1e12 * lam0, 1e30), 1e-12, "λ1", "λ0");
         } else {
           if (f(1e-300) < target) throw CalcError("the target power cannot be reached with this N for any λ1 < λ0");
           lam1 = solve::solve_decreasing(f, target, lam0, lam0 / 2, 1e-300, 1e-12, "λ1", "λ0");
@@ -644,10 +646,11 @@ Procedure one_poisson() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [l1, l0] = fnum_apart(r.num("lam1"), r.num("lam0"));
     std::string t = "A sample of " + fint(r.num("n")) + " subjects, each observed for " + fnum(s("time")) +
                     " time unit(s) (total exposure " + fnum(r.num("exposure")) + "), " + achieves_singular(s, r) +
-                    " to detect an event rate of " + fnum(r.num("lam1")) + " when the rate under H0 is " +
-                    fnum(r.num("lam0")) + ", using a " + alt_words(alt(s)) + " " +
+                    " to detect an event rate of " + l1 + " when the rate under H0 is " + l0 + ", using a " +
+                    alt_words(alt(s)) + " " +
                     (s.is("test", "exact") ? "exact Poisson test" : "z-test") + " with a target significance level of " +
                     fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual significance level " + text::format_fixed(r.num("actual_alpha"), 4) + ")";

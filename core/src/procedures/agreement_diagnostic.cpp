@@ -3,6 +3,7 @@
 // tests compared on the same subjects).
 #include <unordered_map>
 
+#include "procedures/apart.hpp"
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
 #include "procedures/mcnemar.hpp"
@@ -20,16 +21,32 @@ using namespace blocks;
 // H0: ρ = ρ0 compares F with c(ρ0) times an F quantile, so power is exact.
 double icc_c(double rho, double k) { return (1 + (k - 1) * rho) / (1 - rho); }
 
-double icc_power(double n, double k, double rho0, double rho1, double alpha, Alt a) {
+// The power from the ratio c(ρ0)/c(ρ1) of the two multipliers.
+double icc_power_ratio(double n, double k, double ratio, double alpha, Alt a) {
   using namespace stats;
   const double df1 = n - 1, df2 = n * (k - 1);
   if (!(df1 > 0 && df2 > 0)) return NAN;
-  const double ratio = icc_c(rho0, k) / icc_c(rho1, k);
   const double side = tail_alpha(alpha, a);
   double pw = 0;
   if (a != Alt::Lower) pw += pf(qf(side, df1, df2, false) * ratio, df1, df2, false);
   if (a != Alt::Upper) pw += pf(qf(side, df1, df2, true) * ratio, df1, df2, true);
   return stats::clamp01(pw);
+}
+
+double icc_power(double n, double k, double rho0, double rho1, double alpha, Alt a) {
+  return icc_power_ratio(n, k, icc_c(rho0, k) / icc_c(rho1, k), alpha, a);
+}
+
+// The ICC whose multiplier is c = c0·e^u and whose distance from ρ0 is d (accurate as
+// k·c0·(e^u − 1)/((c + k − 1)(c0 + k − 1))), kept to a few doubles near both limits, where the power changes much
+// from one double to the next: (c − 1)/(c + k − 1), written as 1 − k/(c + k − 1) near 1 and as
+// −1/(k − 1) + kc/((k − 1)(c + k − 1)) near −1/(k − 1), or ρ0 + d next to ρ0.
+double icc_of(double u, double rho0, double c0, double d, double k) {
+  const double c = c0 * std::exp(u);
+  if (c > k + 1) return 1 - k / (c + k - 1);  // above 0.5
+  if (c < (k - 1) / (2 * k - 1)) return -1 / (k - 1) + k * c / ((k - 1) * (c + k - 1));  // below −1/(2(k − 1))
+  if (std::fabs(d) < 0.5 * std::fabs(rho0 + d)) return rho0 + d;
+  return (c - 1) / (c + k - 1);
 }
 
 Procedure icc() {
@@ -88,13 +105,33 @@ Procedure icc() {
       const double target = s("power");
       const bool up = a != Alt::Lower;
       auto P = [&](double x) { return icc_power(n, k, rho0, x, alpha, a); };
-      // the search reaches the last ICCs below 1 and above −1/(k − 1) (where 1 + (k − 1)ρ is still positive), so
-      // that a ρ0 within 1e-9 of either keeps room for ρ1
+      // the search reaches the last ICCs below 1 and above −1/(k − 1) (where 1 + (k − 1)ρ is still positive, and
+      // which a given ρ1 may be), so that a ρ0 within 1e-9 of either keeps room for ρ1
       const double hi_lim = std::nextafter(1.0, 0.0);
-      double lo_lim = -1 / (k - 1);
+      double lo_lim = std::nextafter(-1 / (k - 1), 0.0);
       while (!(1 + (k - 1) * lo_lim > 0)) lo_lim = std::nextafter(lo_lim, 0.0);
-      rho1 = up ? solve::solve_increasing(P, target, rho0, rho0 + 0.5 * (1 - rho0), hi_lim, 1e-11, "ρ1", "ρ0")
-                : solve::solve_decreasing(P, target, rho0, rho0 - 0.5 * (rho0 - lo_lim), lo_lim, 1e-11, "ρ1", "ρ0");
+      if (up ? rho0 >= hi_lim : rho0 <= lo_lim)
+        throw CalcError("ρ1 cannot be told apart from ρ0 = " + text::format_roundtrip(rho0) +
+                        ": no number lies between it and " + (up ? "1" : "−1/(k − 1)"));
+      // ρ1 is found as u = log(c(ρ1)/c(ρ0)), the log of the factor by which it multiplies F: the power is smooth in
+      // u, which runs over all numbers as ρ1 nears either limit, and a tolerance relative to u is relative to the
+      // effect near ρ0 and to the distance from the limit near 1 or −1/(k − 1) (where one relative to ρ1 − ρ0 left
+      // answers far from the target power: 0.49 for 0.5)
+      const double c0 = icc_c(rho0, k);
+      auto Pu = [&](double u) { return icc_power_ratio(n, k, std::exp(-u), alpha, a); };
+      auto u_of = [&](double x) { return std::log(icc_c(x, k) / c0); };
+      const double u = up ? solve::solve_increasing(Pu, target, 0, u_of(rho0 + 0.5 * (1 - rho0)), u_of(hi_lim), 1e-12,
+                                                    "ρ1", "ρ0")
+                          : solve::solve_decreasing(Pu, target, 0, u_of(rho0 - 0.5 * (rho0 - lo_lim)), u_of(lo_lim),
+                                                    1e-12, "ρ1", "ρ0");
+      // the nearest double, which must keep the difference from ρ0 to four digits; near the limits the doubles lie
+      // too far apart to hold the root, and the answer is the first of them that reaches the target
+      const double c = c0 * std::exp(u), d = k * c0 * std::expm1(u) / ((c + k - 1) * (c0 + k - 1));
+      rho1 = std::fmin(hi_lim, std::fmax(lo_lim, icc_of(u, rho0, c0, d, k)));
+      solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
+      rho1 = solve::reach(P, rho1, up ? hi_lim : lo_lim, up, target, "ρ1",
+                          "the target power cannot be reached for any admissible value of ρ1");
+      solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
     } else {
       rho1 = s("rho1");
       if (!(rho1 > -1 / (k - 1))) throw CalcError("ρ1 must exceed −1/(k − 1)");
@@ -130,9 +167,11 @@ Procedure icc() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    // apart from each other and from the limits 1 and −1/(k − 1)
+    const auto [r1, r0] = fnum_apart(r.num("rho1"), r.num("rho0"), {1.0, -1 / (r.num("k") - 1)});
     return "A sample of " + fint(r.num("n")) + " subjects, each rated " + fint(r.num("k")) + " times, " +
-           achieves_singular(s, r) + " to detect an intraclass correlation of " + fnum_fine(r.num("rho1")) +
-           " when the value under the null hypothesis is " + fnum_fine(r.num("rho0")) + ", using a " +
+           achieves_singular(s, r) + " to detect an intraclass correlation of " + r1 +
+           " when the value under the null hypothesis is " + r0 + ", using a " +
            alt_words(alt(s)) + " F-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"N", "Number of subjects."},
@@ -263,10 +302,11 @@ Procedure kappa() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [k1, k0] = fnum_apart(r.num("kappa1"), r.num("kappa0"));
     return "A sample of " + fint(r.num("n")) + " subjects rated by two raters " + achieves_singular(s, r) +
-           " to detect a kappa of " + fnum(r.num("kappa1")) + " when the value under the null hypothesis is " +
-           fnum(r.num("kappa0")) + ", assuming a proportion of positive ratings of " + fnum(r.num("prev")) +
-           ", using a " + alt_words(alt(s)) + " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
+           " to detect a kappa of " + k1 + " when the value under the null hypothesis is " + k0 +
+           ", assuming a proportion of positive ratings of " + fnum(r.num("prev")) + ", using a " + alt_words(alt(s)) +
+           " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"κ0, κ1", "Cohen's kappa under the null and the alternative hypotheses."},
                    {"π", "Probability that a rater classifies a subject as positive (equal for both raters)."},
@@ -386,9 +426,10 @@ Procedure auc() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [a1, a0] = fnum_apart(r.num("auc1"), r.num("auc0"));
     return "Samples of " + fint(r.num("n1")) + " cases and " + fint(r.num("n0")) + " controls " +
-           achieves(s, r) + " to detect an area under the ROC curve of " + fnum(r.num("auc1")) +
-           " when the value under the null hypothesis is " + fnum(r.num("auc0")) + ", using a " + alt_words(alt(s)) +
+           achieves(s, r) + " to detect an area under the ROC curve of " + a1 +
+           " when the value under the null hypothesis is " + a0 + ", using a " + alt_words(alt(s)) +
            " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"Cases, Controls", "Subjects with and without the condition (by the reference standard)."},
@@ -554,11 +595,15 @@ Procedure sens_spec() {
   };
   p.statement = [](const Scenario& s, const Row& r) {
     std::string what;
-    if (!s.is("goal", "sp"))
-      what = "a sensitivity of " + fnum(r.num("se1")) + " (null value " + fnum(r.num("se0")) + ")";
+    if (!s.is("goal", "sp")) {
+      const auto [e1, e0] = fnum_apart(r.num("se1"), r.num("se0"));
+      what = "a sensitivity of " + e1 + " (null value " + e0 + ")";
+    }
     if (s.is("goal", "both")) what += " and ";
-    if (!s.is("goal", "se"))
-      what += "a specificity of " + fnum(r.num("sp1")) + " (null value " + fnum(r.num("sp0")) + ")";
+    if (!s.is("goal", "se")) {
+      const auto [p1, p0] = fnum_apart(r.num("sp1"), r.num("sp0"));
+      what += "a specificity of " + p1 + " (null value " + p0 + ")";
+    }
     // both counts are rounded down, so they can add up to one less than N
     return "A total of " + fint(r.num("n")) + " subjects (" + fint(r.num("nd")) + " with and " + fint(r.num("nn")) +
            " without the condition: the expected numbers at a prevalence of " + fnum(r.num("prev")) +

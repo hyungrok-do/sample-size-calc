@@ -1,6 +1,7 @@
 // Correlation (one and two correlations, CI precision) and regression
 // (multiple regression R², simple linear regression slope, logistic and Cox
 // regression with one covariate of interest).
+#include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 #include "procedures/integrals.hpp"
 
@@ -11,11 +12,11 @@ using namespace blocks;
 
 // The exact distribution of the sample correlation is stats::pcorr (stats::pcorr_z on Fisher's scale).
 
-// Root of h(z) = 0 for h increasing in Fisher's z = atanh(r) on [zmin, zmax].  The bracket starts narrow around
-// zg, where the normal-theory guess is accurate to O(1/n), and widens only if needed: few exact CDF evaluations,
-// and none near r = ±1 where they are expensive.
+// Root of h(z) = 0 for h increasing in Fisher's z = atanh(r) on [zmin, zmax], to within tol + rtol·|z|.  The
+// bracket starts narrow around zg, where the normal-theory guess is accurate to O(1/n), and widens only if needed:
+// few exact CDF evaluations, and none near r = ±1 where they are expensive.
 template <class H>
-double corr_root_z(H&& h, double zg, double zmin, double zmax) {
+double corr_root_z(H&& h, double zg, double zmin, double zmax, double tol = 1e-12, double rtol = 0) {
   zg = std::min(zmax, std::max(zmin, zg));
   double w = 0.05;
   double lo = std::max(zmin, zg - w), hi = std::min(zmax, zg + w);
@@ -35,14 +36,7 @@ double corr_root_z(H&& h, double zg, double zmin, double zmax) {
     hhi = h(hi);
   }
   if ((hlo > 0) == (hhi > 0)) return hlo > 0 ? lo : hi;
-  return numerics::brent(h, lo, hi, hlo, hhi, 1e-12);
-}
-
-// Root of g(r) = 0 for g increasing in r on [rmin, rmax], searched on Fisher's scale.
-template <class G>
-double corr_root(G&& g, double guess, double rmin, double rmax) {
-  return std::tanh(corr_root_z([&](double z) { return g(std::tanh(z)); }, std::atanh(guess), std::atanh(rmin),
-                               std::atanh(rmax)));
+  return numerics::brent(h, lo, hi, hlo, hhi, tol, 300, rtol);
 }
 
 // The critical values are found and kept on Fisher's scale: the doubles next to a critical value near ±1 are too
@@ -53,10 +47,9 @@ constexpr double Z_LIMIT = 60;
 // Critical value z_c = atanh(r_c) with P(r ≥ r_c | rho0) = a (upper) under the exact null distribution.
 double zcrit_upper(double n, double rho0, double a) {
   if (rho0 == 0) {
-    const double t = stats::qt(a, n - 2, false);
-    // t² overflows beyond 1e154 (at a subnormal alpha and few subjects), where t/√(n − 2 + t²) is 1 to double
-    // precision; the overflow made it 0, so that every positive correlation was significant
-    return std::atanh(std::isfinite(t * t) ? t / std::sqrt(n - 2 + t * t) : 1.0);
+    // r = t/√(n − 2 + t²), whose atanh is asinh(t/√(n − 2)): r itself rounds to 1 for a tiny alpha with few
+    // subjects (t of 1e8 or more), where atanh(r) was infinite and the side was dropped
+    return std::asinh(stats::qt(a, n - 2, false) / std::sqrt(n - 2));
   }
   const double zeta = std::atanh(rho0);
   return corr_root_z([&](double z) { return a - stats::pcorr_z(z, n, zeta, false); },
@@ -168,20 +161,29 @@ Procedure one_corr() {
         if (corr_power(s, n, rho0, crit) >= target)  // at ρ1 = ρ0 the power is the significance level
           throw CalcError("the target power must exceed the power with no effect (the significance level)");
         // up to the last correlation below 1 (or above −1), so that a ρ0 near it keeps room for ρ1
-        const double last = std::nextafter(1.0, 0.0);
-        if (up)
-          rho1 = corr_root([&](double x) { return corr_power(s, n, x, crit) - target; }, guess, rho0, last);
-        else
-          rho1 = corr_root([&](double x) { return target - corr_power(s, n, x, crit); }, guess, -last, rho0);
-        solve::offset(rho0, rho1 - rho0, "ρ1", "ρ0");
-        // near ±1 the power changes by more than 1e-9 from one double to the next, and the root can lie between
-        // two of them: the next one outwards then reaches the target
-        double pw = corr_power(s, n, rho1, crit);
-        if (pw < target - 1e-9 && std::fabs(rho1) < last) {
-          rho1 = std::nextafter(rho1, up ? 1.0 : -1.0);
-          pw = corr_power(s, n, rho1, crit);
-        }
-        if (pw < target - 1e-9) throw CalcError("the target power cannot be reached with this N");
+        const double last = up ? std::nextafter(1.0, 0.0) : std::nextafter(-1.0, 0.0);
+        auto power = [&](double x) { return corr_power(s, n, x, crit); };
+        if (up ? rho0 >= last : rho0 <= last)
+          throw CalcError("ρ1 cannot be told apart from ρ0 = " + text::format_roundtrip(rho0) +
+                          ": no number lies between it and " + (up ? "1" : "−1"));
+        const std::string unreachable = "the target power cannot be reached with this N";
+        // the search is for the distance t = z1 − z0 on Fisher's scale, to a tolerance relative to it: one of 1e-12
+        // on z left the power 5e-9 off the target with 1e9 subjects
+        const double z0 = std::atanh(rho0), tg = std::atanh(guess) - z0, t_last = std::atanh(last) - z0;
+        const double t =
+            up ? corr_root_z([&](double x) { return power(std::tanh(z0 + x)) - target; }, tg, 0, t_last, 0, 1e-12)
+               : corr_root_z([&](double x) { return target - power(std::tanh(z0 + x)); }, tg, t_last, 0, 0, 1e-12);
+        // a search that ends at the last correlation found no root: the target is out of reach, whatever the
+        // difference from ρ0 would have been
+        if (t == t_last && power(last) < target - 1e-9) throw CalcError(unreachable);
+        // the nearest double, which must keep the difference tanh(z1) − ρ0 = sinh(z1 − z0)/(cosh z1 cosh z0) to four
+        // digits; near ±1 the power changes by more than 1e-9 from one double to the next, and the root can lie
+        // between two of them: the answer is the first that reaches the target
+        const double z1 = z0 + t, d = std::sinh(t) / (std::cosh(z1) * std::cosh(z0));
+        rho1 = up ? std::fmin(last, std::tanh(z1)) : std::fmax(last, std::tanh(z1));
+        solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
+        rho1 = solve::reach(power, rho1, last, up, target, "ρ1", unreachable);
+        solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
       }
     }
     r.set("n", n);
@@ -197,9 +199,10 @@ Procedure one_corr() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [r1, r0] = fnum_apart(r.num("rho1"), r.num("rho0"));
     return "A sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) +
-           " to detect a correlation of ρ1 = " + fnum_fine(r.num("rho1")) + " when the null correlation is ρ0 = " +
-           fnum_fine(r.num("rho0")) + ", using a " + alt_words(alt(s)) + " test" +
+           " to detect a correlation of ρ1 = " + r1 + " when the null correlation is ρ0 = " + r0 + ", using a " +
+           alt_words(alt(s)) + " test" +
            (s.is("method", "fisher") ? " based on Fisher's z transformation" : " based on the exact distribution of r") +
            " at α = " + fnum(r.num("alpha")) + ".";
   };
@@ -275,8 +278,9 @@ Procedure two_corr() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [r1, r2] = fnum_apart(r.num("rho1"), r.num("rho2"));
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
-           " to detect a difference between correlations of " + fnum(r.num("rho1")) + " and " + fnum(r.num("rho2")) +
+           " to detect a difference between correlations of " + r1 + " and " + r2 +
            " using a " + alt_words(alt(s)) + " Fisher z-test at α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"ρ1, ρ2", "Population correlations in the two groups."}};
@@ -363,9 +367,10 @@ Procedure corr_ci() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [lower, upper] = fnum_apart(r.num("lower"), r.num("upper"), {-1.0, 1.0});
     return "A sample of " + fint(r.num("n")) + " gives a " + level_text(r.num("conf")) +
-           " Fisher-z confidence interval of width " + fnum(r.num("width")) + " (" + fnum(r.num("lower")) + " to " +
-           fnum(r.num("upper")) + ") when the sample correlation is " + fnum(r.num("rho")) + ".";
+           " Fisher-z confidence interval of width " + fnum(r.num("width")) + " (" + lower + " to " + upper +
+           ") when the sample correlation is " + fnum_fine(r.num("rho")) + ".";
   };
   p.references = {REF_MACHIN};
   p.example_solve = "n";
@@ -441,10 +446,19 @@ Procedure multiple_regression() {
     if (s.solve == "r2t") {
       n = s("n");
       if (n < a + b + 2) throw CalcError("N must exceed A + B + 1");
-      // solve on the unbounded f² scale, then ΔR² = f²(1 − R²c)/(1 + f²)
+      // solve on the unbounded f² scale, then ΔR² = f²(1 − R²c)/(1 + f²), up to an f² of 1e15, where ΔR² is the
+      // last few numbers below 1 − R²c
       const double f2 = solve::solve_increasing([&](double x) { return mreg_power(n, x, b, a, alpha); }, s("power"),
-                                                1e-12, 0.15, 1e9, 1e-12, "ΔR²");
+                                                1e-12, 0.15, 1e15, 1e-12, "ΔR²");
       r2t = f2 * (1 - r2c) / (1 + f2);
+      // the f² that the ΔR² reported stands for, ΔR²/(1 − R²c − ΔR²), keeps few of its digits as ΔR² nears
+      // 1 − R²c: the power it gives must still be the target
+      const double pw = mreg_power(n, f2_of(r2t), b, a, alpha);
+      if (!(std::fabs(pw - s("power")) <= solve::power_slack(s("power"))))
+        throw CalcError("ΔR² cannot be placed close enough to 1 − R²c = " + text::format_roundtrip(1 - r2c) +
+                        ": the nearest value that can be stored, " + text::format_roundtrip(r2t) +
+                        ", gives a power of " + solve::power_digits(pw) + " for the target of " +
+                        solve::power_digits(s("power")));
     } else {
       r2t = s("r2t");
       if (!(r2c + r2t < 1)) throw CalcError("R² of the control and tested predictors must sum to less than 1");
@@ -599,8 +613,8 @@ Procedure linreg_slope() {
           } catch (const CalcError&) {
             return 1.0;
           }
-        }, s("power"), 0, scale, 1e9 * scale);
-        b1 = solve::offset(b0, sign * d, "β1", "B0", true);
+        }, s("power"), 0, scale, std::fmax(1e9 * scale, solve::BOUND_SPAN));
+        b1 = solve::offset(b0, sign * d, [&](double dd) { return Pd(n, dd, b0 + dd); }, s("power"), "β1", "B0", true);
       }
     }
     r.set("n", n);
@@ -619,8 +633,9 @@ Procedure linreg_slope() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
-    return "A sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) + " to detect a slope of " +
-           fnum(r.num("b1")) + " (null value " + fnum(r.num("b0")) + ") when the predictor's SD is " +
+    const auto [b1, b0] = fnum_apart(r.num("b1"), r.num("b0"));
+    return "A sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) + " to detect a slope of " + b1 +
+           " (null value " + b0 + ") when the predictor's SD is " +
            fnum(r.num("sx")) + " and the residual SD is " + fnum(r.num("sigma")) + ", using a " + alt_words(alt(s)) +
            " t-test at α = " + fnum(r.num("alpha")) + ".";
   };
