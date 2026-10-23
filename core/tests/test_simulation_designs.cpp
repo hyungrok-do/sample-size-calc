@@ -167,6 +167,35 @@ TEST_CASE("multiarm: Dunnett's critical values in the far tail, where 1 − alph
   };
   CHECK_EQ(n_for("dunnett"), 817.0);
   CHECK_EQ(n_for("bonferroni"), 817.0);
+  // with no effective treatment the power is the familywise error, also this far out (it was 0.29·alpha)
+  for (const char* adjust : {"dunnett", "bonferroni"}) {
+    const json::Value r = first_row(
+        R"({"procedure":"sim.multiarm","solve_for":"power","options":{"approximate":true},)"
+        R"("inputs":{"mu":"0 0 0","n":"817","alpha":"1e-30","adjust":")" + std::string(adjust) + "\"}}");
+    CHECK_CLOSE(num(r, "power"), 1e-30, 1e-9, 0);
+  }
+}
+
+TEST_CASE("multiarm: a small control arm and few degrees of freedom") {
+  // references: the familywise error and the powers integrated over z on panels as fine as 1/8 of the width of an
+  // arm's rejection, √(1 − λ²), and over the SD's chi distribution in log s (relative error about 1e-11).  With a
+  // control arm a tenth of a treatment arm (λ = 0.95), the 64 nodes in z were too coarse for that width: the
+  // critical value was 2.333920 (a familywise error of 0.05014) and the power that all eight arms reject 0.10833
+  const json::Value a = first_row(
+      R"({"procedure":"sim.multiarm","solve_for":"power","options":{"approximate":true},)"
+      R"("inputs":{"mu":"0.3 0.3 0.3 0.3 0.3 0.3 0.3 0.3","n":"300","r0":"0.1","goal":"all"}})");
+  CHECK_CLOSE(num(a, "crit"), 2.33508721495, 1e-10, 0);
+  CHECK_CLOSE(num(a, "power_all"), 0.108874948216, 1e-8, 0);
+  CHECK_CLOSE(num(a, "power_any"), 0.363652587996, 1e-8, 0);
+  const json::Value z = first_row(
+      R"({"procedure":"sim.multiarm","solve_for":"power","options":{"approximate":true},)"
+      R"("inputs":{"mu":"0 0 0 0 0 0 0 0","n":"300","r0":"0.1"}})");
+  CHECK_CLOSE(num(z, "power"), 0.05, 1e-10, 0);
+  // 3 degrees of freedom (2 arms of 2): 26.453136 before
+  const json::Value b = first_row(
+      R"({"procedure":"sim.multiarm","solve_for":"power","options":{"approximate":true},)"
+      R"("inputs":{"mu":"0 0","n":"2","alternative":"upper","alpha":"1e-4"}})");
+  CHECK_CLOSE(num(b, "crit"), 26.4507712356, 1e-8, 0);
 }
 
 TEST_CASE("multiarm: exact powers of Dunnett's test agree with mvtnorm") {

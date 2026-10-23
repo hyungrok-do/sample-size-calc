@@ -246,9 +246,10 @@ constexpr double COMBO_GAMMA[4] = {0, 1, 0, 1};
 
 // Below this probability of a MaxCombo statistic leaving its box (a level, a p-value or a power), it is computed
 // as such (nph::mvn_outside) rather than as 1 − P(box), whose lattice error of about 1e-5 is then more than a
-// thousandth of it: at 1e-4, up to a third (four statistics correlated 0.95), and below about 1e-16 all of it, so
-// that the critical value was a single test's and the power of a study 0.
-constexpr double COMBO_TAIL = 0.01;
+// five-hundredth of it: at 1e-4, up to a third (four statistics correlated 0.95), and below about 1e-16 all of it,
+// so that the critical value was a single test's and the power of a study 0.  Up to 4·COMBO_TAIL the two are
+// blended (see combo_outside).
+constexpr double COMBO_TAIL = 0.005;
 
 // Largest total sample size N1 + N2 of the sample-size search.
 constexpr double MAX_N = 2e5;
@@ -412,6 +413,19 @@ struct ComboNull {
   double c = 0;
 };
 
+// P(the statistics leave the box (lo, hi)): 1 − P(box) from 4·COMBO_TAIL up, nph::mvn_outside below COMBO_TAIL, and
+// in between the two weighted by where 1 − P(box) lies on the log scale, so that the level, the p-value and the
+// power use the same function (the power with no effect is alpha) and none jumps where one gives way to the
+// other (the power with α = 0.009999 was 3e-4 above that with 0.01, and the power curve had a step at 0.01).
+double combo_outside(int m, const double* lo, const double* hi, const double* r, int threads = 1) {
+  const double p = 1 - nph::mvn_probability(m, lo, hi, r, threads);
+  if (p >= 4 * COMBO_TAIL) return p;
+  const double out = nph::mvn_outside(m, lo, hi, r, threads);
+  if (!(p > COMBO_TAIL)) return out;
+  const double w = std::log(p / COMBO_TAIL) / std::log(4.0);
+  return w * p + (1 - w) * out;
+}
+
 ComboNull combo_null(const Design& d, double p, double alpha, Alt a, int threads) {
   // the same design comes back for every point of a power curve: keep the last few
   struct Cached {
@@ -435,8 +449,7 @@ ComboNull combo_null(const Design& d, double p, double alpha, Alt a, int threads
       lo[j] = a == Alt::Two ? -c : -stats::INF;
       hi[j] = c;
     }
-    return alpha < COMBO_TAIL ? nph::mvn_outside(4, lo, hi, out.r, threads)
-                              : 1 - nph::mvn_probability(4, lo, hi, out.r, threads);
+    return combo_outside(4, lo, hi, out.r, threads);
   };
   // between the critical values of a single test and of Bonferroni's correction for four
   const double q = tail_alpha(alpha, a);
@@ -467,8 +480,7 @@ double approx_power(const Design& d, const RmstExpected& rm, const ComboNull& co
       lo[j] = a == Alt::Upper ? -stats::INF : -combo.c - mu;
       hi[j] = a == Alt::Lower ? stats::INF : combo.c - mu;
     }
-    const double p = 1 - nph::mvn_probability(4, lo, hi, combo.r, threads);
-    return p < COMBO_TAIL ? nph::mvn_outside(4, lo, hi, combo.r, threads) : p;
+    return combo_outside(4, lo, hi, combo.r, threads);
   }
   const Expected e = expected(d, n1 / (n1 + n2), 1, &d.rho, &d.gamma);
   return z_power(root * e.drift[0], alpha, a);
@@ -526,7 +538,7 @@ bool maxcombo_rejects(const nph::WeightedLogrank& w, double alpha, Alt a) {
     lo[i] = a == Alt::Two ? -t : -stats::INF;
     hi[i] = t;
   }
-  return (alpha < COMBO_TAIL ? nph::mvn_outside(k, lo, hi, r) : 1 - nph::mvn_probability(k, lo, hi, r)) < alpha;
+  return combo_outside(k, lo, hi, r) < alpha;
 }
 
 /// Sorts observations with times in [0, end]: a counting pass into as many buckets as observations, then each

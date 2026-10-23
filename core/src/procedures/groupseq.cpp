@@ -14,25 +14,44 @@ using stats::pnorm;
 using stats::qnorm;
 
 SpendFn spending(const std::string& name, double level, double param) {
+  // each spends F(t) − F(s) on (s, t] for its cumulative function F
   if (name == "obf") {
     // level(t) = 2 − 2Φ(z_{level/2} / √t)
     const double z = qnorm(level / 2, false);
-    return [=](double t) { return t <= 0 ? 0.0 : (t >= 1 ? level : 2 * pnorm(z / std::sqrt(t), false)); };
+    auto F = [=](double t) { return t <= 0 ? 0.0 : (t >= 1 ? level : 2 * pnorm(z / std::sqrt(t), false)); };
+    return [=](double s, double t) { return F(t) - F(s); };
   }
   if (name == "pocock") {
-    return [=](double t) { return t <= 0 ? 0.0 : (t >= 1 ? level : level * std::log1p((std::exp(1.0) - 1) * t)); };
+    auto F = [=](double t) { return t <= 0 ? 0.0 : (t >= 1 ? level : level * std::log1p((std::exp(1.0) - 1) * t)); };
+    return [=](double s, double t) { return F(t) - F(s); };
   }
+  // The power family with a small ρ and Hwang–Shih–DeCani with a large γ are nearly flat after the first
+  // analyses, so F(t) and F(s) agree in most of their digits (with ρ below about 1e-16, t^ρ rounds to 1 and the
+  // difference to 0, as if all of alpha were spent at the first analysis).  Where the difference keeps fewer than
+  // about 13 of them, it is taken in one piece.
   if (name == "power") {
     const double rho = param;
-    return [=](double t) { return t <= 0 ? 0.0 : (t >= 1 ? level : level * std::pow(t, rho)); };
+    auto F = [=](double t) { return t <= 0 ? 0.0 : (t >= 1 ? level : level * std::pow(t, rho)); };
+    return [=](double s, double t) {
+      const double d = F(t) - F(s);
+      if (s <= 0 || d >= 1e-3 * F(t)) return d;
+      return level * std::pow(s, rho) * std::expm1(rho * std::log(std::fmin(t, 1.0) / s));  // level·(t^ρ − s^ρ)
+    };
   }
   if (name == "hsd") {
     const double g = param;
-    return [=](double t) {
+    const bool linear = std::fabs(g) < 1e-10;
+    auto F = [=](double t) {
       if (t <= 0) return 0.0;
       if (t >= 1) return level;
-      if (std::fabs(g) < 1e-10) return level * t;
+      if (linear) return level * t;
       return level * std::expm1(-g * t) / std::expm1(-g);
+    };
+    return [=](double s, double t) {
+      const double d = F(t) - F(s);
+      if (s <= 0 || linear || d >= 1e-3 * F(t)) return d;
+      // level·(e^{−γt} − e^{−γs}) / (e^{−γ} − 1)
+      return level * std::exp(-g * s) * std::expm1(-g * (std::fmin(t, 1.0) - s)) / std::expm1(-g);
     };
   }
   throw CalcError("unknown spending function: " + name);
@@ -41,7 +60,7 @@ SpendFn spending(const std::string& name, double level, double param) {
 SpendFn alpha_spending(const std::string& name, double alpha, bool two_sided, double param) {
   if (!two_sided) return spending(name, alpha, param);
   SpendFn side = spending(name, alpha / 2, param);
-  return [side](double t) { return 2 * side(t); };
+  return [side](double s, double t) { return 2 * side(s, t); };
 }
 
 namespace {
@@ -217,15 +236,11 @@ void check_t(const std::vector<double>& t) {
   if (std::fabs(t.back() - 1) > 1e-9) throw CalcError("the last information fraction must be 1");
 }
 
-// Error to spend at each analysis: f(t_k) − f(t_{k−1}), with the total spent at the end.
-std::vector<double> increments(const SpendFn& f, const std::vector<double>& t, double total) {
+// Error to spend at each analysis, with the whole level spent by the last.
+std::vector<double> increments(const SpendFn& f, const std::vector<double>& t) {
   std::vector<double> inc(t.size());
-  double prev = 0;
-  for (std::size_t k = 0; k < t.size(); ++k) {
-    const double cum = k + 1 == t.size() ? total : std::min(total, f(t[k]));
-    inc[k] = std::max(0.0, cum - prev);
-    prev = std::max(prev, cum);
-  }
+  for (std::size_t k = 0; k < t.size(); ++k)
+    inc[k] = std::max(0.0, f(k == 0 ? 0.0 : t[k - 1], k + 1 == t.size() ? 1.0 : t[k]));
   return inc;
 }
 
@@ -314,7 +329,7 @@ double beta_pass(Design& d, double eta, const std::vector<double>& ainc, const s
 // Beta-spending futility: the drift at which the boundaries spend exactly beta.
 void spend_beta(Design& d, double alpha, const std::vector<double>& ainc, const Futility& fut,
                 const std::function<void()>& check, int r) {
-  const auto binc = increments(fut.spend, d.t, fut.beta);
+  const auto binc = increments(fut.spend, d.t);
   const double target = 1 - fut.beta;
   auto f = [&](double eta) {
     if (check) check();
@@ -350,8 +365,20 @@ void check_spent(const std::vector<double>& inc) {
 
 }  // namespace
 
-int grid_resolution(double alpha) {
-  return alpha >= 1e-4 ? 32 : (alpha >= 1e-8 ? 48 : (alpha >= 1e-12 ? 64 : (alpha >= 1e-20 ? 96 : 128)));
+int grid_resolution(double alpha, const std::vector<double>& t, const Efficacy& eff) {
+  // a spending function that spends next to nothing at the last analysis (less than a thousandth of alpha: the
+  // power family with a tiny ρ, Hwang–Shih–DeCani with a large γ) puts its later boundaries as far out as a level
+  // that small does
+  double level = alpha;
+  if (eff.kind == Efficacy::Kind::Spending && t.size() > 1)
+    level = std::fmin(alpha, 1e3 * eff.spend(t[t.size() - 2], 1));
+  if (level >= 1e-4) return 32;
+  if (level >= 1e-8) return 48;
+  // two analyses closer than 20 equally spaced ones narrow the step from one to the next below what 64 and 96 were
+  // checked for: such designs keep 128
+  for (std::size_t k = 1; k < t.size(); ++k)
+    if ((t[k] - t[k - 1]) * 19 < t[k - 1] * (1 - 1e-9)) return 128;
+  return level >= 1e-12 ? 64 : (level >= 1e-20 ? 96 : 128);
 }
 
 Design make_design(const std::vector<double>& t, double alpha, bool two_sided, const Efficacy& eff,
@@ -371,13 +398,13 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
   d.t = t;
   d.two_sided = two_sided;
   d.binding = futility && fut.binding;
-  d.grid = r = r > 0 ? r : grid_resolution(alpha);
+  d.grid = r = r > 0 ? r : grid_resolution(alpha, t, eff);
   d.b.assign(K, INFINITY);
   d.alpha_spent.assign(K, 0.0);
   const std::vector<double>* az = futility && fut.kind == Futility::Kind::Fixed && d.binding ? &fut.z : nullptr;
 
   if (eff.kind == Efficacy::Kind::Spending) {
-    const auto ainc = increments(eff.spend, t, alpha);
+    const auto ainc = increments(eff.spend, t);
     check_spent(ainc);
     if (futility && fut.kind == Futility::Kind::BetaSpending) {
       d.a.assign(K, -INFINITY);
@@ -435,8 +462,8 @@ double drift_for_power(const Design& d, double power, double scale, int r) {
   double lo = std::max(1e-6, scale * qnorm(side, false) + zp - 0.25);
   double reach = scale * d.b.back() + zp + 0.25;
   if (!std::isfinite(reach)) {
-    // the last boundary is infinite when all of alpha is spent before (power-family spending with ρ below about
-    // 1e-16, whose t^ρ rounds to 1): a drift with that power at an analysis with a finite boundary
+    // the last boundary is infinite when nothing is left to spend there: a drift with that power at an analysis
+    // with a finite boundary
     for (std::size_t k = 0; k < d.t.size(); ++k)
       if (std::isfinite(d.b[k])) reach = std::fmin(reach, (scale * d.b[k] + zp + 0.25) / std::sqrt(d.t[k]));
   }

@@ -120,27 +120,32 @@ Events single_step(const Design& d, const Sizes& n, double c, const SNodes& sn, 
       if (theta[j] == theta[i]) same[i] = j;
   }
   const stats::GLRule& g = stats::gauss_legendre(Z_NODES);
+  // an arm's rejection changes with z over a width of about root/λ: with a control arm under a third of a treatment
+  // arm (root below 1/2), the nodes are split into two panels (with r0 = 0.1 and 8 arms, one panel gave the power
+  // that all arms reject 0.7% low)
+  const int panels = root >= 0.5 ? 1 : 2;
   std::vector<Events> part(sn.s.size());
   parallel_for(sn.s.size(), ctx.threads, [&](std::size_t a) {
     const double cs = c * sn.s[a];
     Events inner{}, e{};
     e[m] = 1;  // the rule's own total, summed exactly as the events are
     Probs prob{};
-    for (std::size_t b = 0; b < g.x.size(); ++b) {
-      const double z = Z_RANGE * g.x[b];
-      for (int i = 0; i < d.k; ++i) {
-        if (same[i] != i) {
-          prob[i] = prob[same[i]];
-          continue;
+    for (int q = 0; q < panels; ++q)
+      for (std::size_t b = 0; b < g.x.size(); ++b) {
+        const double z = Z_RANGE * (g.x[b] + (2 * q + 1 - panels)) / panels;  // as before with one panel
+        for (int i = 0; i < d.k; ++i) {
+          if (same[i] != i) {
+            prob[i] = prob[same[i]];
+            continue;
+          }
+          const double mi = theta[i] + lam * z;
+          prob[i] = d.alt == Alt::Two ? stats::pnorm((-cs - mi) / root) + stats::pnorm((mi - cs) / root)
+                                      : stats::pnorm((mi - cs) / root);
         }
-        const double mi = theta[i] + lam * z;
-        prob[i] = d.alt == Alt::Two ? stats::pnorm((-cs - mi) / root) + stats::pnorm((mi - cs) / root)
-                                    : stats::pnorm((mi - cs) / root);
+        const double weight = g.w[b] / panels * stats::dnorm(z);
+        events(prob, e);
+        for (int j = 0; j <= m; ++j) inner[j] += weight * e[j];
       }
-      const double weight = g.w[b] * stats::dnorm(z);
-      events(prob, e);
-      for (int j = 0; j <= m; ++j) inner[j] += weight * e[j];
-    }
     part[a] = inner;
   }, ctx.token);
   Events total{};
@@ -158,24 +163,22 @@ double t_critical(double level, double df, Alt a) {
   return stats::qt(tail_alpha(level, a), df, false);
 }
 
-/// Below this α the familywise error is computed in the tail: 1 − α, which single_step's sum resolves only to
-/// about 1e-16, keeps too few digits of α (at 1e-12, 5 digits of the critical value; at 1e-18, none).
-constexpr double DUNNETT_TAIL = 1e-6;
-
 /// ln P(Z ≥ y), also where P(Z ≥ y) is below the smallest double.
 double log_upper_normal(double y) {
   if (y < 30) return std::log(stats::pnorm(y, false));
   return -y * y / 2 - std::log(y) - stats::LN_SQRT_2PI + std::log1p(-1 / (y * y));
 }
 
-/// Dunnett's familywise error at the critical value c for a tiny α, from the overlap of the arms' rejections
-/// rather than from 1 − P(no arm rejects): k·P(T ≥ c) less E[k·p − (1 − (1 − p)^k)], with p = P(an arm rejects
-/// | z, s) under the null and P(T ≥ c) (both tails if two-sided) exact.  The overlap is computed without
-/// cancellation, as −expm1(k·log1p(−p)) for 1 − (1 − p)^k, and as a share of the nodes' own sum of p, so that
-/// their error cancels.  The nodes follow the rejections into the tail, where single_step's do not reach: in
-/// t = log s over the range where the density times P(T ≥ c | s) is within e^−40 of its largest value, and in z
-/// out to λ·c·s (where an arm's statistic reaches c) and 8.5 beyond.
-double dunnett_tail_level(const Design& d, const Sizes& n, double c) {
+/// The familywise error of a single-step test with critical value c, P(some arm rejects | every null true), from
+/// the overlap of the arms' rejections rather than as 1 − P(no arm rejects), which single_step resolves only to
+/// about 1e-16, and on its nodes only to 0.3% of α with a small control arm (k = 8, r0 = 0.1: 0.05014 for 0.05)
+/// and 1e-4 with 3 degrees of freedom: k·P(T ≥ c) less E[k·p − (1 − (1 − p)^k)], with p = P(an arm rejects | z, s)
+/// under the null and P(T ≥ c) (both tails if two-sided) exact.  The overlap is computed without cancellation, as
+/// −expm1(k·log1p(−p)) for 1 − (1 − p)^k, and as a share of the nodes' own sum of p, so that their error cancels.
+/// The nodes follow the rejections, also into the far tail where single_step's do not reach: in t = log s over the
+/// range where the density times P(T ≥ c | s) is within e^−40 of its largest value, and in z out to λ·c·s (where
+/// an arm's statistic reaches c) and 8.5 beyond.
+double familywise_error(const Design& d, const Sizes& n, double c) {
   const double df = n.df(d.k);
   const double lam = std::sqrt(n.n / (n.n + n.n0)), root = std::sqrt(1 - lam * lam);
   const bool two = d.alt == Alt::Two;
@@ -219,7 +222,7 @@ double dunnett_tail_level(const Design& d, const Sizes& n, double c) {
       for (std::size_t b = 0; b < rule.x.size(); ++b) {
         const double z = zlo + half * (2 * q + 1 + rule.x[b]);
         double p = stats::pnorm((lam * z - cs) / root);
-        if (two) p = std::fmin(1.0, p + stats::pnorm((-lam * z - cs) / root));
+        if (two) p = stats::clamp01(p + stats::pnorm((-lam * z - cs) / root));
         const double weight = rule.w[b] * stats::dnorm(z);
         inner_p += weight * p;
         inner_o += weight * (d.k * p + std::expm1(d.k * std::log1p(-p)));
@@ -231,42 +234,27 @@ double dunnett_tail_level(const Design& d, const Sizes& n, double c) {
   return one * (d.k - (sum_p > 0 ? overlap / sum_p : 0));
 }
 
-/// Dunnett's critical value: P(no arm rejects | all nulls true) = 1 − α.
-double dunnett_critical(const Design& d, const Sizes& n, const SNodes& sn, const RunContext& ctx) {
+/// Dunnett's critical value: P(some arm rejects | all nulls true) = α.
+double dunnett_critical(const Design& d, const Sizes& n, const RunContext& ctx) {
   const double df = n.df(d.k);
   if (d.k == 1) return t_critical(d.alpha, df, d.alt);
   const double lo = t_critical(d.alpha, df, d.alt), hi = t_critical(alpha_share(d.alpha, d.k), df, d.alt) + 1e-9;
-  if (d.alpha < DUNNETT_TAIL) {
-    auto f = [&](double c) {
-      ctx.check();
-      return std::log(dunnett_tail_level(d, n, c) / d.alpha);
-    };
-    const double flo = f(lo), fhi = f(hi);
-    // within the nodes' error of Bonferroni's value (the arms' rejections hardly overlap so far out): that one,
-    // on the safe side
-    if (!(fhi < 0)) return hi;
-    if (!(flo > 0)) return lo;
-    return numerics::brent(f, lo, hi, flo, fhi, 1e-10);
-  }
-  Design null = d;
-  null.mu.fill(d.mu0);
-  auto accept_all = [&](double c) {
-    return single_step(null, n, c, sn, 1, [&](const Probs& p, Events& e) {
-      double q = 1;
-      for (int i = 0; i < d.k; ++i) q *= 1 - p[i];
-      e[0] = q;
-    }, ctx)[0];
+  auto f = [&](double c) {
+    ctx.check();
+    return std::log(familywise_error(d, n, c) / d.alpha);
   };
-  auto f = [&](double c) { return accept_all(c) - (1 - d.alpha); };
   const double flo = f(lo), fhi = f(hi);
-  if (!(flo <= 0 && fhi >= 0)) return fhi < 0 ? hi : lo;
+  // within the nodes' error of Bonferroni's value (the arms' rejections hardly overlap so far out): that one, on
+  // the safe side
+  if (!(fhi < 0)) return hi;
+  if (!(flo > 0)) return lo;
   return numerics::brent(f, lo, hi, flo, fhi, 1e-10);
 }
 
-double critical_value(const Design& d, const Sizes& n, const SNodes& sn, const RunContext& ctx) {
+double critical_value(const Design& d, const Sizes& n, const RunContext& ctx) {
   const double df = n.df(d.k);
   switch (d.adjust) {
-    case Adjust::Dunnett: return dunnett_critical(d, n, sn, ctx);
+    case Adjust::Dunnett: return dunnett_critical(d, n, ctx);
     case Adjust::None: return t_critical(d.alpha, df, d.alt);
     default: return t_critical(alpha_share(d.alpha, d.k), df, d.alt);  // Bonferroni (and its bound for Holm, Hochberg)
   }
@@ -282,6 +270,15 @@ struct Exact {
 Exact exact_power(const Design& d, const Sizes& n, double c, const SNodes& sn, const RunContext& ctx) {
   Exact e;
   const int eff = d.effective_count();
+  bool null = true;
+  for (int i = 0; i < d.k; ++i) null = null && d.mu[i] == d.mu0;
+  if (null) {
+    // every null true: the familywise error, as Dunnett's value is found from it (single_step's sum, which does
+    // not reach the far tail, gave 0.29·α at α = 1e-30), and each arm's exact t tail
+    e.any = familywise_error(d, n, c);
+    for (int i = 0; i < d.k; ++i) e.arm[i] = (d.alt == Alt::Two ? 2 : 1) * stats::pt(c, n.df(d.k), false);
+    return e;
+  }
   const Events p = single_step(d, n, c, sn, 2 + d.k, [&](const Probs& q, Events& ev) {
     double none = 1, all = 1;
     for (int i = 0; i < d.k; ++i)
@@ -483,7 +480,7 @@ Procedure multiarm() {
     auto exact_at = [&](double n, double* crit = nullptr) {
       const Sizes z = sizes(n);
       const SNodes sn(z.df(d.k));
-      const double c = critical_value(d, z, sn, ctx);
+      const double c = critical_value(d, z, ctx);
       if (crit) *crit = c;
       return exact_power(d, z, c, sn, ctx);
     };
@@ -516,8 +513,7 @@ Procedure multiarm() {
       const auto seed = static_cast<std::uint64_t>(s("seed"));
       auto power_at = [&](double m, long R, double p0, double p1) {
         const Sizes z = sizes(m);
-        const SNodes sn(z.df(d.k));
-        const double c = critical_value(d, z, sn, ctx);
+        const double c = critical_value(d, z, ctx);
         const sim::Summary sm =
             sim::simulate(R, [&](long rep) { return multiarm_study(d, z, c, rep, seed); }, ctx, p0, p1);
         if (d.goal != Goal::Each) return sm;

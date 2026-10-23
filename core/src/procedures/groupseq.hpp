@@ -17,8 +17,8 @@
 
 namespace ssc::gs {
 
-/// Cumulative error spent at information fraction t ∈ [0, 1].
-using SpendFn = std::function<double(double t)>;
+/// Error spent between information fractions s and t, 0 ≤ s < t ≤ 1 (the whole level by t = 1).
+using SpendFn = std::function<double(double s, double t)>;
 
 /// One-sided spending function at total level `level`: "obf" (Lan–DeMets
 /// O'Brien–Fleming type), "pocock" (Lan–DeMets Pocock type), "power"
@@ -33,14 +33,14 @@ SpendFn alpha_spending(const std::string& name, double alpha, bool two_sided, do
 struct Efficacy {
   enum class Kind { Spending, WangTsiatis };
   Kind kind = Kind::Spending;
-  SpendFn spend;     // cumulative alpha at t (Spending)
+  SpendFn spend;     // alpha spent between two information fractions (Spending)
   double delta = 0;  // b_k = C·t_k^(delta − ½) (WangTsiatis): 0 = O'Brien–Fleming, ½ = Pocock
 };
 
 struct Futility {
   enum class Kind { None, BetaSpending, Fixed };
   Kind kind = Kind::None;
-  SpendFn spend;          // cumulative beta at t (BetaSpending)
+  SpendFn spend;          // beta spent between two information fractions (BetaSpending)
   double beta = 0.2;      // total type II error (BetaSpending)
   std::vector<double> z;  // z-scale futility boundaries at analyses 1..K−1 (Fixed)
   bool binding = false;   // binding boundaries are used when computing the type I error
@@ -59,13 +59,16 @@ struct Design {
   bool has_futility() const { return !a.empty(); }
 };
 
-/// The grid's r for a design at level alpha: the smallest of 32 (as Jennison & Turnbull advise), 48, 64, 96 and
-/// 128 that keeps the last boundary within about 2e-5 of a grid with r = 256, the accuracy of 32 at ordinary
-/// levels: 32 down to an alpha of 1e-4, 48 to 1e-8, 64 to 1e-12, 96 to 1e-20 and 128 below.  The smaller the
-/// alpha, the farther out the boundaries lie, where the sparse tails of a coarse grid lose accuracy: with 32 and up
-/// to 20 analyses the error was 1e-4 at 1e-7 and 3e-4 at 1e-12, N was 2 more at 1e-5 (Wang–Tsiatis, 20
-/// analyses), and at 1e-20 the last nominal level exceeded alpha.  The work grows with r².
-int grid_resolution(double alpha);
+/// The grid's r for a design at level alpha with information fractions t: the smallest of 32 (as Jennison &
+/// Turnbull advise), 48, 64, 96 and 128 that keeps the last boundary within about 2e-5 of a grid with r = 256 for up
+/// to 20 equally spaced analyses: 32 down to an alpha of 1e-4, 48 to 1e-8, 64 to 1e-12, 96 to 1e-20 and 128 below.
+/// The smaller the alpha, the farther out the boundaries lie, where the sparse tails of a coarse grid lose
+/// accuracy: with 32 and up to 20 analyses the error was 1e-4 at 1e-7 and 3e-4 at 1e-12, N was 2 more at 1e-5
+/// (Wang–Tsiatis, 20 analyses), and at 1e-20 the last nominal level exceeded alpha.  Two analyses closer than 20
+/// equally spaced ones make the step from one to the next narrower than that: below 1e-8 such designs take 128.
+/// An alpha-spending function that spends less than a thousandth of alpha at the last analysis takes the r of a
+/// thousand times that (with ρ = 1e-30 and 20 analyses, N was 2 short with 32).  The work grows with r².
+int grid_resolution(double alpha, const std::vector<double>& t, const Efficacy& eff);
 
 struct ExitProbs {
   std::vector<double> up;   // P(stop at analysis k by crossing +b_k)
@@ -79,7 +82,7 @@ struct ExitProbs {
 /// one-sided design; beta-spending futility needs alpha-spending efficacy
 /// boundaries and solves for the drift at which the total beta is spent
 /// (stored in eta_design).  `check` (optional) is called between expensive
-/// steps and may throw to cancel.  r = 0 takes grid_resolution(alpha).
+/// steps and may throw to cancel.  r = 0 takes grid_resolution(alpha, t, eff).
 Design make_design(const std::vector<double>& t, double alpha, bool two_sided, const Efficacy& eff,
                    const Futility& fut, const std::function<void()>& check = {}, int r = 0);
 
