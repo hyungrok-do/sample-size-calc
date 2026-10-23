@@ -141,6 +141,19 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK(message("0.0\u0301").find("\\u{301}") != std::string::npos);
   CHECK(message("1\u200dx").find("\\u{200D}") != std::string::npos);
   CHECK_EQ(parse::quoted("abc\u00e9"), std::string("abc\u00e9"));
+  // marks of any script, and enclosing ones, are written out; letters and symbols of common scripts are not
+  CHECK_EQ(parse::quoted("\u05b0abc"), std::string("\\u{5B0}abc"));
+  CHECK_EQ(parse::quoted("\u0489\u064e\u093c"), std::string("\\u{489}\\u{64E}\\u{93C}"));
+  CHECK_EQ(parse::quoted("\u03bc \u2264 \u00bd \u4e2d"), std::string("\u03bc \u2264 \u00bd \u4e2d"));
+  // bytes that are not UTF-8 stay bytes (the JSON writer shows U+FFFD), never a character they could spell
+  CHECK_EQ(parse::quoted("a\x85" "b"), std::string("a\x85" "b"));
+  CHECK_EQ(parse::quoted("a\xc0\x80" "b"), std::string("a\xc0\x80" "b"));
+  CHECK_EQ(parse::quoted("a\xf0\x82\x80\xae" "b"), std::string("a\xf0\x82\x80\xae" "b"));
+  CHECK_EQ(parse::quoted("a\xe2\x80"), std::string("a\xe2\x80"));
+  // the cut counts the text as written: 37 controls give at most 40 bytes and the ellipsis
+  CHECK(parse::quoted(std::string(37, '\x1f')).size() <= 40 + std::string("\u2026").size());
+  CHECK_EQ(parse::quoted(std::string(40, 'x')), std::string(40, 'x'));
+  CHECK_EQ(parse::quoted(std::string(41, 'x')), std::string(40, 'x') + "\u2026");
   // objects and arrays nested beyond any request are refused, not followed into a stack overflow
   std::string deep = R"({"procedure":"means.two.t","inputs":{"x":)";
   for (int i = 0; i < 100000; ++i) deep += '[';

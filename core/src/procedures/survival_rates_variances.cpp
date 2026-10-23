@@ -15,8 +15,10 @@ using namespace blocks;
 double event_prob(double lam, double eta, double A, double F) {
   const double h = lam + eta;
   if (!(h > 0)) return 0;
-  // a hazard so large (a median of about 0) that each subject has the event, or drops out, at once
-  if (std::isinf(h)) return std::isinf(eta) ? (std::isinf(lam) ? NAN : 0) : 1;
+  // hazards so large (a median of about 0) that each subject has the event, or drops out, at once: the share with
+  // the event is lam / (lam + eta), written so that two finite hazards whose sum overflows still give it
+  if (std::isinf(h))
+    return std::isinf(lam) ? (std::isinf(eta) ? NAN : 1) : (std::isinf(eta) ? 0 : 1 / (1 + eta / lam));
   const double frac = lam / h;
   if (A <= 0) return frac * -std::expm1(-h * F);
   // 1 − e^{−hF}(1 − e^{−hA})/(hA), written without cancellation for small hazards (a median of millions of

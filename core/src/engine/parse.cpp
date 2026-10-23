@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 #include "util/numtext.hpp"
 
@@ -10,49 +11,61 @@ namespace ssc::parse {
 
 namespace {
 
-// A character that would act on a message rather than show in it: controls, the format characters that reorder or
-// join text (U+202E turns the rest of the line around) and combining marks (they land on the quote mark).
-bool acts_on_text(char32_t c) {
-  return c < 0x20 || (c >= 0x7F && c < 0xA0) || c == 0xAD || c == 0x61C || (c >= 0x300 && c < 0x370) ||
-         (c >= 0x1AB0 && c < 0x1B00) || (c >= 0x1DC0 && c < 0x1E00) || (c >= 0x200B && c < 0x2010) ||
-         (c >= 0x2028 && c < 0x202F) || (c >= 0x2060 && c < 0x2070) || (c >= 0x20D0 && c < 0x2100) ||
-         (c >= 0xFE00 && c < 0xFE10) || (c >= 0xFE20 && c < 0xFE30) || c == 0xFEFF || (c >= 0xFFF9 && c < 0xFFFC) ||
-         (c >= 0xE0000 && c < 0xE1000);
+// Whether a character is shown in a message as it is: printable ASCII and the letters, digits and symbols of common
+// scripts.  Any other (controls, the format characters that reorder or join text, such as U+202E, which turns the
+// rest of the line around, combining marks, which land on the quote mark, and the scripts this leaves out) is
+// written as \u{...}.
+bool shown_as_is(char32_t c) {
+  static const char32_t ranges[][2] = {
+      {0x20, 0x7E},     {0xA0, 0xAC},     {0xAE, 0x2FF},    {0x370, 0x482},   {0x48A, 0x52F},
+      {0x660, 0x669},   {0x6F0, 0x6F9},   {0x966, 0x96F},   {0x1E00, 0x1FFF}, {0x2010, 0x2027},
+      {0x2030, 0x205E}, {0x2070, 0x20CF}, {0x2100, 0x27BF}, {0x3000, 0x3029}, {0x3030, 0x303F},
+      {0x3041, 0x3096}, {0x309B, 0x30FF}, {0x4E00, 0x9FFF}, {0xAC00, 0xD7A3}, {0xFF01, 0xFF5E},
+      {0xFF61, 0xFF9F}, {0xFFFD, 0xFFFD}, {0x1F300, 0x1FAFF}};  // U+FFFD: where text was not Unicode
+  for (const auto& r : ranges)
+    if (c >= r[0] && c <= r[1]) return true;
+  return false;
+}
+
+// The character of the UTF-8 sequence at t[i] and its length; length 0 where the bytes are not UTF-8 (a lone
+// continuation byte, an overlong form, a surrogate, a sequence cut short or past U+10FFFF).
+std::pair<char32_t, std::size_t> decode(const std::string& t, std::size_t i) {
+  const unsigned char b = static_cast<unsigned char>(t[i]);
+  if (b < 0x80) return {b, 1};
+  const std::size_t len = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC2 ? 2 : 0;
+  if (len == 0 || b > 0xF4 || i + len > t.size()) return {0, 0};
+  char32_t c = b & (0x7F >> len);
+  for (std::size_t k = 1; k < len; ++k) {
+    const unsigned char x = static_cast<unsigned char>(t[i + k]);
+    if ((x & 0xC0) != 0x80) return {0, 0};
+    c = (c << 6) | (x & 0x3F);
+  }
+  static const char32_t least[] = {0, 0, 0x80, 0x800, 0x10000};
+  if (c < least[len] || c > 0x10FFFF || (c >= 0xD800 && c < 0xE000)) return {0, 0};
+  return {c, len};
 }
 
 }  // namespace
 
 std::string quoted(const std::string& t) {
-  std::size_t end = t.size();
-  if (end > 40) {
-    end = 40;
-    while (end > 0 && (static_cast<unsigned char>(t[end]) & 0xC0) == 0x80) --end;
-  }
-  // such characters are written as \u{...}
   std::string out;
-  for (std::size_t i = 0; i < end;) {
-    const unsigned char b = static_cast<unsigned char>(t[i]);
-    const std::size_t len = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
-    char32_t c = len == 1 ? b : b & (0x7F >> len);
-    bool whole = i + len <= end;
-    for (std::size_t k = 1; whole && k < len; ++k) {
-      const unsigned char x = static_cast<unsigned char>(t[i + k]);
-      whole = (x & 0xC0) == 0x80;
-      c = (c << 6) | (x & 0x3F);
-    }
-    if (whole && acts_on_text(c)) {
+  for (std::size_t i = 0; i < t.size();) {
+    const auto [c, len] = decode(t, i);
+    std::string piece;
+    if (len == 0) {
+      piece = t.substr(i, 1);  // not UTF-8: the byte, which the JSON writer shows as U+FFFD
+    } else if (shown_as_is(c)) {
+      piece = t.substr(i, len);
+    } else {
       char hex[16];
       std::snprintf(hex, sizeof hex, "\\u{%X}", static_cast<unsigned>(c));
-      out += hex;
-      i += len;
-    } else if (whole) {
-      out.append(t, i, len);
-      i += len;
-    } else {
-      out += t[i++];  // not UTF-8: the byte as it is
+      piece = hex;
     }
+    if (out.size() + piece.size() > 40) return out + "…";  // 40 bytes of the message, written out
+    out += piece;
+    i += len ? len : 1;
   }
-  return end < t.size() ? out + "…" : out;
+  return out;
 }
 
 std::size_t characters(const std::string& t) {

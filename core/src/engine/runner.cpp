@@ -47,6 +47,9 @@ json::Value visibility_json(const Visibility& v) {
   return any;
 }
 
+// The largest count (a group size, controls, events) an answer gives; past it no study could have it.
+constexpr double MAX_COUNT = 1e15;
+
 json::Value number_or_null(double d) { return std::isfinite(d) ? json::Value(d) : json::Value(); }
 
 json::Value cell_json(const Cell& c) {
@@ -510,7 +513,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     return v && !std::isfinite(*v);
   };
   // the counts of the table (group sizes, controls, clusters): one that overflowed, or that no study could have
-  // (past 10^15; past 2^53 a double does not even hold whole numbers), says so rather than being shown
+  // (past MAX_COUNT; past 2^53 a double does not even hold whole numbers), says so rather than being shown
   std::vector<std::string> count_keys;
   if (proc->columns && count > 0)
     for (const auto& c : proc->columns(scen[0]))
@@ -519,7 +522,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     const double* v = cell(r, key);
     if (!v) return false;
     if (std::isnan(*v)) return key == "n" || key == "n1" || key == "n2";  // a criterion that does not apply is blank
-    return std::fabs(*v) > 1e15;
+    return std::fabs(*v) > MAX_COUNT;
   };
   try {
     parallel_for(
@@ -709,6 +712,7 @@ json::Value run_request(const json::Value& req, Token* token) {
         if (!std::isfinite(n)) ok = false;
         const double mult = proc->dropout_multiple;
         const double ni = std::ceil(n / (1 - d) / mult - 1e-9) * mult;
+        if (!(ni <= MAX_COUNT)) ok = false;  // a dropout rate near 1 inflates past any study: no row, as for the table
         x.set(k, n);
         x.set(k + "_inflated", ni);
         x.set(k + "_dropouts", ni - n);

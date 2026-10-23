@@ -744,6 +744,22 @@ def test_a_median_of_about_zero_has_every_subject_with_the_event():
     assert not row.get("_error") and "nan" not in row["_statement"], row
 
 
+def test_hazards_whose_sum_overflows_keep_their_share_of_events():
+    """With event and dropout hazards of 1e308 each, their sum overflowed and the event probability came out 1
+    (half the answer); the share of events is that of any equal pair of hazards."""
+    rows = [first_row(run("surv.logrank", "n", {**base_inputs("surv.logrank"), "survin": "hazard", "lam2": h,
+                                                "eta": h, "hr": "0.5"})) for h in ("1e3", "1e307", "1e308", "1.7e308")]
+    assert all(r is not None for r in rows), rows
+    assert len({r["n"] for r in rows}) == 1, [r["n"] for r in rows]
+
+
+def test_a_dropout_table_never_shows_a_count_past_any_study():
+    res = run("means.two.t", "power", {**base_inputs("means.two.t"), "n1": "1000000000", "dropout": "0.9999999999"})
+    assert first_row(res) is not None
+    for row in (res.get("dropout") or {}).get("rows", []):
+        assert all(abs(v) <= 1e15 for k, v in row.items() if k.endswith(("_inflated", "_dropouts"))), row
+
+
 def test_odds_ratio_messages_speak_of_odds():
     row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "scale": "or", "or0": "1e308"})["rows"][0]
     assert "(odds OR0 times those of P2), must lie strictly between 0 and 1" in row["_error"], row
