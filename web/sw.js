@@ -1,6 +1,8 @@
 // What a static host such as GitHub Pages cannot do for the page, done in the browser:
 //  - the two headers that make the page cross-origin isolated, so the engine can use every core (from the
 //    visit after this worker is installed);
+//  - the page's Content-Security-Policy as a header, which also reaches the engine's worker and its threads (the
+//    <meta> in the page covers the page alone) and forbids other sites to frame the page (a <meta> cannot);
 //  - a copy of each of the page's files, used when the network is not there, so the page and its engine
 //    start offline.
 // The network comes first, so a new version is used as soon as it is published.  Every file but the page is
@@ -41,12 +43,18 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
+// The policy of the <meta> in index.html, plus frame-ancestors (npm test checks that the two agree).
+const POLICY = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; "
+  + "style-src 'sha256-LtGRP7x8nuDcEhoScjv9nKEH1X+KyDisyXq0OFyJt8A='; connect-src 'self'; worker-src 'self'; "
+  + "img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 function isolated(response) {
   if (response.status === 0) return response;  // an opaque response cannot be changed
   const headers = new Headers(response.headers);
   headers.set('Cross-Origin-Opener-Policy', 'same-origin');
   headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  headers.set('Content-Security-Policy', POLICY);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 

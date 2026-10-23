@@ -6,6 +6,7 @@ import { dirname, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, firefox, webkit } from 'playwright';
 import { guideData } from '../guide-data.js';
+import { watchViolations } from './csp.mjs';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
@@ -29,8 +30,14 @@ const browser = await { chromium, firefox, webkit }[kind].launch(kind === 'chrom
   executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
   args: ['--disable-dev-shm-usage'],
 } : {});
+const violations = [];  // what the page's Content-Security-Policy blocked
+async function newContext(options) {
+  const context = await browser.newContext(options);
+  await watchViolations(context, violations);
+  return context;
+}
 try {
-  const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1280, height: 900 } });
+  const context = await newContext({ serviceWorkers: 'block', viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -218,7 +225,7 @@ try {
   await context.close();
 
   // The guide must be included in the first-visit cache, not only work while online.
-  const offline = await browser.newContext({ serviceWorkers: 'allow' });
+  const offline = await newContext({ serviceWorkers: 'allow' });
   const offlinePage = await offline.newPage();
   await offlinePage.goto(base);
   await offlinePage.waitForSelector('#guide-questions input', { state: 'attached' });
@@ -238,6 +245,7 @@ try {
   await offlinePage.waitForSelector('#guide-questions input', { state: 'attached' });
   down = false;
   await offline.close();
+  assert.deepEqual(violations, [], 'the Content-Security-Policy blocked nothing');
   console.log(`Browser: calculation, same-method options, stale results, keyboard, history, mobile/dark layout, and offline reload passed in ${kind}.`);
 } finally {
   await browser.close();

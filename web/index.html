@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- What the page may load: its own scripts, the engine (WebAssembly) and its workers, and the <style> below by its
+     hash, which changes with any edit to it (npm test checks it). sw.js sends the same policy as a header. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'sha256-LtGRP7x8nuDcEhoScjv9nKEH1X+KyDisyXq0OFyJt8A='; connect-src 'self'; worker-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sample Size Calculator</title>
 <meta name="description" content="Sample size and power for study planning. The calculator's C++ engine runs in your browser through WebAssembly; nothing you type leaves the page.">
