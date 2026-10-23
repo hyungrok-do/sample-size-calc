@@ -165,42 +165,101 @@ SSC_REGISTER(ancova);
 struct Factorial {
   int a = 0, b = 0;
   double ssa = 0, ssb = 0, ssab = 0;  // Σ effects² (main effects summed over their own levels)
+  bool equal = true;                  // every cell mean the same number
+};
+
+// A sum kept to about twice the digits of a double, hi + lo, with the rounding error of each addition carried in lo
+// (Knuth's two-sum): an effect is a difference of sums of the cell means, and next to large means it is smaller than
+// the digits that a sum in doubles keeps (a row of 1e6 shifted the effect of B in the row of 0 0 1e-9 by 5%).
+struct Sum2 {
+  double hi = 0, lo = 0;
+  void add(double x) {
+    const double t = hi + x, v = t - hi;
+    lo += (hi - (t - v)) + (x - v);
+    hi = t;
+  }
+  void add(double x, double w) {  // x × w, exactly for a whole w (the product's rounding error from fma)
+    const double p = x * w;
+    add(p);
+    add(std::fma(x, w, -p));
+  }
+  void add(const Sum2& x, double w) {
+    add(x.hi, w);
+    add(x.lo, w);
+  }
+  double value() const { return hi + lo; }
 };
 
 Factorial factorial(const Scenario& s) {
   Factorial f;
   f.a = static_cast<int>(s("a"));
   f.b = static_cast<int>(s("b"));
+  const int A = f.a, B = f.b;
   const auto& m = s.v("means");
-  if (static_cast<int>(m.size()) != f.a * f.b)
-    throw CalcError("enter " + std::to_string(f.a * f.b) + " cell means (" + std::to_string(f.a) + " rows of " +
-                    std::to_string(f.b) + ")");
-  // from the differences from the first cell: means of the cell means themselves round when the means are large
-  // next to their spread, and six equal cells of 0.1 with σ = 1e-30 showed effects that are not there
-  std::vector<double> ra(f.a, 0.0), cb(f.b, 0.0);
-  double grand = 0, top = 0;
-  for (int i = 0; i < f.a; ++i)
-    for (int j = 0; j < f.b; ++j) {
-      const double v = m[static_cast<std::size_t>(i * f.b + j)] - m[0];
-      ra[i] += v / f.b;
-      cb[j] += v / f.a;
-      grand += v / (f.a * f.b);
-      top = std::fmax(top, std::fabs(m[static_cast<std::size_t>(i * f.b + j)]));
+  if (static_cast<int>(m.size()) != A * B)
+    throw CalcError("enter " + std::to_string(A * B) + " cell means (" + std::to_string(A) + " rows of " +
+                    std::to_string(B) + ")");
+  auto cell = [&](int i, int j) { return m[static_cast<std::size_t>(i * B + j)]; };
+  // The effects times A·B, from the sums of the rows R, the columns C and all cells G: A R_i − G for the rows,
+  // B C_j − G for the columns and A·B m_ij − A R_i − B C_j + G for the interaction.  Each is the sum of the cells
+  // with whole weights, and next to it the most that the rounding of the means as typed can make of it: the sum of
+  // the cells' half spacings h of the doubles there, with the same weights in size.
+  std::vector<Sum2> R(A), C(B);
+  Sum2 G;
+  std::vector<double> hr(A, 0.0), hc(B, 0.0);
+  double H = 0;
+  auto half = [](double x) { return 0.5 * (std::nextafter(std::fabs(x), HUGE_VAL) - std::fabs(x)); };
+  for (int i = 0; i < A; ++i)
+    for (int j = 0; j < B; ++j) {
+      const double v = cell(i, j), h = half(v);
+      R[i].add(v);
+      C[j].add(v);
+      G.add(v);
+      hr[i] += h;
+      hc[j] += h;
+      H += h;
+      if (v != m[0]) f.equal = false;
     }
-  for (int i = 0; i < f.a; ++i) f.ssa += (ra[i] - grand) * (ra[i] - grand);
-  for (int j = 0; j < f.b; ++j) f.ssb += (cb[j] - grand) * (cb[j] - grand);
-  for (int i = 0; i < f.a; ++i)
-    for (int j = 0; j < f.b; ++j) {
-      const double g = m[static_cast<std::size_t>(i * f.b + j)] - m[0] - ra[i] - cb[j] + grand;
-      f.ssab += g * g;
+  // an effect smaller than what the rounding of the means as typed can make is none: 0.1 0.2 0.3 0.4 are additive,
+  // but as doubles they leave an interaction of 7e-18, 7e12 times σ = 1e-30, where their rounding can make 1.9e-17;
+  // one at least as large as that is kept however small, since no means that round to these are without it
+  const double cells = static_cast<double>(A) * B;
+  std::vector<double> ea(A), eb(B), eab(static_cast<std::size_t>(A * B));
+  bool real_a = false, real_b = false, real_ab = false;
+  for (int i = 0; i < A; ++i) {
+    Sum2 e;
+    e.add(R[i], A);
+    e.add(G, -1);
+    ea[i] = e.value();
+    if (!(std::fabs(ea[i]) < (A - 1) * hr[i] + (H - hr[i]))) real_a = true;
+  }
+  for (int j = 0; j < B; ++j) {
+    Sum2 e;
+    e.add(C[j], B);
+    e.add(G, -1);
+    eb[j] = e.value();
+    if (!(std::fabs(eb[j]) < (B - 1) * hc[j] + (H - hc[j]))) real_b = true;
+  }
+  for (int i = 0; i < A; ++i)
+    for (int j = 0; j < B; ++j) {
+      Sum2 e;
+      e.add(cell(i, j), cells);
+      e.add(R[i], -A);
+      e.add(C[j], -B);
+      e.add(G, 1);
+      const double h = half(cell(i, j)), v = e.value();
+      eab[static_cast<std::size_t>(i * B + j)] = v;
+      // weights (A − 1)(B − 1) on the cell, 1 − A on the rest of its row, 1 − B on the rest of its column, 1 elsewhere
+      const double bound = (A - 1.0) * (B - 1) * h + (A - 1.0) * (hr[i] - h) + (B - 1.0) * (hc[j] - h) +
+                           (H - hr[i] - hc[j] + h);
+      if (!(std::fabs(v) < bound)) real_ab = true;
     }
-  // an effect no larger than the rounding of the means as typed is none (0.1 0.2 0.3 0.4 are additive, but as
-  // doubles they leave an interaction of 3e-17, which is 3e13 times σ = 1e-30): each effect is a sum of the cells
-  // with weights of at most 4 in all, and each cell is off by up to half the spacing of the doubles at its size
-  const double off = 4 * std::numeric_limits<double>::epsilon() * top;
-  if (f.ssa <= f.a * off * off) f.ssa = 0;
-  if (f.ssb <= f.b * off * off) f.ssb = 0;
-  if (f.ssab <= f.a * f.b * off * off) f.ssab = 0;
+  for (double e : ea)
+    if (real_a) f.ssa += (e / cells) * (e / cells);
+  for (double e : eb)
+    if (real_b) f.ssb += (e / cells) * (e / cells);
+  for (double e : eab)
+    if (real_ab) f.ssab += (e / cells) * (e / cells);
   return f;
 }
 
@@ -294,8 +353,10 @@ Procedure anova2() {
     };
     double n;
     if (s.solve == "n") {
+      if (f.equal) throw CalcError("the cell means are all equal; there is no effect to detect");
       if (f.ssa == 0 && f.ssb == 0 && f.ssab == 0)
-        throw CalcError("the cell means are all equal; there is no effect to detect");
+        throw CalcError("the cell means differ by no more than the rounding of numbers of their size; there is no "
+                        "effect to detect");
       if ((goal == "A" && !hasA) || (goal == "B" && !hasB) || (goal == "AB" && !hasAB) ||
           (goal == "all" && !(hasA || hasB || hasAB)))
         throw CalcError("the cell means have no effect of the chosen kind");

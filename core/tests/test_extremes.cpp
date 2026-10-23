@@ -375,21 +375,52 @@ TEST_CASE("extremes: an answer on doubles too coarse for the root is the first t
   const double last = std::nextafter(1.0, 0.0);
   // from a few doubles to either side, the first double whose power reaches 0.8 (the target lies 0.4 of a step past
   // x0: x0 itself falls short by 4e-7, which a power shown to four decimals would hide, but the next one reaches it)
+  // (the effect is measured from 0.5, so that every double here keeps it)
+  const double d = x0 + 0.4 * step - 0.5;
   for (int off : {-5, -1, 0, 1, 5}) {
     double x = x0;
     for (int i = 0; i < std::abs(off); ++i) x = std::nextafter(x, off < 0 ? 0.0 : 1.0);
-    CHECK_EQ(solve::reach(power, x, last, true, 0.8, "ρ1", "unreachable"), std::nextafter(x0, 1.0));
+    CHECK_EQ(solve::reach(power, x, last, true, 0.8, 0.5, d, "ρ1", "ρ0", "unreachable"), std::nextafter(x0, 1.0));
   }
   // a target between two doubles whose powers both miss it by more than the precision shown
   auto steep = [&](double x) { return 0.8 + 1e-3 * ((x - x0) / step - 0.5); };
-  bool refused = false;
-  try {
-    solve::reach(steep, x0, last, true, 0.8, "ρ1", "unreachable");
-  } catch (const CalcError& e) {
-    const std::string m = e.what();
-    refused = m.find("the power cannot be brought to the target at any ρ1 that can be stored") == 0;
+  auto message = [&](auto&& pw, double target, double from, double dd) {
+    try {
+      solve::reach(pw, x0, last, true, target, from, dd, "ρ1", "ρ0", "unreachable");
+    } catch (const CalcError& e) {
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  CHECK(message(steep, 0.8, 0.5, d).find("the power cannot be brought to the target at any ρ1 that can be stored") ==
+        0);
+  // a power that moves unevenly from one double to the next is not blamed on the doubles
+  auto uneven = [&](double x) { return 0.8 + (std::lround((x - x0) / step) % 2 == 0 ? 1e-3 : -1e-3); };
+  CHECK(message(uneven, 0.8, 0.5, d).find("the power cannot be computed to within 5e-05 of the target") == 0);
+  // the double next to the root keeps fewer than four digits of a difference 3,000 doubles wide: refused as such,
+  // though the next one reaches the target to the precision shown
+  auto flat = [&](double x) { return 0.8 + 1e-9 * ((x - x0) / step - 0.5); };
+  CHECK(message(flat, 0.8, x0 - 3000 * step, 3000.5 * step).find("keeps fewer than four significant digits") !=
+        std::string::npos);
+  // and one that keeps it to four digits, short of the target by less than the precision shown, is the answer when
+  // the next overshoots by more
+  auto coarse = [&](double x) { return 0.8 + 1e-4 * ((x - x0) / step - 0.3); };
+  CHECK_EQ(solve::reach(coarse, x0, last, true, 0.8, 0.5, x0 - 0.5, "ρ1", "ρ0", "unreachable"), x0);
+}
+
+TEST_CASE("extremes: an answer near a target of 100% meets it to the finer precision shown there") {
+  const double x0 = 0.75, step = std::nextafter(x0, 1.0) - x0, last = std::nextafter(1.0, 0.0);
+  for (double target : {1 - 1e-11, 1 - 1e-10}) {
+    const double slack = solve::power_slack(target);
+    // a power that moves by 4e-12 per double, overshooting at x0 by more than the precision shown
+    auto rising = [&](double x) { return std::fmin(1.0, target + 6e-12 + 4e-12 * ((x - x0) / step)); };
+    const double x = solve::reach(rising, x0, last, true, target, 0.5, x0 - 0.5, "ρ1", "ρ0", "unreachable");
+    CHECK(std::fabs(rising(x) - target) <= slack);
+    // and one short by 8e-10 at x0, which the 1e-9 that counts as reaching an ordinary target would have accepted
+    auto flat = [&](double y) { return target - 8e-10 + 1e-10 * ((y - x0) / step); };
+    const double y = solve::reach(flat, x0, last, true, target, 0.5, x0 - 0.5, "ρ1", "ρ0", "unreachable");
+    CHECK(std::fabs(flat(y) - target) <= slack);
   }
-  CHECK(refused);
 }
 
 TEST_CASE("extremes: the correlation's distribution on Fisher's scale") {

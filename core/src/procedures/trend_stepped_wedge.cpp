@@ -44,12 +44,10 @@ Trend trend_setup(const Scenario& s) {
   return t;
 }
 
-// n times the relative size, rounded up, with a slack for the rounding of the product (20 × 1.1 is
-// 22.000000000000004) that is relative below 1: an absolute one of 1e-9 left a group with n × w of 1e-9 or less
-// without subjects
+// n times the relative size, rounded up (at least 1 however small the size)
 std::vector<double> trend_sizes(const Trend& t, double n) {
   std::vector<double> ni;
-  for (double w : t.w) ni.push_back(std::ceil(n * w - 1e-9 * std::fmin(1.0, n * w)));
+  for (double w : t.w) ni.push_back(solve::round_up(n * w));
   return ni;
 }
 

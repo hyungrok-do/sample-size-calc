@@ -1391,7 +1391,14 @@ def test_an_effect_lost_next_to_a_large_value_is_refused(pid, solve, key, base_k
     ("rates.one.poisson", "lam1", {"lam0": "1e20", "n": "50"}, "lam1", "lam0"),
     ("corr.one", "rho1", {"rho0": "0.99999999", "n": "1e9", "alternative": "upper"}, "rho1", "rho0"),
     ("corr.one", "rho1", {"rho0": "-0.99999999999", "alternative": "lower"}, "rho1", "rho0"),
-    ("agree.icc", "rho1", {"rho0": "0.99999999999"}, "rho1", "rho0")])
+    ("agree.icc", "rho1", {"rho0": "0.99999999999"}, "rho1", "rho0"),
+    # the double next to the root keeps the difference, though one a search on the doubles ends at is half a
+    # double off it (and the difference it took for the root missed it by as much)
+    ("corr.one", "rho1", {"rho0": "-0.9999999999999", "n": "100", "alternative": "upper", "alpha": "1e-20",
+                          "power": "0.5", "method": "fisher"}, "rho1", "rho0"),
+    ("agree.icc", "rho1", {"k": "2", "rho0": "0.99999999999", "n": "1000", "alternative": "two", "power": "0.5"},
+     "rho1", "rho0"),
+    ("rates.one.poisson", "lam1", {"lam0": "1.19023e23", "n": "50"}, "lam1", "lam0")])
 def test_an_effect_kept_to_its_digits_next_to_a_large_value_is_given(pid, solve, inputs, key, base_key):
     """A difference that the sum keeps to five digits or more was refused as lost to rounding (the doubles next to
     the answer lay more than a millionth of it apart); the power there is the target to the precision shown."""
@@ -1464,6 +1471,43 @@ def test_an_icc_near_its_limits_reaches_the_target_power(inputs):
     assert msg == "the target power cannot be reached for any admissible value of ρ1", msg
 
 
+def test_an_icc_next_to_its_lower_limit_has_its_exact_power():
+    """1 + (k − 1)ρ lost its digits next to −1/(k − 1) for k − 1 not a power of 2 (the rounding of (k − 1)ρ alone),
+    and answers missed the target by more than the precision shown, refusals named wrong powers, and a reachable
+    target was called unreachable.  Reference powers: the F distribution in mpmath at 50 digits."""
+    base = base_inputs("agree.icc")
+    for k, rho0, rho1, n, alt, ref in (("11", "-0.0999999999999", "-0.09999999999999999", "2", "lower", 0.99999906336),
+                                       ("4", "-0.333333333330171", "-0.333333333333249", "3", "lower", 0.799913449556),
+                                       ("7", "-0.16666666666616547", "-0.16666666666610178", "1000", "upper",
+                                        0.79998557)):
+        row = first_row(run("agree.icc", "power", {**base, "k": k, "rho0": rho0, "rho1": rho1, "n": n,
+                                                   "alternative": alt}))
+        assert row["power"] == pytest.approx(ref, abs=1e-9), (k, row["power"])
+    # the target of the first is reached at the last ICC above −1/(k − 1); the second lies between two doubles
+    # whose powers both miss it; the third is met within the precision shown
+    row = first_row(run("agree.icc", "rho1", {**base, "k": "11", "rho0": "-0.0999999999999", "n": "2",
+                                              "power": "0.999999", "alternative": "lower"}))
+    assert row["rho1"] == -0.09999999999999999 and row["power"] >= 0.999999 - 5e-7, row
+    msg = run("agree.icc", "rho1", {**base, "k": "4", "rho0": "-0.333333333330171", "n": "3",
+                                    "alternative": "lower"})["rows"][0]["_error"]
+    assert msg.startswith("the power cannot be brought to the target") and "0.799913 at -0.333333333333249" in msg
+    row = first_row(run("agree.icc", "rho1", {**base, "k": "7", "rho0": "-0.16666666666616547", "n": "1000"}))
+    assert row["rho1"] == -0.16666666666610178, row
+
+
+def test_a_target_near_100_percent_is_met_to_the_finer_precision_shown():
+    """Above 1 − 1e-9 the precision shown is finer than the 1e-9 by which a power counted as reaching the target: an
+    answer could miss it by more, and a refusal read 'moves from nan at nan to …'.  Where the power itself is not
+    computed to that precision (it moves up and down by 3e-12 from one double to the next) the message says so."""
+    msg = run("corr.one", "rho1", {**base_inputs("corr.one"), "rho0": "0.99999999999", "n": "1e9",
+                                   "power": "0.999999999999", "alternative": "lower"})["rows"][0]["_error"]
+    assert "nan" not in msg and msg.startswith("the power cannot be computed to within 5e-13 of the target"), msg
+    for target in ("0.9999999999", "0.99999999999"):
+        row = first_row(run("agree.icc", "rho1", {**base_inputs("agree.icc"), "rho0": "0.3", "n": "1000",
+                                                  "power": target}))
+        assert abs(row["power"] - float(target)) <= 0.5 * (1 - float(target)), row
+
+
 def test_the_exact_correlation_test_keeps_its_critical_value_at_a_tiny_alpha():
     """With ρ0 = 0 the critical value r = t/√(N − 2 + t²) rounded to 1 for a tiny alpha with few subjects, and that
     side was dropped (a power of 0 for every ρ1, and N = 5 where 4 reach the target).  Reference powers: the exact
@@ -1504,6 +1548,19 @@ def test_an_effect_search_reaches_what_the_inputs_allow(pid, solve, inputs, key)
     assert again["power"] == pytest.approx(target, abs=5e-5), again
 
 
+def test_a_delta_r2_next_to_its_limit_is_found_or_refused_as_between_two_doubles():
+    """The search for f² stopped at 1e15, where nine ΔR² below 1 − R²c remain, and called the target unreachable:
+    with 3 subjects and α = 1e-8 the power is 0.75 at ΔR² = 0.9999999999999994 and 0.80 at the next double up."""
+    base = {**base_inputs("reg.multiple"), "n": "3", "b": "1", "a": "0", "r2c": "0"}
+    for alpha, before, after in (("1e-8", "0.75181 at 0.9999999999999994", "0.9999999999999996"),
+                                 ("5e-9", "0.638713 at 0.9999999999999998", "0.9999999999999999")):
+        msg = run("reg.multiple", "r2t", {**base, "alpha": alpha})["rows"][0]["_error"]
+        assert msg.startswith("the power cannot be brought to the target at any ΔR²") and before in msg, msg
+        assert msg.endswith(after), msg
+    row = first_row(run("reg.multiple", "r2t", {**base, "n": "4", "alpha": "1e-12"}))
+    assert row["power"] == pytest.approx(0.8, abs=5e-5), row
+
+
 def test_a_confidence_level_is_shown_with_its_digits():
     for pid, conf, says in (("means.one.ci", "0.999", "99.9%"), ("means.two.ci", "0.975", "97.5%"),
                             ("corr.ci", "0.9999999999999", "99.99999999999%"), ("prop.one.ci", "0.95", "95%"),
@@ -1541,6 +1598,23 @@ def test_degenerate_effect_sizes_and_sizes_are_refused():
             assert row["n"] == first["n"] and row["sizes"].endswith(", 1"), (w, row)
             row = first_row(run(pid, "power", {**base, key: weights.format(w), "n": str(n)}))
             assert row["sizes"].endswith(", 1"), (w, row)
+    # every group of 1 leaves the F-test no degrees of freedom for the error
+    base = {**base_inputs("means.anova"), "alloc": "ratio", "estype": "f", "k": "3", "ratios": "1e-30 1e-30 1e-30"}
+    for solve, extra in (("power", {"n": "1000"}), ("f", {"n": "1000"}), ("n", {})):
+        row = run("means.anova", solve, {**base, **extra})["rows"][0]
+        assert row["_error"].startswith("every group has 1 subject (n × its allocation ratio, rounded up)"), row
+        assert "no degrees of freedom for the error" in row["_error"] and "n" not in row and "sizes" not in row, row
+
+
+def test_a_tiny_ratio_gives_its_group_one():
+    """n times a ratio of 1e-10 or 1e-12, rounded up, is 1, but the slack for rounding made it 0: messages said
+    '0 cluster' and '0 control', and the interval for two means took 1,001 subjects where 6 give its width."""
+    msg = run("means.two.cluster", "power", {**base_inputs("means.two.cluster"), "kr": "1e-10"})["rows"][0]["_error"]
+    assert msg.startswith("group 2 would have 1 cluster (k1 × the cluster ratio, rounded up)"), msg
+    msg = run("diag.auc", "power", {**base_inputs("diag.auc"), "ratio": "1e-12"})["rows"][0]["_error"]
+    assert msg.startswith("there would be 1 control (cases × the ratio, rounded up)"), msg
+    row = first_row(run("means.two.ci", "n", {**base_inputs("means.two.ci"), "r": "1e-12", "e": "3", "sigma": "1"}))
+    assert (row["n1"], row["n2"]) == (6, 1), row
 
 
 def test_equal_means_far_from_zero_are_no_effect():
@@ -1570,6 +1644,28 @@ def test_equal_means_far_from_zero_are_no_effect():
     assert msg == "the proportions have no linear trend across the scores", msg
 
 
+def test_two_way_effects_beyond_the_rounding_of_the_means_are_kept():
+    """Effects were set to none up to 8 times what the rounding of the means could make, measured at the largest
+    cell: real effects of 7 to 17 doubles' spacing gave 'the cell means are all equal', and a row of 1e6 removed the
+    effects of B and A × B that a row of 1 left at f = 235.7."""
+    base = {**base_inputs("means.anova2"), "a": "2", "b": "2", "goal": "all"}
+    row = first_row(run("means.anova2", "power", {**base, "means": "1000000 1000000 1000000 1000000.000000002",
+                                                  "sigma": "1e-9", "n": "10"}))
+    # the stored cells differ by 1.979e-9: f = 1.979e-9/4/1e-9 for each effect, and λ = 40 f² on (1, 36) df
+    assert row["fa"] == row["fb"] == row["fab"] == pytest.approx(0.4947651177644729, rel=1e-12), row
+    assert row["pab"] == pytest.approx(0.86097794658, rel=1e-9), row
+    assert first_row(run("means.anova2", "n", {**base, "means": "9e29 9e29 9e29 9.00000000000001e29",
+                                                "sigma": "1"}))["n"] == 2
+    for shift in ("1", "1000000"):
+        row = first_row(run("means.anova2", "power", {**base, "b": "3", "means": f"{shift} {shift} {shift} 0 0 1e-9",
+                                                      "sigma": "1e-12", "n": "10"}))
+        assert row["fb"] == row["fab"] == pytest.approx(1000 / math.sqrt(18), rel=1e-12), (shift, row)
+    # cells one spacing apart differ by no more than the rounding of numbers of their size
+    msg = run("means.anova2", "n", {**base, "means": "1 1 1 1.0000000000000002", "sigma": "1e-17"})["rows"][0]
+    assert msg["_error"] == ("the cell means differ by no more than the rounding of numbers of their size; there is "
+                             "no effect to detect"), msg
+
+
 @pytest.mark.parametrize("pid,solve,inputs,says", [
     ("agree.icc", "rho1", {"k": "3", "rho0": "-0.49999999", "alternative": "lower"},
      "intraclass correlation of -0.4999999956 when the value under the null hypothesis is -0.49999999,"),
@@ -1582,7 +1678,14 @@ def test_equal_means_far_from_zero_are_no_effect():
     ("reg.slope", "b1", {"b0": "1e9"}, "slope of 1000000000.4 (null value 1000000000)"),
     ("rates.one.poisson", "lam1", {"lam0": "1e9"}, "event rate of 1.000013e+09 when the rate under H0 is 1000000000,"),
     ("corr.two", "n", {"rho1": "0.9999999", "rho2": "0.9999998"}, "correlations of 0.9999999 and 0.9999998 "),
-    ("means.two.cluster", "power", {"icc": "0.99999"}, "ICC = 0.99999,")])
+    ("means.two.cluster", "power", {"icc": "0.99999"}, "ICC = 0.99999,"),
+    # a value that is not whole never shows as one, or as the limit 1 of a correlation
+    ("corr.one", "rho1", {"rho0": "0.9999999", "n": "4", "alternative": "lower", "power": "0.5"},
+     "when the null correlation is ρ0 = 0.9999999,"),
+    ("corr.one", "power", {"rho0": "0.99990884", "rho1": "0.9999999", "alternative": "upper"},
+     "ρ1 = 0.9999999 when the null correlation is ρ0 = 0.99991,"),
+    ("rates.one.poisson", "lam1", {"lam0": "0.9999999", "n": "1e9"}, "when the rate under H0 is 0.9999999,"),
+    ("means.one.t", "mu1", {"mu0": "0.9999999", "sigma": "0.000133"}, "null mean μ0 = 0.9999999 and")])
 def test_values_side_by_side_are_shown_apart(pid, solve, inputs, says):
     """Statements showed two values that differ as one ('-0.5 when the value under the null hypothesis is -0.5',
     'μD = 1e+09 (null value 1000000000)'), or a value as the limit next to it ('(1 to 1)', 'target 100%')."""

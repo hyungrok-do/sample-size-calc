@@ -19,7 +19,9 @@ using namespace blocks;
 // With n subjects rated k times, F = MSB/MSW equals c(ρ)·F* where
 // c(ρ) = (1 + (k − 1)ρ)/(1 − ρ) and F* ~ F(n − 1, n(k − 1)); the test of
 // H0: ρ = ρ0 compares F with c(ρ0) times an F quantile, so power is exact.
-double icc_c(double rho, double k) { return (1 + (k - 1) * rho) / (1 - rho); }
+// 1 + (k − 1)ρ is taken with one rounding (fma): next to ρ = −1/(k − 1) it is the difference of two numbers near 1,
+// and the rounding of (k − 1)ρ alone, up to 1e-16, left it a thousandth off at ρ = −1/(k − 1) + 1e-13.
+double icc_c(double rho, double k) { return std::fma(k - 1, rho, 1) / (1 - rho); }
 
 // The power from the ratio c(ρ0)/c(ρ1) of the two multipliers.
 double icc_power_ratio(double n, double k, double ratio, double alpha, Alt a) {
@@ -109,7 +111,7 @@ Procedure icc() {
       // which a given ρ1 may be), so that a ρ0 within 1e-9 of either keeps room for ρ1
       const double hi_lim = std::nextafter(1.0, 0.0);
       double lo_lim = std::nextafter(-1 / (k - 1), 0.0);
-      while (!(1 + (k - 1) * lo_lim > 0)) lo_lim = std::nextafter(lo_lim, 0.0);
+      while (!(std::fma(k - 1, lo_lim, 1) > 0)) lo_lim = std::nextafter(lo_lim, 0.0);
       if (up ? rho0 >= hi_lim : rho0 <= lo_lim)
         throw CalcError("ρ1 cannot be told apart from ρ0 = " + text::format_roundtrip(rho0) +
                         ": no number lies between it and " + (up ? "1" : "−1/(k − 1)"));
@@ -124,14 +126,12 @@ Procedure icc() {
                                                     "ρ1", "ρ0")
                           : solve::solve_decreasing(Pu, target, 0, u_of(rho0 - 0.5 * (rho0 - lo_lim)), u_of(lo_lim),
                                                     1e-12, "ρ1", "ρ0");
-      // the nearest double, which must keep the difference from ρ0 to four digits; near the limits the doubles lie
-      // too far apart to hold the root, and the answer is the first of them that reaches the target
+      // a double next to the root, which must keep the difference from ρ0 to four digits; near the limits the
+      // doubles lie too far apart to hold the root, and the answer is the first of them that reaches the target
       const double c = c0 * std::exp(u), d = k * c0 * std::expm1(u) / ((c + k - 1) * (c0 + k - 1));
       rho1 = std::fmin(hi_lim, std::fmax(lo_lim, icc_of(u, rho0, c0, d, k)));
-      solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
-      rho1 = solve::reach(P, rho1, up ? hi_lim : lo_lim, up, target, "ρ1",
+      rho1 = solve::reach(P, rho1, up ? hi_lim : lo_lim, up, target, rho0, d, "ρ1", "ρ0",
                           "the target power cannot be reached for any admissible value of ρ1");
-      solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
     } else {
       rho1 = s("rho1");
       if (!(rho1 > -1 / (k - 1))) throw CalcError("ρ1 must exceed −1/(k − 1)");
@@ -392,7 +392,7 @@ Procedure auc() {
     if (a1 == a0) throw CalcError("AUC1 equals AUC0");
     if ((a == Alt::Upper && a1 < a0) || (a == Alt::Lower && a1 > a0))
       throw CalcError("AUC1 lies on the side opposite to the one-sided alternative");
-    auto controls = [&](double n1) { return std::ceil(n1 * ratio - 1e-9); };
+    auto controls = [&](double n1) { return solve::round_up(n1 * ratio); };
     double n1;
     if (s.solve == "n") {
       solve::NSearch o;
@@ -404,8 +404,8 @@ Procedure auc() {
     }
     const double n0 = controls(n1);
     if (n0 < 2)
-      throw CalcError("there would be " + fint(n0) + " control (cases × the ratio, rounded up); at least 2 are "
-                      "needed");
+      throw CalcError("there would be " + fint(n0) + (n0 == 1 ? " control" : " controls") +
+                      " (cases × the ratio, rounded up); at least 2 are needed");
     r.set("n1", n1);
     r.set("n0", n0);
     r.set("n", n1 + n0);

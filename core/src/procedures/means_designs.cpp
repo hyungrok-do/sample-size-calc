@@ -39,20 +39,13 @@ int anova_k(const Scenario& s) {
   return k;
 }
 
-// n × w rounded up, with a slack for the rounding of the product (20 × 1.1 is 22.000000000000004) that is relative
-// below 1: an absolute one of 1e-9 left a group with n × w of 1e-9 or less without subjects
-double group_size(double n, double w) {
-  const double x = n * w;
-  return std::ceil(x - 1e-9 * std::fmin(1.0, x));
-}
-
 // effect-size multiplier `scale` stretches the means about their mean (for solving the effect)
 AnovaDesign anova_design(const Scenario& s, double n, double scale_f = NAN) {
   const int k = anova_k(s);
   const auto w = anova_weights(s, k);
   AnovaDesign d;
   d.k = k;
-  for (double wi : w) d.sizes.push_back(group_size(n, wi));
+  for (double wi : w) d.sizes.push_back(solve::round_up(n * wi));
   double N = 0;
   for (double x : d.sizes) N += x;
   if (s.is("estype", "f")) {
@@ -161,10 +154,21 @@ Procedure anova() {
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double alpha = s("alpha");
+    // the F-test's error has N − k degrees of freedom: none when tiny allocation ratios give every group 1 subject
+    const auto w = anova_weights(s, anova_k(s));
+    auto spare = [&](double n) {
+      for (double wi : w)
+        if (solve::round_up(n * wi) >= 2) return true;
+      return false;
+    };
+    const std::string single = "every group has 1 subject (n × its allocation ratio, rounded up)";
+    const std::string no_df = ", which leaves the F-test no degrees of freedom for the error; at least one group "
+                              "needs 2";
     AnovaDesign d;
     if (s.solve == "n") {
       solve::NSearch o;
       o.lo = 2;
+      if (!spare(o.hi)) throw CalcError(single + " for any n up to " + text::format_g(o.hi, 10) + no_df);
       d = anova_design(s, o.lo);
       if (!(d.f > 0)) throw CalcError("the group means are all equal; there is no effect to detect");
       o.guess = (z_factor(alpha, s("power"), Alt::Two) + 2.0 * (d.k - 1)) / (d.k * d.f * d.f) + 1;
@@ -173,6 +177,7 @@ Procedure anova() {
       r.set("n", n);
     } else {
       const double n = s("n");
+      if (!spare(n)) throw CalcError(single + no_df);
       if (s.solve == "power") {
         d = anova_design(s, n);
       } else {
@@ -576,7 +581,7 @@ Procedure cluster_means() {
     const double de = 1 + (m - 1) * icc;
     const Alt a = alt(s);
     const bool z = s.is("test", "z");
-    auto k2_of = [&](double k1) { return std::ceil(kr * k1 - 1e-9); };
+    auto k2_of = [&](double k1) { return solve::round_up(kr * k1); };
     auto P = [&](double k1, double diff) {
       const double k2 = k2_of(k1);
       const double se = sigma * std::sqrt(de / m * (1 / k1 + 1 / k2));
@@ -596,8 +601,8 @@ Procedure cluster_means() {
     } else {
       k1 = s("k1");
       if (k2_of(k1) < 2)
-        throw CalcError("group 2 would have " + fint(k2_of(k1)) + " cluster (k1 × the cluster ratio, rounded up); "
-                        "each group needs at least 2 clusters");
+        throw CalcError("group 2 would have " + fint(k2_of(k1)) + (k2_of(k1) == 1 ? " cluster" : " clusters") +
+                        " (k1 × the cluster ratio, rounded up); each group needs at least 2 clusters");
       if (s.solve == "power") {
         diff = s("mu1") - s("mu2");
       } else {

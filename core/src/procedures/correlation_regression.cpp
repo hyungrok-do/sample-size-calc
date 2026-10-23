@@ -78,17 +78,21 @@ CorrCrit corr_crit(const Scenario& s, double n) {
   return c;
 }
 
-double corr_power(const Scenario& s, double n, double rho1, const CorrCrit& c) {
-  const double rho0 = s("rho0"), alpha = s("alpha");
+// The power at ζ1 = atanh(ρ1), at the distance t = ζ1 − atanh(ρ0) on Fisher's scale (the one the approximation
+// takes, the other the exact distribution).
+double corr_power_z(const Scenario& s, double n, double zeta1, double t, const CorrCrit& c) {
+  const double alpha = s("alpha");
   const Alt a = alt(s);
-  if (s.is("method", "fisher")) {
-    const double d = (std::atanh(rho1) - std::atanh(rho0)) * std::sqrt(n - 3);
-    return z_power(d, alpha, a);
-  }
+  if (s.is("method", "fisher")) return z_power(t * std::sqrt(n - 3), alpha, a);
   double pw = 0;
-  if (std::isfinite(c.up)) pw += stats::pcorr_z(c.up, n, std::atanh(rho1), false);
-  if (std::isfinite(c.lo)) pw += stats::pcorr_z(c.lo, n, std::atanh(rho1), true);
+  if (std::isfinite(c.up)) pw += stats::pcorr_z(c.up, n, zeta1, false);
+  if (std::isfinite(c.lo)) pw += stats::pcorr_z(c.lo, n, zeta1, true);
   return stats::clamp01(pw);
+}
+
+double corr_power(const Scenario& s, double n, double rho1, const CorrCrit& c) {
+  const double zeta1 = std::atanh(rho1);
+  return corr_power_z(s, n, zeta1, zeta1 - std::atanh(s("rho0")), c);
 }
 
 double corr_power(const Scenario& s, double n, double rho1) { return corr_power(s, n, rho1, corr_crit(s, n)); }
@@ -167,23 +171,23 @@ Procedure one_corr() {
           throw CalcError("ρ1 cannot be told apart from ρ0 = " + text::format_roundtrip(rho0) +
                           ": no number lies between it and " + (up ? "1" : "−1"));
         const std::string unreachable = "the target power cannot be reached with this N";
-        // the search is for the distance t = z1 − z0 on Fisher's scale, to a tolerance relative to it: one of 1e-12
-        // on z left the power 5e-9 off the target with 1e9 subjects
+        // the search is for the distance t = z1 − z0 on Fisher's scale, to a tolerance relative to it (one of 1e-12
+        // on z left the power 5e-9 off the target with 1e9 subjects), with the power taken at t itself: at the
+        // double ρ1 = tanh(z0 + t) it changes in steps near ±1, and the root at a step's edge stood half a double
+        // off the difference it needs
         const double z0 = std::atanh(rho0), tg = std::atanh(guess) - z0, t_last = std::atanh(last) - z0;
-        const double t =
-            up ? corr_root_z([&](double x) { return power(std::tanh(z0 + x)) - target; }, tg, 0, t_last, 0, 1e-12)
-               : corr_root_z([&](double x) { return target - power(std::tanh(z0 + x)); }, tg, t_last, 0, 0, 1e-12);
+        auto power_t = [&](double x) { return corr_power_z(s, n, z0 + x, x, crit); };
+        const double t = up ? corr_root_z([&](double x) { return power_t(x) - target; }, tg, 0, t_last, 0, 1e-12)
+                            : corr_root_z([&](double x) { return target - power_t(x); }, tg, t_last, 0, 0, 1e-12);
         // a search that ends at the last correlation found no root: the target is out of reach, whatever the
         // difference from ρ0 would have been
-        if (t == t_last && power(last) < target - 1e-9) throw CalcError(unreachable);
-        // the nearest double, which must keep the difference tanh(z1) − ρ0 = sinh(z1 − z0)/(cosh z1 cosh z0) to four
-        // digits; near ±1 the power changes by more than 1e-9 from one double to the next, and the root can lie
-        // between two of them: the answer is the first that reaches the target
+        if (t == t_last && power(last) < target - solve::power_band(target)) throw CalcError(unreachable);
+        // a double next to the root, which must keep the difference tanh(z1) − ρ0 = sinh(z1 − z0)/(cosh z1 cosh z0)
+        // to four digits; near ±1 the power changes by more than 1e-9 from one double to the next, and the root can
+        // lie between two of them: the answer is the first that reaches the target
         const double z1 = z0 + t, d = std::sinh(t) / (std::cosh(z1) * std::cosh(z0));
         rho1 = up ? std::fmin(last, std::tanh(z1)) : std::fmax(last, std::tanh(z1));
-        solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
-        rho1 = solve::reach(power, rho1, last, up, target, "ρ1", unreachable);
-        solve::check_kept(rho0, d, rho1, "ρ1", "ρ0");
+        rho1 = solve::reach(power, rho1, last, up, target, rho0, d, "ρ1", "ρ0", unreachable);
       }
     }
     r.set("n", n);
@@ -446,19 +450,18 @@ Procedure multiple_regression() {
     if (s.solve == "r2t") {
       n = s("n");
       if (n < a + b + 2) throw CalcError("N must exceed A + B + 1");
-      // solve on the unbounded f² scale, then ΔR² = f²(1 − R²c)/(1 + f²), up to an f² of 1e15, where ΔR² is the
-      // last few numbers below 1 − R²c
+      // solve on the unbounded f² scale, then ΔR² = f²(1 − R²c)/(1 + f²), up to the f² of the last ΔR² that may
+      // be given (R²c + ΔR² < 1)
+      double last = std::nextafter(1 - r2c, 0.0);
+      while (!(r2c + last < 1 && 1 - r2c - last > 0)) last = std::nextafter(last, 0.0);
+      const std::string unreachable = "the target power cannot be reached for any admissible value of ΔR²";
       const double f2 = solve::solve_increasing([&](double x) { return mreg_power(n, x, b, a, alpha); }, s("power"),
-                                                1e-12, 0.15, 1e15, 1e-12, "ΔR²");
+                                                1e-12, 0.15, f2_of(last), 1e-12, "ΔR²");
+      // next to 1 − R²c the doubles lie too far apart in f² = ΔR²/(1 − R²c − ΔR²) to hold the root: the answer is
+      // the first that reaches the target, as for a correlation near 1
       r2t = f2 * (1 - r2c) / (1 + f2);
-      // the f² that the ΔR² reported stands for, ΔR²/(1 − R²c − ΔR²), keeps few of its digits as ΔR² nears
-      // 1 − R²c: the power it gives must still be the target
-      const double pw = mreg_power(n, f2_of(r2t), b, a, alpha);
-      if (!(std::fabs(pw - s("power")) <= solve::power_slack(s("power"))))
-        throw CalcError("ΔR² cannot be placed close enough to 1 − R²c = " + text::format_roundtrip(1 - r2c) +
-                        ": the nearest value that can be stored, " + text::format_roundtrip(r2t) +
-                        ", gives a power of " + solve::power_digits(pw) + " for the target of " +
-                        solve::power_digits(s("power")));
+      r2t = solve::reach([&](double x) { return mreg_power(n, f2_of(x), b, a, alpha); }, std::fmin(r2t, last), last,
+                         true, s("power"), 0, r2t, "ΔR²", "0", unreachable);
     } else {
       r2t = s("r2t");
       if (!(r2c + r2t < 1)) throw CalcError("R² of the control and tested predictors must sum to less than 1");

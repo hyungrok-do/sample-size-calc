@@ -472,12 +472,13 @@ CiMean ci_mean(const Scenario& s, double se_factor, double df, double target) {
 void run_ci_mean(const Scenario& s, Row& r, RunContext& ctx, bool two_groups) {
   if (!s.is("sides", "two")) check_one_sided_conf(s("conf"));
   const double gamma = s.get("tolprob", 0);
+  // group 2: n1 × the ratio, rounded up (at least 1: a tiny ratio left it empty, and the interval infinitely wide)
+  auto n2_of = [&](double n) { return solve::round_up(s("r") * n); };
   auto factor = [&](double n) {
     if (!two_groups) return std::sqrt(1 / n);
-    const double n2 = std::ceil(s("r") * n - 1e-9);
-    return std::sqrt(1 / n + 1 / n2);
+    return std::sqrt(1 / n + 1 / n2_of(n));
   };
-  auto dfof = [&](double n) { return two_groups ? n + std::ceil(s("r") * n - 1e-9) - 2 : n - 1; };
+  auto dfof = [&](double n) { return two_groups ? n + n2_of(n) - 2 : n - 1; };
   double n;
   if (s.solve == "n") {
     const double target = s("e");
@@ -499,8 +500,8 @@ void run_ci_mean(const Scenario& s, Row& r, RunContext& ctx, bool two_groups) {
   const CiMean c = ci_mean(s, factor(n), dfof(n), s.solve == "n" ? s("e") : NAN);
   if (two_groups) {
     r.set("n1", n);
-    r.set("n2", std::ceil(s("r") * n - 1e-9));
-    r.set("n", n + std::ceil(s("r") * n - 1e-9));
+    r.set("n2", n2_of(n));
+    r.set("n", n + n2_of(n));
   } else {
     r.set("n", n);
   }
