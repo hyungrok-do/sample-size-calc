@@ -1078,6 +1078,78 @@ def test_an_exact_odds_ratio_test_far_from_one_rejects_the_tables_it_should():
     assert row["power"] < 1e-12, row
 
 
+def test_an_odds_ratio_margin_with_proportions_near_one_counts_no_table_where_everyone_responded():
+    """The table where every subject of both groups responded rejected on an infinite statistic before it was made
+    one without information: at P1 = P2 = 0.95, 20 per group and OR0 = 0.302 the exact power was 0.25488, where a
+    60-digit enumeration gives 0.12637."""
+    row = first_row(run("prop.two.ni", "power", {"scale": "or", "method": "exact", "p1": "0.95", "p2": "0.95",
+                                                 "n1": "20", "or0": "0.302", "h1": "upper", "alpha": "0.025"}))
+    assert row["power"] == pytest.approx(0.1263705114339569, abs=1e-12), row
+
+
+@pytest.mark.parametrize("h1,d0", [("upper", "-5e-17"), ("upper", "-1e-20"), ("upper", "-1e-30"), ("lower", "1e-20")])
+def test_a_difference_margin_next_to_zero_leaves_the_table_where_everyone_responded_unrejected(h1, d0):
+    """At the boundary the table where every subject responded has P1 = 1 + D0 and P2 = 1: 1 − P1 = −D0 was lost to
+    rounding below about 5.6e-17, so that the table had no variance and its numerator −D0 an infinite statistic.  The
+    exact power and size at P1 = P2 = 0.95 and 20 per group were 0.1343 (0.0058 + 0.95^40), not the 0.0058 of a
+    margin of −1e-16, and an equivalence test with limits of ±1e-20 had a power of 0.95^40."""
+    base = {"scale": "diff", "method": "exact", "p1": "0.95", "p2": "0.95", "n1": "20", "alpha": "0.025"}
+    near = first_row(run("prop.two.ni", "power", {**base, "h1": "upper", "d0": "-1e-16"}))
+    row = first_row(run("prop.two.ni", "power", {**base, "h1": h1, "d0": d0}))
+    assert row["power"] == pytest.approx(near["power"], abs=1e-12), (row, near)
+    assert row["actual_alpha"] == pytest.approx(near["actual_alpha"], abs=1e-12), (row, near)
+    equiv = first_row(run("prop.two.equiv", "power", {**base, "alpha": "0.05", "dl": "-1e-20", "du": "1e-20"}))
+    assert equiv["power"] < 1e-12, equiv
+
+
+def test_a_superiority_test_with_a_negligible_difference_margin_needs_the_same_groups():
+    """D0 = −1e-20 gave 2 per group at an actual alpha of 0.96 (the table where every subject responded rejected)."""
+    base = {"scale": "diff", "method": "exact", "p1": "0.999", "p2": "0.99", "h1": "upper", "alpha": "0.025",
+            "power": "0.8"}
+    a, b = (first_row(run("prop.two.ni", "n", {**base, "d0": d0})) for d0 in ("-1e-15", "-1e-20"))
+    assert a["n1"] == b["n1"] == 910 and b["actual_alpha"] < 0.025, (a, b)
+
+
+@pytest.mark.parametrize("scale,inputs,power", [
+    ("diff", {"p1": "1e-20", "p2": "1e-20", "d0": "-1e-25"}, 0.024999999998568537),
+    ("diff", {"p1": "0.9999999999", "p2": "0.9999999999", "d0": "-1e-25"}, 0.025),
+    ("diff", {"p1": "0.999999", "p2": "0.9999995", "d0": "-1e-7", "n1": "10000000"}, 0.0014652489849946286),
+    ("ratio", {"p1": "1e-20", "p2": "1e-20", "r0": "0.8"}, 0.026439090706363813)])
+def test_score_tests_at_proportions_near_0_or_1_by_the_normal_approximation(scale, inputs, power):
+    """The restricted estimates lost their digits near 0 and 1 (the closed-form root of the difference's cubic is
+    off by 1e-16 or more whatever its size, and the smaller root of the ratio's quadratic cancelled to 0): at
+    P1 = P2 = 1e-20 the power was 50% where it is about α.  The references evaluate the same formula to 120 digits."""
+    row = first_row(run("prop.two.ni", "power", {"scale": scale, "method": "normal", "n1": "100", "h1": "upper",
+                                                 "alpha": "0.025", **inputs}))
+    assert row["power"] == pytest.approx(power, rel=1e-12), row
+
+
+@pytest.mark.parametrize("method,inputs", [
+    ("exact", {"p1": "0.001", "p2": "0.2", "n1": "50", "r0": "1e-17", "h1": "lower"}),
+    ("exact", {"p1": "1e-25", "p2": "0.2", "n1": "50", "r0": "1e-17", "h1": "lower"}),
+    ("exact", {"p1": "0.5", "p2": "1e-19", "n1": "30", "r0": "1e18", "h1": "upper"}),
+    ("normal", {"p1": "1e-25", "p2": "0.2", "n1": "50", "r0": "1e-17", "h1": "lower"})])
+def test_a_ratio_margin_far_from_one_rejects_no_table_it_should_not(method, inputs):
+    """(−B − √D)/(2A), the smaller root of the restricted estimates' quadratic, cancelled to 0 for a margin below about
+    1e-16 (or above 1e16 with a small P2): the table had no variance and an infinite statistic.  The exact power and
+    size were 95% and 99.999%, and the normal approximation 50%, where a 120-digit enumeration gives 0 (the actual
+    ratio lies far inside H0)."""
+    row = first_row(run("prop.two.ni", "power", {"scale": "ratio", "method": method, "alpha": "0.025", **inputs}))
+    assert row["power"] < 1e-12 and row.get("actual_alpha", 0) < 1e-12, row
+
+
+@pytest.mark.parametrize("inputs,size", [
+    ({"scale": "or", "p1": "0.6", "p2": "0.6", "n1": "4", "or0": "1e30", "h1": "lower"}, 2.5984000000000001736e-30),
+    ({"scale": "or", "p1": "0.999", "p2": "0.998", "n1": "25", "or0": "1e13", "h1": "lower"}, 5.01002004008015173e-15),
+    ({"scale": "or", "p1": "0.6", "p2": "0.6", "n1": "20", "or0": "1e-30", "h1": "upper"}, 2.9998903152467980833e-29),
+    ({"scale": "ratio", "p1": "0.3", "p2": "0.2", "n1": "30", "r0": "1e-20", "h1": "upper"}, 6e-20)])
+def test_the_exact_size_is_taken_at_the_boundary_itself(inputs, size):
+    """P1 was kept within 1e-9 of 0 and 1, so that the size at OR0 = 1e30 was 3.9e-9 where a 150-digit enumeration
+    gives 2.6e-30."""
+    row = first_row(run("prop.two.ni", "power", {"method": "exact", "alpha": "0.025", **inputs}))
+    assert row["actual_alpha"] == pytest.approx(size, rel=1e-9), row
+
+
 @pytest.mark.parametrize("pid,inputs", [
     ("prop.cc", {"es": "or", "or": "1e20"}),
     ("prop.two", {"es": "or", "or1": "1e14"}),
@@ -1091,9 +1163,29 @@ def test_a_given_odds_ratio_is_reported_as_given(pid, inputs):
 
 
 def test_a_cluster_ratio_that_leaves_group_2_no_clusters_is_refused():
-    """k2 = k1 × the ratio, rounded up, was 0: a power of 100% (from min(1, NaN + NaN)), as the k solve refuses."""
-    row = run("prop.two.cluster", "power", {**base_inputs("prop.two.cluster"), "k1": "10", "kr": "1e-12"})["rows"][0]
-    assert "group 2 would have no clusters" in row.get("_error", ""), row
+    """k2 = k1 × the ratio, rounded up, was 0: a power of 100% (from min(1, NaN + NaN)), as the k solve refuses.  A
+    product within 1e-9 above a whole number counts as that number, so that one of 1e-9 or less leaves group 2 none,
+    which the message of either mode says (the power's spoke of rounding up, which makes such a product 1)."""
+    base = base_inputs("prop.two.cluster")
+    says = "the cluster ratio is too small: group 2 would have no clusters (k1 × the cluster ratio is 1e-9 or less)"
+    for kr in ("1e-12", "5e-11"):
+        row = run("prop.two.cluster", "power", {**base, "k1": "10", "kr": kr})["rows"][0]
+        assert row.get("_error") == says, row
+    row = run("prop.two.cluster", "k", {**base, "kr": "1e-30"})["rows"][0]
+    assert row.get("_error") == says, row
+    assert first_row(run("prop.two.cluster", "power", {**base, "k1": "11", "kr": "1e-10"}))["k2"] == 1
+
+
+@pytest.mark.parametrize("odds_ratio", ["1e16", "1e20", "1e30"])
+def test_a_matched_case_control_study_with_an_odds_ratio_far_above_one(odds_ratio):
+    """1 − P1 and the chance that the case is the exposed member of a set, 1 − e, rounded to 0 once the odds ratio
+    passed about 1e16: the variance under H1 was 0 (no answer), and beyond the exposure of a control whose case was
+    not exposed was no number, refused as too strong a correlation φ, at φ = 0."""
+    base = {**base_inputs("prop.cc.matched"), "phi": "0"}
+    near = first_row(run("prop.cc.matched", "power", {**base, "or": "1e10"}))
+    row = first_row(run("prop.cc.matched", "power", {**base, "or": odds_ratio}))
+    assert row and row["or"] == float(odds_ratio), row
+    assert row["power"] == pytest.approx(near["power"], abs=1e-12), (row, near)
 
 
 def test_text_that_acts_on_a_message_is_written_out():

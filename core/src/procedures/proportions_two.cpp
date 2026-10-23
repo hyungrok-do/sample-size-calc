@@ -851,7 +851,9 @@ struct Matched {
 };
 
 Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
-  const double p1 = case_exposure(odds_ratio, p0), q1 = 1 - p1, q0 = 1 - p0;
+  // 1 − P1 and 1 − e below in the forms that keep their digits when the odds ratio is large (from about 1e16 they
+  // rounded to 0: the variance under H1 was 0, and the conditional exposure pm no number)
+  const double q0 = 1 - p0, p1 = case_exposure(odds_ratio, p0), q1 = q0 / (q0 + odds_ratio * p0);
   // exposure of a control given that its case is exposed (plus) or not (minus)
   const double pp = p0 + phi * std::sqrt(q1 * p0 * q0 / p1), pm = p0 - phi * std::sqrt(p1 * p0 * q0 / q1);
   if (!(pp >= 0 && pp <= 1 && pm >= 0 && pm <= 1))
@@ -865,7 +867,7 @@ Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
     const double e = t * odds_ratio / (t * odds_ratio + M - t + 1), e0 = t / (M + 1.0);
     mo.delta += pt * (e - e0);
     mo.v0 += pt * e0 * (1 - e0);
-    mo.v1 += pt * e * (1 - e);
+    mo.v1 += pt * e * (M - t + 1) / (t * odds_ratio + M - t + 1);
   }
   return mo;
 }

@@ -369,6 +369,30 @@ TEST_CASE("extremes: odds-ratio limits far from 1 never lower the power, and an 
   CHECK(empty.find("group 2 would have no clusters") != std::string::npos);
 }
 
+TEST_CASE("extremes: difference margins next to 0 and ratio margins far from 1 keep the tables' variances") {
+  auto row = [](const std::string& inputs) {
+    return run("prop.two.ni", "power", "{" + inputs + "}").get("rows").elements().at(0);
+  };
+  // in the table where every subject responded, 1 − P1 = −D0 was lost to rounding below about 5.6e-17: no variance,
+  // and an infinite statistic from the numerator −D0
+  const std::string diff = R"("scale":"diff","method":"exact","p1":"0.95","p2":"0.95","n1":"20","alpha":"0.025")";
+  const double near = row(diff + R"(,"h1":"upper","d0":"-1e-16")").get("power").as_number(NAN);
+  CHECK(near > 0.005 && near < 0.007);
+  for (const char* d0 : {"-5e-17", "-1e-20", "-1e-30"})
+    CHECK_CLOSE(row(diff + R"(,"h1":"upper","d0":")" + d0 + "\"").get("power").as_number(NAN), near, 1e-12, 0);
+  CHECK_CLOSE(row(diff + R"(,"h1":"lower","d0":"1e-20")").get("power").as_number(NAN), near, 1e-12, 0);
+  // the smaller root of the ratio's quadratic cancelled to 0 below a margin of about 1e-16, with the same effect
+  const json::Value ratio =
+      row(R"("scale":"ratio","method":"exact","p1":"0.001","p2":"0.2","n1":"50","alpha":"0.025","h1":"lower",)"
+          R"("r0":"1e-17")");
+  CHECK(ratio.get("power").as_number(NAN) < 1e-12);
+  CHECK(ratio.get("actual_alpha").as_number(NAN) < 1e-12);
+  // the exact size at the boundary itself, not at a P1 kept 1e-9 from 1 (150-digit enumeration)
+  const json::Value far =
+      row(R"("scale":"or","method":"exact","p1":"0.6","p2":"0.6","n1":"4","alpha":"0.025","h1":"lower","or0":"1e30")");
+  CHECK_CLOSE(far.get("actual_alpha").as_number(NAN), 2.5984e-30, 1e-9, 0);
+}
+
 TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an answer or a message") {
   struct Case {
     const char* request;

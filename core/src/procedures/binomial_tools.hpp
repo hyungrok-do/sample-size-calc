@@ -19,7 +19,9 @@ struct BinomWindow {
   double at(int x) const { return (x < lo || x > hi) ? 0.0 : pmf[static_cast<std::size_t>(x - lo)]; }
 };
 
-inline BinomWindow binom_window(int n, double p, double tail = 1e-16) {
+/// The window for p given together with q = 1 − p, which keeps the digits that 1 − p loses when p is a rounding error
+/// from 1.
+inline BinomWindow binom_window_pq(int n, double p, double q, double tail = 1e-16) {
   using namespace stats;
   BinomWindow w;
   if (n <= 0) {
@@ -27,12 +29,11 @@ inline BinomWindow binom_window(int n, double p, double tail = 1e-16) {
     w.pmf = {1.0};
     return w;
   }
-  if (p <= 0 || p >= 1) {
+  if (p <= 0 || q <= 0) {
     w.lo = w.hi = (p <= 0 ? 0 : n);
     w.pmf = {1.0};
     return w;
   }
-  const double q = 1 - p;
   int lo = 0, hi = n;
   if (n > 50) {
     lo = static_cast<int>(std::max(0.0, qbinom(tail, n, p) - 1));
@@ -58,6 +59,8 @@ inline BinomWindow binom_window(int n, double p, double tail = 1e-16) {
   }
   return w;
 }
+
+inline BinomWindow binom_window(int n, double p, double tail = 1e-16) { return binom_window_pq(n, p, 1 - p, tail); }
 
 /// Smallest c with P(X ≥ c | n, p) ≤ a  (n + 1 if none).
 inline int upper_critical(int n, double p, double a) {
