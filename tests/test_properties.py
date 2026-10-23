@@ -1028,11 +1028,72 @@ def test_a_win_ratio_median_of_about_zero(key):
     assert row and row["failures"] == 0 and row["power"] == pytest.approx(row["approx_power"], abs=0.15), row
 
 
-def test_odds_ratio_messages_speak_of_odds():
-    row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "scale": "or", "or0": "1e30"})["rows"][0]
-    assert "(odds OR0 times those of P2), must lie strictly between 0 and 1" in row["_error"], row
+def test_an_implied_p1_that_rounds_to_one_is_named():
     row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "es": "or", "or1": "1e30"})["rows"][0]
     assert row["_error"] == "the implied P1 = 1 is not strictly between 0 and 1", row
+
+
+@pytest.mark.parametrize("method", ["normal", "exact"])
+@pytest.mark.parametrize("p1,p2", [(0.6, 0.6), (0.3, 0.2), (0.95, 0.9), (0.05, 0.1), (0.999, 0.998)])
+def test_widening_an_odds_ratio_margin_never_lowers_the_power(method, p1, p2):
+    """Restricted estimates of the wrong sign gave 0% power once an upper limit was some 10^13 from 1, a 1 − P2
+    that lost its digits lowered the exact power from a lower limit of 10^-20 on, and a non-inferiority margin whose
+    boundary P1 rounds to 1 was refused."""
+    odds = p1 / (1 - p1) / (p2 / (1 - p2))
+    common = {"scale": "or", "p1": str(p1), "p2": str(p2), "n1": "60", "method": method}
+    steps = [10.0 ** e for e in (0.2, 1, 4, 8, 12, 13, 14, 16, 20, 30)]
+    lo, hi = min(odds, 1) / 1.5, max(odds, 1) * 1.5  # the limits lie on either side of 1
+    for side in ("orl", "oru"):
+        powers = []
+        for f in steps:
+            limit = lo / f if side == "orl" else hi * f
+            if limit < 1e-30 or limit > 1e30:
+                continue
+            limits = {"orl": repr(lo), "oru": repr(hi), side: repr(limit)}
+            row = first_row(run("prop.two.equiv", "power", {**common, **limits}))
+            assert row, (side, limit)
+            powers.append(row["power"])
+        assert all(b >= a - 1e-12 for a, b in zip(powers, powers[1:])), (side, powers)
+    for h1, sign in (("upper", -1), ("lower", 1)):
+        powers = []
+        for f in steps:
+            margin = odds * f ** sign
+            if margin < 1e-30 or margin > 1e30:
+                continue
+            row = first_row(run("prop.two.ni", "power", {**common, "h1": h1, "or0": repr(margin)}))
+            assert row, (h1, margin)
+            powers.append(row["power"])
+        assert all(b >= a - 1e-12 for a, b in zip(powers, powers[1:])), (h1, powers)
+
+
+def test_an_exact_odds_ratio_test_far_from_one_rejects_the_tables_it_should():
+    """With P1 = 0.999 and P2 = 0.998 almost every table has a group whose subjects all responded.  For H1: OR >
+    10^-13 the test rejects every table but those where all of group 2 responded (power 1 − 0.998^25), and for
+    H1: OR > 10^13 none: the numerator ph1 − pt1, a rounding error off 0 with no information to weigh it, gave
+    99.97% and 100%."""
+    base = {"scale": "or", "method": "exact", "p1": "0.999", "p2": "0.998", "n1": "25", "h1": "upper", "alpha": "0.025"}
+    row = first_row(run("prop.two.ni", "power", {**base, "or0": "1e-13"}))
+    assert row["power"] == pytest.approx(1 - 0.998 ** 25, abs=1e-12), row
+    row = first_row(run("prop.two.ni", "power", {**base, "or0": "1e13"}))
+    assert row["power"] < 1e-12, row
+
+
+@pytest.mark.parametrize("pid,inputs", [
+    ("prop.cc", {"es": "or", "or": "1e20"}),
+    ("prop.two", {"es": "or", "or1": "1e14"}),
+    ("prop.two.equiv", {"scale": "or", "es": "or", "or1": "1e12", "orl": "0.5", "oru": "1e13"})])
+def test_a_given_odds_ratio_is_reported_as_given(pid, inputs):
+    """Recomputed from a P1 near 1, the odds ratio lost its digits with 1 − P1 (and was infinite once P1 rounded to
+    1): an odds ratio of 10^12 was reported as 9.9999 × 10^11."""
+    row = first_row(run(pid, "power", {**base_inputs(pid), **inputs}))
+    key = "or1" if pid == "prop.two.equiv" else "or"
+    assert row and row[key] == float(inputs["or1" if "or1" in inputs else "or"]), row
+
+
+def test_a_cluster_ratio_that_leaves_group_2_no_clusters_is_refused():
+    """k2 = k1 × the ratio, rounded up, was 0: a power of 100% (from min(1, NaN + NaN)), as the k solve refuses."""
+    row = run("prop.two.cluster", "power", {**base_inputs("prop.two.cluster"), "k1": "10", "kr": "1e-12"})["rows"][0]
+    assert "group 2 would have no clusters" in row.get("_error", ""), row
 
 
 def test_text_that_acts_on_a_message_is_written_out():

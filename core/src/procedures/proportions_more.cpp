@@ -77,16 +77,32 @@ void rmle_ratio(double ph1, double ph2, double theta, double phi, double& pt1, d
 }
 
 // Odds ratio: maximize under p1/(1 − p1) = psi · p2/(1 − p2).  The score equations keep the expected number of
-// responses n1·p1 + n2·p2 at the observed one, a quadratic in p2 (Miettinen & Nurminen 1985), whose root in [0, 1]
-// is taken without cancellation (the quadratic is linear when psi = 1).
-void rmle_odds(double ph1, double ph2, double theta, double psi, double& pt1, double& pt2) {
-  const double m = ph1 + theta * ph2;  // responses per subject of group 1
-  const double a = theta * (psi - 1), b = psi + theta - m * (psi - 1), c = -m;
-  const double q = -0.5 * (b + std::copysign(std::sqrt(std::max(0.0, b * b - 4 * a * c)), b));
-  double root = q != 0 ? c / q : 0;
-  if (!(root >= -1e-12 && root <= 1 + 1e-12) && a != 0) root = q / a;
-  pt2 = std::min(std::max(root, 0.0), 1.0);
-  pt1 = psi * pt2 / (1 + (psi - 1) * pt2);
+// responses n1·p1 + n2·p2 at the observed one, a quadratic f(p2) = a·p2² + b·p2 − m (Miettinen & Nurminen 1985)
+// that rises through 0 once in [0, 1]: f(0) = −m, f(1) = psi·w.  That root, (√D − b)/(2a), and beyond 1/2 its
+// complement, the root of g(u) = f(1 − u) where it falls, are each taken in the form that does not cancel (the
+// quadratic is linear when psi = 1), so that P1 and 1 − P1 keep their digits however far psi is from 1; q1 and q2
+// are 1 − pt1 and 1 − pt2.
+void rmle_odds(double ph1, double ph2, double theta, double psi, double& pt1, double& pt2, double& q1, double& q2) {
+  const double m = ph1 + theta * ph2;              // responses per subject of group 1
+  const double w = (1 - ph1) + theta * (1 - ph2);  // and the others
+  const double a = theta * (psi - 1), b = psi * ((1 - ph1) - theta * ph2) + theta + m;
+  const double bu = -(psi * (theta + w) + ph1 - theta * (1 - ph2)), cu = psi * w;  // g(u) = a·u² + bu·u + cu
+  // the discriminant (the same for f and g) from whichever form adds two terms of one sign
+  const double d = std::sqrt(std::max(0.0, a > 0 ? b * b + 4 * a * m : bu * bu - 4 * a * cu));
+  pt2 = std::min(std::max(b < 0 ? (d - b) / (2 * a) : 2 * m / (b + d), 0.0), 1.0);
+  // 1 − p2 by subtraction up to p2 = 1/2 (where it is exact to rounding), from g beyond
+  q2 = pt2 <= 0.5 ? 1 - pt2 : std::min(std::max(bu > 0 ? -(bu + d) / (2 * a) : 2 * cu / (d - bu), 0.0), 1.0);
+  // P1 = odds/(q2 + odds) and 1 − P1, the smaller of the two divided out and the other by subtraction, so that P1 is
+  // exactly 1 (and 1 − P1 exactly 0) when 1 − p2 is 0: the score test then sees no information rather than a
+  // numerator one rounding error off 0
+  const double odds = psi * pt2;
+  if (odds <= q2) {
+    pt1 = odds / (q2 + odds);
+    q1 = 1 - pt1;
+  } else {
+    q1 = q2 / (q2 + odds);
+    pt1 = 1 - q1;
+  }
 }
 
 enum class Scale { Diff, Ratio, Odds };
@@ -106,6 +122,12 @@ struct Score {
   double num, var0, g1, g2;
 };
 
+// x − y for proportions given with their complements qx and qy: the difference of the pair with the smaller
+// numbers, whose rounding errors are the smaller.
+double diff_of(double x, double qx, double y, double qy) {
+  return std::max(x, y) <= std::max(qx, qy) ? x - y : qy - qx;
+}
+
 Score fm_score(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
   const double theta = n2 / n1;
   double pt1, pt2;
@@ -114,10 +136,22 @@ Score fm_score(const NiSpec& S, double ph1, double ph2, double n1, double n2) {
     return {ph1 - S.bound * ph2, pt1 * (1 - pt1) / n1 + S.bound * S.bound * pt2 * (1 - pt2) / n2, 1, -S.bound};
   }
   if (S.scale == Scale::Odds) {
-    rmle_odds(ph1, ph2, theta, S.bound, pt1, pt2);
-    const double a = n1 * pt1 * (1 - pt1), b = n2 * pt2 * (1 - pt2);  // each group's information
-    if (!(a + b > 0)) return {ph1 - pt1, 0, 1, 0};                     // every response alike: no information
-    return {ph1 - pt1, a * b / (a + b) / (n1 * n1), b / (a + b), -a / (a + b) * theta};
+    double q1, q2;
+    rmle_odds(ph1, ph2, theta, S.bound, pt1, pt2, q1, q2);
+    const double a = n1 * pt1 * q1, b = n2 * pt2 * q2;  // each group's information
+    // the numerator; below 1e-6 it is taken again from the group whose numbers are the smaller, proportions or
+    // complements (θ(pt2 − ph2) is what the score equations make it): with psi far from 1 it can lie far below the
+    // proportions, whose rounding errors would swamp it (a numerator a rounding error off 0, with no information to
+    // weigh it, was an infinite statistic)
+    double num = ph1 - pt1;
+    if (std::fabs(num) < 1e-6) {
+      const double s1 = std::min(std::max(ph1, pt1), std::max(1 - ph1, q1));
+      const double s2 = theta * std::min(std::max(ph2, pt2), std::max(1 - ph2, q2));
+      num = s1 <= s2 ? diff_of(ph1, 1 - ph1, pt1, q1) : theta * diff_of(pt2, q2, ph2, 1 - ph2);
+    }
+    if (!(a + b > 0)) return {num, 0, 1, 0};  // every response alike: no information
+    const double inv = 1 / (a + b);            // one division for the three terms (paid at every table enumerated)
+    return {num, a * b * inv / (n1 * n1), b * inv, -a * inv * theta};
   }
   rmle_diff(ph1, ph2, theta, S.bound, pt1, pt2);
   return {ph1 - ph2 - S.bound, pt1 * (1 - pt1) / n1 + pt2 * (1 - pt2) / n2, 1, -1};
@@ -235,6 +269,12 @@ double measure(Scale sc, double p1, double p2) {
   if (sc == Scale::Ratio) return p1 / p2;
   if (sc == Scale::Odds) return p1 / (1 - p1) / (p2 / (1 - p2));
   return p1 - p2;
+}
+
+// The actual value on a scale: the odds ratio itself when it was given (recomputed from a P1 near 1, it would lose
+// its digits with 1 − P1), otherwise the comparison of the proportions.
+double actual_measure(const Scenario& s, Scale sc, double p1, double p2) {
+  return sc == Scale::Odds && s.is("es", "or") ? s("or1") : measure(sc, p1, p2);
 }
 
 // Result keys and words for each scale: the boundary, the actual value, the quantity.
@@ -381,13 +421,12 @@ Procedure two_prop_ni() {
     const char* bkey = sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0");
     const NiSpec S{sc, s(bkey), s.is("h1", "upper"), s("alpha")};
     const double p2 = s("p2"), p1 = p1_from(s, p2);
-    const double p10 = p1_at(sc, S.bound, p2);  // P1 on the boundary of H0
-    if (!(p10 > 0 && p10 < 1))
+    // P1 on the boundary of H0; with an odds ratio it always lies between 0 and 1, though it may round to 1 (only
+    // the exact size uses it, kept below 1)
+    const double p10 = p1_at(sc, S.bound, p2);
+    if (sc != Scale::Odds && !(p10 > 0 && p10 < 1))
       throw CalcError("the boundary of the null hypothesis, P1 = " + fnum(p10) +
-                      (sc == Scale::Ratio  ? " (R0 × P2)"
-                       : sc == Scale::Odds ? " (odds OR0 times those of P2)"
-                                           : " (P2 + D0)") +
-                      ", must lie strictly between 0 and 1");
+                      (sc == Scale::Ratio ? " (R0 × P2)" : " (P2 + D0)") + ", must lie strictly between 0 and 1");
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     ExactSearch search;
@@ -405,7 +444,7 @@ Procedure two_prop_ni() {
     };
     TwoN n;
     if (s.solve == "n") {
-      const double act = measure(sc, p1, p2);
+      const double act = actual_measure(s, sc, p1, p2);
       if ((S.upper && act <= S.bound) || (!S.upper && act >= S.bound))
         throw CalcError("the actual effect does not lie inside the alternative hypothesis");
       const double zf = z_factor(S.alpha, s("power"), Alt::Upper);
@@ -432,7 +471,7 @@ Procedure two_prop_ni() {
     r.set("p1", p1);
     r.set("p2", p2);
     r.set(bkey, S.bound);
-    r.set(actual_key(sc), measure(sc, p1, p2));
+    r.set(actual_key(sc), actual_measure(s, sc, p1, p2));
     r.set("alpha", S.alpha);
     if (exact && !fell_back && !ctx.curve_points) {  // a curve uses only the power
       const double size = fm_power_exact({S}, n.n1, n.n2, std::min(std::max(p10, 1e-9), 1 - 1e-9), p2, ctx);
@@ -566,7 +605,7 @@ Procedure two_prop_equiv() {
     const char* lkey = sc == Scale::Ratio ? "rl" : (sc == Scale::Odds ? "orl" : "dl");
     const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
     const double p2 = s("p2"), p1 = p1_from(s, p2), alpha = s("alpha");
-    const double lo = s(lkey), hi = s(ukey), act = measure(sc, p1, p2);
+    const double lo = s(lkey), hi = s(ukey), act = actual_measure(s, sc, p1, p2);
     if (!(act > lo && act < hi))
       throw CalcError("the actual " + std::string(sc == Scale::Ratio ? "ratio P1/P2" : (sc == Scale::Odds ? "odds ratio"
                                                                                                         : "difference")) +
@@ -1086,6 +1125,9 @@ Procedure cluster_props() {
       k1 = solve::min_n(P, s("power"), o, &ctx);
     } else {
       k1 = s("k1");
+      if (k2_of(k1) < 1)
+        throw CalcError("the cluster ratio is too small: group 2 would have no clusters (k1 × the cluster ratio, "
+                        "rounded up)");
     }
     const double k2 = k2_of(k1);
     r.set("k1", k1);
