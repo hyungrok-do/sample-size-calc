@@ -1,49 +1,111 @@
 name: CI
 
-# Debug branch only: why WebKit keeps no offline copies (web/tests/sw-debug.mjs).  The engines are committed here
-# (built locally) so the job needs no Emscripten build.
+# Debug branch only: Playwright's container for the Firefox and WebKit jobs, before main takes it.
+
 on:
   push:
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  webkit-debug:
-    name: Service worker caches in webkit
+  web:
+    name: WebAssembly engine and frontend
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Browser
+      - name: Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.13
+          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.13
+      - name: C++ tests under Node (the threaded build)
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcmake cmake -S . -B build-wasm-tests -DCMAKE_BUILD_TYPE=Release -DSSC_WASM_THREADS=ON -DSSC_BUILD_TESTS=ON
+          cmake --build build-wasm-tests --parallel
+          node build-wasm-tests/ssc_tests.js
+      - name: The web page's engines
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          web/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-engines
+          path: web/engine/
+          retention-days: 3
+      - name: Guide coverage and number formatting
         run: |
           npm ci --prefix web
           cd web
-          # the package mirror can stall: bounded, and tried once more
-          timeout 600 npx playwright install-deps webkit || timeout 900 npx playwright install-deps webkit
-          for attempt in 1 2 3; do
-            timeout 300 npx playwright install webkit && break
-            if [ "$attempt" = 3 ]; then exit 1; fi
-          done
-      - name: Whether the copies are lost to writes still under way when the network goes down
-        timeout-minutes: 45
+          npx playwright install --with-deps chromium
+          npm test
+      - name: Guide and calculator in Chromium
+        if: ${{ !cancelled() }}
+        run: cd web && npm run test:browser
+      - name: The testers' fixes, responsiveness and engine fallback in Chromium
+        if: ${{ !cancelled() }}
+        run: cd web && npm run test:page
+      - name: The site as published (web/assemble.sh) in Chromium
+        if: ${{ !cancelled() }}
         run: |
-          web/assemble.sh "$RUNNER_TEMP/site" "dbg-${GITHUB_SHA::7}"
-          web/assemble.sh "$RUNNER_TEMP/site-once" "dbg-${GITHUB_SHA::7}"
-          python3 web/tests/put-once.py "$RUNNER_TEMP/site-once"
-          cd web
-          for config in "site:" "site:update" "site:settle1"; do
-            dir=${config%%:*}; variant=${config#*:}
-            pass=0; fail=0
-            for run in 1 2 3 4 5 6 7 8; do
-              if SSC_BROWSER=webkit VARIANT=$variant timeout 240 node tests/site-variant.mjs "$RUNNER_TEMP/$dir" > /tmp/out.txt 2>&1; then
-                pass=$((pass + 1))
-              else
-                fail=$((fail + 1)); grep -m1 -o '"status": "[^"]*"' /tmp/out.txt || tail -3 /tmp/out.txt; grep -m1 '^update:' /tmp/out.txt || true
-              fi
-            done
-            echo "=== $dir ${variant:-as is}: $pass passed, $fail failed"
-          done
+          web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
+          cd web && npm run test:site -- "$RUNNER_TEMP/site"
+
+  browsers:
+    name: Web page in ${{ matrix.browser }}
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+        playwright: ["1.57.0"]  # the version web/package.json pins (checked below)
+    # Playwright's image holds the browsers and the system libraries they need: nothing comes through apt, whose
+    # mirror twice took the 20 minutes the step had (50 MB of WebKit's libraries at 60 KB/s), or the browser
+    # download, which once stalled for half an hour.  The runner's user, as Firefox wants to own its home.
+    container:
+      image: mcr.microsoft.com/playwright:v${{ matrix.playwright }}-noble
+      options: --user 1001 --ipc=host
+    env:
+      SSC_BROWSER: ${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-engines
+          path: web/engine
+      - name: Browser
+        id: browser
+        timeout-minutes: 10
+        run: |
+          pinned=$(node -p "require('./web/package.json').devDependencies.playwright")
+          if [ "$pinned" != "${{ matrix.playwright }}" ]; then
+            echo "web/package.json pins Playwright $pinned: set the image's version to it in ci.yml" >&2
+            exit 1
+          fi
+          npm ci --prefix web
+      - name: Guide and calculator
+        run: cd web && npm run test:browser
+      - name: The testers' fixes and responsiveness
+        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
+        run: cd web && npm run test:page
+      - name: The site as published
+        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
+        run: |
+          web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
+          cd web && npm run test:site -- "$RUNNER_TEMP/site"

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "engine/parse.hpp"
 #include "engine/runner.hpp"
 #include "testing.hpp"
 #include "util/json.hpp"
@@ -126,8 +127,20 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK_EQ(first_mu1("\u22120.5"), -0.5);
   CHECK_EQ(first_mu1("0.75\u00a0"), 0.75);
   CHECK_EQ(first_mu1("\u2009 0.25\u202f"), 0.25);
-  // a long text is refused before it is read
+  // a long text is refused before it is read; the limit counts characters, not bytes
   CHECK(message(std::string(1000001, '1')).find("too long") != std::string::npos);
+  std::string accents;
+  for (int i = 0; i < 600000; ++i) accents += "\u00e9";
+  CHECK(message(accents).find("too long") == std::string::npos);
+  // characters that would act on the message are written out: a right-to-left override, a joiner, NUL, a
+  // combining mark
+  const std::string rlo = message("\u202e0.5");
+  CHECK(rlo.find("\\u{202E}0.5") != std::string::npos);
+  CHECK(rlo.find("\u202e") == std::string::npos);
+  CHECK(message("1\\u0000x").find("\\u{0}") != std::string::npos);  // NUL, escaped in the request
+  CHECK(message("0.0\u0301").find("\\u{301}") != std::string::npos);
+  CHECK(message("1\u200dx").find("\\u{200D}") != std::string::npos);
+  CHECK_EQ(parse::quoted("abc\u00e9"), std::string("abc\u00e9"));
   // objects and arrays nested beyond any request are refused, not followed into a stack overflow
   std::string deep = R"({"procedure":"means.two.t","inputs":{"x":)";
   for (int i = 0; i < 100000; ++i) deep += '[';

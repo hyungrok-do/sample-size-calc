@@ -587,10 +587,17 @@ int edit_distance(const std::string& a, const std::string& b, int limit) {
   return std::min(prev[m], limit + 1);
 }
 
-Result query(const std::string& text, std::size_t limit) {
+Result query(const std::string& full, std::size_t limit) {
   const Index& idx = the_index();
-  const std::vector<Clause> clauses = parse_query(idx, text);
+  // a study is described in a few sentences: of a longer text (a pasted document) the first 2,000 bytes are read
+  // (in whole characters) and at most 64 of its words count, so a megabyte cost seconds and gigabytes no more
+  std::size_t cut = std::min<std::size_t>(full.size(), 2000);
+  while (cut < full.size() && cut > 0 && (static_cast<unsigned char>(full[cut]) & 0xC0) == 0x80) --cut;
+  const std::string text = full.substr(0, cut);
+  std::vector<Clause> clauses = parse_query(idx, text);
+  if (clauses.size() > 64) clauses.resize(64);
   Result res;
+  res.query = text;
   if (clauses.empty()) return res;
   const std::size_t n = idx.ids.size();
   std::vector<double> total(n, 0.0);
@@ -614,7 +621,8 @@ Result query(const std::string& text, std::size_t limit) {
     for (std::size_t d = 0; d < n; ++d) {
       if (best[d] <= 0) continue;
       total[d] += best[d];
-      matched[d].push_back(idx.surface[via[d]]);
+      if (std::find(matched[d].begin(), matched[d].end(), idx.surface[via[d]]) == matched[d].end())
+        matched[d].push_back(idx.surface[via[d]]);  // each term once
       if (!described[d]) continue;
       ++satisfied[d];
       required_met[d] += c.required;

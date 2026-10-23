@@ -262,6 +262,18 @@ double pbeta_raw(double x, double a, double b, bool lower, double y) {
       const double J = beta_asymptotic(b, a, -lambda);  // I_y(b, a) = 1 − I_x(a, b)
       return lower ? 1 - J : J;
     }
+    // beyond, the tail is below e^(−4000) from 1e7 on (λ is over 95 of its standard deviations, √(ab/(a+b+1)),
+    // from the mean): it rounds to 0
+    if (std::fmin(a, b) >= 1e7) return (lambda > 0) == lower ? 0.0 : 1.0;
+  }
+  // One shape parameter astronomically larger than the other (the Poisson terms of a noncentral F with an
+  // enormous noncentrality): the series and the continued fraction cannot resolve a + m there.  As b → ∞,
+  // −(b + (a − 1)/2)·ln(1 − x) has the Gamma(a) distribution, with a relative error of about 16·(a/b)², under
+  // 2e-17 here.
+  if (std::fmax(a, b) >= 1e15 && std::fmin(a, b) <= 1e-9 * std::fmax(a, b)) {
+    if (b > a) return pgamma_raw((b + (a - 1) / 2) * (x < 0.5 ? -std::log1p(-x) : -std::log(y)), a, lower);
+    // I_x(a, b) = 1 − I_y(b, a)
+    return pgamma_raw((a + (b - 1) / 2) * (y < 0.5 ? -std::log1p(-y) : -std::log(x)), b, !lower);
   }
   // Series in whichever variable makes (a+b)·var small (one shape parameter
   // small, the other large, near the mean).  Accept the result when the

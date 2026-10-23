@@ -22,6 +22,7 @@ import argparse
 import math
 import os
 import re
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
@@ -333,7 +334,22 @@ def build_server(limits: Optional[Limits] = None):
     return server
 
 
+def _fewer_malloc_arenas() -> None:
+    """glibc keeps freed memory in an arena per thread (up to 8 a core), and an HTTP server has many threads: under
+    eight clients its memory rose from 73 MB to about 400 MB and stayed, though what it used stayed near 20 MB.
+    Two arenas kept it near 100 MB.  (Only this server's own process; elsewhere the library leaves malloc alone.)"""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).mallopt(-8, 2)  # M_ARENA_MAX; a C library without mallopt (musl) is left as it is
+    except (OSError, AttributeError):
+        pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    _fewer_malloc_arenas()
     ap = argparse.ArgumentParser(prog="ssc-mcp", description="The sample size calculator as an MCP server.")
     ap.add_argument("--transport", choices=["stdio", "http"], default="stdio",
                     help="stdio for a local client (default); http (Streamable HTTP) to host it")
@@ -346,8 +362,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         server = build_server(Limits.for_transport(args.transport))
     except ImportError:
-        import sys
-
         print("ssc-mcp needs the MCP package: pip install \"sample-size-calculator[mcp]\" (or pip install mcp)",
               file=sys.stderr)
         return 1

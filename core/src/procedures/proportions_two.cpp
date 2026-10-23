@@ -214,10 +214,10 @@ double p1_from_effect(const Scenario& s, double p2) {
     p1 = p2 * s("r1");
   else if (es == "or") {
     const double o = s("or1") * p2 / (1 - p2);
-    p1 = o / (1 + o);
+    p1 = std::isinf(o) ? 1 : o / (1 + o);  // odds past the largest double: P1 is 1
   } else
     p1 = s("p1");
-  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not between 0 and 1");
+  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not strictly between 0 and 1");
   return p1;
 }
 
@@ -317,9 +317,10 @@ Procedure two_props() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto power = [&](double n1, double n2, double x) {
-      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      if (exact && !on_curve_too_long(ctx, exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, x, p2,
-                                                             T.test == "fisher"))) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
+      // judged at its curve's largest point (in either group)
+      const TwoN last = ctx.curve_last ? two_group_n(*ctx.curve_last) : TwoN{n1, n2};
+      if (exact && !on_curve_too_long(ctx, exact_power_work(last.n1, last.n2, x, p2, T.test == "fisher"))) {
         const double pw = two_prop_exact(T, n1, n2, x, p2, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
@@ -339,7 +340,8 @@ Procedure two_props() {
                        ((p1 - p2) * (p1 - p2));
       // the groups the search tries: with a ratio allocation, group 2 is R times group 1
       const double ratio = s.is("alloc", "ratio") ? s("r") : 1.0, g1 = g * (1 + 1 / ratio) / 2;
-      if (exact && exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
+      if (exact && exact_search_work(g1, ratio * g1, p1, p2, T.test == "fisher") > EXACT_SEARCH_BUDGET)
+        exact = false, fell_back = true;
       n = solve_two_group_n(
           s, [&](double a1, double a2) { return power(a1, a2, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
     } else {
@@ -348,8 +350,17 @@ Procedure two_props() {
         p1 = p1_from_effect(s, p2);
       } else {
         const bool up = a == Alt::Upper || (a == Alt::Two && !s.is("p1dir", "below"));
-        auto f = [&](double x) { return power(n.n1, n.n2, x) - s("power"); };
         const double lo = up ? p2 : 1e-9, hi = up ? 1 - 1e-9 : p2;
+        // the search evaluates the power some 40 times: past the exact search's budget (judged at the approximate
+        // answer), the normal approximation
+        if (exact) {
+          auto g = [&](double x) { return two_prop_normal(T, n.n1, n.n2, x, p2) - s("power"); };
+          if (g(p2) < 0 && g(up ? hi : lo) >= 0 &&
+              40 * exact_power_work(n.n1, n.n2, numerics::brent(g, lo, hi, 1e-9), p2, T.test == "fisher") >
+                  EXACT_SEARCH_BUDGET)
+            exact = false, fell_back = true;
+        }
+        auto f = [&](double x) { return power(n.n1, n.n2, x) - s("power"); };
         if (f(p2) >= 0) throw CalcError("the target power must exceed the power at P1 = P2 (the significance level)");
         if (f(up ? hi : lo) < 0) throw CalcError("the target power cannot be reached with these sample sizes");
         p1 = numerics::brent(f, lo, hi, 1e-11);
@@ -699,17 +710,19 @@ Procedure case_control() {
     const TwoPropTest T{s.s("test"), a, s("alpha")};
     bool exact = s.is("method", "exact");
     bool fell_back = false;
+    auto controls = [&](double cases) { return std::ceil(m * cases - 1e-9); };
     auto power = [&](double n1, double n2, double x) {
-      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      if (exact && !on_curve_too_long(ctx, exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, x, p0,
-                                                             T.test == "fisher"))) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
+      // judged at its curve's largest point
+      const double last1 = ctx.curve_last ? (*ctx.curve_last)("ncase") : n1;
+      const double last2 = ctx.curve_last ? controls(last1) : n2;
+      if (exact && !on_curve_too_long(ctx, exact_power_work(last1, last2, x, p0, T.test == "fisher"))) {
         const double pw = two_prop_exact(T, n1, n2, x, p0, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
       }
       return two_prop_normal(T, n1, n2, x, p0);
     };
-    auto controls = [&](double cases) { return std::ceil(m * cases - 1e-9); };
     TwoN n;
     double p1;
     if (s.solve == "n") {
@@ -722,7 +735,8 @@ Procedure case_control() {
       const double pb = (p1 + m * p0) / (1 + m);
       const double g = std::pow(za * std::sqrt((1 + 1 / m) * pb * (1 - pb)) + zb * std::sqrt(p1 * (1 - p1) + p0 * (1 - p0) / m), 2) /
                        ((p1 - p0) * (p1 - p0));
-      if (exact && exact_search_work(g, m * g, p1, p0) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
+      if (exact && exact_search_work(g, m * g, p1, p0, T.test == "fisher") > EXACT_SEARCH_BUDGET)
+        exact = false, fell_back = true;
       Scenario t = s;  // the two-group search with controls = M × cases
       t.sel["alloc"] = "ratio";
       t.num["r"] = m;
@@ -734,8 +748,17 @@ Procedure case_control() {
         p1 = s.is("es", "p1") ? s("p1") : case_exposure(s("or"), p0);
       } else {
         const bool up = a == Alt::Upper || (a == Alt::Two && !s.is("ordir", "below"));
-        auto f = [&](double x) { return power(n.n1, n.n2, x) - s("power"); };
         const double lo = up ? p0 : 1e-9, hi = up ? 1 - 1e-9 : p0;
+        // the search evaluates the power some 40 times: past the exact search's budget (judged at the approximate
+        // answer), the normal approximation
+        if (exact) {
+          auto g = [&](double x) { return two_prop_normal(T, n.n1, n.n2, x, p0) - s("power"); };
+          if (g(p0) < 0 && g(up ? hi : lo) >= 0 &&
+              40 * exact_power_work(n.n1, n.n2, numerics::brent(g, lo, hi, 1e-9), p0, T.test == "fisher") >
+                  EXACT_SEARCH_BUDGET)
+            exact = false, fell_back = true;
+        }
+        auto f = [&](double x) { return power(n.n1, n.n2, x) - s("power"); };
         if (f(p0) >= 0) throw CalcError("the target power must exceed the power at OR = 1 (the significance level)");
         if (f(up ? hi : lo) < 0) throw CalcError("the target power cannot be reached with these numbers of cases and controls");
         p1 = numerics::brent(f, lo, hi, 1e-11);

@@ -152,8 +152,10 @@ try {
     assert.equal(await p.textContent('#timing'), timing);
     assert.match(await p.textContent('#bench-out'), /Stopped/);
   });
-  await check('a 20,000-scenario answer never stalls the page for long', async () => {
+  await check('a 20,000-scenario answer never stalls the page for long, and its engine is replaced after it', async () => {
     await show(p, 'means.two.t');
+    const engines = [];  // engine workers started from here on (the multi-core engine's own threads aside)
+    p.on('worker', (w) => { if (/worker\.js\?/.test(w.url())) engines.push(w.url()); });
     await p.click('#solve label >> nth=1'); await p.fill('#in-n1', '2 to 10001'); await p.fill('#in-alpha', '0.05 0.01');
     await p.evaluate(() => {
       window.__gap = 0; let last = performance.now();
@@ -184,6 +186,10 @@ try {
     assert.match(await p.textContent('#result'), /20,000/);
     // answered by the multi-core engine itself, not the one-thread engine after it stopped
     if (await p.evaluate(() => navigator.hardwareConcurrency) > 1) assert.match(await p.textContent('#engine-status'), /\d+ threads/);
+    // the heap such an answer leaves (about 90 MB) is given back by a fresh engine once idle; the multi-core
+    // engine's memory is 128 MB from the start, so its heap is what tells
+    for (let t = 0; t < 100 && engines.length === 0; t++) await p.waitForTimeout(100);
+    assert.equal(engines.length, 1, 'a fresh engine replaces the one the answer left big');
     return `longest pause ${Math.round(gap)} ms`;
   });
   await p.context().close();

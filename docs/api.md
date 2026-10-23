@@ -233,6 +233,9 @@ does:
   as a phrase of a procedure's name; a procedure id typed exactly comes first.
   Every distinctive word must match; if no procedure has them all, the
   procedures matching most of them are returned with `partial` set.
+- **Long text.** Only the first 2,000 bytes of a query are read (cut at a
+  character boundary), and only its first 64 words; `query` gives the text
+  as read.
 
 The index is built once, on first use, in about 20 ms. A query then takes a
 few hundredths of a millisecond, including the call from Python. The relevance benchmark in

@@ -493,17 +493,33 @@ json::Value run_request(const json::Value& req, Token* token) {
   token->set_total(static_cast<long>(count) * units + static_cast<long>(n_curves) * curve_points);
   std::vector<Row> rows(count);
   std::atomic<bool> tables_dropped{false}, curve_approximated{false};
+  bool curves_drawn = false;
   RunContext ctx{token, threads, approximate, nullptr};
   auto answer_key = [&](const std::string& solve) {
     for (const auto& o : proc->solve_for)
       if (o.value == solve) return o.ykey.empty() ? o.value : o.ykey;
     return solve;
   };
-  auto nan_cell = [](const Row& r, const std::string& key) {  // no number, or an infinite one
+  auto cell = [](const Row& r, const std::string& key) -> const double* {
     for (const auto& kv : r.cells)
-      if (kv.first == key)
-        return std::holds_alternative<double>(kv.second) && !std::isfinite(std::get<double>(kv.second));
-    return false;
+      if (kv.first == key) return std::get_if<double>(&kv.second);
+    return nullptr;
+  };
+  auto nan_cell = [&](const Row& r, const std::string& key) {  // no number, or an infinite one
+    const double* v = cell(r, key);
+    return v && !std::isfinite(*v);
+  };
+  // the counts of the table (group sizes, controls, clusters): one that overflowed, or that no study could have
+  // (past 10^15; past 2^53 a double does not even hold whole numbers), says so rather than being shown
+  std::vector<std::string> count_keys;
+  if (proc->columns && count > 0)
+    for (const auto& c : proc->columns(scen[0]))
+      if (c.fmt == "int") count_keys.push_back(c.key);
+  auto bad_count = [&](const Row& r, const std::string& key) {
+    const double* v = cell(r, key);
+    if (!v) return false;
+    if (std::isnan(*v)) return key == "n" || key == "n1" || key == "n2";  // a criterion that does not apply is blank
+    return std::fabs(*v) > 1e15;
   };
   try {
     parallel_for(
@@ -526,6 +542,10 @@ json::Value run_request(const json::Value& req, Token* token) {
             for (const std::string& key : {answer_key(scen[i].solve), std::string("power")})
               if (nan_cell(r, key))
                 throw CalcError("the answer cannot be computed for these inputs; check for an extreme value");
+            for (const std::string& key : count_keys)
+              if (bad_count(r, key))
+                throw CalcError("the answer cannot be computed for these inputs: a count would be infinite or "
+                                "beyond 10^15; check for an extreme value");
             if (proc->statement) r.statement = proc->statement(scen[i], r);
             // 20,000 rows of group-sequential boundaries would take a gigabyte
             if (i >= MAX_TABLE_ROWS && !r.tables.empty()) {
@@ -782,7 +802,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   // one curve, which then carries one marker per solution.
   if (curve_ok) {
     struct CurveJob {
-      Scenario sc;
+      Scenario sc, last;  // its scenario, and that of its largest point
       std::string param, key, name;
       std::vector<double> xs, ys;
       std::vector<std::pair<double, double>> markers;
@@ -813,6 +833,7 @@ json::Value run_request(const json::Value& req, Token* token) {
         for (const auto& p : proc->params)
           if (p.id == kv.first && p.type == PType::Number && !job.sc.num.count(p.id)) job.sc.num[p.id] = *d;
       }
+      if (solving_effect && proc->curve_inputs) proc->curve_inputs(job.sc, rows[i]);
       auto alloc = job.sc.sel.find("alloc");
       if (alloc != job.sc.sel.end()) {
         const std::string a = alloc->second;
@@ -888,6 +909,8 @@ json::Value run_request(const json::Value& req, Token* token) {
       for (const auto& m : job.markers) grid.insert(m.first);
       job.xs.assign(grid.begin(), grid.end());
       job.ys.assign(job.xs.size(), NAN);
+      job.last = job.sc;
+      job.last.num[job.param] = job.xs.back();
     }
     std::vector<std::pair<std::size_t, std::size_t>> work;
     for (std::size_t j = 0; j < jobs.size(); ++j)
@@ -905,7 +928,7 @@ json::Value run_request(const json::Value& req, Token* token) {
             Scenario sc = job.sc;
             sc.num[job.param] = job.xs[work[w].second];
             RunContext point = curve_ctx;  // a series takes one method throughout: the one its largest point needs
-            if (job.xs[work[w].second] > 0) point.curve_scale = std::max(1.0, job.xs.back() / job.xs[work[w].second]);
+            point.curve_last = &job.last;
             Row r;
             try {
               proc->run(sc, r, point);
@@ -924,12 +947,10 @@ json::Value run_request(const json::Value& req, Token* token) {
       out.set("error", "Calculation cancelled.");
       return out;
     }
-    // each answer lies on its curve, whichever way the curve was computed
-    for (auto& job : jobs)
-      for (const auto& m : job.markers)
-        for (std::size_t k = 0; k < job.xs.size(); ++k)
-          if (job.xs[k] == m.first && std::isfinite(m.second)) job.ys[k] = m.second;
+    // each answer is marked at its own power: on its curve when the curve is computed as the answer is, near it
+    // when one of the two is an approximation (the notes say which); a curve takes one method throughout
     if (!jobs.empty()) {
+      curves_drawn = true;
       json::Value pl = json::Value::object();
       pl.set("kind", "curve");
       pl.set("x_key", jobs[0].param);  // the input along the x axis
@@ -986,6 +1007,8 @@ json::Value run_request(const json::Value& req, Token* token) {
   if (curve_approximated)
     notes.push("Where enumerating every point of a power curve would take long, the curve uses the normal "
                "approximation; the answers marked on it are those of the table.");
+  if (proc->simulation && !approximate && curves_drawn)
+    notes.push("The power curve comes from the analytic approximation; the simulated answers are marked on it.");
   if (tables_dropped) {
     notes.push("Detail tables are given for the first 1,000 scenarios.");  // MAX_TABLE_ROWS
     out.set("tables_rows", static_cast<double>(MAX_TABLE_ROWS));
@@ -1006,7 +1029,7 @@ json::Value run_request(const json::Value& req, Token* token) {
 json::Value search_json(const std::string& query, std::size_t limit) {
   const search::Result res = search::query(query, limit);
   json::Value o = json::Value::object();
-  o.set("query", query);
+  o.set("query", res.query);
   o.set("corrected", res.corrected);
   o.set("partial", res.partial);
   json::Value hits = json::Value::array();

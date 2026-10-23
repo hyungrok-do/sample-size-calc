@@ -668,6 +668,96 @@ def test_a_curve_names_the_input_it_varies():
         assert curve["x_key"] == key and curve["x_with"] == with_, inputs
 
 
+def test_an_exact_curve_takes_one_method_judged_at_its_largest_point():
+    """With N2 given apart from N1 the curve varies N1 alone.  Each point was judged by scaling both groups by the
+    curve's largest N1 over its own, which sent the small sizes (and their huge scaled N2) to the normal
+    approximation while the large ones stayed exact; each point now matches its own exact power."""
+    base = {**base_inputs("prop.two"), "method": "exact", "test": "zpool", "alloc": "sep", "n1": "200",
+            "n2": "400000", "es": "props", "p1": "0.5", "p2": "0.45"}
+    res = ssc.run("prop.two", "power", base, threads=1, power_curve=True)
+    series = next(p for p in res["plots"] if p["kind"] == "curve")["series"][0]
+    for x, y in list(zip(series["x"], series["y"]))[::10]:
+        row = ssc.run("prop.two", "power", {**base, "n1": str(int(x))}, threads=1, power_curve=False)["rows"][0]
+        assert y == pytest.approx(row["power"], abs=1e-12), x
+
+
+ANALYTIC_CURVE_CASES = [(pid, mode) for pid in IDS if not ssc.schema(pid).get("simulation") for mode in modes(pid)]
+
+
+@pytest.mark.parametrize("pid,mode", ANALYTIC_CURVE_CASES, ids=[f"{p}:{m}" for p, m in ANALYTIC_CURVE_CASES])
+def test_a_curve_passes_through_its_answer(pid, mode):
+    """A curve computed as its answer is gives the answer's power at the answer's size.  (Each answer was written
+    into its curve, which hid a curve drawn for the wrong effect and spiked one drawn another way.)"""
+    res = ssc.run(pid, mode, base_inputs(pid), threads=1, power_curve=True)
+    if not res.get("ok") or any("normal approximation; the answers marked" in t for t in res.get("notes", [])):
+        pytest.skip("no curve computed as the answer is")
+    for plot in [p for p in res["plots"] if p["kind"] == "curve"]:
+        for series in plot["series"]:
+            for x, y in series.get("markers", []):
+                if x in series["x"]:
+                    assert series["y"][series["x"].index(x)] == pytest.approx(y, abs=1e-7), (pid, mode, x)
+
+
+def test_a_solved_f_is_the_effect_of_its_curve():
+    """means.anova solved for f drew its curve with the means it was solved next to (0.913 at the answer's n,
+    against 0.800, with unequal groups)."""
+    res = ssc.run("means.anova", "f", {**base_inputs("means.anova"), "alloc": "ratio", "n": "20"}, power_curve=True)
+    series = res["plots"][0]["series"][0]
+    assert series["y"][series["x"].index(20)] == pytest.approx(res["rows"][0]["power"], abs=1e-9)
+    ys = series["y"]
+    assert all(a < b for a, b in zip(ys, ys[1:])), "the curve rises with n"
+
+
+def test_a_simulation_curve_says_it_is_the_approximation():
+    """Simulated answers sit near the curve, which is the analytic approximation; answers from the approximation
+    itself lie on it, and the note is not given."""
+    note = "analytic approximation; the simulated answers"
+    inputs = {**base_inputs("sim.ordinal"), "reps": "100"}
+    res = ssc.run("sim.ordinal", "power", inputs, power_curve=True)
+    assert any(note in t for t in res["notes"])
+    res = ssc.run("sim.ordinal", "power", inputs, power_curve=True, approximate=True)
+    assert not any(note in t for t in res["notes"])
+
+
+@pytest.mark.parametrize("pid,solve,inputs", [
+    ("means.two.ni", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("prop.two.ni", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("rates.two.poisson", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("gs.logrank", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("prop.cc", "power", {"m": "1e308"}),
+    ("means.two.ni", "n", {"alloc": "ratio", "r": "1e15"}),
+    ("prop.cc", "n", {"m": "9007199254740993"}),
+])
+def test_a_count_past_any_study_is_said(pid, solve, inputs):
+    """Group sizes and controls of infinity, or of more than 10^15, were given as answers ("20 and inf")."""
+    row = run(pid, solve, {**base_inputs(pid), **inputs})["rows"][0]
+    assert "a count would be infinite or beyond 10^15" in row.get("_error", ""), row
+
+
+def test_a_median_of_about_zero_has_every_subject_with_the_event():
+    """A subnormal median made the hazard infinite and the event probability inf/inf: "-nan events"."""
+    for solve in ("power", "n"):
+        rows = [first_row(run("gs.logrank", solve, {**base_inputs("gs.logrank"), "med2": m})) for m in ("5e-324", "1e-300")]
+        assert not rows[0].get("_error") and "nan" not in rows[0]["_statement"], rows[0]
+        assert rows[0]["events"] == rows[1]["events"] and rows[0]["power"] == rows[1]["power"]
+    row = first_row(run("surv.logrank", "n", {**base_inputs("surv.logrank"), "med2": "5e-324"}))
+    assert not row.get("_error") and "nan" not in row["_statement"], row
+
+
+def test_odds_ratio_messages_speak_of_odds():
+    row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "scale": "or", "or0": "1e308"})["rows"][0]
+    assert "(odds OR0 times those of P2), must lie strictly between 0 and 1" in row["_error"], row
+    row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "es": "or", "or1": "1.7976931348623157e308"})["rows"][0]
+    assert row["_error"] == "the implied P1 = 1 is not strictly between 0 and 1", row
+
+
+def test_text_that_acts_on_a_message_is_written_out():
+    """A right-to-left override typed in a field turned the rest of the error line around."""
+    res = run("means.two.ni", "n", {**base_inputs("means.two.ni"), "power": "\u202e0.8", "sigma": "1\u200d"})
+    assert res["input_errors"]["power"] == "could not read '\\u{202E}0.8' as a number"
+    assert "\\u{200D}" in res["input_errors"]["sigma"] and "\u200d" not in res["input_errors"]["sigma"]
+
+
 def test_an_unknown_choice_is_an_input_error():
     res = run("means.two.t", "power", {**base_inputs("means.two.t"), "alternative": "greater"})
     assert not res["ok"] and "unknown choice 'greater'" in res["input_errors"]["alternative"]

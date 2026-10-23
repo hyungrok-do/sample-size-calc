@@ -75,7 +75,7 @@ if(EMSCRIPTEN)
   # ---------------------------------------------------------------------------
   set(SSC_WASM_EXPORTS
     _ssc_version _ssc_hardware_threads _ssc_catalog_json _ssc_procedure_json _ssc_search_json _ssc_run_json
-    _ssc_free _ssc_token_new _ssc_token_cancel _ssc_token_progress _ssc_token_free _malloc _free)
+    _ssc_free _ssc_token_new _ssc_token_cancel _ssc_token_progress _ssc_token_free _malloc _free _sbrk)
   string(REPLACE ";" "," SSC_WASM_EXPORTS "${SSC_WASM_EXPORTS}")
   set(SSC_WASM_LINK -O3 --no-entry -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createEngine
       -sENVIRONMENT=web,worker,node -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=4MB

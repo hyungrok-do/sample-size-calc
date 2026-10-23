@@ -15,12 +15,17 @@ using namespace blocks;
 double event_prob(double lam, double eta, double A, double F) {
   const double h = lam + eta;
   if (!(h > 0)) return 0;
+  // a hazard so large (a median of about 0) that each subject has the event, or drops out, at once
+  if (std::isinf(h)) return std::isinf(eta) ? (std::isinf(lam) ? NAN : 0) : 1;
   const double frac = lam / h;
   if (A <= 0) return frac * -std::expm1(-h * F);
   // 1 − e^{−hF}(1 − e^{−hA})/(hA), written without cancellation for small hazards (a median of millions of
   // time units): −expm1(−hF) + e^{−hF}(x + expm1(−x))/x with x = hA, the last factor by its series when small
+  // (and 1 once hA overflows)
   const double x = h * A;
-  const double tail = x < 1e-3 ? x / 2 - x * x / 6 + x * x * x / 24 - x * x * x * x / 120 : (x + std::expm1(-x)) / x;
+  const double tail = x < 1e-3   ? x / 2 - x * x / 6 + x * x * x / 24 - x * x * x * x / 120
+                      : x < 1e300 ? (x + std::expm1(-x)) / x
+                                  : 1;
   return frac * (-std::expm1(-h * F) + std::exp(-h * F) * tail);
 }
 

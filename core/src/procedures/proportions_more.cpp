@@ -207,10 +207,10 @@ double p1_from(const Scenario& s, double p2) {
     p1 = p2 * s("r1");
   else if (s.is("es", "or")) {
     const double o = s("or1") * p2 / (1 - p2);
-    p1 = o / (1 + o);
+    p1 = std::isinf(o) ? 1 : o / (1 + o);  // odds past the largest double: P1 is 1
   } else
     p1 = s("p1");
-  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not between 0 and 1");
+  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not strictly between 0 and 1");
   return p1;
 }
 
@@ -380,12 +380,17 @@ Procedure two_prop_ni() {
     const double p10 = p1_at(sc, S.bound, p2);  // P1 on the boundary of H0
     if (!(p10 > 0 && p10 < 1))
       throw CalcError("the boundary of the null hypothesis, P1 = " + fnum(p10) +
-                      (sc == Scale::Ratio ? " (R0 × P2)" : " (P2 + D0)") + ", must lie between 0 and 1");
+                      (sc == Scale::Ratio  ? " (R0 × P2)"
+                       : sc == Scale::Odds ? " (odds OR0 times those of P2)"
+                                           : " (P2 + D0)") +
+                      ", must lie strictly between 0 and 1");
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
-      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      if (exact && !on_curve_too_long(ctx, exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, p1, p2))) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
+      // judged at its curve's largest point (in either group)
+      const TwoN last = ctx.curve_last ? two_group_n(*ctx.curve_last) : TwoN{n1, n2};
+      if (exact && !on_curve_too_long(ctx, exact_power_work(last.n1, last.n2, p1, p2))) {
         const double v = fm_power_exact({S}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;
@@ -564,9 +569,10 @@ Procedure two_prop_equiv() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto P = [&](double n1, double n2) {
-      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget
-      // two tests a table
-      if (exact && !on_curve_too_long(ctx, 2 * exact_power_work(n1 * ctx.curve_scale, n2 * ctx.curve_scale, p1, p2))) {
+      // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
+      // judged at its curve's largest point (in either group); two tests a table
+      const TwoN last = ctx.curve_last ? two_group_n(*ctx.curve_last) : TwoN{n1, n2};
+      if (exact && !on_curve_too_long(ctx, 2 * exact_power_work(last.n1, last.n2, p1, p2))) {
         const double v = fm_power_exact({L, U}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;

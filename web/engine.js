@@ -2,7 +2,7 @@
 // (ssc_web_mt); any other page, or a browser that cannot start it, gets the one-thread engine.  Stop ends the
 // worker in the middle of a calculation and starts a fresh one.
 const STARTUP_MS = 20000;      // from compiled to ready: starting the threads (a tenth of a second); more means never
-const RECYCLE_BYTES = 64e6;    // an engine this big after an answer is replaced once idle (memory never shrinks)
+const RECYCLE_BYTES = 64e6;    // an engine whose heap is this big after an answer is replaced once idle (it never shrinks)
 const CRASHED = 'The engine stopped unexpectedly during this calculation, often for lack of memory with a very large '
   + 'answer. It has been restarted: try again, with fewer scenarios if this was a large one.';
 
@@ -41,7 +41,10 @@ export class Engine {
       }
       if (data.ok) call.resolve(data);
       else call.reject(new Error(data.error));
-      if (data.value?.memoryBytes > Math.max(RECYCLE_BYTES, data.value?.initialBytes ?? 0)) this.recycle = true;
+      const v = data.value;
+      if (v?.heapBytes !== undefined ? v.heapBytes > RECYCLE_BYTES : v?.memoryBytes > Math.max(RECYCLE_BYTES, v?.initialBytes ?? 0)) {
+        this.recycle = true;
+      }
       if (this.recycle && this.pending.size === 0) queueMicrotask(() => this.replace());
     };
     this.worker.onerror = (e) => {

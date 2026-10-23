@@ -27,8 +27,12 @@ struct Vectors {
 constexpr std::size_t MAX_TEXT = 1000000;
 
 /// Text from a request quoted in a message: at most 40 bytes, cut where a character begins (a field can hold
-/// 1,000,000 characters, and a page lays out an unbroken word slowly).
+/// 1,000,000 characters, and a page lays out an unbroken word slowly), with the characters that would act on the
+/// message (controls, bidirectional and joining format characters, combining marks) written as \u{...}.
 std::string quoted(const std::string& text);
+
+/// The number of characters (code points) of UTF-8 text.
+std::size_t characters(const std::string& text);
 
 Numbers numbers(const std::string& text, std::size_t max_values = 10000);
 Vectors vectors(const std::string& text, std::size_t max_vectors = 1000);
