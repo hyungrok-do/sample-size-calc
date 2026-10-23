@@ -9,7 +9,9 @@
 // b = (Z'Z)⁺ Z'y, and the rest, (I − P)y.  The REML criterion only needs, per
 // design, Z'Z, Z'X and the within-cluster part X'(I − P)X and, per pattern,
 // Σ b, Σ b b' and the within-cluster sums Σ X'(I − P)y and Σ y'(I − P)y, so
-// one evaluation costs O(patterns), whatever the number of subjects.
+// one evaluation costs O(patterns), whatever the number of subjects.  Clusters
+// whose X does not vary within the cluster, with a random intercept, need
+// less, and are kept by arm and size (Arm).
 //
 // The two parts are kept apart, and the between-cluster part is taken in the
 // coordinates b, because anything else loses digits when the clusters differ
@@ -123,10 +125,28 @@ void Pattern::add_effects(int p_, const double* rx, const double* z, const doubl
   yy += syy;
 }
 
+/// All clusters of one arm of a design whose X is the same row x on every observation of a cluster (a
+/// cluster-randomized comparison), with a random intercept (q = 1), by size.  Nothing of X is left within such a
+/// cluster, and its coefficients on Z are x itself, so that of a Pattern a size needs only its count and the sums
+/// Σ b, Σ b² and Σ y'(I − P)y (Σ X'(I − P)y is 0): 40 bytes in place of 1,544, for sizes that vary so widely that
+/// almost every cluster has one of its own (a million clusters took 1.9 GB as patterns).
+struct Arm {
+  struct Size {
+    double n = 0;      // observations per cluster
+    double count = 0;  // clusters of this size
+    double b = 0;      // sums over them: Σ b (b: the cluster's mean), Σ b², Σ y'(I − P)y
+    double bb = 0;
+    double yy = 0;
+  };
+  double x[PMAX] = {};
+  std::vector<Size> sizes;
+};
+
 struct Data {
   int p = 0;
   int q = 0;
   std::vector<Pattern> patterns;
+  std::vector<Arm> arms;  // with q = 1 only; taken after the patterns
   /// Random effects (q = 2) whose covariates take two values only (a random slope with two visits): σ² and D are
   /// not told apart then, only the covariance of the two measurements is, and a D of rank 1 (θ2 = 0) reaches each
   /// one once, so the fit holds D there.

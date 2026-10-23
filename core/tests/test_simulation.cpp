@@ -2,6 +2,7 @@
 // closed forms and a brute-force likelihood, Satterthwaite's degrees of
 // freedom, simulated power against exact power, type I error, reproducibility
 // and the sample-size search.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -250,6 +251,66 @@ TEST_CASE("lmm: REML of a balanced random-intercept design equals the ANOVA esti
   CHECK(!w.fallback);
   CHECK_CLOSE(w.se, std::sqrt(msb / m * 2.0 / k), 1e-6, 0);
   CHECK_CLOSE(w.df, 2 * k - 2, 1e-4, 0);
+}
+
+TEST_CASE("lmm: clusters kept by arm and size fit as their patterns do, to the bit") {
+  // a cluster-randomized study with sizes that vary (a few shared, most of their own), as one Pattern per arm and
+  // size in the order the sizes first appear, and as the same sizes in two Arms
+  for (const double icc : {0.0, 0.05, 0.6}) {
+    sim::Rng rng(29);
+    lmm::Data by_pattern, by_arm;
+    by_pattern.p = by_arm.p = 2;
+    by_pattern.q = by_arm.q = 1;
+    by_arm.arms.resize(2);
+    for (int g = 0; g < 2; ++g) {
+      std::vector<long> seen;
+      lmm::Arm& arm = by_arm.arms[g];
+      arm.x[0] = 1, arm.x[1] = g == 0 ? 1 : 0;
+      for (int c = 0; c < 40; ++c) {
+        const long m = c % 3 == 0 ? 5 : 1 + static_cast<long>(rng.uniform() * 300);
+        const double dm = static_cast<double>(m);
+        const double mean = std::sqrt(icc) * rng.normal() + std::sqrt((1 - icc) / dm) * rng.normal();
+        const double ss = m > 1 ? (1 - icc) * rng.chisq(dm - 1) : 0;
+        std::size_t i = std::find(seen.begin(), seen.end(), m) - seen.begin();
+        if (i == seen.size()) {
+          seen.push_back(m);
+          lmm::Pattern pt;
+          pt.n = m;
+          pt.zz[0] = dm;
+          pt.zx[0] = dm, pt.zx[1] = dm * arm.x[1];
+          pt.set_coefficients(2, 1);
+          by_pattern.patterns.push_back(pt);
+          arm.sizes.push_back({dm});
+        }
+        const double xy[2] = {0, 0};
+        by_pattern.patterns[by_pattern.patterns.size() - seen.size() + i].add_sums(2, 1, xy, &mean, ss);
+        lmm::Arm::Size& sz = arm.sizes[i];
+        sz.count += 1, sz.b += mean, sz.bb += mean * mean, sz.yy += ss;
+      }
+    }
+    CHECK(by_arm.arms[0].sizes.size() + by_arm.arms[1].sizes.size() == by_pattern.patterns.size());
+    CHECK(by_arm.observations() == by_pattern.observations());
+    CHECK(by_arm.clusters() == 80);
+    const double theta0 = std::sqrt(icc / (1 - icc));
+    const lmm::Fit a = lmm::fit(by_pattern, &theta0), b = lmm::fit(by_arm, &theta0);
+    CHECK(a.ok && b.ok);
+    CHECK(a.theta[0] == b.theta[0] && a.sigma2 == b.sigma2 && a.criterion == b.criterion);
+    for (int i = 0; i < 2; ++i) CHECK(a.beta[i] == b.beta[i]);
+    for (int i = 0; i < 4; ++i) CHECK(a.cov[i] == b.cov[i]);
+    const double c[2] = {0, 1};
+    for (int method = 0; method < 3; ++method) {
+      const lmm::Wald wa = lmm::wald(by_pattern, a, c, method, 78), wb = lmm::wald(by_arm, b, c, method, 78);
+      CHECK(wa.estimate == wb.estimate && wa.se == wb.se && wa.df == wb.df && wa.fallback == wb.fallback);
+    }
+  }
+  // arms are clusters with a random intercept alone
+  lmm::Data d;
+  d.p = 2;
+  d.q = 2;
+  d.arms.resize(1);
+  d.arms[0].x[0] = 1;
+  d.arms[0].sizes.push_back({10, 5, 0.1, 0.2, 40});
+  CHECK(!lmm::fit(d).ok);
 }
 
 TEST_CASE("lmm: random slopes on complete balanced data reproduce the two-stage analysis") {

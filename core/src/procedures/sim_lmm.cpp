@@ -11,7 +11,7 @@
 // previews and power curves is the generalized least squares variance of the
 // effect at the assumed variances; for complete balanced designs it equals the
 // closed-form procedures means.two.slopes and means.two.cluster.
-#include <map>
+#include <cstdint>
 #include <utility>
 
 #include "procedures/sim_common.hpp"
@@ -125,7 +125,8 @@ double steady_shift(const LongDesign& d, double& share) {
     const double la = d.m00 + mean * d.m10, lb = d.m01 + mean * d.m11, v = la * la + lb * lb;
     if (ss > 0) {
       const double det = s2 * s2 / (dk * ss) + s2 * (v / ss + slope2 / dk) + det_m * det_m;
-      const double e_aa = s2 * (1 / dk + mean * mean / ss) + g_aa, e_as = g_as - s2 * mean / ss, e_ss = s2 / ss + slope2;
+      const double e_aa = s2 * (1 / dk + mean * mean / ss) + g_aa, e_as = g_as - s2 * mean / ss;
+      const double e_ss = s2 / ss + slope2;
       maa += p * e_ss / det, mas -= p * e_as / det, mss += p * e_aa / det;
     } else {
       const double w = p / (s2 / dk + v);
@@ -616,19 +617,61 @@ std::pair<double, double> expected_weight(const ClusterDesign& d) {
   return {w / static_cast<double>(grid.size()), m / static_cast<double>(grid.size())};
 }
 
+/// An arm's sizes in the order they were first drawn, as indices into its sizes: an open-addressing table, 4 bytes a
+/// slot and at most half full (a map took 64 bytes a size, and sizes that vary widely give almost every
+/// cluster one of its own).
+class SizeIndex {
+ public:
+  explicit SizeIndex(lmm::Arm& arm) : arm_(arm), slots_(64, EMPTY) {}
+  /// The arm's sums for clusters of size m, added (empty) for the first one.
+  lmm::Arm::Size& operator[](long m) {
+    std::size_t i = slot(m);
+    if (slots_[i] == EMPTY) {
+      if (2 * (arm_.sizes.size() + 1) > slots_.size()) {
+        grow();
+        i = slot(m);
+      }
+      slots_[i] = static_cast<std::uint32_t>(arm_.sizes.size());
+      arm_.sizes.push_back({static_cast<double>(m)});
+    }
+    return arm_.sizes[slots_[i]];
+  }
+
+ private:
+  static constexpr std::uint32_t EMPTY = 0xffffffff;
+  lmm::Arm& arm_;
+  std::vector<std::uint32_t> slots_;
+  /// The slot that holds size m, or the empty one where it goes (linear probing from a Fibonacci hash).
+  std::size_t slot(long m) const {
+    const std::size_t mask = slots_.size() - 1;
+    std::size_t i = static_cast<std::size_t>(static_cast<std::uint64_t>(m) * 0x9e3779b97f4a7c15ULL >> 32) & mask;
+    while (slots_[i] != EMPTY && arm_.sizes[slots_[i]].n != static_cast<double>(m)) i = (i + 1) & mask;
+    return i;
+  }
+  void grow() {
+    std::vector<std::uint32_t>(2 * slots_.size(), EMPTY).swap(slots_);
+    for (std::size_t k = 0; k < arm_.sizes.size(); ++k)
+      slots_[slot(static_cast<long>(arm_.sizes[k].n))] = static_cast<std::uint32_t>(k);
+  }
+};
+
 /// One simulated study.  The analysis estimates both means freely, so adding them to the outcome changes the
 /// estimated difference by exactly μ1 − μ2 and nothing else: the clusters are simulated around 0, in units of
 /// σ, and the difference is added to the estimate (sums of squares of outcomes far from 0, or of 10¹⁶⁰ σ, would
-/// lose the digits the variance estimates need, or overflow).
+/// lose the digits the variance estimates need, or overflow).  A study of a million clusters takes about a second,
+/// so the token is checked within it.
 sim::Outcome cluster_study(const ClusterDesign& d, long k1, long k2, double diff, long rep, std::uint64_t seed,
-                           int dfm, double alpha, Alt a) {
+                           int dfm, double alpha, Alt a, const RunContext& ctx) {
   lmm::Data data;
   data.p = 2;
   data.q = 1;
-  std::map<std::pair<int, long>, std::size_t> index;
+  data.arms.resize(2);
   for (int g = 0; g < 2; ++g) {
-    const double ind = g == 0 ? 1 : 0;
+    lmm::Arm& arm = data.arms[static_cast<std::size_t>(g)];
+    arm.x[0] = 1, arm.x[1] = g == 0 ? 1 : 0;  // X = (1, group), the same on every row of a cluster
+    SizeIndex index(arm);
     for (long c = 0; c < (g == 0 ? k1 : k2); ++c) {
+      if (c % 4096 == 0) ctx.check();
       Rng rng(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(g + 1),
               static_cast<std::uint64_t>(c));
       const long m = d.sizes.draw(rng);
@@ -636,23 +679,17 @@ sim::Outcome cluster_study(const ClusterDesign& d, long k1, long k2, double diff
       // the cluster's mean and within-cluster sum of squares (normal theory)
       const double mean = d.sb * rng.normal() + d.se / std::sqrt(dm) * rng.normal();
       const double ss = m > 1 ? d.se * d.se * rng.chisq(dm - 1) : 0;
-      auto it = index.find({g, m});
-      if (it == index.end()) {
-        lmm::Pattern pt;  // X = (1, group) is constant within a cluster: nothing of it is left within
-        pt.n = m;
-        pt.zz[0] = dm;
-        pt.zx[0] = dm, pt.zx[1] = dm * ind;
-        pt.set_coefficients(2, 1);
-        data.patterns.push_back(pt);
-        it = index.emplace(std::make_pair(g, m), data.patterns.size() - 1).first;
-      }
-      const double xy[2] = {0, 0};
-      data.patterns[it->second].add_sums(2, 1, xy, &mean, ss);
+      lmm::Arm::Size& sz = index[m];
+      sz.count += 1;
+      sz.b += mean;
+      sz.bb += mean * mean;
+      sz.yy += ss;
     }
   }
   sim::Outcome o;
   const double theta = d.sb / d.se;
   const lmm::Fit f = lmm::fit(data, &theta);
+  ctx.check();
   if (!f.ok) {
     o.failed = true;
     return o;
@@ -771,7 +808,8 @@ Procedure cluster() {
         simc::check_study_size(c1 + k2_of(c1), "clusters");
         const long n1 = static_cast<long>(c1), n2 = static_cast<long>(k2_of(c1));
         return sim::simulate(
-            R, [&](long rep) { return cluster_study(d, n1, n2, diff, rep, seed, dfm, alpha, a); }, ctx, p0, p1);
+            R, [&](long rep) { return cluster_study(d, n1, n2, diff, rep, seed, dfm, alpha, a, ctx); }, ctx, p0,
+            p1);
       };
       sim::Summary sm;
       if (s.solve == "k") {

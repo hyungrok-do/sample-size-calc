@@ -196,12 +196,16 @@ void Pattern::clear_responses() {
 double Data::observations() const {
   double s = 0;
   for (const auto& pt : patterns) s += pt.count * static_cast<double>(pt.n);
+  for (const auto& arm : arms)
+    for (const auto& sz : arm.sizes) s += sz.count * sz.n;
   return s;
 }
 
 double Data::clusters() const {
   double s = 0;
   for (const auto& pt : patterns) s += pt.count;
+  for (const auto& arm : arms)
+    for (const auto& sz : arm.sizes) s += sz.count;
   return s;
 }
 
@@ -340,6 +344,24 @@ bool gls(const Data& d, const double* g, Gls& w, double det_g = std::numeric_lim
     for (int i = 0; i < q; ++i)
       for (int j = 0; j < q; ++j) tr += wm[i * q + j] * pt.bb[j * q + i];
     s += pt.yy + tr;
+  }
+  // the same sums for clusters by arm and size: Z'Z = n, C = x and nothing of X within the cluster
+  for (const Arm& arm : d.arms) {
+    const double* x = arm.x;
+    for (const Arm::Size& sz : arm.sizes) {
+      if (sz.count == 0) continue;
+      const double detk = 1 + sz.n * g[0];
+      if (!(detk > 0)) return false;
+      const double wm = sz.n / detk;
+      w.logdet_k += sz.count * std::log(detk);
+      double wc[PMAX];
+      for (int b = 0; b < p; ++b) wc[b] = wm * x[b];
+      for (int a = 0; a < p; ++a) {
+        for (int b = a; b < p; ++b) w.m[a * p + b] += sz.count * (x[a] * wc[b]);
+        w.v[a] += wc[a] * sz.b;
+      }
+      s += sz.yy + wm * sz.bb;
+    }
   }
   for (int a = 0; a < p; ++a)
     for (int b = 0; b < a; ++b) w.m[a * p + b] = w.m[b * p + a];
@@ -509,7 +531,7 @@ bool beta_covariance(const Data& d, double sigma2, const double* g, double* cov,
 Fit fit(const Data& d, const double* theta0) {
   Fit out;
   const int p = d.p, q = d.q;
-  if (p < 1 || p > PMAX || q < 1 || q > QMAX || d.observations() <= p) return out;
+  if (p < 1 || p > PMAX || q < 1 || q > QMAX || (q != 1 && !d.arms.empty()) || d.observations() <= p) return out;
   Gls w;
   if (q == 1) {
     auto f = [&](double t) {

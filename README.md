@@ -336,7 +336,8 @@ to use a library in another location.
   that once ran forever). Counts are limited to a billion, every other number
   to 0 or 1e-30 to 1e30 in size, and one simulated study to a million
   subjects, measurements or clusters (200,000 patients for the win ratio), so
-  that Stop, which acts between studies, is prompt.
+  that Stop, which acts between studies (and within a study of many
+  clusters), is prompt.
 - **Properties.** Tests generated from each procedure's schema check every
   solve mode: a solved sample size or effect gives back the target power,
   sample sizes are the smallest that reach it, power never falls as α grows,
