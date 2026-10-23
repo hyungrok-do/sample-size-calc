@@ -34,19 +34,23 @@ using simc::p_value;
 // rescaled), so each study is simulated and fitted with time measured from the visit nearest to time 0 (from 0
 // when the visits span it) in units of the farthest visit, t' = (t − t0)/τ, and the outcome in units of its
 // largest SD: a follow-up of 10⁶ time units, visits 10⁶ time units after the origin, or an intercept SD of 10¹⁶⁰
-// is then no different from the defaults.
+// is then no different from the defaults.  When the visits span 0, or all precede it, the rows of the subjects'
+// Z (with random slopes) measure time from the first visit instead, t'' = (t − t1)/τ, where Z'Z is far from
+// singular whatever the subject's visits: from t0, two early visits close together and far from it (times
+// −1000001, −1000000 and 0) would have made Z'Z look singular and lost the information in their difference.
 struct LongDesign {
   std::vector<double> times;
   bool slopes = true;  // random intercepts and slopes (otherwise intercepts only)
   double sd0 = 1, sd1 = 0, rho = 0, sde = 1;
   double hazard = 0;  // probability of dropping out after each visit
   double l00 = 1, l10 = 0, l11 = 0;  // Cholesky factor of D
-  double t0 = 0, tau = 1, unit = 1;  // time origin and unit, and outcome unit of the analysis
+  double t0 = 0, t1 = 0, tau = 1, unit = 1;  // time origins of the analysis and of Z's rows, time unit, outcome unit
   // in those units: the residual SD and a factor M of the random effects' covariance, so that the intercept at
   // t0 and the slope per τ are (m00 z0 + m01 z1, m10 z0 + m11 z1) for standard normal z
   double se1 = 1, m00 = 1, m01 = 0, m10 = 0, m11 = 0;
   int q() const { return slopes ? 2 : 1; }
   double time(std::size_t j) const { return (times[j] - t0) / tau; }
+  double z_time(std::size_t j) const { return (times[j] - t1) / tau; }
 };
 
 std::vector<double> visit_times(const Scenario& s) {
@@ -82,6 +86,7 @@ LongDesign long_design(const Scenario& s) {
   const double k = static_cast<double>(d.times.size());
   d.hazard = dropout > 0 ? 1 - std::pow(1 - dropout, 1 / (k - 1)) : 0;
   d.t0 = std::clamp(0.0, d.times.front(), d.times.back());
+  d.t1 = d.slopes ? d.times.front() : d.t0;  // a random intercept alone is the same at every time
   d.tau = std::fmax(std::fabs(d.times.front() - d.t0), std::fabs(d.times.back() - d.t0));
   // b0 + b1 t = (b0 + b1 t0) + (b1 τ) t'
   const double intercept0 = d.l00 + d.t0 * d.l10, intercept1 = d.t0 * d.l11;
@@ -106,7 +111,7 @@ void long_lambda(const LongDesign& d, double* theta) {
   theta[2] = det / a / d.se1;
 }
 
-/// Rows of X (intercept, group, t', group × t') and Z (1, t') of a subject of group g (0 is group 1) at every
+/// Rows of X (intercept, group, t', group × t') and Z (1, t'') of a subject of group g (0 is group 1) at every
 /// visit.
 void long_rows(const LongDesign& d, int g, std::vector<double>& x, std::vector<double>& z) {
   const std::size_t K = d.times.size();
@@ -119,24 +124,50 @@ void long_rows(const LongDesign& d, int g, std::vector<double>& x, std::vector<d
     double* xr = &x[4 * j];
     xr[0] = 1, xr[1] = ind, xr[2] = t, xr[3] = ind * t;
     z[static_cast<std::size_t>(q) * j] = 1;
-    if (q == 2) z[2 * j + 1] = t;
+    if (q == 2) z[2 * j + 1] = d.z_time(j);
   }
 }
 
-/// Designs of the patterns: index = group × K + (visits − 1); group 0 is group 1 (indicator 1).
-lmm::Data long_patterns(const LongDesign& d) {
-  const int K = static_cast<int>(d.times.size()), q = d.q();
+/// Designs of the patterns: index = group × K + (visits − 1); group 0 is group 1 (indicator 1).  With each, X's
+/// rows within a subject (the rows of (I − P)X), which depend only on the pattern: formed once, they leave a
+/// subject's sums little more work than its errors.
+struct LongPatterns {
   lmm::Data data;
+  std::vector<std::vector<double>> within;
+};
+
+LongPatterns long_patterns(const LongDesign& d) {
+  const int K = static_cast<int>(d.times.size()), q = d.q();
+  LongPatterns lp;
+  lmm::Data& data = lp.data;
   data.p = 4;
   data.q = q;
   data.patterns.resize(static_cast<std::size_t>(2 * K));
+  lp.within.resize(data.patterns.size());
+  // with random slopes and the visits from t1 ≠ t0, (1, t') = (1, t'') S, and X = (1, group, t', group × t') =
+  // Z S C exactly; G at the assumed variances decides whether a subject's nearly coinciding visits tell anything
+  // apart.  Otherwise Z = (1, t'), and the design comes from X and Z as it always has
+  const double s[4] = {1, (d.t1 - d.t0) / d.tau, 0, 1};
+  double theta[3], g[4];
+  long_lambda(d, theta);
+  g[0] = theta[0] * theta[0], g[1] = g[2] = theta[0] * theta[1], g[3] = theta[1] * theta[1] + theta[2] * theta[2];
   std::vector<double> x, z;
-  for (int g = 0; g < 2; ++g) {
-    long_rows(d, g, x, z);
-    for (int k = 1; k <= K; ++k)
-      data.patterns[static_cast<std::size_t>(g * K + k - 1)].set_design(k, 4, q, x.data(), z.data());
+  for (int grp = 0; grp < 2; ++grp) {
+    long_rows(d, grp, x, z);
+    const double ind = grp == 0 ? 1 : 0, c[8] = {1, ind, 0, 0, 0, 0, 1, ind};
+    for (int k = 1; k <= K; ++k) {
+      const auto i = static_cast<std::size_t>(grp * K + k - 1);
+      lmm::Pattern& pt = data.patterns[i];
+      lp.within[i].resize(static_cast<std::size_t>(4 * k));
+      if (q == 2 && d.t1 != d.t0) {
+        pt.set_spanned(k, 4, q, z.data(), c, s, g);  // nothing of X within a subject
+      } else {
+        pt.set_design(k, 4, q, x.data(), z.data());
+        pt.within_rows(4, q, x.data(), z.data(), lp.within[i].data());
+      }
+    }
   }
-  return data;
+  return lp;
 }
 
 /// Probability that a subject is measured at exactly the first k visits (k = 1..K).
@@ -150,7 +181,7 @@ std::vector<double> visit_probs(const LongDesign& d) {
 
 /// Standard error of the slope difference by generalized least squares at the assumed variances.
 double long_se(const LongDesign& d, double n1, double n2) {
-  lmm::Data data = long_patterns(d);
+  lmm::Data data = long_patterns(d).data;
   const std::vector<double> prob = visit_probs(d);
   const std::size_t K = d.times.size();
   for (std::size_t k = 0; k < K; ++k) {
@@ -166,11 +197,17 @@ double long_se(const LongDesign& d, double n1, double n2) {
   } else {
     g[0] = theta[0] * theta[0];
   }
-  // variance components more than 10¹⁵⁴ times apart square to infinity, whatever the units
-  if (!std::isfinite(d.slopes ? g[0] * g[3] - g[1] * g[2] : g[0]))
-    throw CalcError("the answer cannot be computed for these inputs; check for an extreme value");
-  if (!lmm::beta_covariance(data, d.se1 * d.se1, g, cov))
-    throw CalcError("the slopes cannot be estimated with this design (too few subjects measured twice)");
+  // variance components more than 10¹⁵⁴ times apart square to infinity, whatever the units (|G| from the factor:
+  // from G's entries it is the small difference of large numbers when the visits are far from time 0)
+  const double det_g = d.slopes ? theta[0] * theta[2] * (theta[0] * theta[2]) : g[0];
+  const char* extreme = "the answer cannot be computed for these inputs; check for an extreme value";
+  if (!std::isfinite(det_g) || !std::isfinite(g[0]) || (d.slopes && !std::isfinite(g[3]))) throw CalcError(extreme);
+  if (!lmm::beta_covariance(data, d.se1 * d.se1, g, cov, det_g)) {
+    // the slopes can be estimated as soon as some subjects are measured at two times
+    if ((n1 + n2) * (1 - prob[0]) < 1)
+      throw CalcError("the slopes cannot be estimated with this design (too few subjects measured twice)");
+    throw CalcError(extreme);
+  }
   return std::sqrt(cov[3 * 4 + 3]) * (d.unit / d.tau);
 }
 
@@ -178,9 +215,9 @@ double long_se(const LongDesign& d, double n1, double n2) {
 /// outcome changes the estimate of δ by exactly δ and nothing else: the subjects are simulated without them
 /// (in the analysis units, only their random effects and errors), and δ is added to the estimate, which keeps
 /// a δ of 10¹⁶⁰ out of the sums of squares.
-sim::Outcome long_study(const LongDesign& d, lmm::Data& data, long n1, long n2, double delta, long rep,
+sim::Outcome long_study(const LongDesign& d, const LongPatterns& designs, long n1, long n2, double delta, long rep,
                         std::uint64_t seed, int dfm, double alpha, Alt a) {
-  for (auto& pt : data.patterns) pt.clear_responses();
+  lmm::Data data = designs.data;
   const int K = static_cast<int>(d.times.size()), q = d.q();
   std::vector<double> x, z, e(static_cast<std::size_t>(K));
   for (int g = 0; g < 2; ++g) {
@@ -194,7 +231,12 @@ sim::Outcome long_study(const LongDesign& d, lmm::Data& data, long n1, long n2, 
       int k = 1;
       while (k < K && rng.uniform() >= d.hazard) ++k;
       for (int j = 0; j < k; ++j) e[static_cast<std::size_t>(j)] = d.se1 * rng.normal();
-      data.patterns[static_cast<std::size_t>(g * K + k - 1)].add_cluster(4, q, x.data(), z.data(), b, e.data());
+      const auto i = static_cast<std::size_t>(g * K + k - 1);
+      const double* rx = designs.within[i].data();
+      if (q == 1)
+        data.patterns[i].add_effects<4, 1>(4, rx, z.data(), b, e.data());
+      else
+        data.patterns[i].add_effects<4, 2>(4, rx, z.data(), b, e.data());
     }
   }
   double theta[3];
@@ -355,17 +397,13 @@ Procedure longitudinal() {
     } else {
       const long reps = static_cast<long>(s("reps"));
       const auto seed = static_cast<std::uint64_t>(s("seed"));
-      const lmm::Data designs = long_patterns(d);
+      const LongPatterns designs = long_patterns(d);
       auto power_at = [&](double m1, long R, double p0, double p1) {
         simc::check_study_size((m1 + n2_of(m1)) * static_cast<double>(d.times.size()), "measurements");
         const long k1 = static_cast<long>(m1), k2 = static_cast<long>(n2_of(m1));
         return sim::simulate(
-            R,
-            [&](long rep) {
-              lmm::Data data = designs;
-              return long_study(d, data, k1, k2, delta, rep, seed, dfm, alpha, a);
-            },
-            ctx, p0, p1);
+            R, [&](long rep) { return long_study(d, designs, k1, k2, delta, rep, seed, dfm, alpha, a); }, ctx, p0,
+            p1);
       };
       sim::Summary sm;
       if (s.solve == "n") {
@@ -381,8 +419,9 @@ Procedure longitudinal() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
-      r.set("approx_power", approx(n1));
+      const double ap = approx(n1);  // first: where it cannot be computed, neither can the simulated power
+      simc::put_summary(s, r, sm, simc::Failures::Numerical);
+      r.set("approx_power", ap);
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
     }
     put_two_group(r, {n1, n2_of(n1)});
@@ -656,7 +695,7 @@ Procedure cluster() {
       } else {
         sm = power_at(k1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
+      simc::put_summary(s, r, sm, simc::Failures::Numerical);
       r.set("approx_power", approx(k1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
     }

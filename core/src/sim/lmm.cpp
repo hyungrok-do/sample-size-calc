@@ -8,9 +8,10 @@ namespace ssc::sim::lmm {
 
 namespace {
 
-/// Whether a 2 × 2 Z'Z has full rank: one whose determinant is negligible next to the product of its diagonal
-/// (one visit, or visits at the same time) has rank 1.
-bool full_rank(const double* a) { return a[0] * a[3] - a[1] * a[2] > 1e-12 * a[0] * a[3]; }
+/// Whether a 2 × 2 Z'Z with determinant det has full rank: one whose determinant is negligible next to the
+/// product of its diagonal (one visit, or visits at the same time) has rank 1.
+bool full_rank(const double* a, double det) { return det > 1e-12 * a[0] * a[3]; }
+bool full_rank(const double* a) { return full_rank(a, a[0] * a[3] - a[1] * a[2]); }
 
 /// Rank of Z'Z (q ≤ 2).
 int rank(const double* a, int q) {
@@ -24,6 +25,24 @@ void within_row(const double* xr, const double* zr, const double* coef, int p, i
     res[b] = xr[b];
     for (int i = 0; i < q; ++i) res[b] -= zr[i] * coef[i * p + b];
   }
+}
+
+/// The Moore–Penrose inverse of a 2 × 2 A of rank 1: A / tr(A)².
+void rank1_inverse(const double* a, double* ai) {
+  const double tr = a[0] + a[3];
+  for (int i = 0; i < 4; ++i) ai[i] = tr > 0 ? a[i] / (tr * tr) : 0;
+}
+
+/// M' A M and M A M' for 2 × 2 matrices.
+void congruent(const double* m, const double* a, double* out, bool transposed) {
+  double t[4];
+  for (int i = 0; i < 2; ++i)
+    for (int j = 0; j < 2; ++j)
+      t[i * 2 + j] = transposed ? m[i] * a[j] + m[2 + i] * a[2 + j] : m[i * 2] * a[j] + m[i * 2 + 1] * a[2 + j];
+  for (int i = 0; i < 2; ++i)
+    for (int j = 0; j < 2; ++j)
+      out[i * 2 + j] = transposed ? t[i * 2] * m[j] + t[i * 2 + 1] * m[2 + j]
+                                  : t[i * 2] * m[j * 2] + t[i * 2 + 1] * m[j * 2 + 1];
 }
 
 }  // namespace
@@ -46,12 +65,71 @@ void Pattern::set_coefficients(int p, int q) {
       cx[p + b] = (a[0] * zx[p + b] - a[2] * zx[b]) / det;
     }
   } else {
+    rank1_inverse(a, zi);
     const double tr = a[0] + a[3];
-    for (int i = 0; i < 4; ++i) zi[i] = tr > 0 ? a[i] / (tr * tr) : 0;
     for (int b = 0; b < p; ++b) {
       cx[b] = tr > 0 ? (a[0] * zx[b] + a[1] * zx[p + b]) / (tr * tr) : 0;
       cx[p + b] = tr > 0 ? (a[2] * zx[b] + a[3] * zx[p + b]) / (tr * tr) : 0;
     }
+  }
+  rank_z = rank(a, q);
+  det_z = q == 2 ? a[0] * a[3] - a[1] * a[2] : a[0];
+  std::copy(zi, zi + q * q, zl);
+  si[0] = 1, si[1] = 0, si[2] = 0, si[3] = 1;
+}
+
+void Pattern::set_spanned(long rows, int p, int q, const double* z, const double* c, const double* s,
+                          const double* g) {
+  n = rows;
+  std::fill(std::begin(xx), std::end(xx), 0.0);
+  std::fill(std::begin(zz), std::end(zz), 0.0);
+  for (long r = 0; r < rows; ++r) {
+    const double* zr = z + r * q;
+    for (int i = 0; i < q; ++i)
+      for (int j = 0; j < q; ++j) zz[i * q + j] += zr[i] * zr[j];
+  }
+  const double one[4] = {1, 0, 0, 1};
+  if (!s || q == 1 || (s[0] == 1 && s[1] == 0 && s[2] == 0 && s[3] == 1)) s = one;
+  // Z'X = Z'Z S C, then (Z'Z)⁺, the rank and |Z'Z| in Z's coordinates
+  for (int i = 0; i < q; ++i)
+    for (int b = 0; b < p; ++b) {
+      double t = 0;
+      for (int j = 0; j < q; ++j)
+        for (int k = 0; k < q; ++k) t += zz[i * q + j] * s[j * q + k] * c[k * p + b];
+      zx[i * p + b] = t;
+    }
+  set_coefficients(p, q);
+  std::copy(c, c + q * p, cx);
+  if (s == one) return;
+  // in the random effects' coordinates: Z'Z → S'Z'Z S (whose determinant is the same), Z'X → S'Z'X and
+  // coefficients S⁻¹ b; (Z'Z)⁻¹ → S⁻¹ (Z'Z)⁻¹ S⁻ᵀ from the inverse in Z's coordinates, where Z'Z is far from
+  // singular
+  const double a[4] = {zz[0], zz[1], zz[2], zz[3]};
+  congruent(s, a, zz, true);
+  for (int b = 0; b < p; ++b) {
+    const double x0 = zx[b], x1 = zx[p + b];
+    zx[b] = s[0] * x0 + s[2] * x1, zx[p + b] = s[1] * x0 + s[3] * x1;
+  }
+  si[0] = s[3], si[1] = -s[1], si[2] = -s[2], si[3] = s[0];
+  bool full = rank_z == 2;
+  if (full && !full_rank(zz, det_z) && g) {
+    // a direction in which Z S is nearly singular (two visits close together, far from where the random
+    // effects are given) is kept as long as the random effects show in it at more than 10⁻⁶ of the residual
+    // variance: λ (v'Gv), with λ the small eigenvalue of S'Z'Z S and v its eigenvector.  Below, it is left within
+    // the cluster (rank 1), which errs by as little, while keeping it would make the clusters' coefficients
+    // swing along it far more than the random effects do, and their sums of squares lose their digits
+    const double tr = zz[0] + zz[3];
+    const double lambda = det_z / (0.5 * tr + std::sqrt(std::fmax(0.25 * tr * tr - det_z, 0.0)));
+    const double v0 = zz[0] >= zz[3] ? -zz[1] : -zz[3], v1 = zz[0] >= zz[3] ? zz[0] : zz[2];
+    const double vgv = (v0 * (g[0] * v0 + g[1] * v1) + v1 * (g[2] * v0 + g[3] * v1)) / (v0 * v0 + v1 * v1);
+    full = lambda * vgv > 1e-6;
+  }
+  if (full) {
+    congruent(si, zl, zi, false);
+  } else {
+    rank_z = std::min(rank_z, 1);
+    rank1_inverse(zz, zi);
+    congruent(s, zi, zl, false);
   }
 }
 
@@ -70,7 +148,7 @@ void Pattern::set_design(long rows, int p, int q, const double* x, const double*
   }
   set_coefficients(p, q);
   // X'(I − P)X from the rows' residuals on Z (none when the cluster has no more rows than Z has rank)
-  if (rows <= rank(zz, q)) return;
+  if (rows <= rank_z) return;
   for (long r = 0; r < rows; ++r) {
     double res[PMAX];
     within_row(x + r * p, z + r * q, cx, p, q, res);
@@ -79,30 +157,22 @@ void Pattern::set_design(long rows, int p, int q, const double* x, const double*
   }
 }
 
-void Pattern::add_cluster(int p, int q, const double* x, const double* z, const double* y) {
-  const double none[QMAX] = {};
-  add_cluster(p, q, x, z, none, y);
+void Pattern::within_rows(int p, int q, const double* x, const double* z, double* rx) const {
+  for (long r = 0; r < n; ++r) within_row(x + r * p, z + r * q, cx, p, q, rx + r * p);
 }
 
-void Pattern::add_cluster(int p, int q, const double* x, const double* z, const double* u, const double* e) {
-  // e's coefficients on Z give b = u + (Z'Z)⁺ Z'e and e's residuals; X'(I − P)e from X's residuals
-  double ze[QMAX] = {}, coef_e[QMAX] = {};
-  for (long r = 0; r < n; ++r)
-    for (int i = 0; i < q; ++i) ze[i] += z[r * q + i] * e[r];
-  for (int i = 0; i < q; ++i)
-    for (int j = 0; j < q; ++j) coef_e[i] += zi[i * q + j] * ze[j];
-  double sx[PMAX] = {}, sb[QMAX], syy = 0;
-  if (n > rank(zz, q)) {
-    for (long r = 0; r < n; ++r) {
-      double v = e[r], res[PMAX];
-      for (int i = 0; i < q; ++i) v -= z[r * q + i] * coef_e[i];
-      within_row(x + r * p, z + r * q, cx, p, q, res);
-      for (int a = 0; a < p; ++a) sx[a] += res[a] * v;
-      syy += v * v;
-    }
-  }
-  for (int i = 0; i < q; ++i) sb[i] = u[i] + coef_e[i];
-  add_sums(p, q, sx, sb, syy);
+void Pattern::add_cluster(int p, int q, const double* x, const double* z, const double* y) {
+  std::vector<double> rx(static_cast<std::size_t>(n * p));
+  within_rows(p, q, x, z, rx.data());
+  const double none[QMAX] = {};
+  add_effects(p, q, rx.data(), z, none, y);
+}
+
+void Pattern::add_effects(int p, int q, const double* rx, const double* z, const double* u, const double* e) {
+  if (q == 1)
+    add_effects<0, 1>(p, rx, z, u, e);
+  else
+    add_effects<0, 2>(p, rx, z, u, e);
 }
 
 void Pattern::add_sums(int p, int q, const double* xy_, const double* b_, double yy_) {
@@ -156,6 +226,23 @@ bool cholesky(double* a, int n) {
   return true;
 }
 
+/// Whether β's covariance from X'V*⁻¹X keeps at least three digits, from its Cholesky factor L: each pivot L_jj² is
+/// what is left of the diagonal entry (Σ_k L_jk²) once the earlier columns are taken out, and the inverse loses
+/// about as many digits as that share has zeros.  With random slopes, G can make X'V*⁻¹X so nearly singular that
+/// nothing is left: when the subjects' slopes vary 10⁸ times more than their intercepts at time 0, the level at a
+/// visit 1 time unit away all but follows from the slope, as does the estimate of the mean level from that of the
+/// mean slope, and the slopes' variance came out as rounding noise (an approximate power of 100% for 8.6%).
+bool keeps_digits(const double* l, int n) {
+  for (int j = 0; j < n; ++j) {
+    double big = 0, s = 0;
+    for (int k = 0; k <= j; ++k) big = std::fmax(big, std::fabs(l[j * n + k]));
+    for (int k = 0; k <= j; ++k) s += (l[j * n + k] / big) * (l[j * n + k] / big);
+    const double pivot = l[j * n + j] / big;
+    if (!(pivot * pivot > 1e-13 * s)) return false;
+  }
+  return true;
+}
+
 /// Solve L L' x = b in place, L from cholesky().
 void chol_solve(const double* l, int n, double* b) {
   for (int i = 0; i < n; ++i) {
@@ -189,20 +276,21 @@ struct Gls {
   double rss = 0;       // (y − Xβ̂)'V*⁻¹(y − Xβ̂)
 };
 
-/// For a cluster with Z'Z = A (and A⁺ = ai): W = K⁻¹ A, the between-cluster part of V*⁻¹ in the coordinates b,
-/// and |K| = |I + A G|; false unless V* is positive definite.  Computed so that nothing cancels: for a 2 × 2 A
-/// of full rank, |K| = 1 + tr(AG) + |A||G| and W = (A⁻¹ + G)⁻¹, whose determinant is |K|/|A|; for a
-/// 1 × 1 A, or one of rank 1, W = A / (1 + tr(AG)).
-bool between(const double* a, const double* ai, const double* g, int q, double* w, double& detk) {
+/// For a cluster with Z'Z = A (pt.zz, with A⁺, rank and determinant): W = K⁻¹ A, the between-cluster part of V*⁻¹
+/// in the coordinates b, and |K| = |I + A G| (det_g = |G|); false unless V* is positive definite.  Computed so
+/// that nothing cancels: for a 2 × 2 A of full rank, |K| = 1 + tr(AG) + |A||G| and W = (A⁻¹ + G)⁻¹, whose
+/// determinant is |K|/|A|; for a 1 × 1 A, or one of rank 1, W = A / (1 + tr(AG)).
+bool between(const Pattern& pt, const double* g, double det_g, int q, double* w, double& detk) {
+  const double *a = pt.zz, *ai = pt.zi;
   const double tr_ag = q == 1 ? a[0] * g[0] : a[0] * g[0] + a[1] * g[2] + a[2] * g[1] + a[3] * g[3];
-  if (q == 1 || !full_rank(a)) {
+  if (q == 1 || pt.rank_z < 2) {
     detk = 1 + tr_ag;
     if (!(detk > 0)) return false;
     for (int i = 0; i < q * q; ++i) w[i] = a[i] / detk;
     return true;
   }
-  const double det_a = a[0] * a[3] - a[1] * a[2];
-  detk = 1 + tr_ag + det_a * (g[0] * g[3] - g[1] * g[2]);
+  const double det_a = pt.det_z;
+  detk = 1 + tr_ag + det_a * det_g;
   const double e00 = ai[0] + g[0], e11 = ai[3] + g[3], e01 = 0.5 * (ai[1] + g[1] + ai[2] + g[2]);
   if (!(detk > 0) || !(e00 > 0)) return false;
   const double det_e = detk / det_a;
@@ -210,16 +298,23 @@ bool between(const double* a, const double* ai, const double* g, int q, double* 
   return true;
 }
 
-bool gls(const Data& d, const double* g, Gls& w) {
+/// The generalized least squares pieces at G; det_g, when given, is |G| from a factor of G, which takes the place of
+/// |G| from its entries when that is mostly rounding (G nearly singular: a random intercept given at visits so far
+/// from time 0 that it all but follows from the slope).
+bool gls(const Data& d, const double* g, Gls& w, double det_g = std::numeric_limits<double>::quiet_NaN()) {
   const int p = d.p, q = std::min(d.q, QMAX);  // bounded, so that the compiler unrolls the loops over Z's columns
   std::fill(w.m, w.m + p * p, 0.0);
   std::fill(w.v, w.v + p, 0.0);
   double s = 0;
   w.logdet_k = 0;
+  if (q == 2) {
+    const double det_entries = g[0] * g[3] - g[1] * g[2];
+    if (!std::isfinite(det_g) || std::fabs(det_entries) > 1e-8 * std::fabs(g[0] * g[3])) det_g = det_entries;
+  }
   for (const Pattern& pt : d.patterns) {
     if (pt.count == 0) continue;
     double wm[QMAX * QMAX], detk;
-    if (!between(pt.zz, pt.zi, g, q, wm, detk)) return false;
+    if (!between(pt, g, det_g, q, wm, detk)) return false;
     w.logdet_k += pt.count * std::log(detk);
     // W C (q × p), C = (Z'Z)⁺ Z'X the coefficients of X on Z
     double wc[QMAX * PMAX];
@@ -401,9 +496,9 @@ double criterion(const Data& d, double sigma2, const double* g) {
   return r * (LOG_2PI + std::log(sigma2)) + w.logdet_k + w.logdet_m + w.rss / sigma2;
 }
 
-bool beta_covariance(const Data& d, double sigma2, const double* g, double* cov) {
+bool beta_covariance(const Data& d, double sigma2, const double* g, double* cov, double det_g) {
   Gls w;
-  if (!gls(d, g, w)) return false;
+  if (!gls(d, g, w, det_g) || (d.q == 2 && !keeps_digits(w.m, d.p))) return false;
   chol_inverse(w.m, d.p, cov);
   for (int i = 0; i < d.p * d.p; ++i) cov[i] *= sigma2;
   return true;
@@ -535,17 +630,22 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     const double size = std::fabs(phi[j]) * unit[j];
     h[j] = j == 0 ? 1e-4 * s2 : 1e-4 * ((j == 2 ? size + dscale : 2 * size) + 1e-2 * s2) / unit[j];
   }
-  double hess[16], grad[4], x[4];
+  // the derivatives are taken in units of the steps and of V, each a power of 2 (hs = h 2^e, V 2^m), which keeps
+  // every product and quotient below exact to the last bit and away from under- and overflow: h², and V², pass
+  // below the smallest double once the residual variance is 10⁻¹⁵⁰ of the random effects' in the analysis units
+  double hess[16], grad[4], x[4], hs[4];
+  for (int j = 0; j < k; ++j) hs[j] = std::ldexp(h[j], -std::ilogb(h[j]));
+  const int m = var > 0 ? -std::ilogb(var) : 0;
   const double f0 = crit(phi);
-  bool ok = std::isfinite(f0);
+  bool ok = std::isfinite(f0) && var > 0;
   for (int a = 0; a < k && ok; ++a) {
     std::copy(phi, phi + k, x);
     x[a] = phi[a] + h[a];
     const double fp = crit(x), vp = cvar(x);
     x[a] = phi[a] - h[a];
     const double fm = crit(x), vm = cvar(x);
-    hess[a * k + a] = (fp - 2 * f0 + fm) / (h[a] * h[a]);
-    grad[a] = (vp - vm) / (2 * h[a]);
+    hess[a * k + a] = (fp - 2 * f0 + fm) / (hs[a] * hs[a]);
+    grad[a] = std::ldexp(vp - vm, m) / (2 * hs[a]);
     for (int b = 0; b < a; ++b) {
       double fpp, fpm, fmp, fmm;
       std::copy(phi, phi + k, x);
@@ -557,7 +657,7 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
       fmm = crit(x);
       x[b] = phi[b] + h[b];
       fmp = crit(x);
-      hess[a * k + b] = hess[b * k + a] = (fpp - fpm - fmp + fmm) / (4 * h[a] * h[b]);
+      hess[a * k + b] = hess[b * k + a] = (fpp - fpm - fmp + fmm) / (4 * hs[a] * hs[b]);
     }
     ok = std::isfinite(hess[a * k + a]) && std::isfinite(grad[a]);
   }
@@ -567,7 +667,7 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     chol_solve(hess, k, y);  // H⁻¹ ∇V
     double quad = 0;
     for (int a = 0; a < k; ++a) quad += grad[a] * y[a];
-    const double df = var * var / quad;  // 2 V² / (∇V' · 2 H⁻¹ · ∇V)
+    const double v = std::ldexp(var, m), df = v * v / quad;  // 2 V² / (∇V' · 2 H⁻¹ · ∇V)
     if (std::isfinite(df) && df > 0) {
       out.df = std::fmin(df, d.observations() - p);
       return out;

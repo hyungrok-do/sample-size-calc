@@ -339,7 +339,7 @@ Procedure stepped_wedge_sim() {
       } else {
         sm = power_at(g, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
+      simc::put_summary(s, r, sm, simc::Failures::Numerical);
       r.set("approx_power", approx(g));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
     }

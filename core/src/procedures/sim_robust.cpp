@@ -208,11 +208,11 @@ sim::Outcome robust_study(const Design& d, long n1, long n2, long rep, std::uint
   const double diff = sum[0] - sum[1], v1 = ss[0] / (a1 - 1), v2 = ss[1] / (a2 - 1);
   // pooled t
   const double dfp = a1 + a2 - 2, sp2 = (ss[0] + ss[1]) / dfp, sep = std::sqrt(sp2 * (1 / a1 + 1 / a2));
-  const bool rej_pooled = sep > 0 && simc::p_value(diff / sep, dfp, a) < alpha;
+  const bool rej_pooled = sep > 0 && simc::p_value(simc::t_stat(diff, sep), dfp, a) < alpha;
   // Welch
   const double q1 = v1 / a1, q2 = v2 / a2, sew = std::sqrt(q1 + q2);
   const double dfw = (q1 + q2) * (q1 + q2) / (q1 * q1 / (a1 - 1) + q2 * q2 / (a2 - 1));
-  const bool rej_welch = sew > 0 && simc::p_value(diff / sew, dfw, a) < alpha;
+  const bool rej_welch = sew > 0 && simc::p_value(simc::t_stat(diff, sew), dfw, a) < alpha;
   // Mann–Whitney with midranks
   std::sort(all.begin(), all.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
   double r1 = 0, ties = 0;
@@ -351,11 +351,13 @@ Procedure robust() {
     d.sd1 = s("sd1");
     d.sd2 = s("sd2");
     // the three tests are unchanged by a common change of location and scale: extreme values are simulated on the
-    // scale of the larger SD, where their squares cannot overflow (others exactly as given)
+    // scale of the larger SD, where their squares cannot overflow, and around μ2 (group 1 around μ1 − μ2), so
+    // that means far from 0 next to the SDs do not swamp the variation (μ1 = μ2 = 10¹⁶ with SDs of 2 gave the
+    // t-tests a type I error of 35%, and μ1 − μ2 = 2 there a power of 76% for 97%); others exactly as given
     Design w = d;
     double unit = 1;
-    if (!(std::fmax(d.sd1, d.sd2) < 1e100 && std::fmin(d.sd1, d.sd2) > 1e-100 && std::fabs(d.mu1) < 1e100 &&
-          std::fabs(d.mu2) < 1e100)) {
+    const double sd_min = std::fmin(d.sd1, d.sd2), mu_max = std::fmax(std::fabs(d.mu1), std::fabs(d.mu2));
+    if (!(std::fmax(d.sd1, d.sd2) < 1e100 && sd_min > 1e-100 && mu_max < 1e100 && mu_max < 1e6 * sd_min)) {
       unit = std::fmax(d.sd1, d.sd2);
       w.mu1 = (d.mu1 - d.mu2) / unit;
       w.mu2 = 0;
@@ -419,7 +421,7 @@ Procedure robust() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
+      simc::put_summary(s, r, sm, simc::Failures::Numerical);
       r.set("approx_power", approx(n1));
       r.set("power_t", sm.also_power(POOLED));
       r.set("power_welch", sm.also_power(WELCH));

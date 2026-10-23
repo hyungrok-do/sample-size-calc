@@ -257,7 +257,8 @@ Procedure glmm_cluster() {
       } else {
         sm = power_at(k1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
+      simc::put_summary(s, r, sm, simc::Failures::Design,
+                        "the model could not be fitted, as when every cluster of a group has the same outcome");
       r.set("approx_power", approx(k1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_logor", sm.mean_estimate);
     }
@@ -327,8 +328,8 @@ Procedure glmm_cluster() {
              "The SD of the random intercept may be at most 6 on the logit scale (a latent ICC of 0.92): beyond "
              "it, clusters are almost all-or-none and the Wald test breaks down.",
              "Studies whose fit does not converge (for example when every cluster of a group has the same outcome) "
-             "count as not rejecting and are reported as failed fits; when they are more than half of the studies, "
-             "no simulated power is given.",
+             "count as not rejecting and are reported as failed fits; when no study can be fitted, no simulated power "
+             "is given.",
              "The quick approximation compares the population-averaged proportions with each cluster weighted by "
              "size / (p(1 − p)(1 + (size − 1)ρ)), averaged over the size distribution."};
   p.references = {"Li, P. & Redden, D. T. (2015). Comparing denominator degrees of freedom approximations for the "

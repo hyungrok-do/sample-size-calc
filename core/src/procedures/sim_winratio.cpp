@@ -573,7 +573,7 @@ Procedure winratio() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
+      simc::put_summary(s, r, sm, simc::Failures::Design, "each had no wins or no losses, so no finite win ratio");
       r.set("approx_power", approx(n1));
       r.set("power_fs", sm.also_power(FS));
       r.set("power_wr", sm.also_power(WR));
