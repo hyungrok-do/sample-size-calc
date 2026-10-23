@@ -1,4 +1,4 @@
-// What a user can type at the extremes (a ratio of 1e-300, a noncentrality of 1e300, a count beyond a
+// What a user can type at the extremes (a ratio of 1e-30 or 1e-300, a noncentrality of 1e300, a count beyond a
 // billion) ends at once with an answer or a message, Stop ends what takes long, and a long simulation keeps only
 // a block of studies in memory with the same result as keeping them all.
 #include <chrono>
@@ -116,38 +116,42 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
     const char* inputs;
     const char* says;  // part of the message, or "" for an answer
   };
+  // at the smallest and largest sizes an input may have: the values beyond them that once ran forever (1e-300,
+  // 1e300, subnormal ones) are refused, as the next test checks
   const Case cases[] = {
-      {"means.two.cluster", "k", R"({"kr":"1e-300"})", "cluster ratio is too small"},
-      {"prop.two.cluster", "k", R"({"kr":"1e-300"})", "cluster ratio is too small"},
-      {"diag.auc", "n", R"({"ratio":"1e-300"})", "ratio of controls to cases is too small"},
-      {"sim.lmm.cluster", "k", R"({"kr":"1e-300"})", "cluster ratio is too small"},
-      {"sim.glmm.cluster", "k", R"({"kr":"1e-300"})", "cluster ratio is too small"},
-      {"sim.lmm.longitudinal", "n", R"({"r":"1e-300"})", "allocation ratio is too small"},
-      {"sim.mmrm", "n", R"({"r":"1e-300"})", "allocation ratio is too small"},
-      {"sim.means.robust", "n", R"({"r":"1e-300"})", "allocation ratio is too small"},
-      {"sim.ordinal", "n", R"({"r":"1e-300"})", "allocation ratio is too small"},
-      {"sim.winratio", "n", R"({"r":"1e-300"})", "allocation ratio is too small"},
+      {"means.two.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
+      {"prop.two.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
+      {"diag.auc", "n", R"({"ratio":"1e-30"})", "ratio of controls to cases is too small"},
+      {"sim.lmm.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
+      {"sim.glmm.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
+      {"sim.lmm.longitudinal", "n", R"({"r":"1e-30"})", "allocation ratio is too small"},
+      {"sim.mmrm", "n", R"({"r":"1e-30"})", "allocation ratio is too small"},
+      {"sim.means.robust", "n", R"({"r":"1e-30"})", "allocation ratio is too small"},
+      {"sim.ordinal", "n", R"({"r":"1e-30"})", "allocation ratio is too small"},
+      {"sim.winratio", "n", R"({"r":"1e-30"})", "allocation ratio is too small"},
       {"prop.one", "power", R"({"n":"1e10"})", "at most 1,000,000,000"},
       {"corr.one", "power", R"({"n":"1e300"})", "at most 1,000,000,000"},
       {"prop.one.simon", "power", R"({"r1":"1","n1":"999999999","r":"5","n":"1000000000"})", "up to 100,000"},
       {"prop.paired.mcnemar", "power", R"({"n":"10000000"})", "up to 1,000,000 pairs"},
       {"means.two.ancova", "mu1", R"({"ncov":"1000"})", "number of covariates"},
       {"means.anova2", "power", R"({"a":"20","b":"214748365"})", "at most 100"},  // A × B wrapped around to 4
-      {"means.two.welch", "power", R"({"sd1":"1e300"})", "cannot be computed"},
-      {"means.two.t", "mu1", R"({"sigma":"1e300"})", ""},  // the search bound 1e9·σ overflowed to infinity
-      {"sim.multiarm", "n", R"({"alpha":"1e-300"})", ""},  // 1 − α rounds to 1: Dunnett's value is Bonferroni's
-      {"rates.one.poisson", "power", R"({"lam0":"1e300"})", ""},
-      {"rates.one.poisson", "n", R"({"time":"1e300"})", ""},
-      {"means.crossover", "n", R"({"delta":"1e300"})", ""},
-      {"means.anova", "power", R"({"sigma":"1e-300"})", ""},
-      {"means.rm.anova", "n", R"({"sigma":"1e-300"})", ""},
-      // loops that a value rounding to 0 or infinity stopped from advancing (and that Stop could not end)
-      {"sim.surv.nph", "power", R"({"med2":"5e-324"})", "too short to compute with"},
-      {"sim.surv.nph", "n", R"({"med2":"1e-320"})", "too short to compute with"},
-      {"rates.one.poisson", "power", R"({"alpha":"5e-324","test":"exact"})", ""},  // each tail at 5e-324
+      {"means.two.welch", "power", R"({"sd1":"1e30"})", ""},
+      {"means.two.t", "mu1", R"({"sigma":"1e30"})", ""},
+      {"sim.multiarm", "n", R"({"alpha":"1e-30"})", ""},  // 1 − α rounds to 1: Dunnett's value is Bonferroni's
+      {"rates.one.poisson", "power", R"({"lam0":"1e30"})", ""},
+      {"rates.one.poisson", "n", R"({"time":"1e30"})", ""},
+      {"means.crossover", "n", R"({"delta":"1e30"})", ""},
+      {"means.anova", "power", R"({"sigma":"1e-30"})", ""},
+      {"means.rm.anova", "n", R"({"sigma":"1e-30"})", ""},
+      // loops that a value rounding to 0 or infinity stopped from advancing (and that Stop could not end), at the
+      // nearest sizes allowed
+      {"sim.surv.nph", "power", R"({"med2":"1e-30"})", ""},
+      {"sim.surv.nph", "n", R"({"med2":"1e-30"})", "cannot be reached"},  // every event before T*, where HR1 = 1
+      {"rates.one.poisson", "power", R"({"alpha":"1e-30","test":"exact"})", ""},
       {"sim.means.robust", "power", R"({"dist":"lognormal","skew":"1e-9"})", ""},
       {"sim.means.robust", "n", R"({"dist":"gamma","skew":"-1e-8"})", ""},
-      {"diag.paired", "n", R"({"method":"exact","goal":"se","prev":"1e-303"})", "cannot be reached"},
+      // 1e6 / prevalence is 1e36 subjects, past any int
+      {"diag.paired", "n", R"({"method":"exact","goal":"se","prev":"1e-30"})", "cannot be reached"},
   };
   {  // a full simulation whose every study would be enormous (Stop acts between studies)
     Token token;
@@ -169,6 +173,59 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
   }
 }
 
+TEST_CASE("extremes: values beyond 1e-30 and 1e30 in size are refused, in the terms of each input's limits") {
+  struct Case {
+    const char* procedure;
+    const char* solve;
+    const char* inputs;
+    const char* id;    // the input refused
+    const char* says;  // its message
+  };
+  const Case cases[] = {
+      // values that once ran forever, or were computed with as 0 or infinity
+      {"means.two.welch", "power", R"({"sd1":"1e300"})", "sd1", "values must be between 1e-30 and 1e30"},
+      {"means.two.t", "mu1", R"({"sigma":"1e300"})", "sigma", "values must be between 1e-30 and 1e30"},
+      {"sim.surv.nph", "power", R"({"med2":"5e-324"})", "med2", "values must be between 1e-30 and 1e30"},
+      {"sim.surv.nph", "n", R"({"med2":"1e-320"})", "med2", "values must be between 1e-30 and 1e30"},
+      {"rates.one.poisson", "power", R"({"alpha":"5e-324","test":"exact"})", "alpha", "values must be at least 1e-30"},
+      {"reg.cox", "n", R"({"alpha":"5e-324"})", "alpha", "values must be at least 1e-30"},
+      {"means.be.ratio", "power", R"({"cv":"5e-324"})", "cv", "values must be between 1e-30 and 1e30"},
+      {"cluster.sw", "power", R"({"sigma":"1e-300"})", "sigma", "values must be between 1e-30 and 1e30"},
+      {"means.two.slopes", "delta", R"({"duration":"1e-160"})", "duration", "values must be between 1e-30 and 1e30"},
+      {"prop.two.ci", "n", R"({"conf":"1e-300"})", "conf", "values must be at least 1e-30"},
+      {"prop.cc", "n", R"({"p0":"5e-324"})", "p0", "values must be at least 1e-30"},
+      {"rates.two.negbin", "power", R"({"r0":"5e-324"})", "r0", "values must be between 1e-30 and 1e30"},
+      {"gs.logrank", "power", R"({"alpha":"5e-324","boundary":"wt_obf"})", "alpha", "values must be at least 1e-30"},
+      {"sim.winratio", "power", R"({"med_d":"5e-324"})", "med_d", "values must be between 1e-30 and 1e30"},
+      {"means.two.t", "power", R"({"alloc":"ratio","r":"1e308"})", "r", "values must be between 1e-30 and 1e30"},
+      // 0 allowed or not, either sign, one end or both; every value of a list, a range and a list of lists
+      {"means.two.t", "power", R"({"mu1":"-1e31"})", "mu1", "values must be 0 or between 1e-30 and 1e30 in size"},
+      {"means.two.t", "power", R"({"mu1":"0.5 1e-31"})", "mu1", "values must be 0 or between 1e-30 and 1e30 in size"},
+      {"means.two.t", "n", R"({"dropout":"0 1e-31"})", "dropout", "values must be 0 or at least 1e-30"},
+      {"means.two.t", "power", R"({"sigma":"1e-31 to 1 by 0.5"})", "sigma", "values must be between 1e-30 and 1e30"},
+      {"corr.one", "n", R"({"rho1":"-1e-40"})", "rho1", "values must be 0 or at least 1e-30 in size"},
+      {"prop.two.equiv", "n", R"({"dl":"-1e-31"})", "dl", "values must be at least 1e-30 in size"},
+      {"prop.two.equiv", "n", R"({"scale":"or","oru":"1e31"})", "oru", "values must be at most 1e30"},
+      {"means.anova", "n", R"({"means":"0 0.5 1; 0 1e31 2"})", "means",
+       "values must be 0 or between 1e-30 and 1e30 in size"},
+      {"means.two.slopes", "delta", R"({"timing":"custom","times":"0 1e-160 2e-160"})", "times",
+       "values must be 0 or between 1e-30 and 1e30 in size"},
+  };
+  for (const Case& c : cases) {
+    const json::Value res = run(c.procedure, c.solve, c.inputs);
+    const json::Value& errors = res.get("input_errors");
+    if (res.get("ok").as_bool(true) || errors.size() != 1 || errors.get(c.id).as_string() != c.says)
+      ::ssc::test::report_failure(std::string(c.procedure) + " " + c.inputs + ": '" + message(res) + "'", __FILE__,
+                                  __LINE__);
+    ::ssc::test::count_check();
+  }
+  // the sizes themselves, 0 (of either sign) and counts (which have their own limit) are allowed
+  const json::Value res = run("means.two.t", "power", R"({"sigma":"1e-30 1e30","mu1":"0 -0 -1e30 1e-30"})");
+  CHECK(res.get("ok").as_bool(false));
+  CHECK_EQ(res.get("rows").size(), std::size_t{8});
+  CHECK(message(run("corr.one", "power", R"({"n":"1000000000"})")).empty());
+}
+
 TEST_CASE("extremes: a share of the smallest alpha stays positive") {
   CHECK_EQ(procs::half_alpha(0.05), 0.025);
   CHECK_EQ(procs::half_alpha(1e-323), 5e-324);
@@ -178,41 +235,42 @@ TEST_CASE("extremes: a share of the smallest alpha stays positive") {
   CHECK_EQ(procs::tail_alpha(0.05, blocks::Alt::Upper), 0.05);
 }
 
-TEST_CASE("extremes: tiny and subnormal inputs give an answer, or a message that says which is too small") {
+TEST_CASE("extremes: the smallest inputs allowed give an answer, or a message that says why not") {
   struct Case {
     const char* procedure;
     const char* solve;
     const char* inputs;
     const char* says;  // part of the message, or "" for an answer
   };
-  // each used to say that the target "cannot be reached", or gave an answer computed from a 0 or an infinity
+  // at subnormal values (now refused) each used to say that the target "cannot be reached", or gave an answer
+  // computed from a 0 or an infinity; at 1e-30, the smallest size an input may have, each is computed
   const Case cases[] = {
-      // half of a two-sided alpha of 5e-324 rounded to 0, an infinite critical value
-      {"reg.cox", "n", R"({"alpha":"5e-324"})", ""},
-      {"rates.two.poisson", "n", R"({"alpha":"5e-324"})", ""},
-      {"sim.lmm.cluster", "k", R"({"alpha":"5e-324"})", ""},
-      {"sim.multiarm", "n", R"({"alpha":"5e-324","adjust":"bonferroni"})", ""},
-      // squares that underflowed to 0: CV², σ², D²
-      {"means.be.ratio", "n", R"({"cv":"1e-300"})", ""},
-      {"means.be.ratio", "power", R"({"cv":"5e-324"})", ""},
-      {"cluster.sw", "power", R"({"sigma":"1e-300"})", ""},
-      {"means.two.t", "mu1", R"({"sigma":"1e-300"})", ""},
-      {"means.two.slopes", "delta", R"({"duration":"1e-160"})", "D (the time from first to last measurement)"},
-      // SDs whose squares underflow together: the Welch degrees of freedom, the paired SD, the slopes' SD
-      {"means.two.welch", "mu1", R"({"sd1":"1e-300","sd2":"1e-300"})", ""},
-      {"means.paired.t", "mud", R"({"sdtype":"corr","sd1":"1e-300","sd2":"1e-300"})", ""},
-      {"means.two.slopes", "delta", R"({"sdb":"1e-300","sde":"1e-300"})", ""},
+      // the smallest alpha, two-sided
+      {"reg.cox", "n", R"({"alpha":"1e-30"})", ""},
+      {"rates.two.poisson", "n", R"({"alpha":"1e-30"})", ""},
+      {"sim.lmm.cluster", "k", R"({"alpha":"1e-30"})", ""},
+      {"sim.multiarm", "n", R"({"alpha":"1e-30","adjust":"bonferroni"})", ""},
+      // squares of tiny inputs: CV², σ², D²
+      {"means.be.ratio", "n", R"({"cv":"1e-30"})", ""},
+      {"means.be.ratio", "power", R"({"cv":"1e-30"})", ""},
+      {"cluster.sw", "power", R"({"sigma":"1e-30"})", ""},
+      {"means.two.t", "mu1", R"({"sigma":"1e-30"})", ""},
+      {"means.two.slopes", "delta", R"({"duration":"1e-30"})", ""},
+      // SDs squared together: the Welch degrees of freedom, the paired SD, the slopes' SD
+      {"means.two.welch", "mu1", R"({"sd1":"1e-30","sd2":"1e-30"})", ""},
+      {"means.paired.t", "mud", R"({"sdtype":"corr","sd1":"1e-30","sd2":"1e-30"})", ""},
+      {"means.two.slopes", "delta", R"({"sdb":"1e-30","sde":"1e-30"})", ""},
       // intervals at a confidence near 0 close on the estimate
-      {"prop.two.ci", "n", R"({"conf":"1e-300"})", ""},
+      {"prop.two.ci", "n", R"({"conf":"1e-30"})", ""},
       {"prop.one.ci", "n", R"({"conf":"1e-15","method":"wilson"})", ""},
-      // proportions, rates and alphas too small to compute with
-      {"prop.cc", "n", R"({"p0":"5e-324"})", "proportions are too small to compute with"},
-      {"prop.two", "n", R"({"es":"or","p2":"5e-324"})", "proportions are too small to compute with"},
-      {"rates.two.poisson", "n", R"({"time":"5e-324"})", "exposure time t is too small"},
-      {"rates.two.negbin", "power", R"({"r0":"5e-324"})", "are too small to compute with"},
-      {"gs.means", "n", R"({"alpha":"1e-300"})", "alpha is too small to compute with"},
-      {"gs.logrank", "power", R"({"alpha":"5e-324","boundary":"wt_obf"})", "alpha is too small to compute with"},
-      {"sim.winratio", "power", R"({"med_d":"5e-324"})", "the median time to death is too short to compute with"},
+      // proportions, rates and alphas this small: a study of about 1e30 subjects, or an answer
+      {"prop.cc", "n", R"({"p0":"1e-30"})", "cannot be reached"},
+      {"prop.two", "n", R"({"es":"or","p2":"1e-30"})", "cannot be reached"},
+      {"rates.two.poisson", "n", R"({"time":"1e-30"})", "cannot be reached"},
+      {"rates.two.negbin", "power", R"({"r0":"1e-30"})", ""},
+      {"gs.means", "n", R"({"alpha":"1e-30"})", ""},
+      {"gs.logrank", "power", R"({"alpha":"1e-30","boundary":"wt_obf"})", ""},
+      {"sim.winratio", "power", R"({"med_d":"1e-30"})", ""},
   };
   for (const Case& c : cases) {
     const auto t0 = std::chrono::steady_clock::now();

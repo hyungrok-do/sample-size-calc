@@ -3,9 +3,9 @@
     PYTHONPATH=python python scripts/stress_inputs.py [procedure ...] [--limit 5] [--json report.json]
 
 Every number or list input, in every solve mode where it shows, gets a battery of typed texts (blank, letters,
-decimal commas, exponents, 1e-300 and 1e300, inf and nan, a unicode minus, ranges good and bad, a list of 3,000
-values ...), run the way an interface runs it (the quick approximation for a simulation, power curve on).
-Reported:
+decimal commas, exponents, 1e-300 and 1e300 (refused) and the sizes allowed nearest them, inf and nan, a unicode
+minus, ranges good and bad, a list of 3,000 values ...), run the way an interface runs it (the quick approximation
+for a simulation, power curve on).  Reported:
 
   hang      still running after --limit seconds (default 5), and whether Stop (cancelling the token) ends it
   message   a failure without a message, or with an internal one
@@ -28,8 +28,9 @@ import ssc.core as core
 
 NUMBER = [
     "", " ", "abc", "1,5", "0,8", "1.5.2", "-", ".", "0.", ".5", "5.", "1e3", "1e-3", "1E2", "1e309", "-1e309",
-    "inf", "-inf", "Infinity", "nan", "NaN", "-0", "0", "-1", "-0.5", "1e-300", "1e300", "999999999999",
-    "0.0000001", "1 to 10", "1 to 10 by 0", "10 to 1 by 1", "1 to 1000000 by 1", "1 to 2 by 0.0000001",
+    "inf", "-inf", "Infinity", "nan", "NaN", "-0", "0", "-1", "-0.5", "1e-300", "1e300", "1e-30", "1e30", "-1e30",
+    "999999999999", "0.0000001", "1 to 10", "1 to 10 by 0", "10 to 1 by 1", "1 to 1000000 by 1",
+    "1 to 2 by 0.0000001",
     "0.5 0.6 0.7", "1;2", "1|2", "−1", "1 000", "10%", "½", "１", "0x10", "1e", "e5", "+5", "++5",
     "5-", "1 to", "to 5", "by 2", "1 by 2", "1 to 5 by", "1 2 to 5", "  7  ", "\t3", "3\n", "1 " * 3000,
     "0.99999999", "1.0000001", "2147483648", "4294967296", "1e10", "-1e10", "0.5 to 0.9 by 0.1",
@@ -37,7 +38,7 @@ NUMBER = [
 VECTOR = [
     "", " ", "1", "0", "-1", "a b", "1;2", "0.6;0.5 0.4", "1 2 3 4 5 6 7 8 9", "0.5 0.5", "0.2 0.3",
     "-0.1 0.6 0.5", "1 to 5", "0 0 0", "1e309 1", "nan 1", "0.1 " * 50, "1 2 3 " * 400, "0,5 0,5", "1|2|3",
-    "0.25 0.25 0.25 0.25", "1 1 1 1 1 1 1 1", "0.001 0.999", "100 200", "−0.5 0.5",
+    "0.25 0.25 0.25 0.25", "1 1 1 1 1 1 1 1", "0.001 0.999", "100 200", "−0.5 0.5", "1e-30 1", "0 1e30",
 ]
 INTERNAL = ("missing input", "missing selection", "missing list input", "not bracketed", "internal", "std::",
             "unknown option", "out of range", "exception", "assert")

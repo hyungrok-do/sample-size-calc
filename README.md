@@ -329,13 +329,14 @@ to use a library in another location.
   run under AddressSanitizer, UndefinedBehaviorSanitizer and
   ThreadSanitizer.
 - **Whatever is typed.** Every input of every method, in every solve mode,
-  gets a battery of 65 typed texts (25 for a list) (blank, letters, decimal commas, 1e-300
-  and 1e300, inf and nan, bad ranges, a list of 3,000 values ...): each run
-  must end promptly, with an answer or a clear message, and Stop must end it
+  gets a battery of 68 typed texts (27 for a list) (blank, letters, decimal commas, 1e-300
+  and 1e300, 1e-30 and 1e30, inf and nan, bad ranges, a list of 3,000 values ...):
+  each run must end promptly, with an answer or a clear message, and Stop must end it
   (`scripts/stress_inputs.py`; `core/tests/test_extremes.cpp` keeps the cases
-  that once ran forever). Counts are limited to a billion, and one simulated
-  study to a million subjects, measurements or clusters (200,000 patients for
-  the win ratio), so that Stop, which acts between studies, is prompt.
+  that once ran forever). Counts are limited to a billion, every other number
+  to 0 or 1e-30 to 1e30 in size, and one simulated study to a million
+  subjects, measurements or clusters (200,000 patients for the win ratio), so
+  that Stop, which acts between studies, is prompt.
 - **Properties.** Tests generated from each procedure's schema check every
   solve mode: a solved sample size or effect gives back the target power,
   sample sizes are the smallest that reach it, power never falls as α grows,

@@ -50,6 +50,21 @@ json::Value visibility_json(const Visibility& v) {
 // The largest count (a group size, controls, events) an answer gives; past it no study could have it.
 constexpr double MAX_COUNT = 1e15;
 
+// The sizes an input that is not a count may have, other than 0: no study's quantity lies beyond them in any
+// sensible unit, and within them the products, squares and ratios of the methods stay far from overflow and
+// underflow.
+constexpr double MIN_SIZE = 1e-30, MAX_SIZE = 1e30;
+
+// The rule for a value outside those sizes, in the terms of the input's own limits: "0 or" only where its limits
+// allow 0, "in size" where they allow negative values, and each end only where its limits reach past it.
+std::string size_rule(const ParamDef& p) {
+  const bool zero = (p.min_open ? p.min < 0 : p.min <= 0) && (p.max_open ? p.max > 0 : p.max >= 0);
+  const bool small = p.min < MIN_SIZE && p.max > -MIN_SIZE, large = p.max > MAX_SIZE || p.min < -MAX_SIZE;
+  std::string rule = small && large ? "between 1e-30 and 1e30" : (small ? "at least 1e-30" : "at most 1e30");
+  if (p.min < 0) rule += " in size";
+  return "values must be " + std::string(zero ? "0 or " : "") + rule;
+}
+
 json::Value number_or_null(double d) { return std::isfinite(d) ? json::Value(d) : json::Value(); }
 
 json::Value cell_json(const Cell& c) {
@@ -390,6 +405,7 @@ json::Value run_request(const json::Value& req, Token* token) {
         return std::string("values must be ") + (p.min_open ? "greater than " : "at least ") + bound(p.min);
       if (p.max_open ? !(v < p.max) : !(v <= p.max))
         return std::string("values must be ") + (p.max_open ? "less than " : "at most ") + bound(p.max);
+      if (!p.integer && v != 0 && !(std::fabs(v) >= MIN_SIZE && std::fabs(v) <= MAX_SIZE)) return size_rule(p);
       // a count (subjects, clusters, levels ...) up to a billion stays exact in the integer arithmetic of the
       // exact methods; no study needs more
       if (p.integer && v > 1e9) return "values must be at most 1,000,000,000";

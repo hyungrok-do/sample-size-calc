@@ -51,7 +51,12 @@ Another thread can watch progress and cancel it through the token.
   with step 1; `10-20` is refused rather than read as 10 and −20. The minus sign
   `−` and the spaces of pasted text (no-break, thin) are read like `-` and a
   space. A list has at most 10,000 values and a text at most 1,000,000
-  characters. Counts (whole-number inputs) go up to 1,000,000,000. A vector input
+  characters. Counts (whole-number inputs) go up to 1,000,000,000. Every other
+  number (each value of a list too) is 0 or between 1e-30 and 1e30 in size (of
+  either sign where the input's own limits allow negative values): no study's
+  quantity lies beyond in any sensible unit, and a value beyond is refused with
+  a message in the terms of the input's limits (`values must be between 1e-30
+  and 1e30`, `values must be 0 or at least 1e-30` ...). A vector input
   (for example group means `0 0.5 1`) can hold several alternatives separated
   by `;`.
 - A request nested deeper than 64 levels of objects and arrays is refused.

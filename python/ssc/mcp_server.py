@@ -88,6 +88,15 @@ def _tidy(v: Any) -> Any:
     return v
 
 
+def _sizes(p: dict) -> str:
+    """The sizes the engine allows a number that is not a count: 0 (where the input's limits allow it), or 1e-30 to
+    1e30 in size."""
+    lo = -math.inf if p.get("min") is None else float(p["min"])
+    hi = math.inf if p.get("max") is None else float(p["max"])
+    zero = (lo < 0 if p.get("min_open") else lo <= 0) and (hi > 0 if p.get("max_open") else hi >= 0)
+    return ("0 or " if zero else "") + "1e-30 to 1e30 in size"
+
+
 def _as_input(v: Any) -> str:
     """A model's value as engine text: numbers, '0.8 0.9', [0.8, 0.9], or [[0, 0.5, 1], [0, 0, 1]] for lists."""
     if isinstance(v, bool):
@@ -160,13 +169,12 @@ def describe_method(method_id: str) -> dict:
                 rules.append(f"{'>' if p.get('min_open') else '≥'} {_tidy(float(p['min']))}")
             if p.get("max") is not None:
                 rules.append(f"{'<' if p.get('max_open') else '≤'} {_tidy(float(p['max']))}")
-            if p.get("integer"):
-                rules.append("whole numbers")
+            rules.append("whole numbers" if p.get("integer") else _sizes(p))
             if p["type"] == "vector":
                 rules.append("a list of numbers separated by spaces; several lists separated by ';'")
             elif p.get("multi"):
                 rules.append("several values allowed")
-            item["values"] = ", ".join(rules) if rules else "any number"
+            item["values"] = ", ".join(rules)
         inputs.append(item)
     return {"id": sch["id"], "name": sch["name"], "category": sch["category"], "summary": sch["summary"],
             "simulation": bool(sch.get("simulation")),
