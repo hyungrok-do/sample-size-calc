@@ -171,9 +171,11 @@ function field(p, initial = p.default ?? '') {
   if (p.type === 'select') input = el('select', { id, onchange: refresh });
   else if (p.type === 'bool') input = el('input', { id, type: 'checkbox', checked: initial === 'true', onchange: refresh });
   else {
+    // one character past the engine's limit: a longer text is still refused with its message (not cut short
+    // without a word), and the page never lays out several million characters
     input = el('input', {
       id, type: 'text', value: initial, autocomplete: 'off', spellcheck: 'false', inputmode: inputmode(p),
-      oninput: () => input.removeAttribute('aria-invalid'),
+      maxlength: 1000001, oninput: () => input.removeAttribute('aria-invalid'),
     });
   }
   // two lines of help, all of it on a click (and on hover, and for screen readers): it never grows by itself

@@ -207,10 +207,10 @@ double p1_from(const Scenario& s, double p2) {
     p1 = p2 * s("r1");
   else if (s.is("es", "or")) {
     const double o = s("or1") * p2 / (1 - p2);
-    p1 = o / (1 + o);
+    p1 = std::isinf(o) ? 1 : o / (1 + o);  // odds past the largest double: P1 is 1
   } else
     p1 = s("p1");
-  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not between 0 and 1");
+  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not strictly between 0 and 1");
   return p1;
 }
 
@@ -380,7 +380,10 @@ Procedure two_prop_ni() {
     const double p10 = p1_at(sc, S.bound, p2);  // P1 on the boundary of H0
     if (!(p10 > 0 && p10 < 1))
       throw CalcError("the boundary of the null hypothesis, P1 = " + fnum(p10) +
-                      (sc == Scale::Ratio ? " (R0 × P2)" : " (P2 + D0)") + ", must lie between 0 and 1");
+                      (sc == Scale::Ratio  ? " (R0 × P2)"
+                       : sc == Scale::Odds ? " (odds OR0 times those of P2)"
+                                           : " (P2 + D0)") +
+                      ", must lie strictly between 0 and 1");
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     auto P = [&](double n1, double n2) {

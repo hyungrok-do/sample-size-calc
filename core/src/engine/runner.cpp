@@ -500,11 +500,26 @@ json::Value run_request(const json::Value& req, Token* token) {
       if (o.value == solve) return o.ykey.empty() ? o.value : o.ykey;
     return solve;
   };
-  auto nan_cell = [](const Row& r, const std::string& key) {  // no number, or an infinite one
+  auto cell = [](const Row& r, const std::string& key) -> const double* {
     for (const auto& kv : r.cells)
-      if (kv.first == key)
-        return std::holds_alternative<double>(kv.second) && !std::isfinite(std::get<double>(kv.second));
-    return false;
+      if (kv.first == key) return std::get_if<double>(&kv.second);
+    return nullptr;
+  };
+  auto nan_cell = [&](const Row& r, const std::string& key) {  // no number, or an infinite one
+    const double* v = cell(r, key);
+    return v && !std::isfinite(*v);
+  };
+  // the counts of the table (group sizes, controls, clusters): one that overflowed, or that no study could have
+  // (past 10^15; past 2^53 a double does not even hold whole numbers), says so rather than being shown
+  std::vector<std::string> count_keys;
+  if (proc->columns && count > 0)
+    for (const auto& c : proc->columns(scen[0]))
+      if (c.fmt == "int") count_keys.push_back(c.key);
+  auto bad_count = [&](const Row& r, const std::string& key) {
+    const double* v = cell(r, key);
+    if (!v) return false;
+    if (std::isnan(*v)) return key == "n" || key == "n1" || key == "n2";  // a criterion that does not apply is blank
+    return std::fabs(*v) > 1e15;
   };
   try {
     parallel_for(
@@ -527,6 +542,10 @@ json::Value run_request(const json::Value& req, Token* token) {
             for (const std::string& key : {answer_key(scen[i].solve), std::string("power")})
               if (nan_cell(r, key))
                 throw CalcError("the answer cannot be computed for these inputs; check for an extreme value");
+            for (const std::string& key : count_keys)
+              if (bad_count(r, key))
+                throw CalcError("the answer cannot be computed for these inputs: a count would be infinite or "
+                                "beyond 10^15; check for an extreme value");
             if (proc->statement) r.statement = proc->statement(scen[i], r);
             // 20,000 rows of group-sequential boundaries would take a gigabyte
             if (i >= MAX_TABLE_ROWS && !r.tables.empty()) {

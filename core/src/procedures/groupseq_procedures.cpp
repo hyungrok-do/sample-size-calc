@@ -678,10 +678,13 @@ SSC_REGISTER(gs_props);
 
 // ======================================================================= logrank
 double gs_event_prob(double lam, double A, double F) {
+  if (std::isinf(lam)) return 1;  // a median of about 0: each subject has the event at once
   if (A <= 0) return -std::expm1(-lam * F);
   // without cancellation for small hazards, as event_prob of the logrank procedures
   const double x = lam * A;
-  const double tail = x < 1e-3 ? x / 2 - x * x / 6 + x * x * x / 24 - x * x * x * x / 120 : (x + std::expm1(-x)) / x;
+  const double tail = x < 1e-3   ? x / 2 - x * x / 6 + x * x * x / 24 - x * x * x * x / 120
+                      : x < 1e300 ? (x + std::expm1(-x)) / x
+                                  : 1;
   return -std::expm1(-lam * F) + std::exp(-lam * F) * tail;
 }
 

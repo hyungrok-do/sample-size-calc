@@ -214,10 +214,10 @@ double p1_from_effect(const Scenario& s, double p2) {
     p1 = p2 * s("r1");
   else if (es == "or") {
     const double o = s("or1") * p2 / (1 - p2);
-    p1 = o / (1 + o);
+    p1 = std::isinf(o) ? 1 : o / (1 + o);  // odds past the largest double: P1 is 1
   } else
     p1 = s("p1");
-  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not between 0 and 1");
+  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not strictly between 0 and 1");
   return p1;
 }
 

@@ -2,16 +2,63 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 
 #include "util/numtext.hpp"
 
 namespace ssc::parse {
 
+namespace {
+
+// A character that would act on a message rather than show in it: controls, the format characters that reorder or
+// join text (U+202E turns the rest of the line around) and combining marks (they land on the quote mark).
+bool acts_on_text(char32_t c) {
+  return c < 0x20 || (c >= 0x7F && c < 0xA0) || c == 0xAD || c == 0x61C || (c >= 0x300 && c < 0x370) ||
+         (c >= 0x1AB0 && c < 0x1B00) || (c >= 0x1DC0 && c < 0x1E00) || (c >= 0x200B && c < 0x2010) ||
+         (c >= 0x2028 && c < 0x202F) || (c >= 0x2060 && c < 0x2070) || (c >= 0x20D0 && c < 0x2100) ||
+         (c >= 0xFE00 && c < 0xFE10) || (c >= 0xFE20 && c < 0xFE30) || c == 0xFEFF || (c >= 0xFFF9 && c < 0xFFFC) ||
+         (c >= 0xE0000 && c < 0xE1000);
+}
+
+}  // namespace
+
 std::string quoted(const std::string& t) {
-  if (t.size() <= 40) return t;
-  std::size_t end = 40;
-  while (end > 0 && (static_cast<unsigned char>(t[end]) & 0xC0) == 0x80) --end;
-  return t.substr(0, end) + "…";
+  std::size_t end = t.size();
+  if (end > 40) {
+    end = 40;
+    while (end > 0 && (static_cast<unsigned char>(t[end]) & 0xC0) == 0x80) --end;
+  }
+  // such characters are written as \u{...}
+  std::string out;
+  for (std::size_t i = 0; i < end;) {
+    const unsigned char b = static_cast<unsigned char>(t[i]);
+    const std::size_t len = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+    char32_t c = len == 1 ? b : b & (0x7F >> len);
+    bool whole = i + len <= end;
+    for (std::size_t k = 1; whole && k < len; ++k) {
+      const unsigned char x = static_cast<unsigned char>(t[i + k]);
+      whole = (x & 0xC0) == 0x80;
+      c = (c << 6) | (x & 0x3F);
+    }
+    if (whole && acts_on_text(c)) {
+      char hex[16];
+      std::snprintf(hex, sizeof hex, "\\u{%X}", static_cast<unsigned>(c));
+      out += hex;
+      i += len;
+    } else if (whole) {
+      out.append(t, i, len);
+      i += len;
+    } else {
+      out += t[i++];  // not UTF-8: the byte as it is
+    }
+  }
+  return end < t.size() ? out + "…" : out;
+}
+
+std::size_t characters(const std::string& t) {
+  std::size_t n = 0;
+  for (char ch : t) n += (static_cast<unsigned char>(ch) & 0xC0) != 0x80;
+  return n;
 }
 
 namespace {
@@ -137,7 +184,8 @@ double tidy(double v) {
 
 Numbers numbers(const std::string& raw, std::size_t max_values) {
   Numbers res;
-  if (raw.size() > MAX_TEXT) {  // read before the value count could be checked, it took memory and seconds
+  // read before the value count could be checked, it took memory and seconds
+  if (raw.size() > MAX_TEXT && (raw.size() > 4 * MAX_TEXT || characters(raw) > MAX_TEXT)) {
     res.error = "the text is too long (limit 1,000,000 characters)";
     return res;
   }
@@ -201,7 +249,7 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
 
 Vectors vectors(const std::string& text, std::size_t max_vectors) {
   Vectors res;
-  if (text.size() > MAX_TEXT) {
+  if (text.size() > MAX_TEXT && (text.size() > 4 * MAX_TEXT || characters(text) > MAX_TEXT)) {
     res.error = "the text is too long (limit 1,000,000 characters)";
     return res;
   }

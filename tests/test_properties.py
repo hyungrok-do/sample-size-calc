@@ -719,6 +719,45 @@ def test_a_simulation_curve_says_it_is_the_approximation():
     assert not any(note in t for t in res["notes"])
 
 
+@pytest.mark.parametrize("pid,solve,inputs", [
+    ("means.two.ni", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("prop.two.ni", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("rates.two.poisson", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("gs.logrank", "power", {"alloc": "ratio", "r": "1e308"}),
+    ("prop.cc", "power", {"m": "1e308"}),
+    ("means.two.ni", "n", {"alloc": "ratio", "r": "1e15"}),
+    ("prop.cc", "n", {"m": "9007199254740993"}),
+])
+def test_a_count_past_any_study_is_said(pid, solve, inputs):
+    """Group sizes and controls of infinity, or of more than 10^15, were given as answers ("20 and inf")."""
+    row = run(pid, solve, {**base_inputs(pid), **inputs})["rows"][0]
+    assert "a count would be infinite or beyond 10^15" in row.get("_error", ""), row
+
+
+def test_a_median_of_about_zero_has_every_subject_with_the_event():
+    """A subnormal median made the hazard infinite and the event probability inf/inf: "-nan events"."""
+    for solve in ("power", "n"):
+        rows = [first_row(run("gs.logrank", solve, {**base_inputs("gs.logrank"), "med2": m})) for m in ("5e-324", "1e-300")]
+        assert not rows[0].get("_error") and "nan" not in rows[0]["_statement"], rows[0]
+        assert rows[0]["events"] == rows[1]["events"] and rows[0]["power"] == rows[1]["power"]
+    row = first_row(run("surv.logrank", "n", {**base_inputs("surv.logrank"), "med2": "5e-324"}))
+    assert not row.get("_error") and "nan" not in row["_statement"], row
+
+
+def test_odds_ratio_messages_speak_of_odds():
+    row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "scale": "or", "or0": "1e308"})["rows"][0]
+    assert "(odds OR0 times those of P2), must lie strictly between 0 and 1" in row["_error"], row
+    row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "es": "or", "or1": "1.7976931348623157e308"})["rows"][0]
+    assert row["_error"] == "the implied P1 = 1 is not strictly between 0 and 1", row
+
+
+def test_text_that_acts_on_a_message_is_written_out():
+    """A right-to-left override typed in a field turned the rest of the error line around."""
+    res = run("means.two.ni", "n", {**base_inputs("means.two.ni"), "power": "\u202e0.8", "sigma": "1\u200d"})
+    assert res["input_errors"]["power"] == "could not read '\\u{202E}0.8' as a number"
+    assert "\\u{200D}" in res["input_errors"]["sigma"] and "\u200d" not in res["input_errors"]["sigma"]
+
+
 def test_an_unknown_choice_is_an_input_error():
     res = run("means.two.t", "power", {**base_inputs("means.two.t"), "alternative": "greater"})
     assert not res["ok"] and "unknown choice 'greater'" in res["input_errors"]["alternative"]
