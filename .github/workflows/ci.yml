@@ -127,6 +127,16 @@ jobs:
       fail-fast: false
       matrix:
         browser: [firefox, webkit]
+        playwright: ["1.57.0"]  # the version web/package.json pins (checked below)
+    # Playwright's image holds the browsers and the system libraries they need: nothing comes through apt, whose
+    # mirror twice took the 20 minutes the step had (50 MB of WebKit's libraries at 60 KB/s), or the browser
+    # download, which once stalled for half an hour.  The runner's user, as Firefox wants to own its home.
+    container:
+      image: mcr.microsoft.com/playwright:v${{ matrix.playwright }}-noble
+      options: --user 1001 --ipc=host
+    defaults:
+      run:
+        shell: bash  # in a container the default is sh, which has no ${GITHUB_SHA::7}
     env:
       SSC_BROWSER: ${{ matrix.browser }}
     steps:
@@ -140,20 +150,14 @@ jobs:
           path: web/engine
       - name: Browser
         id: browser
-        timeout-minutes: 20
+        timeout-minutes: 10
         run: |
+          pinned=$(node -p "require('./web/package.json').devDependencies.playwright")
+          if [ "$pinned" != "${{ matrix.playwright }}" ]; then
+            echo "web/package.json pins Playwright $pinned: set the image's version to it in ci.yml" >&2
+            exit 1
+          fi
           npm ci --prefix web
-          cd web
-          # the system libraries come through apt, which holds the package lock while
-          # it works, so they install once and only this step's limit bounds them
-          npx playwright install-deps ${{ matrix.browser }}
-          # the browser download alone is tried again when it stalls (once one held
-          # the job for half an hour)
-          for attempt in 1 2 3; do
-            timeout 300 npx playwright install ${{ matrix.browser }} && break
-            if [ "$attempt" = 3 ]; then exit 1; fi
-            echo "Downloading ${{ matrix.browser }} did not finish in 5 minutes; trying again"
-          done
       - name: Guide and calculator
         run: cd web && npm run test:browser
       - name: The testers' fixes and responsiveness
