@@ -100,10 +100,11 @@ worker always checks the page itself with the server.
   stopped it the first time its shared memory had to grow. WebAssembly memory
   never shrinks, so after an answer that grows the engine beyond its start
   (and beyond 64 MB), the page replaces the engine once it is idle and online.
-- If the engine stops during a calculation (it traps, for example when out of
-  memory), the page starts a fresh one at once. After the multi-core engine,
-  it uses the one-thread engine for the rest of the visit and runs the
-  calculation again; otherwise it explains what happened.
+- A scenario that needs more memory than the engine can have (2 GB) says so
+  in its row. If the engine stops during a calculation (it traps, or has no
+  memory left even for an answer), the page starts a fresh one at once. After
+  the multi-core engine, it uses the one-thread engine for the rest of the
+  visit and runs the calculation again; otherwise it explains what happened.
 - No leaks were found:
   - The engine's allocated memory is identical after every round of all
     methods, the error cases and requests the engine refuses.
@@ -173,6 +174,12 @@ subpath, no isolation headers, files kept for 10 minutes). It checks a first
 visit, the guide, every core from the second visit, a start without a network,
 and an update that must not mix the new page with older files. The Pages
 workflow runs it before publishing.
+
+`web/build.sh` writes the sources it built the engines from to
+`web/engine/source.txt`: the commit, and a hash of the changes from it to the
+engine's files that git tracks. `npm test`, `test:browser` and `test:page`
+warn when the engines were built from other sources than the ones beside them,
+since they then test another engine.
 
 CI runs all of these in Chromium, and `test:browser`, `test:page` and
 `test:site` in Firefox and WebKit (Safari's engine) too. `SSC_BROWSER` selects

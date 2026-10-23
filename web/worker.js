@@ -42,6 +42,7 @@ engine.catch(() => {});  // reported to each call below
 function withText(M, text, use) {
   const size = M.lengthBytesUTF8(text) + 1;
   const ptr = M._malloc(size);
+  if (!ptr) throw new WebAssembly.RuntimeError('out of memory');  // an engine without room for the request
   M.stringToUTF8(text, ptr, size);
   try {
     return use(ptr);
@@ -92,6 +93,8 @@ const ops = {
       return withText(M, JSON.stringify(request), (p) => {
         const t = performance.now();
         const text = take(M, M._ssc_run_json(p, token));
+        // no answer at all, not even the message that there is not enough memory: the engine has none left
+        if (text === null) throw new WebAssembly.RuntimeError('out of memory');
         const engineMs = performance.now() - t;
         const result = JSON.parse(text);
         delete result.plots;  // the page draws no charts

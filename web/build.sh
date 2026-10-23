@@ -8,6 +8,16 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
 command -v emcmake >/dev/null || { echo "emcmake not found: source <emsdk>/emsdk_env.sh first" >&2; exit 1; }
 mkdir -p "$here/engine"
+# The sources the engines are built from, which the web tests compare with the sources beside them: the commit,
+# and a hash of the changes from it to the engine's files that git tracks (the same files as
+# web/tests/engine-source.mjs).  Written once both engines are built.
+rm -f "$here/engine/source.txt"
+source_id=
+if commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null); then
+  changes=$(cd "$repo" && git diff --no-ext-diff --no-color --binary "$commit" -- CMakeLists.txt core/src core/include |
+    git hash-object --stdin)
+  source_id="$commit $changes"
+fi
 for threads in OFF ON; do
   dir="$repo/build-wasm-$(echo "$threads" | tr 'A-Z' 'a-z')"
   emcmake cmake -S "$repo" -B "$dir" -DCMAKE_BUILD_TYPE=Release -DSSC_BUILD_TESTS=OFF -DSSC_WASM_THREADS="$threads"
@@ -19,4 +29,5 @@ done
 sed -i 's|new URL("ssc_web_mt.mjs",import.meta.url)|new URL(import.meta.url)|' "$here/engine/ssc_web_mt.mjs"
 grep -q 'new Worker(new URL(import.meta.url)' "$here/engine/ssc_web_mt.mjs" ||
   { echo "ssc_web_mt.mjs: the helper threads' address was not found; check web/build.sh" >&2; exit 1; }
+[ -z "$source_id" ] || echo "$source_id" > "$here/engine/source.txt"
 ls -l "$here/engine"

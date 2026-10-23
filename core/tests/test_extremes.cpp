@@ -203,6 +203,11 @@ TEST_CASE("extremes: values beyond 1e-30 and 1e30 in size are refused, in the te
       {"means.two.t", "power", R"({"mu1":"0.5 1e-31"})", "mu1", "values must be 0 or between 1e-30 and 1e30 in size"},
       {"means.two.t", "n", R"({"dropout":"0 1e-31"})", "dropout", "values must be 0 or at least 1e-30"},
       {"means.two.t", "power", R"({"sigma":"1e-31 to 1 by 0.5"})", "sigma", "values must be between 1e-30 and 1e30"},
+      // the ends of a range as typed, as each would be alone: one the values do not reach, and one tidied to 1e-30
+      {"means.two.t", "power", R"({"mu1":"0 to 1.5e30 by 1e30"})", "mu1",
+       "values must be 0 or between 1e-30 and 1e30 in size"},
+      {"means.two.t", "power", R"({"mu1":"9.9999999999999e-31 to 9.9999999999999e-31"})", "mu1",
+       "values must be 0 or between 1e-30 and 1e30 in size"},
       {"corr.one", "n", R"({"rho1":"-1e-40"})", "rho1", "values must be 0 or at least 1e-30 in size"},
       {"prop.two.equiv", "n", R"({"dl":"-1e-31"})", "dl", "values must be at least 1e-30 in size"},
       {"prop.two.equiv", "n", R"({"scale":"or","oru":"1e31"})", "oru", "values must be at most 1e30"},
@@ -224,6 +229,14 @@ TEST_CASE("extremes: values beyond 1e-30 and 1e30 in size are refused, in the te
   CHECK(res.get("ok").as_bool(false));
   CHECK_EQ(res.get("rows").size(), std::size_t{8});
   CHECK(message(run("corr.one", "power", R"({"n":"1000000000"})")).empty());
+  // so is a range that crosses 0 at a small scale, whose value there is 0 rather than the rounding noise of the sum
+  // (3.9e-31 and 3.5e-46 here)
+  for (const char* inputs :
+       {R"({"mu1":"-3e-15 to 3e-15 by 1e-15","sigma":"2e-15"})", R"({"mu1":"-3e-30 to 3e-30 by 1e-30"})"}) {
+    const json::Value range = run("means.two.t", "power", inputs);
+    CHECK(range.get("ok").as_bool(false));
+    CHECK_EQ(range.get("rows").at(3).get("mu1").as_number(NAN), 0.0);
+  }
 }
 
 TEST_CASE("extremes: a share of the smallest alpha stays positive") {

@@ -48,12 +48,15 @@ Another thread can watch progress and cancel it through the token.
   be a single value or a list separated by spaces (`0.8 0.9`; a comma before the
   space is fine, `0.8, 0.9`, but `0.8,0.9` is refused, since `2,500` could be a
   thousands separator). It can also be a range: `10 to 100 by 10`, or `10 to 100`
-  with step 1; `10-20` is refused rather than read as 10 and −20. The minus sign
+  with step 1; `10-20` is refused rather than read as 10 and −20. A range's
+  values are rounded to 12 significant digits, and one within a billionth of a
+  step of 0 is 0 (`-0.3 to 0.3 by 0.1` has 0 in the middle). The minus sign
   `−` and the spaces of pasted text (no-break, thin) are read like `-` and a
-  space. A list has at most 10,000 values and a text at most 1,000,000
+  space. A list has at most 10,000 values and a text at most 200,000
   characters. Counts (whole-number inputs) go up to 1,000,000,000. Every other
-  number (each value of a list too) is 0 or between 1e-30 and 1e30 in size (of
-  either sign where the input's own limits allow negative values): no study's
+  number (each value of a list, and each end of a range as typed, too) is 0 or
+  between 1e-30 and 1e30 in size (of either sign where the input's own limits
+  allow negative values): no study's
   quantity lies beyond in any sensible unit, and a value beyond is refused with
   a message in the terms of the input's limits (`values must be between 1e-30
   and 1e30`, `values must be 0 or at least 1e-30` ...). A vector input
@@ -120,7 +123,7 @@ Another thread can watch progress and cancel it through the token.
 
   | Key | Meaning |
   |---|---|
-  | `_error` | why this scenario could not be computed; the others are unaffected |
+  | `_error` | why this scenario could not be computed (also when it needs more memory than there is); the others are unaffected |
   | `_statement` | a one-paragraph summary of the scenario |
   | `_notes` | remarks specific to this scenario |
   | `_tables` | extra tables, for example group-sequential boundaries: `{"title", "columns": [{key, label, fmt}], "rows": [[…], …]}`; the first 1,000 rows carry them |
@@ -166,7 +169,8 @@ not available in this mode to `{"given": ..., "used": ...}` (`alloc=sep` when
 solving for the sample size). Each is present only when it has entries.
 
 If the request cannot be run, `ok` is `false` and `error` describes the
-problem. Invalid inputs also produce `input_errors`, a map from parameter id to
+problem, for example that there is not enough memory for an answer this large.
+Invalid inputs also produce `input_errors`, a map from parameter id to
 message. A cancelled calculation returns `"cancelled": true`.
 
 ## Procedure schema

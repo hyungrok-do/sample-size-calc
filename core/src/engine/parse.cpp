@@ -206,7 +206,7 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
   Numbers res;
   // read before the value count could be checked, it took memory and seconds
   if (raw.size() > MAX_TEXT && (raw.size() > 4 * MAX_TEXT || characters(raw) > MAX_TEXT)) {
-    res.error = "the text is too long (limit 1,000,000 characters)";
+    res.error = "the text is too long (limit 200,000 characters)";
     return res;
   }
   const std::string text = plain(raw);
@@ -252,7 +252,14 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
         res.error = "too many values (limit " + std::to_string(max_values) + ")";
         return res;
       }
-      for (long k = 0; k < static_cast<long>(count); ++k) res.values.push_back(tidy(a + static_cast<double>(k) * step));
+      res.ends.push_back(a);
+      res.ends.push_back(b);
+      for (long k = 0; k < static_cast<long>(count); ++k) {
+        // where a range crosses 0, the sum leaves rounding noise (-0.3 + 3 * 0.1 is 5.6e-17, -3e-15 + 3 * 1e-15 is
+        // 3.9e-31): a value within a billionth of a step of 0 is 0 (the count above allows that much for rounding)
+        const double v = a + static_cast<double>(k) * step;
+        res.values.push_back(k > 0 && std::fabs(v) < 1e-9 * std::fabs(step) ? 0 : tidy(v));
+      }
       i += used;
       continue;
     }
@@ -270,7 +277,7 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
 Vectors vectors(const std::string& text, std::size_t max_vectors) {
   Vectors res;
   if (text.size() > MAX_TEXT && (text.size() > 4 * MAX_TEXT || characters(text) > MAX_TEXT)) {
-    res.error = "the text is too long (limit 1,000,000 characters)";
+    res.error = "the text is too long (limit 200,000 characters)";
     return res;
   }
   std::size_t start = 0, total = 0;
@@ -294,6 +301,7 @@ Vectors vectors(const std::string& text, std::size_t max_vectors) {
         return res;
       }
       res.vectors.push_back(std::move(n.values));
+      res.ends.insert(res.ends.end(), n.ends.begin(), n.ends.end());
       if (res.vectors.size() > max_vectors) {
         res.error = "too many alternatives";
         return res;

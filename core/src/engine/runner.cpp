@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <new>
 #include <set>
 
 #include "engine/blocks.hpp"
@@ -397,6 +398,10 @@ json::Value run_request(const json::Value& req, Token* token) {
       continue;
     }
     const std::string text = raw(p);
+    // other than 0, a number that is not a count lies within the sizes
+    auto outside = [&](double v) {
+      return !p.integer && v != 0 && !(std::fabs(v) >= MIN_SIZE && std::fabs(v) <= MAX_SIZE);
+    };
     auto check_value = [&](double v) -> std::string {
       if (!std::isfinite(v)) return "values must be finite numbers";
       if (p.integer && v != std::floor(v)) return "values must be whole numbers";
@@ -405,7 +410,7 @@ json::Value run_request(const json::Value& req, Token* token) {
         return std::string("values must be ") + (p.min_open ? "greater than " : "at least ") + bound(p.min);
       if (p.max_open ? !(v < p.max) : !(v <= p.max))
         return std::string("values must be ") + (p.max_open ? "less than " : "at most ") + bound(p.max);
-      if (!p.integer && v != 0 && !(std::fabs(v) >= MIN_SIZE && std::fabs(v) <= MAX_SIZE)) return size_rule(p);
+      if (outside(v)) return size_rule(p);
       // a count (subjects, clusters, levels ...) up to a billion stays exact in the integer arithmetic of the
       // exact methods; no study needs more
       if (p.integer && v > 1e9) return "values must be at most 1,000,000,000";
@@ -420,6 +425,10 @@ json::Value run_request(const json::Value& req, Token* token) {
           err = check_value(v);
           if (!err.empty()) break;
         }
+      // so does each end of a range as typed, as it would alone, though the values need not include it (tidied, a
+      // start of 9.9999999999999e-31 is 1e-30)
+      for (double v : r.ends)
+        if (err.empty() && outside(v)) err = size_rule(p);
       if (!err.empty()) {
         errors.set(p.id, err);
         has_errors = true;
@@ -436,6 +445,8 @@ json::Value run_request(const json::Value& req, Token* token) {
         for (const auto& vv : r.vectors)
           for (double v : vv)
             if (err.empty()) err = check_value(v);
+      for (double v : r.ends)
+        if (err.empty() && outside(v)) err = size_rule(p);
       if (!err.empty()) {
         errors.set(p.id, err);
         has_errors = true;
@@ -575,6 +586,10 @@ json::Value run_request(const json::Value& req, Token* token) {
             r.error = e.what();
           } catch (const Cancelled&) {
             throw;
+          } catch (const std::bad_alloc&) {
+            // a study, table or enumeration larger than the memory left (the page's engine has at most 2 GB): said
+            // as it is, not as an extreme value
+            r.error = "there is not enough memory to compute the answer for these inputs";
           } catch (const std::exception& e) {
             // a numerical routine gave up (a root it could not bracket, a series that did not converge): at the
             // inputs' extremes, as the stress sweeps show
