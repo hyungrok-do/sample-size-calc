@@ -29,6 +29,15 @@ namespace lmm = sim::lmm;
 
 constexpr int SMAX = 10;  // steps (S + 1 periods, S + 2 fixed effects ≤ PMAX)
 
+/// The sentence on the simulated studies whose Satterthwaite degrees of freedom could not be computed, so that
+/// their test used `fixed` degrees of freedom instead.
+std::string fallback_note(const Row& r, const std::string& fixed) {
+  if (!r.has("df_fallbacks")) return "";
+  return " In " + fint(r.num("df_fallbacks")) + " of the " + fint(r.num("reps")) +
+         " simulated studies, Satterthwaite's degrees of freedom could not be computed, and the test used " + fixed +
+         ".";
+}
+
 struct Design {
   int steps = 4;
   double m = 20;
@@ -180,6 +189,7 @@ sim::Outcome sw_study(const Design& d, const lmm::Data& means, const lmm::Data& 
   o.estimate = estimate * d.unit;
   o.se = w.se * d.unit;
   o.df = w.df;
+  o.df_fallback = w.fallback;
   return o;
 }
 
@@ -342,6 +352,7 @@ Procedure stepped_wedge_sim() {
       simc::put_summary(s, r, sm, simc::Failures::Numerical);
       r.set("approx_power", approx(g));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
+      if (sm.df_fallbacks > 0) r.set("df_fallbacks", static_cast<double>(sm.df_fallbacks));
     }
     r.set("g", g);
     r.set("steps", static_cast<double>(d.steps));
@@ -380,7 +391,8 @@ Procedure stepped_wedge_sim() {
            " observations) would " + simc::power_phrase(s, r) + " to detect a treatment effect of " +
            fnum(r.num("delta")) + " (ICC " + fnum(r.num("icc")) + ", cluster autocorrelation " + fnum(r.num("cac")) +
            "), analyzing each trial with a linear mixed model with period effects and " + model + " and a " +
-           alt_words(alt(s)) + " " + test + " at α = " + fnum(r.num("alpha")) + "." + simc::method_note(r);
+           alt_words(alt(s)) + " " + test + " at α = " + fnum(r.num("alpha")) + "." + simc::method_note(r) +
+           fallback_note(r, "K − 2");
   };
   p.definitions = {{"S, g, K", "Steps, clusters switching at each step, and clusters in the trial (K = S × g)."},
                    {"m", "Subjects measured in each cluster in each period (cross-sectional: new subjects every "

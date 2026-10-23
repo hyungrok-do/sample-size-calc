@@ -1355,6 +1355,42 @@ def test_mixed_model_simulations_do_not_depend_on_the_units():
     assert years["power"] == days["power"] and years["mean_df"] == pytest.approx(days["mean_df"], rel=1e-4)
 
 
+def test_satterthwaites_degrees_of_freedom_keep_their_digits_with_large_clusters():
+    """With equal clusters and a positive estimate of the cluster variance the test is the t-test on the cluster
+    means, with k1 + k2 − 2 degrees of freedom.  With 10⁷ subjects a cluster the REML criterion is about 10⁸, and its
+    rounding swamped the differences its Hessian is taken from (the mean was 6.73 for 6); with an ICC of 10⁻⁶
+    besides, the steps took the cluster variance to 0 and back, and 57 of 200 studies of 60 and 30 such clusters
+    fell back to the fixed degrees of freedom."""
+    base = {**base_inputs("sim.lmm.cluster"), "df": "satterthwaite", "k1": "4", "m": "1e7", "cv": "0", "icc": "0.05",
+            "reps": "200", "seed": "7"}
+    assert first_row(run("sim.lmm.cluster", "power", base, threads=2))["mean_df"] == pytest.approx(6, rel=1e-3)
+    row = first_row(run("sim.lmm.cluster", "power", {**base, "k1": "60", "kr": "0.5", "cv": "1e-3", "icc": "1e-6",
+                                                      "mu1": "0", "sigma": "3"}, threads=2))
+    assert "df_fallbacks" not in row
+
+
+def test_satterthwaites_degrees_of_freedom_with_few_clusters_of_millions_are_those_of_a_50_digit_fit():
+    """Three clusters a group, of 10⁷ subjects on average with a CV of 5: in 5 of 400 studies the fit ended at a
+    cluster variance of 10⁻¹⁰ to 10⁻⁹ σ² where the REML optimum is 0 (the criterion's values cannot tell them
+    apart), and Satterthwaite's degrees of freedom fell back to k1 + k2 − 2; elsewhere they were up to 6% off, from
+    finite differences of a criterion of 10⁸ and a fit that located θ² only to 6 · 10⁻⁴.  The mean of the 50-digit
+    fits' degrees of freedom is 7862226.554949597 (the fallbacks had put it at 6054562)."""
+    row = first_row(run("sim.lmm.cluster", "power", {**base_inputs("sim.lmm.cluster"), "k1": "3", "m": "1e7",
+                                                     "cv": "5", "icc": "0.01", "mu1": "0.5", "alternative": "upper",
+                                                     "reps": "400", "seed": "163117"}, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(7862226.554949597, rel=1e-6), row
+
+
+def test_clusters_of_one_subject_take_the_degrees_of_freedom_of_the_clusters():
+    """With one subject a cluster the cluster and residual variances are not told apart (the criterion is the same for
+    every split of their sum), and 159 of 400 studies used k1 + k2 − 2 degrees of freedom with a sentence saying that
+    Satterthwaite's could not be computed; the fit now gives the residual variance all of it, where Satterthwaite's
+    are k1 + k2 − 2."""
+    row = first_row(run("sim.lmm.cluster", "power", {**base_inputs("sim.lmm.cluster"), "k1": "200", "m": "1",
+                                                     "cv": "0", "reps": "400"}, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(398, rel=1e-6), row
+
+
 def simulate_and_approximate(pid: str, inputs: Dict[str, str]):
     sim = first_row(ssc.run(pid, "power", inputs, threads=2, power_curve=False))
     approx = first_row(ssc.run(pid, "power", inputs, power_curve=False, approximate=True))
@@ -1475,24 +1511,151 @@ def test_satterthwaite_degrees_of_freedom_with_a_residual_sd_far_below_the_rando
     assert rows[0]["mean_df"] == pytest.approx(rows[1]["mean_df"], rel=1e-5) and rows[0]["mean_df"] < 17, rows
 
 
-def test_random_slopes_that_dwarf_the_intercepts_away_from_time_zero_are_refused_not_misreported():
-    """With slopes 10⁸ or 10¹⁵ times as variable as the intercepts at time 0 and visits at 1, 2 and 4, a subject's
-    level at the visits all but follows from its slope, and the slopes' variance came out of rounding noise: an
-    approximate power of 100% where the exact GLS power is 8.6%, and simulated powers of 63%.  Such inputs now say
-    that the answer cannot be computed, and give no simulated power; where enough digits are left (slopes 10⁶ times
-    as variable, visits 10¹⁰ time units from 0), the approximation is the exact power."""
-    refused = "the answer cannot be computed for these inputs; check for an extreme value"
-    for sd1 in (1e8, 1e15):
-        inputs = {"timing": "custom", "times": "1 2 4", "sd1": f"{sd1:g}", "rho": "0.5", "dropout": "0.3",
-                  "delta": f"{0.25 * sd1:g}", "n1": "10", "df": "z", "reps": "200"}
-        approx = ssc.run("sim.lmm.longitudinal", "power", inputs, power_curve=False, approximate=True)
-        assert approx["rows"][0].get("_error") == refused, (sd1, approx["rows"][0])
-        sim = run("sim.lmm.longitudinal", "power", inputs, threads=2)["rows"][0]
-        assert sim.get("_error") == refused and "power" not in sim, (sd1, sim)
-    inputs = {"timing": "custom", "times": "10000000000 10000000001 10000000003", "sd1": "1e6", "rho": "0.5",
-              "dropout": "0.3", "delta": "250000", "n1": "10", "df": "z"}
-    approx = first_row(ssc.run("sim.lmm.longitudinal", "power", inputs, power_curve=False, approximate=True))
-    assert approx["power"] == pytest.approx(0.0864997, abs=1e-4)  # 50-digit GLS
+def test_random_slopes_that_dwarf_the_intercepts_away_from_time_zero_give_the_exact_power():
+    """With slopes 10⁶ to 10¹⁵ times as variable as the intercepts at time 0 and visits away from it (at 1, 2 and 4,
+    in calendar years, 10¹⁰ time units on), a subject's level at the visits all but follows from its slope: measured
+    from the first visit, X'V⁻¹X is singular to within 10⁻¹³, which once gave 100% for an exact GLS power of 8.6%, and
+    then refused these inputs (the simulated power too) or kept three digits.  Time is now measured from where the
+    estimates of the mean level and slope are uncorrelated: the approximation is the exact power (300-digit GLS),
+    and the simulation agrees with it within its Monte Carlo error, under the alternative and under the null."""
+    cases = [("1 2 4", "1e8", "0.5", "0.3", "10", "2.5e7", 0.0864997134942078),
+             ("1 2 4", "1e15", "0.5", "0.3", "10", "2.5e14", 0.0864997134942078),
+             ("1 2 4", "1e8", "0", "0", "100", "28284271.2474619", 0.516005273976175),
+             ("10000000000 10000000001 10000000003", "1e6", "0.5", "0.3", "10", "250000", 0.0864997134941966)]
+    for times, sd1, rho, dropout, n1, delta, exact in cases:
+        inputs = {"timing": "custom", "times": times, "sd1": sd1, "rho": rho, "dropout": dropout, "n1": n1,
+                  "delta": delta, "df": "z"}
+        approx = first_row(ssc.run("sim.lmm.longitudinal", "power", inputs, power_curve=False, approximate=True))
+        assert approx["power"] == pytest.approx(exact, abs=1e-9), inputs
+    reps = 1000
+    base = {"timing": "custom", "times": "1 2 4", "sd1": "1e7", "rho": "0.5", "dropout": "0.3", "n1": "100",
+            "df": "z", "reps": str(reps)}
+    for delta, exact in (("2828427.125", 0.516005), ("0", 0.05)):
+        sim = first_row(run("sim.lmm.longitudinal", "power", {**base, "delta": delta}, threads=2))
+        assert sim["failures"] == 0 and sim["approx_power"] == pytest.approx(exact, abs=1e-6)
+        assert abs(sim["power"] - exact) < 4 * math.sqrt(exact * (1 - exact) / reps), (delta, sim["power"])
+
+
+def test_satterthwaite_degrees_of_freedom_are_computed_where_the_random_effects_all_but_coincide():
+    """Subjects whose lines all but cross away from the time origin (an intercept SD of 100 and slopes correlated
+    0.99 with it, or visits at 10 to 13 with the lines crossing near 0), and slopes 10⁴⁷ times as variable as the
+    intercept: the Hessian of the REML criterion came out not positive definite (finite-difference steps near where
+    D stops being a covariance matrix, fits on its boundary, a correlation the fit never moved), and every study, or
+    a share of them, used N − 2 degrees of freedom while the statement spoke of a Satterthwaite t-test.  Where a
+    study still cannot have its own, the row and the statement say how many."""
+    base = {"timing": "custom", "reps": "200"}
+    for extra, n in (({"times": "0 1 2 3", "sd0": "100", "sd1": "10", "rho": "0.99", "dropout": "0.3"}, 100),
+                     ({"times": "10 11 12 13", "sd0": "1", "sd1": "10", "rho": "0.5"}, 20),
+                     ({"timing": "equal", "sd1": "5e29", "delta": "6e29", "sde": "1e-30", "dropout": "0.5",
+                       "duration": "1e18"}, 6)):
+        row = first_row(run("sim.lmm.longitudinal", "power", {**base, **extra, "n1": str(n)}, threads=2))
+        assert "df_fallbacks" not in row and row["mean_df"] != 2 * n - 2, (extra, row)
+        assert "could not be computed" not in row["_statement"]
+    # two visits: the residual and random-effect variances are not told apart, only the covariance of the two
+    # measurements, and the Hessian in all four was singular (69 of these studies used N − 2); the fit now holds D
+    # at rank 1, which reaches each covariance once
+    row = first_row(run("sim.lmm.longitudinal", "power", {**base, "times": "0 1", "n1": "60"}, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(118, abs=1e-3)
+    # lines that all but coincide, and almost every subject seen once: in 47 of these studies no subject was measured
+    # three times, the ridge of two visits, where 21 used N − 2 and the others took degrees of freedom from anywhere
+    # on it; D is held at rank 1 there too
+    inputs = {"timing": "equal", "m": "5", "duration": "4", "dropout": "0.999812", "rho": "0.999563", "n1": "50",
+              "seed": "10130", "reps": "200"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    assert "df_fallbacks" not in row and "could not be computed" not in row["_statement"], row
+    # five subjects a group and 90% dropout: a study with a handful of subjects measured three times can have a
+    # Hessian that is not positive definite either way, and the row and the statement say how many used N − 2
+    inputs = {"timing": "custom", "times": "0 0.590874 0.815691 1.25445 2.06801", "sd1": "6.372", "sde": "1.175e-06",
+              "dropout": "0.899", "n1": "5", "reps": "200"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    k = row.get("df_fallbacks", 0)
+    assert 0 < k < 30, row
+    assert (f"In {k} of the 200 simulated studies, Satterthwaite's degrees of freedom could not be computed, and the "
+            "test used N − 2.") in row["_statement"]
+
+
+def test_satterthwaites_degrees_of_freedom_are_exact_where_theory_gives_them():
+    """Complete, balanced data whose REML fit is interior: the test is the two-sample t-test on the subjects' slopes,
+    with N − 2 degrees of freedom.  With visits in calendar years and slopes 10⁶ times the residual SD, Nelder–Mead
+    stopped at saddles 0.05 to 0.9 above the optimum, where the degrees of freedom were 9.05 to 10.7 for 10 (or
+    N − 2 for want of any); with intercepts and slopes correlated 0.8, the finite differences in D averaged 37.9946
+    for 38.  The derivatives are now exact, and a fit that is not at a minimum is taken on from there."""
+    row = first_row(run("sim.lmm.longitudinal", "power", {"timing": "custom", "times": "2020 2021 2022 2023 2024",
+                                                          "sd1": "1e6", "n1": "6", "reps": "200"}, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(10, rel=1e-5), row
+    row = first_row(run("sim.lmm.longitudinal", "power", {"m": "10", "duration": "9", "sd0": "3", "sd1": "1",
+                                                          "sde": "0.3", "rho": "0.8", "n1": "20", "reps": "200"},
+                        threads=2))
+    assert row["mean_df"] == pytest.approx(38, rel=1e-6), row
+
+
+def test_a_simulated_study_that_cannot_tell_a_groups_slope_apart_counts_as_failed():
+    """With two visits and heavy dropout, every subject of a group is sometimes seen only once: nothing then tells
+    that group's slope apart, and the study reported an arbitrary estimate (exactly 0 or 1 in the analysis units,
+    which moved the mean estimate by 43% of itself over 100 studies) and could even reject.  Such a study now
+    could not be analyzed, and counts as not rejecting; the others agree with a 40-digit REML fit."""
+    inputs = {"timing": "custom", "times": "-620.357 -426.961", "sd0": "0.873", "sd1": "6.37", "rho": "0.09",
+              "sde": "6.6", "dropout": "0.6", "n1": "10", "delta": "0.117", "df": "z", "reps": "100", "r": "1.5"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    assert row["failures"] == 3  # replicates 27, 55 and 93: none of the 10 subjects of group 1 was measured twice
+    assert row["mean_delta"] == pytest.approx(-0.0315106, abs=1e-6)
+
+
+def test_studies_that_leave_the_model_without_an_estimate_count_as_not_rejecting():
+    """With heavy dropout and few subjects, a group often has no subject measured twice, or (with two visits) the
+    subjects measured twice are too few to determine the covariance of the two measurements: such a study counts as
+    not rejecting, as the statement says, and the power is given, where it was withheld with 'check for an extreme
+    value' once more than half of the studies were so (146 of 200 here).  When all are, the message says why."""
+    row = first_row(run("sim.lmm.longitudinal", "power", {"timing": "custom", "times": "0 1", "dropout": "0.8",
+                                                          "n1": "5", "reps": "200"}, threads=2))
+    assert row["failures"] == 177 and 0 <= row["power"] < 0.1, row
+    assert "177 simulated studies could not be analyzed and count as not rejecting." in row["_statement"]
+    res = run("sim.lmm.longitudinal", "power", {"timing": "custom", "times": "0 1", "dropout": "0.99", "n1": "3",
+                                                "reps": "100"}, threads=2)
+    assert res["rows"][0]["_error"] == ("the simulated power cannot be computed: none of the 100 simulated studies "
+                                        "could be analyzed (each had a group with too few subjects measured twice)")
+
+
+def test_random_slopes_whose_lines_cross_far_from_the_visits_are_analyzed():
+    """Intercepts 10¹⁸ times as variable as the slopes and correlated 1 − 10⁻¹³ with them: the subjects' lines cross
+    with the least spread 10¹⁸ time units before the visits, and the time origin of the analysis, meant to move there,
+    went back to 0 (measured from that far, the visits' times lost their spacing).  X'V⁻¹X then kept too few digits:
+    the approximation was refused or up to 1.2 · 10⁻³ off, and 95 of 200 simulated studies failed, which put the power
+    at 0.5 for 0.95.  The approximation is now the exact GLS power (400 digits) in any units, with dropout or calendar
+    years, and every simulated study is analyzed, with N − 2 degrees of freedom as theory gives for complete data."""
+    base = {"timing": "custom", "times": "0 1 2", "sd0": "1e18", "sd1": "1", "sde": "1e-10", "rho": "0.9999999999999",
+            "n1": "30", "delta": "0.6454972243679028", "df": "z"}
+    for extra in ({}, {"sd0": "1e7", "sd1": "1e-10", "sde": "1e-20", "delta": "6.454972243679028e-11"},
+                  {"dropout": "0.3"}, {"times": "2020 2021 2022"}):
+        approx = first_row(ssc.run("sim.lmm.longitudinal", "power", {**base, **extra}, power_curve=False,
+                                   approximate=True))
+        assert approx["power"] == pytest.approx(0.70541800111380, abs=1e-9), extra
+    sim = first_row(run("sim.lmm.longitudinal", "power", {**base, "df": "satterthwaite", "reps": "400"}, threads=2))
+    assert sim["failures"] == 0 and "df_fallbacks" not in sim and sim["mean_df"] == pytest.approx(58, abs=1e-3), sim
+    p = sim["approx_power"]
+    assert abs(sim["power"] - p) < 4 * math.sqrt(p * (1 - p) / 400), sim
+    # two visits that span time 0, and lines that cross 4 · 10²² time units after them
+    span = {"timing": "custom", "times": "-52856.7 0.0263229", "sd0": "1.903e+22", "sd1": "0.5", "sde": "9.6091e-20",
+            "rho": "-0.999999999999999", "dropout": "0.5", "n1": "100", "r": "0.5", "delta": "0.21650635094610987",
+            "df": "z"}
+    approx = first_row(ssc.run("sim.lmm.longitudinal", "power", span, power_curve=False, approximate=True))
+    assert approx["power"] == pytest.approx(0.70541800111380, abs=1e-9)
+
+
+def test_a_fit_that_stops_short_of_a_singular_random_effects_covariance_takes_it():
+    """Visits spanning 400 time units with 60% dropout: in one of 100 studies the subjects' lines all but cross at one
+    time, and the fit stopped where the criterion is 3 · 10⁻¹⁰ of itself above its optimum on the boundary, with
+    Satterthwaite's degrees of freedom 221 for 148; with three visits, in one of 100 studies the fit stopped 0.04 above
+    it, at intercepts and slopes correlated 0.9992 (22.78 for 22.86).  The means of 100 studies' degrees of freedom
+    from 80- and 60-digit fits are 147.94767275595697 and 22.926241777233322."""
+    base = {"timing": "custom", "df": "satterthwaite", "reps": "100", "r": "1.5"}
+    for inputs, df in (({"times": "-152.877 -131.082 34.576 35.931 246.46", "sd0": "0.213", "sd1": "0.42",
+                         "rho": "-0.13", "sde": "5.97", "dropout": "0.6", "n1": "60", "delta": "0.0236"},
+                        147.94767275595697),
+                       ({"times": "0.876 1.304 2.696", "sd0": "0.632", "sd1": "8.23", "rho": "0.61", "sde": "0.112",
+                         "dropout": "0.6", "n1": "10", "delta": "0.116"}, 22.926241777233322)):
+        row = first_row(run("sim.lmm.longitudinal", "power", {**base, **inputs}, threads=2))
+        assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(df, rel=1e-6), row
 
 
 def test_the_win_ratio_approximation_is_alpha_with_no_effect():

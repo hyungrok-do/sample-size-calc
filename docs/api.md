@@ -141,7 +141,12 @@ Another thread can watch progress and cancel it through the token.
   when more than half could not be in the simulations whose analyses fail
   only when the arithmetic breaks down: the longitudinal, cluster and
   stepped-wedge mixed models and the two-sample tests on skewed or
-  heavy-tailed data) and `mean_df`. Columns
+  heavy-tailed data; a longitudinal study whose subjects leave the model
+  without an estimate, as heavy dropout with few subjects can, counts as
+  failed without withholding the power) and `mean_df`, with `df_fallbacks`
+  when some of the mixed models' studies could not have Satterthwaite's
+  degrees of freedom and used the fixed ones instead (the statement says
+  how many). Columns
   without a value in any row are left out, so an approximation has no Monte
   Carlo columns. The result reports
   `"approximate": true` for an approximation. Results depend only on the seed:

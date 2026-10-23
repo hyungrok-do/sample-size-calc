@@ -9,7 +9,9 @@
 // b = (Z'Z)⁺ Z'y, and the rest, (I − P)y.  The REML criterion only needs, per
 // design, Z'Z, Z'X and the within-cluster part X'(I − P)X and, per pattern,
 // Σ b, Σ b b' and the within-cluster sums Σ X'(I − P)y and Σ y'(I − P)y, so
-// one evaluation costs O(patterns), whatever the number of subjects.
+// one evaluation costs O(patterns), whatever the number of subjects.  Clusters
+// whose X does not vary within the cluster, with a random intercept, need
+// less, and are kept by arm and size (Arm).
 //
 // The two parts are kept apart, and the between-cluster part is taken in the
 // coordinates b, because anything else loses digits when the clusters differ
@@ -23,9 +25,12 @@
 // rank) computed entry by entry in closed form (q ≤ 2); both stay valid at
 // the boundary (singular D).  σ² is profiled out; the relative
 // covariance factor Λ (G = ΛΛ') is optimized: Brent's method for a random
-// intercept, Nelder–Mead for a random intercept and slope.  Tests of c'β use
-// a t statistic with Satterthwaite's degrees of freedom (as lmerTest does),
-// from the numerical Hessian of the REML criterion in (σ², D).
+// intercept, Nelder–Mead for a random intercept and slope (with Newton's
+// method from exact derivatives where either stops short of a minimum).  Tests
+// of c'β use a t statistic with Satterthwaite's degrees of freedom (as lmerTest
+// does), from the Hessian of the REML criterion in (σ², D): by finite
+// differences for a random intercept in clusters of up to 100 observations on
+// average, exact for larger ones and for random slopes.
 #pragma once
 
 #include <cstdint>
@@ -123,10 +128,37 @@ void Pattern::add_effects(int p_, const double* rx, const double* z, const doubl
   yy += syy;
 }
 
+/// All clusters of one arm of a design whose X is the same row x on every observation of a cluster (a
+/// cluster-randomized comparison), with a random intercept (q = 1), by size.  Nothing of X is left within such a
+/// cluster, and its coefficients on Z are x itself, so that of a Pattern a size needs only its count and the sums
+/// Σ b, Σ b² and Σ y'(I − P)y (Σ X'(I − P)y is 0): 40 bytes in place of 1,544, for sizes that vary so widely that
+/// almost every cluster has one of its own (a million clusters took 1.9 GB as patterns).
+struct Arm {
+  struct Size {
+    double n = 0;      // observations per cluster
+    double count = 0;  // clusters of this size
+    double b = 0;      // sums over them: Σ b (b: the cluster's mean), Σ b², Σ y'(I − P)y
+    double bb = 0;
+    double yy = 0;
+  };
+  double x[PMAX] = {};
+  std::vector<Size> sizes;
+};
+
 struct Data {
   int p = 0;
   int q = 0;
   std::vector<Pattern> patterns;
+  std::vector<Arm> arms;  // with q = 1 only; taken after the patterns
+  /// Random effects (q = 2) whose covariates take two values only (a random slope with two visits): σ² and D are
+  /// not told apart then, only the covariance of the two measurements is, and a D of rank 1 (θ2 = 0) reaches each
+  /// one once, so the fit holds D there.  It does so as well in a study none of whose clusters has more observations
+  /// than random effects (no subject measured three times).
+  bool two_rows = false;
+  /// Called with poll_arg as each evaluation of the criterion begins, when set: a caller whose evaluations are long
+  /// (a million cluster sizes) checks there whether to stop, and throws to stop the fit or the test.
+  void (*poll)(const void*) = nullptr;
+  const void* poll_arg = nullptr;
   double observations() const;
   double clusters() const;
 };
@@ -151,14 +183,16 @@ struct Wald {
   double se = 0;
   double df = 0;
   double t = 0;
-  bool fallback = false;  // Satterthwaite's df unavailable (boundary), `fallback_df` used
+  bool fallback = false;  // Satterthwaite's df unavailable (no positive definite Hessian), the given df used
 };
 
 /// t test of c'β = 0; df_method: 0 Satterthwaite, 1 the given df, 2 normal (df = ∞).
 Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fixed_df);
 
-/// −2 × REML log-likelihood at (σ², G) with β profiled out; NaN if V is not positive definite.
-double criterion(const Data& d, double sigma2, const double* g);
+/// −2 × REML log-likelihood at (σ², G) with β profiled out; NaN if V is not positive definite.  det_g as for
+/// beta_covariance.
+double criterion(const Data& d, double sigma2, const double* g,
+                 double det_g = std::numeric_limits<double>::quiet_NaN());
 
 /// Covariance of β̂ at (σ², G) (the generalized least squares covariance), into `cov` (p × p).  det_g: |G| from a
 /// factor of G, when G is known as ΛΛ' (it is used if G is so nearly singular that |G| from its entries is not).
