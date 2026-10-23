@@ -280,13 +280,13 @@ double pbeta_raw(double x, double a, double b, bool lower, double y) {
   // complement does not lose more than ~3 digits; otherwise use the CF.
   const double s = a + b;
   if (y <= 0.5 && s * y <= b + 60) {
-    const double J = std::fmin(beta_series(b, a, y, x), 1.0);  // = 1 − I_x(a,b)
+    const double J = clamp01(beta_series(b, a, y, x));  // = 1 − I_x(a,b); a NaN stays NaN
     if (!lower) return J;
     if (J <= 0.99) return 1 - J;
     return beta_upper_tail_integral(b, a, y);  // I_x(a,b) = P(Y ≥ y), Y = 1 − X
   }
   if (x <= 0.5 && s * x <= a + 60) {
-    const double I = std::fmin(beta_series(a, b, x, y), 1.0);
+    const double I = clamp01(beta_series(a, b, x, y));
     if (lower) return I;
     if (I <= 0.99) return 1 - I;
     return beta_upper_tail_integral(a, b, x);  // 1 − I_x(a,b) = P(X ≥ x)

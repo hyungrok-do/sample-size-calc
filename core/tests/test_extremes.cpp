@@ -137,7 +137,7 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
       {"means.anova2", "power", R"({"a":"20","b":"214748365"})", "at most 100"},  // A × B wrapped around to 4
       {"means.two.welch", "power", R"({"sd1":"1e30"})", ""},
       {"means.two.t", "mu1", R"({"sigma":"1e30"})", ""},
-      {"sim.multiarm", "n", R"({"alpha":"1e-30"})", ""},  // 1 − α rounds to 1: Dunnett's value is Bonferroni's
+      {"sim.multiarm", "n", R"({"alpha":"1e-30"})", ""},  // 1 − α rounds to 1: Dunnett's value from the tail
       {"rates.one.poisson", "power", R"({"lam0":"1e30"})", ""},
       {"rates.one.poisson", "n", R"({"time":"1e30"})", ""},
       {"means.crossover", "n", R"({"delta":"1e30"})", ""},

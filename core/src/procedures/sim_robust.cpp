@@ -141,7 +141,8 @@ Shape shape_of(const Scenario& s) {
     z.k = s("kout");
     const double var = (1 - z.eps) + z.eps * z.k * z.k;
     // past about 1.3e154 the outliers' variance passes the largest double: every value would be standardized to 0
-    if (!std::isfinite(var))
+    // (k² itself, as a tiny ε keeps the mixed variance finite while k² overflows)
+    if (!std::isfinite(z.k * z.k))
       throw CalcError("the outliers' SD multiple k is too large to simulate (its square passes the largest number)");
     z.c = std::sqrt(var);
     z.exkurt = 3 * ((1 - z.eps) + z.eps * z.k * z.k * z.k * z.k) / (var * var) - 3;

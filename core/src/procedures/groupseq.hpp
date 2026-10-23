@@ -59,10 +59,12 @@ struct Design {
   bool has_futility() const { return !a.empty(); }
 };
 
-/// The grid's r for a design at level alpha: 32, as Jennison & Turnbull advise, and 128 below an alpha of 1e-8,
-/// whose boundaries lie so far out that the sparse tails of the coarser grid lose the accuracy of the last one
-/// (with 20 analyses its error grew tenfold at 1e-12, and at 1e-20 the last nominal level exceeded alpha and N
-/// was 2 short; with 128 the boundaries keep the accuracy of 32 at ordinary levels down to an alpha of 1e-30).
+/// The grid's r for a design at level alpha: the smallest of 32 (as Jennison & Turnbull advise), 48, 64, 96 and
+/// 128 that keeps the last boundary within about 2e-5 of a grid with r = 256, the accuracy of 32 at ordinary
+/// levels: 32 down to an alpha of 1e-4, 48 to 1e-8, 64 to 1e-12, 96 to 1e-20 and 128 below.  The smaller the
+/// alpha, the farther out the boundaries lie, where the sparse tails of a coarse grid lose accuracy: with 32 and up
+/// to 20 analyses the error was 1e-4 at 1e-7 and 3e-4 at 1e-12, N was 2 more at 1e-5 (Wang–Tsiatis, 20
+/// analyses), and at 1e-20 the last nominal level exceeded alpha.  The work grows with r².
 int grid_resolution(double alpha);
 
 struct ExitProbs {

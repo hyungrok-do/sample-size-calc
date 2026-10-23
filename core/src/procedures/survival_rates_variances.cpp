@@ -738,7 +738,7 @@ Procedure two_poisson() {
       const double v0 = s.is("method", "h1") ? v1 : (1 / (n1 * t) + 1 / (n2 * t)) / lbar;
       const double zt = qnorm(tail_alpha(alpha, a), false);
       auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
-      if (a == Alt::Two) return std::min(1.0, tail(lr) + tail(-lr));
+      if (a == Alt::Two) return clamp01(tail(lr) + tail(-lr));  // a NaN stays NaN (std::min(1.0, x) gives 1)
       return tail(a == Alt::Upper ? lr : -lr);
     };
     TwoN n;
@@ -872,7 +872,7 @@ Procedure two_negbin() {
       const double lr = std::log(rr);
       const double zt = qnorm(tail_alpha(alpha, a), false);
       auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
-      if (a == Alt::Two) return std::min(1.0, tail(lr) + tail(-lr));
+      if (a == Alt::Two) return clamp01(tail(lr) + tail(-lr));  // a NaN stays NaN (std::min(1.0, x) gives 1)
       return tail(a == Alt::Upper ? lr : -lr);
     };
     TwoN n;

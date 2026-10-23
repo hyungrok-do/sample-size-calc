@@ -120,7 +120,7 @@ Rmst restricted_mean(const std::vector<Obs>& sorted, long n1, long n2, double ta
 }
 
 double mvn_probability(int m, const double* a, const double* b, const double* r, int threads) {
-  if (m == 1) return std::fmax(0.0, stats::pnorm(b[0]) - stats::pnorm(a[0]));
+  if (m == 1) return stats::clamp01(stats::pnorm(b[0]) - stats::pnorm(a[0]));
   // Cholesky factor; a variable that (nearly) depends linearly on the previous ones gets a zero pivot and
   // its limits become a condition on that combination
   double c[16] = {};
@@ -198,7 +198,36 @@ double mvn_probability(int m, const double* a, const double* b, const double* r,
   });
   double total = 0;  // added in order: the same sum on any number of threads
   for (double f : value) total += f;
-  return std::fmin(1.0, total / static_cast<double>(points));
+  // a NaN (from a NaN limit or correlation) stays NaN: std::fmin(1.0, x) would make it a probability of 1, the
+  // co-primary endpoints' joint power 100% and MaxCombo's power 0
+  return stats::clamp01(total / static_cast<double>(points));
+}
+
+double mvn_outside(int m, const double* a, const double* b, const double* r, int threads) {
+  // X_0 outside its limits, then for each later X_j the probability that it is outside while X_0..X_(j−1) are
+  // inside, with X_j first in the separation of variables
+  double total = (b[0] < stats::INF ? stats::pnorm(-b[0]) : 0.0) + (a[0] > -stats::INF ? stats::pnorm(a[0]) : 0.0);
+  for (int j = 1; j < m; ++j) {
+    const int dim = j + 1;
+    int order[4] = {j, 0, 1, 2};
+    double rr[16], lo[4], hi[4];
+    for (int u = 0; u < dim; ++u) {
+      for (int v = 0; v < dim; ++v) rr[u * dim + v] = r[order[u] * m + order[v]];
+      lo[u] = a[order[u]];
+      hi[u] = b[order[u]];
+    }
+    if (b[j] < stats::INF) {
+      lo[0] = b[j];
+      hi[0] = stats::INF;
+      total += mvn_probability(dim, lo, hi, rr, threads);
+    }
+    if (a[j] > -stats::INF) {
+      lo[0] = -stats::INF;
+      hi[0] = a[j];
+      total += mvn_probability(dim, lo, hi, rr, threads);
+    }
+  }
+  return stats::clamp01(total);
 }
 
 }  // namespace nph
@@ -214,6 +243,12 @@ enum class Test { Logrank, FH, MaxCombo, Rmst };
 // FH(ρ, γ) weights of the MaxCombo test
 constexpr double COMBO_RHO[4] = {0, 0, 1, 1};
 constexpr double COMBO_GAMMA[4] = {0, 1, 0, 1};
+
+// Below this probability of a MaxCombo statistic leaving its box (a level, a p-value or a power), it is computed
+// as such (nph::mvn_outside) rather than as 1 − P(box), whose lattice error of about 1e-5 is then more than a
+// thousandth of it: at 1e-4, up to a third (four statistics correlated 0.95), and below about 1e-16 all of it, so
+// that the critical value was a single test's and the power of a study 0.
+constexpr double COMBO_TAIL = 0.01;
 
 // Largest total sample size N1 + N2 of the sample-size search.
 constexpr double MAX_N = 2e5;
@@ -392,7 +427,7 @@ ComboNull combo_null(const Design& d, double p, double alpha, Alt a, int threads
   for (int i = 0; i < 4; ++i)
     for (int j = 0; j < 4; ++j) {
       const double den = std::sqrt(e.cross[i * 5] * e.cross[j * 5]);
-      out.r[i * 4 + j] = den > 0 ? std::fmax(-1.0, std::fmin(1.0, e.cross[i * 4 + j] / den)) : (i == j ? 1 : 0);
+      out.r[i * 4 + j] = den > 0 ? std::clamp(e.cross[i * 4 + j] / den, -1.0, 1.0) : (i == j ? 1 : 0);
     }
   auto exceed = [&](double c) {
     double lo[4], hi[4];
@@ -400,7 +435,8 @@ ComboNull combo_null(const Design& d, double p, double alpha, Alt a, int threads
       lo[j] = a == Alt::Two ? -c : -stats::INF;
       hi[j] = c;
     }
-    return 1 - nph::mvn_probability(4, lo, hi, out.r, threads);
+    return alpha < COMBO_TAIL ? nph::mvn_outside(4, lo, hi, out.r, threads)
+                              : 1 - nph::mvn_probability(4, lo, hi, out.r, threads);
   };
   // between the critical values of a single test and of Bonferroni's correction for four
   const double q = tail_alpha(alpha, a);
@@ -431,7 +467,8 @@ double approx_power(const Design& d, const RmstExpected& rm, const ComboNull& co
       lo[j] = a == Alt::Upper ? -stats::INF : -combo.c - mu;
       hi[j] = a == Alt::Lower ? stats::INF : combo.c - mu;
     }
-    return 1 - nph::mvn_probability(4, lo, hi, combo.r, threads);
+    const double p = 1 - nph::mvn_probability(4, lo, hi, combo.r, threads);
+    return p < COMBO_TAIL ? nph::mvn_outside(4, lo, hi, combo.r, threads) : p;
   }
   const Expected e = expected(d, n1 / (n1 + n2), 1, &d.rho, &d.gamma);
   return z_power(root * e.drift[0], alpha, a);
@@ -460,7 +497,7 @@ bool maxcombo_rejects(const nph::WeightedLogrank& w, double alpha, Alt a) {
   for (int i = 0; i < k; ++i)
     for (int j = 0; j < k; ++j) {
       const double rij = w.v[idx[i] * 4 + idx[j]] / std::sqrt(w.v[idx[i] * 5] * w.v[idx[j] * 5]);
-      r[i * k + j] = std::fmax(-1.0, std::fmin(1.0, rij));
+      r[i * k + j] = std::clamp(rij, -1.0, 1.0);  // a NaN stays NaN, not a correlation of 1
       if (i < j)  // P(T_i ≥ t, T_j ≥ t)
         both[i * k + j] = both[j * k + i] = a == Alt::Two ? 2 * (stats::bvn_upper(t, t, r[i * k + j]) +
                                                                   stats::bvn_upper(t, t, -r[i * k + j]))
@@ -489,7 +526,7 @@ bool maxcombo_rejects(const nph::WeightedLogrank& w, double alpha, Alt a) {
     lo[i] = a == Alt::Two ? -t : -stats::INF;
     hi[i] = t;
   }
-  return 1 - nph::mvn_probability(k, lo, hi, r) < alpha;
+  return (alpha < COMBO_TAIL ? nph::mvn_outside(k, lo, hi, r) : 1 - nph::mvn_probability(k, lo, hi, r)) < alpha;
 }
 
 /// Sorts observations with times in [0, end]: a counting pass into as many buckets as observations, then each

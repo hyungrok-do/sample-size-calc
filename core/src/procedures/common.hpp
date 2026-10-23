@@ -34,7 +34,7 @@ inline double z_power(double ncp, double alpha, Alt alt) {
   using namespace stats;
   if (alt == Alt::Two) {
     const double z = qnorm(half_alpha(alpha), false);
-    return pnorm(ncp - z) + pnorm(-ncp - z);
+    return clamp01(pnorm(ncp - z) + pnorm(-ncp - z));  // the two tails can add up to 1 + 2e-16
   }
   const double z = qnorm(alpha, false);
   return alt == Alt::Upper ? pnorm(ncp - z) : pnorm(-ncp - z);
@@ -46,7 +46,7 @@ inline double t_power(double ncp, double df, double alpha, Alt alt) {
   if (!(df > 0)) return NAN;
   if (alt == Alt::Two) {
     const double t = qt(half_alpha(alpha), df, false);
-    return pnt(t, df, ncp, false) + pnt(-t, df, ncp, true);
+    return clamp01(pnt(t, df, ncp, false) + pnt(-t, df, ncp, true));  // as z_power
   }
   const double t = qt(alpha, df, false);
   return alt == Alt::Upper ? pnt(t, df, ncp, false) : pnt(-t, df, ncp, true);

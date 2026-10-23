@@ -747,6 +747,25 @@ def test_a_median_of_about_zero_has_every_subject_with_the_event():
     assert not row.get("_error") and "nan" not in row["_statement"], row
 
 
+def test_maxcombo_at_a_small_alpha():
+    """MaxCombo's critical value and power came from 1 − P(every statistic below c), which the lattice computes
+    to about 1e-5: from an alpha of about 1e-3 the critical value fell short, its sample size dropped below that of
+    the best of its four tests on its own (6182 against 6188 at 1e-30), and a study's power at 1e-30 was 0."""
+    base = {**base_inputs("sim.surv.nph"), "alternative": "two"}
+
+    def approx(solve, inputs):
+        return first_row(ssc.run("sim.surv.nph", solve, {**base, **inputs}, power_curve=False, approximate=True))
+
+    for alpha in ("1e-4", "1e-30"):
+        best = min(approx("n", {"alpha": alpha, "test": "fh", "rho": r, "gamma": g})["n"]
+                   for r, g in (("0", "0"), ("0", "1"), ("1", "0"), ("1", "1")))
+        assert approx("n", {"alpha": alpha, "test": "maxcombo"})["n"] >= best, alpha
+    assert approx("power", {"alpha": "1e-30", "test": "maxcombo"})["power"] > 0
+    # with no effect, the power is the level
+    row = approx("power", {"alpha": "1e-30", "test": "maxcombo", "hr1": "1", "hr2": "1"})
+    assert row["power"] == pytest.approx(1e-30, rel=1e-6), row
+
+
 def test_hazards_whose_sum_overflows_keep_their_share_of_events():
     """With event and dropout hazards of 1e308 each, their sum overflowed and the event probability came out 1
     (half the answer).  Such hazards are refused; up to the largest allowed, 1e30, the share of events is that of
@@ -968,6 +987,17 @@ def test_a_group_sequential_design_at_a_small_alpha(pid, solve, alpha):
     which left its drift unbracketed ("the answer cannot be computed")."""
     row = first_row(run(pid, solve, {**base_inputs(pid), "alpha": alpha}))
     assert row and row["inflation"] == pytest.approx(1, abs=1e-3), row
+
+
+@pytest.mark.parametrize("pid", ["gs.means", "gs.props", "gs.logrank"])
+def test_power_family_spending_with_a_tiny_exponent(pid):
+    """Below a ρ of about 1e-16, t^ρ rounds to 1: all of alpha is spent at the first analysis and the last boundary
+    is infinite, which left the drift unbracketed ("cannot be reached with a sample size up to 100000000").  The
+    design is the fixed one at the first of three analyses, with three times its information."""
+    base = {**base_inputs(pid), "looks": "3", "spacing": "equal", "boundary": "power"}
+    rows = [first_row(run(pid, "n", {**base, "rho": rho})) for rho in ("1e-15", "1e-16", "1e-30")]
+    assert all(r and r["n"] == rows[0]["n"] for r in rows), rows
+    assert all(r["inflation"] == pytest.approx(3, rel=1e-4) for r in rows), rows
 
 
 @pytest.mark.parametrize("pid,solve,scale,fixed", [

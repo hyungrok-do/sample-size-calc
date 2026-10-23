@@ -389,7 +389,7 @@ void gs_report(const Scenario& s, Row& r, const DesignInfo& info, double eta, do
     cum += p1;
     std::vector<Cell> row = {Cell(static_cast<double>(k + 1)), Cell(p1)};
     if (fut) row.push_back(Cell(e1.fut[k]));
-    row.push_back(Cell(cum));
+    row.push_back(Cell(stats::clamp01(cum)));  // the quadrature's error can take it past 1, as the power (exit_probs)
     row.push_back(Cell(e0.up[k] + e0.lo[k]));
     if (fut) row.push_back(Cell(e0.fut[k]));
     sp.rows.push_back(std::move(row));

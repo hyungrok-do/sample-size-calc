@@ -158,10 +158,96 @@ double t_critical(double level, double df, Alt a) {
   return stats::qt(tail_alpha(level, a), df, false);
 }
 
+/// Below this α the familywise error is computed in the tail: 1 − α, which single_step's sum resolves only to
+/// about 1e-16, keeps too few digits of α (at 1e-12, 5 digits of the critical value; at 1e-18, none).
+constexpr double DUNNETT_TAIL = 1e-6;
+
+/// ln P(Z ≥ y), also where P(Z ≥ y) is below the smallest double.
+double log_upper_normal(double y) {
+  if (y < 30) return std::log(stats::pnorm(y, false));
+  return -y * y / 2 - std::log(y) - stats::LN_SQRT_2PI + std::log1p(-1 / (y * y));
+}
+
+/// Dunnett's familywise error at the critical value c for a tiny α, from the overlap of the arms' rejections
+/// rather than from 1 − P(no arm rejects): k·P(T ≥ c) less E[k·p − (1 − (1 − p)^k)], with p = P(an arm rejects
+/// | z, s) under the null and P(T ≥ c) (both tails if two-sided) exact.  The overlap is computed without
+/// cancellation, as −expm1(k·log1p(−p)) for 1 − (1 − p)^k, and as a share of the nodes' own sum of p, so that
+/// their error cancels.  The nodes follow the rejections into the tail, where single_step's do not reach: in
+/// t = log s over the range where the density times P(T ≥ c | s) is within e^−40 of its largest value, and in z
+/// out to λ·c·s (where an arm's statistic reaches c) and 8.5 beyond.
+double dunnett_tail_level(const Design& d, const Sizes& n, double c) {
+  const double df = n.df(d.k);
+  const double lam = std::sqrt(n.n / (n.n + n.n0)), root = std::sqrt(1 - lam * lam);
+  const bool two = d.alt == Alt::Two;
+  std::vector<double> s = {1}, w = {1};
+  if (df <= 1e7) {
+    auto g = [&](double t) { return df * t - df * std::expm1(2 * t) / 2; };
+    auto h = [&](double t) { return g(t) + log_upper_normal(c * std::exp(t)); };  // concave
+    double a = -60, b = 5;  // its largest value, by golden section
+    while (b - a > 1e-9) {
+      const double m1 = b - 0.6180339887498949 * (b - a), m2 = a + 0.6180339887498949 * (b - a);
+      if (h(m1) < h(m2))
+        a = m1;
+      else
+        b = m2;
+    }
+    const double top = (a + b) / 2, level = h(top) - 40;
+    double lo = top - 1, hi = top + 1;
+    while (h(lo) > level) lo -= 2 * (top - lo);
+    while (h(hi) > level) hi += 2 * (hi - top);
+    const double ta = numerics::brent([&](double t) { return h(t) - level; }, lo, top, 1e-12);
+    const double tb = numerics::brent([&](double t) { return h(t) - level; }, top, hi, 1e-12);
+    const stats::GLRule& rule = stats::gauss_legendre(S_NODES);
+    s.clear();
+    w.clear();
+    for (std::size_t i = 0; i < rule.x.size(); ++i) {
+      const double t = ta + (tb - ta) * (rule.x[i] + 1) / 2;
+      s.push_back(std::exp(t));
+      w.push_back(rule.w[i] * std::exp(g(t) - g(top)));  // only their ratios matter
+    }
+  }
+  const stats::GLRule& rule = stats::gauss_legendre(Z_NODES);
+  double sum_p = 0, overlap = 0;
+  for (std::size_t a = 0; a < s.size(); ++a) {
+    const double cs = c * s[a];
+    // z from 0 when two-sided (the null's integrand is even), in panels as fine as single_step's nodes
+    const double zlo = two ? 0 : -Z_RANGE, zhi = std::fmax(Z_RANGE, lam * cs + Z_RANGE);
+    const int panels = static_cast<int>(std::ceil((zhi - zlo) / Z_RANGE - 1e-9));
+    const double half = (zhi - zlo) / panels / 2;
+    double inner_p = 0, inner_o = 0;
+    for (int q = 0; q < panels; ++q)
+      for (std::size_t b = 0; b < rule.x.size(); ++b) {
+        const double z = zlo + half * (2 * q + 1 + rule.x[b]);
+        double p = stats::pnorm((lam * z - cs) / root);
+        if (two) p = std::fmin(1.0, p + stats::pnorm((-lam * z - cs) / root));
+        const double weight = rule.w[b] * stats::dnorm(z);
+        inner_p += weight * p;
+        inner_o += weight * (d.k * p + std::expm1(d.k * std::log1p(-p)));
+      }
+    sum_p += w[a] * half * inner_p;
+    overlap += w[a] * half * inner_o;
+  }
+  const double one = (two ? 2 : 1) * stats::pt(c, df, false);  // P(T ≥ c), or P(|T| ≥ c)
+  return one * (d.k - (sum_p > 0 ? overlap / sum_p : 0));
+}
+
 /// Dunnett's critical value: P(no arm rejects | all nulls true) = 1 − α.
 double dunnett_critical(const Design& d, const Sizes& n, const SNodes& sn, const RunContext& ctx) {
   const double df = n.df(d.k);
   if (d.k == 1) return t_critical(d.alpha, df, d.alt);
+  const double lo = t_critical(d.alpha, df, d.alt), hi = t_critical(alpha_share(d.alpha, d.k), df, d.alt) + 1e-9;
+  if (d.alpha < DUNNETT_TAIL) {
+    auto f = [&](double c) {
+      ctx.check();
+      return std::log(dunnett_tail_level(d, n, c) / d.alpha);
+    };
+    const double flo = f(lo), fhi = f(hi);
+    // within the nodes' error of Bonferroni's value (the arms' rejections hardly overlap so far out): that one,
+    // on the safe side
+    if (!(fhi < 0)) return hi;
+    if (!(flo > 0)) return lo;
+    return numerics::brent(f, lo, hi, flo, fhi, 1e-10);
+  }
   Design null = d;
   null.mu.fill(d.mu0);
   auto accept_all = [&](double c) {
@@ -171,11 +257,8 @@ double dunnett_critical(const Design& d, const Sizes& n, const SNodes& sn, const
       e[0] = q;
     }, ctx)[0];
   };
-  const double lo = t_critical(d.alpha, df, d.alt), hi = t_critical(alpha_share(d.alpha, d.k), df, d.alt) + 1e-9;
   auto f = [&](double c) { return accept_all(c) - (1 - d.alpha); };
   const double flo = f(lo), fhi = f(hi);
-  // at a tiny α, 1 − α rounds to 1 and no value is bracketed: Dunnett's value is then Bonferroni's to many
-  // digits (and on its safe side)
   if (!(flo <= 0 && fhi >= 0)) return fhi < 0 ? hi : lo;
   return numerics::brent(f, lo, hi, flo, fhi, 1e-10);
 }

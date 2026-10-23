@@ -137,6 +137,38 @@ TEST_CASE("multiarm: Dunnett's critical values give a familywise error of exactl
   }
 }
 
+TEST_CASE("multiarm: Dunnett's critical values in the far tail, where 1 − alpha rounds to 1") {
+  // references: the familywise error integrated in double precision over the common normal component and the
+  // SD's chi distribution, with 1 − (1 − p)^k as −expm1(k·log1p(−p)) and the nodes following the tail (relative
+  // error about 1e-12); before, the value was the unadjusted one below an alpha of about 1e-17, and lost digits
+  // from about 1e-10
+  struct Case {
+    const char* inputs;
+    double crit;
+  };
+  const Case cases[] = {
+      {R"("mu":"0 0 0","n":"40","alpha":"1e-12")", 7.9592321202},              // Bonferroni's 7.9592764
+      {R"("mu":"0 0 0","n":"804","alpha":"1e-30")", 11.742200475},             // Bonferroni's to 2e-13
+      {R"("mu":"0 0 0","n":"800","r0":"0.1","alpha":"1e-30")", 11.7784991977},  // Bonferroni's 11.779508
+      {R"("mu":"0 0 0","n":"2","alpha":"1e-30")", 61141209.83},  // 4 df: 6% below Bonferroni's, by the shared SD
+      {R"("mu":"0 0 0 0 0 0 0 0","n":"3","r0":"10","alpha":"1e-30")", 30.3825182176}};
+  for (const Case& c : cases) {
+    const json::Value r = first_row(
+        R"({"procedure":"sim.multiarm","solve_for":"power","options":{"approximate":true},"inputs":{)" +
+        std::string(c.inputs) + "}}");
+    CHECK_CLOSE(num(r, "crit"), c.crit, 1e-8, 0);
+  }
+  // at 1e-30 with three arms Dunnett's value is Bonferroni's to 13 digits, and so is the sample size
+  auto n_for = [](const char* adjust) {
+    return num(first_row(R"({"procedure":"sim.multiarm","solve_for":"n","options":{"approximate":true,)"
+                         R"("power_curve":false},"inputs":{"alpha":"1e-30","adjust":")" +
+                         std::string(adjust) + "\"}}"),
+               "n");
+  };
+  CHECK_EQ(n_for("dunnett"), 817.0);
+  CHECK_EQ(n_for("bonferroni"), 817.0);
+}
+
 TEST_CASE("multiarm: exact powers of Dunnett's test agree with mvtnorm") {
   // R: 1 − pmvt(−c, c, delta, df = 156, corr 0.5) and the sum over the sign patterns of the tails
   const json::Value a = first_row(

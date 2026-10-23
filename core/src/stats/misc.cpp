@@ -43,7 +43,7 @@ double phyper(double x, double m, double n, double k, bool lower) {
       t -= 1;
       if (d < total * 1e-17) break;
     }
-    return lower ? std::fmin(total, 1.0) : std::fmax(1.0 - total, 0.0);
+    return lower ? clamp01(total) : clamp01(1.0 - total);  // a NaN stays NaN (std::fmin(x, 1.0) gives 1)
   }
   double t = x + 1;
   double d = dhyper(t, m, n, k);
@@ -54,7 +54,7 @@ double phyper(double x, double m, double n, double k, bool lower) {
     t += 1;
     if (d < total * 1e-17) break;
   }
-  return lower ? std::fmax(1.0 - total, 0.0) : std::fmin(total, 1.0);
+  return lower ? clamp01(1.0 - total) : clamp01(total);
 }
 
 // ------------------------------------------------------------ Gauss–Legendre

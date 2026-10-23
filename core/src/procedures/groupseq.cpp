@@ -350,7 +350,9 @@ void check_spent(const std::vector<double>& inc) {
 
 }  // namespace
 
-int grid_resolution(double alpha) { return alpha < 1e-8 ? 128 : 32; }
+int grid_resolution(double alpha) {
+  return alpha >= 1e-4 ? 32 : (alpha >= 1e-8 ? 48 : (alpha >= 1e-12 ? 64 : (alpha >= 1e-20 ? 96 : 128)));
+}
 
 Design make_design(const std::vector<double>& t, double alpha, bool two_sided, const Efficacy& eff,
                    const Futility& fut, const std::function<void()>& check, int r) {
@@ -418,7 +420,9 @@ ExitProbs exit_probs(const Design& d, double eta, double scale, int r) {
     e.info += stop * d.t[k];
     tr.advance(d.two_sided ? -b : (fut ? scale * d.a[k] : -INFINITY), b);
   }
-  e.reject = std::min(1.0, e.reject);  // the quadrature error can push a sum near 1 just above it
+  // the quadrature error can push a sum near 1 just above it; a NaN stays NaN, to be refused (std::min(1.0, x)
+  // would make it a power of 1)
+  e.reject = stats::clamp01(e.reject);
   return e;
 }
 
@@ -429,7 +433,14 @@ double drift_for_power(const Design& d, double power, double scale, int r) {
   const double zp = qnorm(power);
   // the fixed-sample test is most powerful at a given drift, so its drift is a lower bound
   double lo = std::max(1e-6, scale * qnorm(side, false) + zp - 0.25);
-  double hi = std::max(lo + 0.5, scale * d.b.back() + zp + 0.25);
+  double reach = scale * d.b.back() + zp + 0.25;
+  if (!std::isfinite(reach)) {
+    // the last boundary is infinite when all of alpha is spent before (power-family spending with ρ below about
+    // 1e-16, whose t^ρ rounds to 1): a drift with that power at an analysis with a finite boundary
+    for (std::size_t k = 0; k < d.t.size(); ++k)
+      if (std::isfinite(d.b[k])) reach = std::fmin(reach, (scale * d.b[k] + zp + 0.25) / std::sqrt(d.t[k]));
+  }
+  double hi = std::max(lo + 0.5, reach);
   double flo = f(lo), fhi = f(hi);
   for (int i = 0; flo > 0 && lo > 1e-9 && i < 60; ++i) flo = f(lo *= 0.5);
   if (flo > 0) return lo;

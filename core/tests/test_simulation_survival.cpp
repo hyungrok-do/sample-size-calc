@@ -140,6 +140,29 @@ TEST_CASE("nph: multivariate normal probabilities") {
   }
 }
 
+TEST_CASE("nph: the probability of leaving a box, also far below the lattice's error") {
+  // P(max X_j ≥ c) for four equicorrelated standard normals, from the one-dimensional integral of
+  // −expm1(4 ln Φ((c − √ρ z)/√(1 − ρ))) (scipy, relative error 1e-13); 1 − mvn_probability was 9% off at
+  // ρ = 0.7 and c = 4, and 0 from c = 8.5
+  struct Case {
+    double rho, c, want;
+  };
+  const Case cases[] = {{0.7, 4, 1.1432734108004246e-4},   {0.7, 8, 2.4859854186757747e-15},
+                        {0.7, 11, 7.6426013306743705e-28}, {0.95, 11, 6.934087999642074e-28},
+                        {0.3, 6, 3.9463097543928375e-9}};
+  for (const Case& t : cases) {
+    double r[16], lo[4], hi[4];
+    for (int i = 0; i < 16; ++i) r[i] = i % 5 == 0 ? 1 : t.rho;
+    for (int j = 0; j < 4; ++j) {
+      lo[j] = -stats::INF;
+      hi[j] = t.c;
+    }
+    CHECK_CLOSE(nph::mvn_outside(4, lo, hi, r), t.want, 5e-5, 0);
+    for (int j = 0; j < 4; ++j) lo[j] = -t.c;  // both tails: twice as likely (an overlap of opposite tails is nil)
+    CHECK_CLOSE(nph::mvn_outside(4, lo, hi, r), 2 * t.want, 5e-5, 0);
+  }
+}
+
 // ------------------------------------------------------------------ approximation and simulated power
 
 TEST_CASE("nph: the quick approximation for proportional hazards is the logrank formula") {
