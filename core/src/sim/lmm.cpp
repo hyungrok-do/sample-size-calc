@@ -228,10 +228,11 @@ bool cholesky(double* a, int n) {
 
 /// Whether β's covariance from X'V*⁻¹X keeps at least three digits, from its Cholesky factor L: each pivot L_jj² is
 /// what is left of the diagonal entry (Σ_k L_jk²) once the earlier columns are taken out, and the inverse loses
-/// about as many digits as that share has zeros.  With random slopes, G can make X'V*⁻¹X so nearly singular that
-/// nothing is left: when the subjects' slopes vary 10⁸ times more than their intercepts at time 0, the level at a
-/// visit 1 time unit away all but follows from the slope, as does the estimate of the mean level from that of the
-/// mean slope, and the slopes' variance came out as rounding noise (an approximate power of 100% for 8.6%).
+/// about as many digits as that share has zeros.  Nothing is left when the design cannot tell the fixed effects
+/// apart (every subject of a group seen once), and next to nothing with random slopes 10⁸ times as variable as the
+/// intercepts at time 0 when time is measured from a visit 1 time unit away, where the level all but follows from
+/// the slope (an approximate power of 100% for 8.6% once; the longitudinal design now measures time from where the
+/// two are uncorrelated).
 bool keeps_digits(const double* l, int n) {
   for (int j = 0; j < n; ++j) {
     double big = 0, s = 0;
@@ -422,14 +423,15 @@ double brent_min(F&& f, double a, double b, double tol, int& evals) {
   return x;
 }
 
-/// Nelder–Mead minimization in `n` dimensions (n ≤ 3), restarted once from its result.
-template <class F>
-void nelder_mead(F&& f, int n, double* x, double step, int max_evals, int& evals) {
+/// Nelder–Mead minimization in `n` dimensions (n ≤ 3), restarted once from its result; the first simplex steps
+/// `step` times scale(x, j) along each coordinate j.
+template <class F, class Scale>
+void nelder_mead(F&& f, int n, double* x, double step, int max_evals, int& evals, Scale&& scale) {
   for (int round = 0; round < 2; ++round) {
     double pts[4][3], val[4];
     for (int i = 0; i <= n; ++i) {
       for (int j = 0; j < n; ++j) pts[i][j] = x[j];
-      if (i > 0) pts[i][i - 1] += step * std::fmax(1.0, std::fabs(x[i - 1]));
+      if (i > 0) pts[i][i - 1] += step * scale(x, i - 1);
       val[i] = f(pts[i]);
       ++evals;
     }
@@ -489,9 +491,9 @@ void nelder_mead(F&& f, int n, double* x, double step, int max_evals, int& evals
 
 }  // namespace
 
-double criterion(const Data& d, double sigma2, const double* g) {
+double criterion(const Data& d, double sigma2, const double* g, double det_g) {
   Gls w;
-  if (!(sigma2 > 0) || !gls(d, g, w) || !(w.rss > 0)) return std::numeric_limits<double>::quiet_NaN();
+  if (!(sigma2 > 0) || !gls(d, g, w, det_g) || !(w.rss > 0)) return std::numeric_limits<double>::quiet_NaN();
   const double r = d.observations() - d.p;
   return r * (LOG_2PI + std::log(sigma2)) + w.logdet_k + w.logdet_m + w.rss / sigma2;
 }
@@ -535,11 +537,39 @@ Fit fit(const Data& d, const double* theta0) {
   } else {
     double x[3] = {1, 0, 1};
     if (theta0) std::copy(theta0, theta0 + 3, x);
-    nelder_mead([&](const double* th) { return profiled(d, th, w); }, 3, x, 0.5, 4000, out.evaluations);
+    // each coordinate steps by its own size (at least 1), except that Λ's off-diagonal θ1 sets the correlation
+    // θ1/√(θ1² + θ2²): where θ2 is over 2²⁰ times that step (slopes that spread the subjects over a million residual
+    // SDs, from a correlation near 0), it steps by θ2, as steps of its own size would leave the correlation where it
+    // started (with an intercept SD 10⁴⁷ times below the slopes', the fits stopped where the Hessian was not positive
+    // definite).  Only there: the fits that converge with steps of their own size keep them
+    auto scale = [](const double* th, int j) {
+      const double own = std::fmax(1.0, std::fabs(th[j]));
+      return j == 1 && std::fabs(th[2]) > 1048576 * own ? std::fabs(th[2]) : own;
+    };
+    if (d.two_rows) {
+      // every point of a ridge from a singular D to σ² = 0 has the same V and criterion: the fits stopped anywhere
+      // on it, and the Hessian in (σ², D) was singular, which left Satterthwaite's degrees of freedom to rounding
+      // or to the given ones (in 69 of 200 studies with visits at 0 and 1 and 60 subjects a group); held at rank 1,
+      // they are those of the covariance of the two measurements
+      x[2] = 0;
+      nelder_mead(
+          [&](const double* th) {
+            const double t[3] = {th[0], th[1], 0};
+            return profiled(d, t, w);
+          },
+          2, x, 0.5, 4000, out.evaluations, scale);
+    } else {
+      nelder_mead([&](const double* th) { return profiled(d, th, w); }, 3, x, 0.5, 4000, out.evaluations, scale);
+    }
     std::copy(x, x + 3, out.theta);
   }
+  // a fit whose X'V⁻¹X has lost its digits has no estimate of β: with every subject of a group seen once, nothing
+  // tells that group's slope apart, and its estimate came out exactly 0 or 1 with a standard error of 10⁷; with two
+  // visits and one subject of a group measured twice and two of the other, the criterion has no minimum (it falls
+  // without bound as the covariance of the two measurements turns singular), and the fits ended with σ² 10⁻²² of
+  // the random effects' variances
   out.criterion = profiled(d, out.theta, w);
-  if (!std::isfinite(out.criterion)) return out;
+  if (!std::isfinite(out.criterion) || !keeps_digits(w.m, p)) return out;
   lambda_to_g(q, out.theta, out.g);
   const double r = d.observations() - p;
   out.sigma2 = w.rss / r;
@@ -577,101 +607,152 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
   }
   // Satterthwaite: df = 2 V² / (∇V' Cov(φ̂) ∇V), φ = (σ², D), Cov(φ̂) = 2 H⁻¹ (H: Hessian of the criterion).
   // A random intercept estimated at zero is held there (φ = σ² only, which gives N − p).
+  //
+  // With random slopes, D is the covariance of the intercept and slope at a time t0 + δ (δ in the design's time
+  // unit, D' = T D T' with T = [[1, δ], [0, 1]]): at the design's own origin when the fitted D is far from singular
+  // (δ = 0), and otherwise at the time where the fitted intercept and slope are uncorrelated (δ = −D12/D22), which
+  // changes nothing in exact arithmetic (the criterion and V are the same functions of D'), but keeps the
+  // finite-difference steps away from where D stops being a covariance matrix: where the subjects' lines all but
+  // cross away from the design's origin (fitted correlation 0.99), a step of 10⁻⁴ is a large part of the distance to
+  // singularity, and the Hessian came out not positive definite in every study (at a correlation of 0.9, the degrees
+  // of freedom were 0.1% off).  A fit on the boundary, with a singular D = w w' (the subjects' lines all cross at one
+  // time, or their slopes do not vary: a variance in some direction below the steps), is taken on that boundary, in
+  // (σ², w), where V and the criterion are even in w: the variance in the missing direction is held at 0, as a
+  // random intercept estimated at zero is, and as lmerTest's derivatives in the factor Λ do (its degrees of freedom
+  // are these to four digits or more on the same fits).  The steps in D went through the boundary, into matrices
+  // that are not covariances, which left the result to rounding (2.3 or 13.3 for lmerTest's 149.5 or 90.4; a
+  // 40-digit limit can be negative), or to the given degrees of freedom when the Hessian was not positive definite.
+  // Only where both ways fail are the given degrees of freedom used.
+  enum class Vary { Full, Rank1 };  // D' in full, or D = w w' (φ = σ², w0, w1)
   const double s2 = f.sigma2;
-  double phi[4];
-  int k = 1;
-  phi[0] = s2;
-  if (q == 1) {
-    if (!f.boundary) phi[k++] = s2 * f.g[0];
-  } else {
-    phi[k++] = s2 * f.g[0];
-    phi[k++] = s2 * f.g[1];
-    phi[k++] = s2 * f.g[3];
-  }
-  auto unpack = [&](const double* x, double& sigma2, double* g) {
-    sigma2 = x[0];
-    if (q == 1) {
-      g[0] = k > 1 ? x[1] / sigma2 : 0;
-    } else {
-      g[0] = x[1] / sigma2;
-      g[1] = g[2] = x[2] / sigma2;
-      g[3] = x[3] / sigma2;
-    }
-  };
-  auto crit = [&](const double* x) {
-    double sigma2, g[QMAX * QMAX];
-    unpack(x, sigma2, g);
-    return criterion(d, sigma2, g);
-  };
-  auto cvar = [&](const double* x) {
-    double sigma2, g[QMAX * QMAX], cov[PMAX * PMAX];
-    unpack(x, sigma2, g);
-    if (!beta_covariance(d, sigma2, g, cov)) return std::numeric_limits<double>::quiet_NaN();
-    double v = 0;
-    for (int a = 0; a < p; ++a)
-      for (int b = 0; b < p; ++b) v += c[a] * cov[a * p + b] * c[b];
-    return v;
-  };
-  // finite-difference steps on the variance components standardized by the random slope's covariate (its root
-  // mean square τ: τ·D12 and τ²·D22 have the outcome's squared units), so that the degrees of freedom do not
-  // depend on the time unit
   double tau = 1;
   if (q == 2) {
     double tt = 0, nn = 0;
     for (const Pattern& pt : d.patterns) tt += pt.count * pt.zz[3], nn += pt.count * pt.zz[0];
     if (tt > 0 && nn > 0) tau = std::sqrt(tt / nn);
   }
-  const double unit[4] = {1, 1, q == 2 ? tau : 1, tau * tau};
-  // a variance's step is relative to itself (a step relative to the other variance as well would be most of it
-  // when that one is 10⁴ times larger), the covariance's to the geometric mean of the two variances
-  double h[4];
-  const double dscale = q == 2 ? std::sqrt(std::fabs(phi[1] * phi[3] * unit[3])) : 0;
-  for (int j = 0; j < k; ++j) {
-    const double size = std::fabs(phi[j]) * unit[j];
-    h[j] = j == 0 ? 1e-4 * s2 : 1e-4 * ((j == 2 ? size + dscale : 2 * size) + 1e-2 * s2) / unit[j];
-  }
-  // the derivatives are taken in units of the steps and of V, each a power of 2 (hs = h 2^e, V 2^m), which keeps
-  // every product and quotient below exact to the last bit and away from under- and overflow: h², and V², pass
-  // below the smallest double once the residual variance is 10⁻¹⁵⁰ of the random effects' in the analysis units
-  double hess[16], grad[4], x[4], hs[4];
-  for (int j = 0; j < k; ++j) hs[j] = std::ldexp(h[j], -std::ilogb(h[j]));
-  const int m = var > 0 ? -std::ilogb(var) : 0;
-  const double f0 = crit(phi);
-  bool ok = std::isfinite(f0) && var > 0;
-  for (int a = 0; a < k && ok; ++a) {
-    std::copy(phi, phi + k, x);
-    x[a] = phi[a] + h[a];
-    const double fp = crit(x), vp = cvar(x);
-    x[a] = phi[a] - h[a];
-    const double fm = crit(x), vm = cvar(x);
-    hess[a * k + a] = (fp - 2 * f0 + fm) / (hs[a] * hs[a]);
-    grad[a] = std::ldexp(vp - vm, m) / (2 * hs[a]);
-    for (int b = 0; b < a; ++b) {
-      double fpp, fpm, fmp, fmm;
-      std::copy(phi, phi + k, x);
-      x[a] = phi[a] + h[a], x[b] = phi[b] + h[b];
-      fpp = crit(x);
-      x[b] = phi[b] - h[b];
-      fpm = crit(x);
-      x[a] = phi[a] - h[a];
-      fmm = crit(x);
-      x[b] = phi[b] + h[b];
-      fmp = crit(x);
-      hess[a * k + b] = hess[b * k + a] = (fpp - fpm - fmp + fmm) / (4 * hs[a] * hs[b]);
+  auto satterthwaite = [&](int k, const double* phi, Vary vary, double shift) {
+    const bool full = q == 2 && vary == Vary::Full;
+    auto unpack = [&](const double* x, double& sigma2, double* g, double& det_g) {
+      sigma2 = x[0];
+      det_g = std::numeric_limits<double>::quiet_NaN();
+      if (q == 1) {
+        g[0] = k > 1 ? x[1] / sigma2 : 0;
+        return;
+      }
+      // D' and then D = T⁻¹ D' T⁻ᵀ, |D| = |D'|
+      const double w0 = vary == Vary::Rank1 && k > 1 ? x[1] : 0, w1 = vary == Vary::Rank1 && k > 1 ? x[2] : 0;
+      const double d00 = full ? x[1] : w0 * w0, d01 = full ? x[2] : w0 * w1, d11 = full ? x[3] : w1 * w1;
+      if (shift == 0) {
+        g[0] = d00 / sigma2;
+        g[1] = g[2] = d01 / sigma2;
+        g[3] = d11 / sigma2;
+        if (!full) det_g = 0;
+        return;
+      }
+      g[0] = (d00 - shift * (2 * d01 - shift * d11)) / sigma2;
+      g[1] = g[2] = (d01 - shift * d11) / sigma2;
+      g[3] = d11 / sigma2;
+      det_g = (d00 * d11 - d01 * d01) / sigma2 / sigma2;
+    };
+    auto crit = [&](const double* x) {
+      double sigma2, g[QMAX * QMAX], det_g;
+      unpack(x, sigma2, g, det_g);
+      return criterion(d, sigma2, g, det_g);
+    };
+    auto cvar = [&](const double* x) {
+      double sigma2, g[QMAX * QMAX], det_g, cov[PMAX * PMAX];
+      unpack(x, sigma2, g, det_g);
+      if (!beta_covariance(d, sigma2, g, cov, det_g)) return std::numeric_limits<double>::quiet_NaN();
+      double v = 0;
+      for (int a = 0; a < p; ++a)
+        for (int b = 0; b < p; ++b) v += c[a] * cov[a * p + b] * c[b];
+      return v;
+    };
+    // finite-difference steps on the variance components standardized by the random slope's covariate (its root
+    // mean square τ: τ·D12 and τ²·D22 have the outcome's squared units), so that the degrees of freedom do not
+    // depend on the time unit
+    const double unit[4] = {1, 1, q == 2 ? tau : 1, tau * tau};
+    // a variance's step is relative to itself (a step relative to the other variance as well would be most of it
+    // when that one is 10⁴ times larger), the covariance's to the geometric mean of the two variances, and w's to
+    // its length
+    double h[4];
+    const double dscale = full ? std::sqrt(std::fabs(phi[1] * phi[3] * unit[3])) : 0;
+    const double length = vary == Vary::Rank1 && k > 1 ? std::hypot(phi[1], phi[2] * tau) : 0;
+    for (int j = 0; j < k; ++j) {
+      const double size = std::fabs(phi[j]) * unit[j];
+      h[j] = j == 0                    ? 1e-4 * s2
+             : vary == Vary::Rank1 ? 1e-4 * (length + 1e-1 * std::sqrt(s2)) / unit[j]
+                                   : 1e-4 * ((full && j == 2 ? size + dscale : 2 * size) + 1e-2 * s2) / unit[j];
     }
-    ok = std::isfinite(hess[a * k + a]) && std::isfinite(grad[a]);
-  }
-  if (ok && cholesky(hess, k)) {
+    // the derivatives are taken in units of the steps and of V, each a power of 2 (hs = h 2^e, V 2^m), which keeps
+    // every product and quotient below exact to the last bit and away from under- and overflow: h², and V², pass
+    // below the smallest double once the residual variance is 10⁻¹⁵⁰ of the random effects' in the analysis units
+    double hess[16], grad[4], x[4], hs[4];
+    for (int j = 0; j < k; ++j) hs[j] = std::ldexp(h[j], -std::ilogb(h[j]));
+    const int m = var > 0 ? -std::ilogb(var) : 0;
+    const double f0 = crit(phi);
+    bool ok = std::isfinite(f0) && var > 0;
+    for (int a = 0; a < k && ok; ++a) {
+      std::copy(phi, phi + k, x);
+      x[a] = phi[a] + h[a];
+      const double fp = crit(x), vp = cvar(x);
+      x[a] = phi[a] - h[a];
+      const double fm = crit(x), vm = cvar(x);
+      hess[a * k + a] = (fp - 2 * f0 + fm) / (hs[a] * hs[a]);
+      grad[a] = std::ldexp(vp - vm, m) / (2 * hs[a]);
+      for (int b = 0; b < a; ++b) {
+        double fpp, fpm, fmp, fmm;
+        std::copy(phi, phi + k, x);
+        x[a] = phi[a] + h[a], x[b] = phi[b] + h[b];
+        fpp = crit(x);
+        x[b] = phi[b] - h[b];
+        fpm = crit(x);
+        x[a] = phi[a] - h[a];
+        fmm = crit(x);
+        x[b] = phi[b] + h[b];
+        fmp = crit(x);
+        hess[a * k + b] = hess[b * k + a] = (fpp - fpm - fmp + fmm) / (4 * hs[a] * hs[b]);
+      }
+      ok = std::isfinite(hess[a * k + a]) && std::isfinite(grad[a]);
+    }
+    if (!ok || !cholesky(hess, k)) return std::numeric_limits<double>::quiet_NaN();
     double y[4];
     std::copy(grad, grad + k, y);
     chol_solve(hess, k, y);  // H⁻¹ ∇V
     double quad = 0;
     for (int a = 0; a < k; ++a) quad += grad[a] * y[a];
-    const double v = std::ldexp(var, m), df = v * v / quad;  // 2 V² / (∇V' · 2 H⁻¹ · ∇V)
-    if (std::isfinite(df) && df > 0) {
-      out.df = std::fmin(df, d.observations() - p);
-      return out;
+    const double v = std::ldexp(var, m);
+    return v * v / quad;  // 2 V² / (∇V' · 2 H⁻¹ · ∇V)
+  };
+  double df = std::numeric_limits<double>::quiet_NaN();
+  if (q == 1) {
+    const double phi[2] = {s2, s2 * f.g[0]};
+    df = satterthwaite(f.boundary ? 1 : 2, phi, Vary::Full, 0);
+  } else {
+    // on the boundary when the slope's variance (in units of τ²), or else the intercept's at the crossing time
+    // (|D|/D22, with |G| from Λ: from G's entries it is the small difference of large numbers), is below the steps'
+    // floor of 10⁻⁶ σ²
+    const double det_g = f.theta[0] * f.theta[2] * (f.theta[0] * f.theta[2]);
+    const bool flat_slope = !(f.g[3] * tau * tau > 1e-6), flat = flat_slope || !(det_g > 1e-6 * f.g[3]);
+    if (flat) {
+      // w from Λ's first column (G = w w' when θ2 = 0), or the slope's alone when the intercept does not vary; σ²
+      // alone when neither does
+      const double sd = std::sqrt(s2), w0 = f.theta[0] != 0 ? sd * f.theta[0] : 0;
+      const double w1 = f.theta[0] != 0 ? sd * f.theta[1] : sd * std::hypot(f.theta[1], f.theta[2]);
+      const double held[3] = {s2, w0, w1};
+      df = satterthwaite(flat_slope && !(f.g[0] > 1e-6) ? 1 : 3, held, Vary::Rank1, 0);
     }
+    if (!(std::isfinite(df) && df > 0)) {
+      const double shift = !flat && det_g < 0.1 * (f.g[0] * f.g[3]) ? -f.g[1] / f.g[3] : 0;
+      const double phi[4] = {s2, shift != 0 ? s2 * (det_g / f.g[3]) : s2 * f.g[0], shift != 0 ? 0 : s2 * f.g[1],
+                             s2 * f.g[3]};
+      df = satterthwaite(4, phi, Vary::Full, shift);
+    }
+  }
+  if (std::isfinite(df) && df > 0) {
+    out.df = std::fmin(df, d.observations() - p);
+    return out;
   }
   out.df = fixed_df;
   out.fallback = true;

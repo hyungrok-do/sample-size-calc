@@ -27,6 +27,7 @@ struct Outcome {
   double estimate = NAN;  // estimated effect
   double se = NAN;        // its standard error
   double df = NAN;        // degrees of freedom of the test
+  bool df_fallback = false;  // the test's degrees of freedom could not be computed, and a fixed number stood in
   double extra = NAN;     // a design quantity, e.g. the number of events
   unsigned also = 0;      // other tests of the same data: bit i set when test i rejected
 };
@@ -38,6 +39,7 @@ struct Summary {
   long reps = 0;
   long rejections = 0;
   long failures = 0;
+  long df_fallbacks = 0;  // studies whose test used the fixed degrees of freedom in place of its own
   double power = NAN;  // rejection rate
   double se = NAN;     // Monte Carlo standard error √(p(1 − p)/R)
   double lo = NAN;     // 95% Wilson interval
@@ -79,6 +81,7 @@ class Accumulator {
       return;
     }
     if (o.reject) ++s_.rejections;
+    if (o.df_fallback) ++s_.df_fallbacks;
     for (int i = 0; i < ALSO_MAX; ++i)
       if (o.also >> i & 1u) ++s_.also[i];
     if (std::isfinite(o.estimate)) {

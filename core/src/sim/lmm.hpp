@@ -127,6 +127,10 @@ struct Data {
   int p = 0;
   int q = 0;
   std::vector<Pattern> patterns;
+  /// Random effects (q = 2) whose covariates take two values only (a random slope with two visits): σ² and D are
+  /// not told apart then, only the covariance of the two measurements is, and a D of rank 1 (θ2 = 0) reaches each
+  /// one once, so the fit holds D there.
+  bool two_rows = false;
   double observations() const;
   double clusters() const;
 };
@@ -157,8 +161,10 @@ struct Wald {
 /// t test of c'β = 0; df_method: 0 Satterthwaite, 1 the given df, 2 normal (df = ∞).
 Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fixed_df);
 
-/// −2 × REML log-likelihood at (σ², G) with β profiled out; NaN if V is not positive definite.
-double criterion(const Data& d, double sigma2, const double* g);
+/// −2 × REML log-likelihood at (σ², G) with β profiled out; NaN if V is not positive definite.  det_g as for
+/// beta_covariance.
+double criterion(const Data& d, double sigma2, const double* g,
+                 double det_g = std::numeric_limits<double>::quiet_NaN());
 
 /// Covariance of β̂ at (σ², G) (the generalized least squares covariance), into `cov` (p × p).  det_g: |G| from a
 /// factor of G, when G is known as ΛΛ' (it is used if G is so nearly singular that |G| from its entries is not).

@@ -27,6 +27,15 @@ namespace lmm = sim::lmm;
 using simc::df_method;
 using simc::p_value;
 
+/// The sentence on the simulated studies whose Satterthwaite degrees of freedom could not be computed, so that
+/// their test used `fixed` degrees of freedom instead.
+std::string fallback_note(const Row& r, const std::string& fixed) {
+  if (!r.has("df_fallbacks")) return "";
+  return " In " + fint(r.num("df_fallbacks")) + " of the " + fint(r.num("reps")) +
+         " simulated studies, Satterthwaite's degrees of freedom could not be computed, and the test used " + fixed +
+         ".";
+}
+
 // =====================================================================================
 // Longitudinal: difference between two mean slopes
 // =====================================================================================
@@ -34,10 +43,13 @@ using simc::p_value;
 // rescaled), so each study is simulated and fitted with time measured from the visit nearest to time 0 (from 0
 // when the visits span it) in units of the farthest visit, t' = (t − t0)/τ, and the outcome in units of its
 // largest SD: a follow-up of 10⁶ time units, visits 10⁶ time units after the origin, or an intercept SD of 10¹⁶⁰
-// is then no different from the defaults.  When the visits span 0, or all precede it, the rows of the subjects'
-// Z (with random slopes) measure time from the first visit instead, t'' = (t − t1)/τ, where Z'Z is far from
-// singular whatever the subject's visits: from t0, two early visits close together and far from it (times
-// −1000001, −1000000 and 0) would have made Z'Z look singular and lost the information in their difference.
+// is then no different from the defaults.  With random slopes, t0 moves to where the estimates of a group's mean
+// level and mean slope are uncorrelated when at the visit nearest 0 they are nearly collinear (slopes far more
+// variable than the intercepts at time 0, visits away from it).  When the visits span 0, or all precede it, or t0
+// has moved, the rows of the subjects' Z (with random slopes) measure time from the first visit instead,
+// t'' = (t − t1)/τ, where Z'Z is far from singular whatever the subject's visits: from t0, two early visits close
+// together and far from it (times −1000001, −1000000 and 0) would have made Z'Z look singular and lost the
+// information in their difference.
 struct LongDesign {
   std::vector<double> times;
   bool slopes = true;  // random intercepts and slopes (otherwise intercepts only)
@@ -69,6 +81,61 @@ std::vector<double> visit_times(const Scenario& s) {
   return t;
 }
 
+/// Probability that a subject is measured at exactly the first k visits (k = 1..K).
+std::vector<double> visit_probs(const LongDesign& d) {
+  const int K = static_cast<int>(d.times.size());
+  std::vector<double> p(static_cast<std::size_t>(K));
+  for (int k = 1; k <= K; ++k)
+    p[static_cast<std::size_t>(k - 1)] = std::pow(1 - d.hazard, k - 1) * (k < K ? d.hazard : 1);
+  return p;
+}
+
+/// Set the time origin t0 of the analysis, with the time unit τ (the distance to the farthest visit), the outcome
+/// unit (the largest SD) and, in those units, the residual SD and M.
+void set_origin(LongDesign& d, double t0) {
+  d.t0 = t0;
+  d.tau = std::fmax(std::fabs(d.times.front() - d.t0), std::fabs(d.times.back() - d.t0));
+  // b0 + b1 t = (b0 + b1 t0) + (b1 τ) t'
+  const double intercept0 = d.l00 + d.t0 * d.l10, intercept1 = d.t0 * d.l11;
+  d.unit = std::fmax(std::fmax(std::hypot(intercept0, intercept1), d.sde), d.sd1 * d.tau);
+  d.se1 = d.sde / d.unit;
+  d.m00 = intercept0 / d.unit, d.m01 = intercept1 / d.unit;
+  d.m10 = d.tau * d.l10 / d.unit, d.m11 = d.tau * d.l11 / d.unit;
+}
+
+/// With random slopes: how far (in units of τ) to move the time origin so that a group's estimated mean level and
+/// mean slope are uncorrelated at the assumed variances, and (share) 1 − their squared correlation at t0.  Far from
+/// the time where the subjects' lines cross with the least spread, both estimates follow the slope's: with slopes
+/// 10⁷ times as variable as the intercepts at time 0 and visits at 1, 2 and 4, X'V⁻¹X at the first visit is singular
+/// to within 10⁻¹³ and its inverse has lost all but three digits.  From each pattern of visits (the first k), with
+/// mean t̄ and spread S = Σ (t − t̄)², E = σ² (Z'Z)⁻¹ + G is the covariance of a subject's least-squares level and
+/// slope, |E| = σ⁴/(k S) + σ² (v/S + s²/k) + |M|² (v and s² the variances of the level at t̄ and of the slope),
+/// a sum of positive terms, and the information is Σ_k p_k E⁻¹ (a subject seen at one time tells only the level
+/// there).
+double steady_shift(const LongDesign& d, double& share) {
+  const std::vector<double> prob = visit_probs(d);
+  const double s2 = d.se1 * d.se1, slope2 = d.m10 * d.m10 + d.m11 * d.m11, det_m = d.m00 * d.m11 - d.m01 * d.m10;
+  const double g_aa = d.m00 * d.m00 + d.m01 * d.m01, g_as = d.m00 * d.m10 + d.m01 * d.m11;
+  double maa = 0, mas = 0, mss = 0;
+  for (std::size_t k = 1; k <= d.times.size(); ++k) {
+    const double p = prob[k - 1], dk = static_cast<double>(k);
+    double mean = 0, ss = 0;
+    for (std::size_t j = 0; j < k; ++j) mean += d.time(j) / dk;
+    for (std::size_t j = 0; j < k; ++j) ss += (d.time(j) - mean) * (d.time(j) - mean);
+    const double la = d.m00 + mean * d.m10, lb = d.m01 + mean * d.m11, v = la * la + lb * lb;
+    if (ss > 0) {
+      const double det = s2 * s2 / (dk * ss) + s2 * (v / ss + slope2 / dk) + det_m * det_m;
+      const double e_aa = s2 * (1 / dk + mean * mean / ss) + g_aa, e_as = g_as - s2 * mean / ss, e_ss = s2 / ss + slope2;
+      maa += p * e_ss / det, mas -= p * e_as / det, mss += p * e_aa / det;
+    } else {
+      const double w = p / (s2 / dk + v);
+      maa += w, mas += w * mean, mss += w * mean * mean;
+    }
+  }
+  share = 1 - mas / maa * (mas / mss);
+  return mas / maa;
+}
+
 LongDesign long_design(const Scenario& s) {
   LongDesign d;
   d.times = visit_times(s);
@@ -85,15 +152,26 @@ LongDesign long_design(const Scenario& s) {
   const double dropout = s("dropout");
   const double k = static_cast<double>(d.times.size());
   d.hazard = dropout > 0 ? 1 - std::pow(1 - dropout, 1 / (k - 1)) : 0;
-  d.t0 = std::clamp(0.0, d.times.front(), d.times.back());
+  set_origin(d, std::clamp(0.0, d.times.front(), d.times.back()));
   d.t1 = d.slopes ? d.times.front() : d.t0;  // a random intercept alone is the same at every time
-  d.tau = std::fmax(std::fabs(d.times.front() - d.t0), std::fabs(d.times.back() - d.t0));
-  // b0 + b1 t = (b0 + b1 t0) + (b1 τ) t'
-  const double intercept0 = d.l00 + d.t0 * d.l10, intercept1 = d.t0 * d.l11;
-  d.unit = std::fmax(std::fmax(std::hypot(intercept0, intercept1), d.sde), d.sd1 * d.tau);
-  d.se1 = d.sde / d.unit;
-  d.m00 = intercept0 / d.unit, d.m01 = intercept1 / d.unit;
-  d.m10 = d.tau * d.l10 / d.unit, d.m11 = d.tau * d.l11 / d.unit;
+  if (d.slopes) {
+    // a new origin where the estimates at t0 have lost four digits or more, from whichever of t0 and the time
+    // c = −ρσ0/σ1, where the lines cross with the least spread, it lies nearer to: from the other, the sum of a time
+    // and a long shift would lose its place (visits at 10²⁹ and 10³⁰, and lines that cross at 0 within the residual
+    // SD, put t0 + shift 10¹³ time units off)
+    double share;
+    const double shift = steady_shift(d, share);
+    if (std::isfinite(shift) && share < 1e-4) {
+      double t = d.t0 + shift * d.tau;
+      const double c = d.sd1 > 0 ? -d.rho * d.sd0 / d.sd1 : t;
+      if (std::fabs(t - c) < std::fabs(t - d.t0)) {
+        LongDesign from_c = d;
+        set_origin(from_c, c);
+        t = c + steady_shift(from_c, share) * from_c.tau;
+      }
+      set_origin(d, t);
+    }
+  }
   return d;
 }
 
@@ -142,6 +220,7 @@ LongPatterns long_patterns(const LongDesign& d) {
   lmm::Data& data = lp.data;
   data.p = 4;
   data.q = q;
+  data.two_rows = q == 2 && K == 2;
   data.patterns.resize(static_cast<std::size_t>(2 * K));
   lp.within.resize(data.patterns.size());
   // with random slopes and the visits from t1 ≠ t0, (1, t') = (1, t'') S, and X = (1, group, t', group × t') =
@@ -168,15 +247,6 @@ LongPatterns long_patterns(const LongDesign& d) {
     }
   }
   return lp;
-}
-
-/// Probability that a subject is measured at exactly the first k visits (k = 1..K).
-std::vector<double> visit_probs(const LongDesign& d) {
-  const int K = static_cast<int>(d.times.size());
-  std::vector<double> p(static_cast<std::size_t>(K));
-  for (int k = 1; k <= K; ++k)
-    p[static_cast<std::size_t>(k - 1)] = std::pow(1 - d.hazard, k - 1) * (k < K ? d.hazard : 1);
-  return p;
 }
 
 /// Standard error of the slope difference by generalized least squares at the assumed variances.
@@ -230,13 +300,32 @@ sim::Outcome long_study(const LongDesign& d, const LongPatterns& designs, long n
       const double b[2] = {d.m00 * z0 + d.m01 * z1, d.m10 * z0 + d.m11 * z1};  // the intercept at t0, the slope per τ
       int k = 1;
       while (k < K && rng.uniform() >= d.hazard) ++k;
-      for (int j = 0; j < k; ++j) e[static_cast<std::size_t>(j)] = d.se1 * rng.normal();
       const auto i = static_cast<std::size_t>(g * K + k - 1);
       const double* rx = designs.within[i].data();
-      if (q == 1)
-        data.patterns[i].add_effects<4, 1>(4, rx, z.data(), b, e.data());
-      else
-        data.patterns[i].add_effects<4, 2>(4, rx, z.data(), b, e.data());
+      lmm::Pattern& pt = data.patterns[i];
+      if (q == 2) {
+        for (int j = 0; j < k; ++j) e[static_cast<std::size_t>(j)] = d.se1 * rng.normal();
+        pt.add_effects<4, 2>(4, rx, z.data(), b, e.data());
+        continue;
+      }
+      // a random intercept alone (Z = 1): what is left of X within a subject is (0, 0, t' − t̄', group × (t' − t̄')),
+      // so the subject's sums need only the errors' mean, their deviations from it and the time's column; these are
+      // Pattern::add_effects' sums to the bit, with one pass over the errors fewer
+      double sum = 0, sx = 0, syy = 0;
+      for (int j = 0; j < k; ++j) {
+        e[static_cast<std::size_t>(j)] = d.se1 * rng.normal();
+        sum += e[static_cast<std::size_t>(j)];
+      }
+      const double mean = pt.zl[0] * sum;  // (Z'Z)⁻¹ Z'e
+      if (k > 1) {
+        for (int j = 0; j < k; ++j) {
+          const double v = e[static_cast<std::size_t>(j)] - mean;
+          sx += rx[4 * j + 2] * v;
+          syy += v * v;
+        }
+      }
+      const double xy[4] = {0, 0, sx, g == 0 ? sx : 0}, level = b[0] + mean;
+      pt.add_sums(4, 1, xy, &level, syy);
     }
   }
   double theta[3];
@@ -254,6 +343,7 @@ sim::Outcome long_study(const LongDesign& d, const LongPatterns& designs, long n
   o.estimate = estimate * (d.unit / d.tau);
   o.se = w.se * (d.unit / d.tau);
   o.df = w.df;
+  o.df_fallback = w.fallback;
   return o;
 }
 
@@ -417,12 +507,13 @@ Procedure longitudinal() {
         n1 = res.n;
         sm = res.s;
       } else {
+        approx(n1);  // first: where it cannot be computed, neither can the simulated power
         sm = power_at(n1, reps, 0, 1);
       }
-      const double ap = approx(n1);  // first: where it cannot be computed, neither can the simulated power
       simc::put_summary(s, r, sm, simc::Failures::Numerical);
-      r.set("approx_power", ap);
+      r.set("approx_power", approx(n1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
+      if (sm.df_fallbacks > 0) r.set("df_fallbacks", static_cast<double>(sm.df_fallbacks));
     }
     put_two_group(r, {n1, n2_of(n1)});
     r.set("delta", delta);
@@ -464,7 +555,7 @@ Procedure longitudinal() {
                     "mixed model with " + model + " and a " + alt_words(alt(s)) + " " + test +
                     " at α = " + fnum(r.num("alpha")) + ". Subjects are measured at times " + text_of(r, "times");
     t += r.num("dropout") > 0 ? " and " + fpct(r.num("dropout"), 0) + " drop out by the last visit." : ".";
-    return t + simc::method_note(r);
+    return t + simc::method_note(r) + fallback_note(r, "N − 2");
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
                    {"δ", "Difference β1 − β2 between the groups' mean slopes (change per time unit)."},
@@ -573,6 +664,7 @@ sim::Outcome cluster_study(const ClusterDesign& d, long k1, long k2, double diff
   o.estimate = estimate * d.unit;
   o.se = w.se * d.unit;
   o.df = w.df;
+  o.df_fallback = w.fallback;
   return o;
 }
 
@@ -698,6 +790,7 @@ Procedure cluster() {
       simc::put_summary(s, r, sm, simc::Failures::Numerical);
       r.set("approx_power", approx(k1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
+      if (sm.df_fallbacks > 0) r.set("df_fallbacks", static_cast<double>(sm.df_fallbacks));
     }
     const double k2 = k2_of(k1);
     // the average size as entered (rounding the drawn sizes moves their mean only in the third decimal)
@@ -741,7 +834,7 @@ Procedure cluster() {
            " to detect a difference of " + fnum(r.num("delta")) + " between the means (σ = " +
            fnum(r.num("sigma")) + ", ICC = " + fnum(r.num("icc")) + "), analyzing each study with a linear mixed " +
            "model with a random cluster intercept and a " + alt_words(alt(s)) + " " + test + " at α = " +
-           fnum(r.num("alpha")) + "." + simc::method_note(r);
+           fnum(r.num("alpha")) + "." + simc::method_note(r) + fallback_note(r, "k1 + k2 − 2");
   };
   p.definitions = {{"k1, k2", "Number of clusters randomized to each group."},
                    {"m̄, CV", "Average cluster size and coefficient of variation of the sizes."},
