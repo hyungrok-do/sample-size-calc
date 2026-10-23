@@ -230,6 +230,9 @@ try {
       if (!await cache.match(new URL(file + '?v=dev', location.href))) throw new Error(`Missing cached asset: ${file}`);
     }
   });
+  // as in site.mjs: WebKit can lose every copy it keeps when the network goes down while the visit's own work is
+  // still under way, so the network goes down a second after the page is ready
+  await offlinePage.waitForTimeout(1000);
   down = true;
   await offlinePage.reload();
   await offlinePage.waitForSelector('#guide-questions input', { state: 'attached' });
