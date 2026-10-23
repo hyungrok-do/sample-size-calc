@@ -460,9 +460,7 @@ double pois_at_most(double c, double mu) { return c < 0 ? 0.0 : stats::ppois(c, 
 
 PoisRegion pois_region(bool exact, double mu0, double alpha, Alt a) {
   PoisRegion r;
-  const double side = a == Alt::Two ? alpha / 2 : alpha;
-  // half of the smallest double is 0: no count is that unlikely, and the steps below would never end
-  if (!(side > 0)) throw CalcError("alpha is too small to compute with");
+  const double side = tail_alpha(alpha, a);  // never 0, at which the steps below would never end
   const double z = stats::qnorm(side, false), sd = std::sqrt(mu0);
   if (exact) {
     // start near the normal quantile (with the Poisson skewness term), then step; beyond 10^15 events a step of
@@ -502,7 +500,7 @@ OnePoisResult one_pois_eval(const Scenario& s, double n, double lam1) {
   OnePoisResult res;
   res.exact = s.is("test", "exact") || s.is("method", "exact");
   if (!res.exact) {
-    const double z = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false);
+    const double z = stats::qnorm(tail_alpha(alpha, a), false);
     const double s0 = std::sqrt(mu0), s1 = std::sqrt(mu1);
     double pw = 0;
     if (a != Alt::Lower) pw += stats::pnorm((mu1 - mu0 - z * s0) / s1);
@@ -591,7 +589,7 @@ Procedure one_poisson() {
       if (lam1 == lam0) throw CalcError("λ1 equals λ0");
       if ((a == Alt::Upper && lam1 < lam0) || (a == Alt::Lower && lam1 > lam0))
         throw CalcError("λ1 lies on the side opposite to the one-sided alternative");
-      const double za = stats::qnorm(a == Alt::Two ? s("alpha") / 2 : s("alpha"), false);
+      const double za = stats::qnorm(tail_alpha(s("alpha"), a), false);
       const double zb = stats::qnorm(s("power"));
       const double g = std::pow((za * std::sqrt(lam0) + zb * std::sqrt(lam1)) / (lam1 - lam0), 2) / t;
       solve::NSearch o;
@@ -728,12 +726,17 @@ Procedure two_poisson() {
     using namespace stats;
     const double l1 = s("lam1"), l2 = s("lam2"), t = s("time"), alpha = s("alpha");
     const Alt a = alt(s);
+    // the variances' reciprocals of exposures below about 5.6e-309 overflow to infinity (and their ratio, the
+    // statistic, is then no number)
+    if (!std::isfinite(1 / t)) throw CalcError("the exposure time t is too small to compute with");
+    if (!std::isfinite(1 / (t * std::fmin(l1, l2))))
+      throw CalcError("the expected events per subject (λ × t) are too small to compute with");
     const double lr = std::log(l1 / l2);
     auto P = [&](double n1, double n2) {
       const double v1 = 1 / (n1 * t * l1) + 1 / (n2 * t * l2);
       const double lbar = (n1 * l1 + n2 * l2) / (n1 + n2);
       const double v0 = s.is("method", "h1") ? v1 : (1 / (n1 * t) + 1 / (n2 * t)) / lbar;
-      const double zt = qnorm(a == Alt::Two ? alpha / 2 : alpha, false);
+      const double zt = qnorm(tail_alpha(alpha, a), false);
       auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
       if (a == Alt::Two) return std::min(1.0, tail(lr) + tail(-lr));
       return tail(a == Alt::Upper ? lr : -lr);
@@ -849,6 +852,10 @@ Procedure two_negbin() {
     const double r0 = s("r0"), rr = s("rr"), kappa = s("kappa"), mt = s("time"), alpha = s("alpha");
     const double r1 = r0 * rr;
     const Alt a = alt(s);
+    // the variances' reciprocals of exposures below about 5.6e-309 overflow to infinity (and their ratio, the
+    // statistic, is then no number)
+    if (!std::isfinite(1 / (mt * std::fmin(r0, r1))))
+      throw CalcError("the expected events per subject (rate × time) are too small to compute with");
     const std::string& m = s.s("method");
     auto P = [&](double n1, double n2) {
       // n1: treatment (rate r1), n2: control (rate r0)
@@ -863,7 +870,7 @@ Procedure two_negbin() {
         v0 = (1 / (mt * rt) + kappa) * (1 / n1 + 1 / n2);
       }
       const double lr = std::log(rr);
-      const double zt = qnorm(a == Alt::Two ? alpha / 2 : alpha, false);
+      const double zt = qnorm(tail_alpha(alpha, a), false);
       auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
       if (a == Alt::Two) return std::min(1.0, tail(lr) + tail(-lr));
       return tail(a == Alt::Upper ? lr : -lr);
@@ -959,7 +966,7 @@ Procedure one_variance() {
     auto P = [&](double n) {
       const double df = n - 1;
       double pw = 0;
-      const double side = a == Alt::Two ? alpha / 2 : alpha;
+      const double side = tail_alpha(alpha, a);
       if (a != Alt::Lower) pw += pchisq(qchisq(side, df, false) / ratio, df, false);
       if (a != Alt::Upper) pw += pchisq(qchisq(side, df, true) / ratio, df, true);
       return clamp01(pw);
@@ -1037,7 +1044,7 @@ Procedure two_variances() {
     const Alt a = alt(s);
     auto P = [&](double n1, double n2) {
       const double d1 = n1 - 1, d2 = n2 - 1;
-      const double side = a == Alt::Two ? alpha / 2 : alpha;
+      const double side = tail_alpha(alpha, a);
       double pw = 0;
       if (a != Alt::Lower) pw += pf(qf(side, d1, d2, false) / ratio, d1, d2, false);
       if (a != Alt::Upper) pw += pf(qf(side, d1, d2, true) / ratio, d1, d2, true);

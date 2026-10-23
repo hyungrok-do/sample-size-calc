@@ -38,7 +38,7 @@ double z_stat(const std::string& test, int x, int n, double p0) {
 Region one_prop_region(const std::string& test, int n, double p0, double alpha, Alt a) {
   Region r;
   r.cu = n + 1;
-  const double side_alpha = a == Alt::Two ? alpha / 2 : alpha;
+  const double side_alpha = tail_alpha(alpha, a);
   if (test == "exact") {
     if (a != Alt::Lower) r.cu = upper_critical(n, p0, side_alpha);
     if (a != Alt::Upper) r.cl = lower_critical(n, p0, side_alpha);
@@ -81,7 +81,7 @@ double one_prop_power_normal(const std::string& test, double n, double p0, doubl
   auto upper = [&](double z) { return pnorm((d - cc - z * s0) / s1); };
   auto lower = [&](double z) { return pnorm((-d - cc - z * s0) / s1); };
   if (a == Alt::Two) {
-    const double z = qnorm(alpha / 2, false);
+    const double z = qnorm(half_alpha(alpha), false);
     return std::min(1.0, upper(z) + lower(z));
   }
   const double z = qnorm(alpha, false);
@@ -184,7 +184,7 @@ Procedure one_prop() {
       if ((a == Alt::Upper && p1 < p0) || (a == Alt::Lower && p1 > p0))
         throw CalcError("P1 lies on the side opposite to the one-sided alternative");
       const double zf = std::sqrt(z_factor(s("alpha"), s("power"), a));
-      const double za = stats::qnorm(a == Alt::Two ? s("alpha") / 2 : s("alpha"), false), zb = zf - za;
+      const double za = stats::qnorm(tail_alpha(s("alpha"), a), false), zb = zf - za;
       const double g = std::pow((za * std::sqrt(p0 * (1 - p0)) + zb * std::sqrt(p1 * (1 - p1))) / (p1 - p0), 2);
       solve::NSearch o;
       o.lo = 1;
@@ -276,7 +276,8 @@ double ci_width(const Scenario& s, double n) {
   const double p = s("p");
   const bool two = s.is("sides", "two");
   const Interval ci = prop_ci(s.s("method"), n, n * p, s("conf"), two);
-  if (two) return ci.hi - ci.lo;
+  // limits that meet (at a confidence near 0) can cross by a rounding error
+  if (two) return ci.hi < ci.lo ? 0.0 : ci.hi - ci.lo;
   return s.is("sides", "upper") ? ci.hi - p : p - ci.lo;
 }
 
@@ -341,15 +342,18 @@ Procedure one_prop_ci() {
     double n;
     if (s.solve == "n") {
       const double target = s("width");
+      const bool two = s.is("sides", "two");
       solve::NSearch o;
       o.lo = 1;
-      const double z = stats::qnorm((1 - s("conf")) / (s.is("sides", "two") ? 2 : 1), false);
+      const double z = stats::qnorm((1 - s("conf")) / (two ? 2 : 1), false);
       const double pp = s("p");
-      o.guess = std::ceil((s.is("sides", "two") ? 4 : 1) * z * z * pp * (1 - pp) / (target * target));
+      o.guess = std::ceil((two ? 4 : 1) * z * z * pp * (1 - pp) / (target * target));
       o.hi = 1e8;
       o.goal = "the target width";
-      n = solve::min_n_staying([&](double x) { const double w = ci_width(s, x); return w > 0 && w <= target; }, o,
-                               &ctx);
+      // a one-sided bound at or beyond the estimate is a degenerate size; a two-sided interval at a confidence near
+      // 0 closes on the estimate itself (a width of 0, or a rounding error either side of it) at every size
+      n = solve::min_n_staying(
+          [&](double x) { const double w = ci_width(s, x); return (two || w > 0) && w <= target; }, o, &ctx);
       r.set("target_width", target);
     } else {
       n = s("n");

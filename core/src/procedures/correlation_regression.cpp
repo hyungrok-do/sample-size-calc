@@ -45,7 +45,9 @@ double corr_root(G&& g, double guess, double rmin = -1 + 1e-12, double rmax = 1 
 double rcrit_upper(double n, double rho0, double a) {
   if (rho0 == 0) {
     const double t = stats::qt(a, n - 2, false);
-    return t / std::sqrt(n - 2 + t * t);
+    // t² overflows beyond 1e154 (at a subnormal alpha and few subjects), where t/√(n − 2 + t²) is 1 to double
+    // precision; the overflow made it 0, so that every positive correlation was significant
+    return std::isfinite(t * t) ? t / std::sqrt(n - 2 + t * t) : 1.0;
   }
   const double guess = std::tanh(std::atanh(rho0) + stats::qnorm(a, false) / std::sqrt(n - 3));
   return corr_root([&](double r) { return a - stats::pcorr(r, n, rho0, false); }, guess);
@@ -66,7 +68,7 @@ CorrCrit corr_crit(const Scenario& s, double n) {
   if (s.is("method", "fisher")) return c;
   const double rho0 = s("rho0"), alpha = s("alpha");
   const Alt a = alt(s);
-  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double side = tail_alpha(alpha, a);
   if (a != Alt::Lower) c.up = rcrit_upper(n, rho0, side);
   if (a != Alt::Upper) c.lo = rcrit_lower(n, rho0, side);
   return c;
@@ -149,7 +151,7 @@ Procedure one_corr() {
         const double target = s("power"), alpha = s("alpha");
         if (n < 4) throw CalcError("N must be at least 4");
         // Fisher-z guess, then the exact power on the side of the alternative
-        const double z = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false) + stats::qnorm(target);
+        const double z = stats::qnorm(tail_alpha(alpha, a), false) + stats::qnorm(target);
         const double guess = std::tanh(std::atanh(rho0) + (up ? z : -z) / std::sqrt(n - 3));
         const CorrCrit crit = corr_crit(s, n);
         if (corr_power(s, n, rho0, crit) >= target)  // at ρ1 = ρ0 the power is the significance level
@@ -676,7 +678,7 @@ Procedure logistic() {
     if (orr == 1) throw CalcError("an odds ratio of 1 has no effect to detect");
     if ((a == Alt::Upper && orr < 1) || (a == Alt::Lower && orr > 1))
       throw CalcError("the odds ratio is on the side opposite to the one-sided alternative");
-    const double za = qnorm(a == Alt::Two ? alpha / 2 : alpha, false);
+    const double za = qnorm(tail_alpha(alpha, a), false);
     std::function<double(double)> P;
     double p1 = NAN;
     if (s.is("xtype", "binary")) {

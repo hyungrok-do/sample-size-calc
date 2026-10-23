@@ -226,9 +226,11 @@ Procedure paired() {
     double sdd;
     if (s.is("sdtype", "corr")) {
       const double a = s("sd1"), b = s("sd2"), rho = s("rho");
-      const double v = a * a + b * b - 2 * rho * a * b;
+      // in units of the larger SD when both are below about 1e-154, where their squares underflow to 0
+      const double u = std::fmax(a, b) < 1e-150 ? std::fmax(a, b) : 1.0;
+      const double x = a / u, y = b / u, v = x * x + y * y - 2 * rho * x * y;
       if (!(v > 0)) throw CalcError("the implied SD of the differences is zero");
-      sdd = std::sqrt(v);
+      sdd = u * std::sqrt(v);
     } else {
       sdd = s("sdd");
     }
@@ -280,7 +282,16 @@ double two_mean_power(const Scenario& s, double n1, double n2, double diff, bool
   const double alpha = s("alpha");
   const Alt a = alt(s);
   if (welch) {
-    const double v1 = s("sd1") * s("sd1") / n1, v2 = s("sd2") * s("sd2") / n2;
+    double sd1 = s("sd1"), sd2 = s("sd2");
+    // the squares of the variances in the degrees of freedom underflow for SDs below about 1e-77 (and the variances
+    // themselves below about 1e-154): the test is then computed in units of the larger SD
+    const double unit = std::fmax(sd1, sd2);
+    if (unit < 1e-70) {
+      sd1 /= unit;
+      sd2 /= unit;
+      diff /= unit;
+    }
+    const double v1 = sd1 * sd1 / n1, v2 = sd2 * sd2 / n2;
     const double se = std::sqrt(v1 + v2);
     if (s.is("test", "z")) return z_power(diff / se, alpha, a);
     const double df = (v1 + v2) * (v1 + v2) / (v1 * v1 / (n1 - 1) + v2 * v2 / (n2 - 1));
@@ -317,10 +328,18 @@ void run_two_means(const Scenario& s, Row& r, RunContext& ctx, bool welch) {
     const TwoN n = two_group_n(s);
     if (n.n1 < 2 || n.n2 < 2) throw CalcError("each group needs at least 2 subjects");
     const double sign = a == Alt::Lower ? -1 : 1;
-    const double scale = std::sqrt(var_sum);
-    const double d = solve::solve_increasing(
-        [&](double dd) { return two_mean_power(s, n.n1, n.n2, sign * dd, welch); }, s("power"), 0, scale,
-        1e9 * scale, 1e-12, "the mean difference");
+    auto power = [&](double dd) { return two_mean_power(s, n.n1, n.n2, sign * dd, welch); };
+    double d;
+    if (var_sum >= stats::DBL_MIN_) {
+      const double scale = std::sqrt(var_sum);
+      d = solve::solve_increasing(power, s("power"), 0, scale, 1e9 * scale, 1e-12, "the mean difference");
+    } else {
+      // the variances underflow for SDs below about 1e-154 (their scale of 0 would leave nothing to search): the
+      // difference is then found in units of the SDs
+      const double unit = welch ? std::hypot(s("sd1"), s("sd2")) : std::sqrt(2.0) * s("sigma");
+      d = unit * solve::solve_increasing([&](double u) { return power(u * unit); }, s("power"), 0, 1, 1e9, 1e-12,
+                                         "the mean difference");
+    }
     put_two_group(r, n);
     put_power(s, r, two_mean_power(s, n.n1, n.n2, sign * d, welch));
     r.set("mu1", mu2 + sign * d);

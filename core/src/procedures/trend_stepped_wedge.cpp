@@ -85,7 +85,7 @@ double trend_power(const Trend& t, double n, double alpha, Alt a) {
     v1 += ni[i] * dd * dd * t.p[i] * (1 - t.p[i]);
   }
   v0 *= pbar * (1 - pbar);
-  const double z = qnorm(a == Alt::Two ? alpha / 2 : alpha, false);
+  const double z = qnorm(tail_alpha(alpha, a), false);
   double pw = 0;
   if (a != Alt::Lower) pw += pnorm((e - z * std::sqrt(v0)) / std::sqrt(v1));
   if (a != Alt::Upper) pw += pnorm((-e - z * std::sqrt(v0)) / std::sqrt(v1));
@@ -224,6 +224,7 @@ double sw_variance(int steps, int per_step, double m, double sigma2, double icc)
 
 struct SwEffect {
   double delta, sigma2;
+  double unit = 1;  // the unit of σ² (σ itself when σ² would underflow)
 };
 
 SwEffect sw_effect(const Scenario& s) {
@@ -234,13 +235,19 @@ SwEffect sw_effect(const Scenario& s) {
   }
   const double d = s("delta"), sd = s("sigma");
   if (d == 0) throw CalcError("δ = 0: there is no effect to detect");
+  // σ² underflows to 0 for a σ below about 1e-154 (the variance would be 0/0): it is then 1 in units of σ
+  if (sd * sd < stats::DBL_MIN_) return {d, 1.0, sd};
   return {d, sd * sd};
+}
+
+double sw_se(int steps, int per_step, double m, const SwEffect& e, double icc) {
+  return std::sqrt(sw_variance(steps, per_step, m, e.sigma2, icc)) * e.unit;
 }
 
 double sw_power(int steps, int per_step, double m, const SwEffect& e, double icc, double alpha) {
   using namespace stats;
-  const double se = std::sqrt(sw_variance(steps, per_step, m, e.sigma2, icc));
-  const double z = qnorm(alpha / 2, false), d = std::fabs(e.delta) / se;
+  const double se = sw_se(steps, per_step, m, e, icc);
+  const double z = qnorm(half_alpha(alpha), false), d = std::fabs(e.delta) / se;
   return pnorm(d - z) + pnorm(-d - z);
 }
 
@@ -368,7 +375,7 @@ Procedure stepped_wedge() {
     r.set("N", I * T * m);
     r.set("delta", e.delta);
     r.set("icc", icc);
-    r.set("se", std::sqrt(sw_variance(steps, g, m, e.sigma2, icc)));
+    r.set("se", sw_se(steps, g, m, e, icc));
     r.set("alpha", alpha);
   };
   p.columns = [](const Scenario& s) {

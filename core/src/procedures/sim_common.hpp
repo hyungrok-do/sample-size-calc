@@ -187,14 +187,18 @@ struct ClusterSizes {
       scale = mean / shape;
     }
   }
+  /// Whether every size is the mean: at a CV of 0, and at one whose square underflows to 0 (below about 1e-154),
+  /// whose shape 1/CV² is infinite (every draw would be 10⁹); the sizes are the mean to the nearest subject well
+  /// before that.
+  bool equal() const { return cv <= 0 || std::isinf(shape); }
   /// A size drawn from the distribution (capped at 10⁹, which keeps it within a 32-bit long).
   long draw(sim::Rng& rng) const {
-    if (cv <= 0) return std::max(1L, std::lround(mean));
+    if (equal()) return std::max(1L, std::lround(mean));
     return std::max(1L, std::lround(std::fmin(scale * rng.gamma(shape), 1e9)));
   }
   /// Equally likely sizes spanning the distribution (512 quantiles), for expected values over it.
   std::vector<double> grid() const {
-    if (cv <= 0) return {std::max(1.0, std::round(mean))};
+    if (equal()) return {std::max(1.0, std::round(mean))};
     std::vector<double> g(512);
     for (std::size_t i = 0; i < g.size(); ++i)
       g[i] = std::max(1.0, std::round(scale * stats::qgamma((i + 0.5) / static_cast<double>(g.size()), shape)));

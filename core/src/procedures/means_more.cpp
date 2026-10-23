@@ -513,18 +513,30 @@ double slope_sxx(const Scenario& s) {
     for (double x : t) mean += x;
     mean /= static_cast<double>(t.size());
     double sxx = 0;
-    for (double x : t) sxx += (x - mean) * (x - mean);
-    if (!(sxx > 0)) throw CalcError("the measurement times must not all be equal");
+    bool spread = false;
+    for (double x : t) {
+      sxx += (x - mean) * (x - mean);
+      spread = spread || x != mean;
+    }
+    if (!spread) throw CalcError("the measurement times must not all be equal");
+    // squares of differences below about 1e-154 underflow, and the slopes' variance σe²/Sxx would be infinite
+    if (!(sxx >= stats::DBL_MIN_)) throw CalcError("the measurement times are too close together to compute with");
     return sxx;
   }
   // m equally spaced times from 0 to D
   const double m = s("m"), d = s("duration");
-  return d * d * m * (m + 1) / (12 * (m - 1));
+  const double sxx = d * d * m * (m + 1) / (12 * (m - 1));
+  // D² underflows below about 1e-154, and the slopes' variance σe²/Sxx would be infinite
+  if (!(sxx >= stats::DBL_MIN_))
+    throw CalcError("D (the time from first to last measurement) is too small to compute with");
+  return sxx;
 }
 
 double slope_sd(const Scenario& s) {
   const double sb = s("sdb"), se = s("sde");
-  return std::sqrt(sb * sb + se * se / slope_sxx(s));
+  // in units of the larger SD when both are below about 1e-154, where their squares underflow to 0
+  const double u = std::fmax(sb, se) < 1e-150 ? std::fmax(sb, se) : 1.0;
+  return u * std::sqrt((sb / u) * (sb / u) + (se / u) * (se / u) / slope_sxx(s));
 }
 
 double slopes_power(const Scenario& s, double n1, double n2, double delta) {

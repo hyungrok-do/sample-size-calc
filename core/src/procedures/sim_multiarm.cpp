@@ -154,7 +154,7 @@ Events single_step(const Design& d, const Sizes& n, double c, const SNodes& sn, 
 
 /// Unadjusted critical value of one t-test at level `level`.
 double t_critical(double level, double df, Alt a) {
-  return stats::qt(a == Alt::Two ? level / 2 : level, df, false);
+  return stats::qt(tail_alpha(level, a), df, false);
 }
 
 /// Dunnett's critical value: P(no arm rejects | all nulls true) = 1 − α.
@@ -170,7 +170,7 @@ double dunnett_critical(const Design& d, const Sizes& n, const SNodes& sn, const
       e[0] = q;
     }, ctx)[0];
   };
-  const double lo = t_critical(d.alpha, df, d.alt), hi = t_critical(d.alpha / d.k, df, d.alt) + 1e-9;
+  const double lo = t_critical(d.alpha, df, d.alt), hi = t_critical(alpha_share(d.alpha, d.k), df, d.alt) + 1e-9;
   auto f = [&](double c) { return accept_all(c) - (1 - d.alpha); };
   const double flo = f(lo), fhi = f(hi);
   // at a tiny α, 1 − α rounds to 1 and no value is bracketed: Dunnett's value is then Bonferroni's to many
@@ -184,7 +184,7 @@ double critical_value(const Design& d, const Sizes& n, const SNodes& sn, const R
   switch (d.adjust) {
     case Adjust::Dunnett: return dunnett_critical(d, n, sn, ctx);
     case Adjust::None: return t_critical(d.alpha, df, d.alt);
-    default: return t_critical(d.alpha / d.k, df, d.alt);  // Bonferroni (and its bound for Holm, Hochberg)
+    default: return t_critical(alpha_share(d.alpha, d.k), df, d.alt);  // Bonferroni (and its bound for Holm, Hochberg)
   }
 }
 
