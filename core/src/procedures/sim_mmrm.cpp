@@ -191,12 +191,16 @@ using namespace blocks;
 using sim::Rng;
 using mmrm::TMAX;
 
+// The analyses do not depend on the outcome's unit or on the means of the groups at the visits (the MMRM
+// estimates every one of them), so the trials are simulated with mean 0 in units of σ, and δ/σ is added to the
+// estimated difference: a δ of 10¹⁰ σ, or a σ of 10¹⁶⁰, would otherwise lose every digit of the residual
+// variances to the sums of squares, or overflow.
 struct Design {
   int visits = 5;
   double delta = 0.5, sd = 1, rho = 0.6;
   bool ar1 = false;
   double drop[2] = {0, 0};  // proportion lost by the last visit, by group
-  std::array<double, TMAX * TMAX> sigma{}, chol{};
+  std::array<double, TMAX * TMAX> sigma{}, chol{};  // the correlation matrix (the covariance in units of σ²)
   /// Probability that a patient of group g is still observed at visit t (1 … T).
   double retained(int g, int t) const { return std::pow(1 - drop[g], static_cast<double>(t) / visits); }
 };
@@ -213,8 +217,7 @@ Design design_of(const Scenario& s) {
   const int T = d.visits;
   for (int a = 0; a < T; ++a)
     for (int b = 0; b < T; ++b) {
-      const double r = a == b ? 1 : (d.ar1 ? std::pow(d.rho, std::abs(a - b)) : d.rho);
-      d.sigma[a * TMAX + b] = d.sd * d.sd * r;
+      d.sigma[a * TMAX + b] = a == b ? 1 : (d.ar1 ? std::pow(d.rho, std::abs(a - b)) : d.rho);
     }
   // Cholesky factor of the true covariance (positive definite for −1/(T − 1) < ρ < 1, or |ρ| < 1 for AR(1))
   for (int j = 0; j < T; ++j) {
@@ -233,8 +236,8 @@ Design design_of(const Scenario& s) {
   return d;
 }
 
-/// Expected variance of the difference at the last visit with n1 and n2 patients: the inverse of the expected
-/// GLS information Σ_k n π_k E_k' Σ_kk⁻¹ E_k under the true covariance and dropout pattern.
+/// Expected variance of the difference at the last visit with n1 and n2 patients, in units of σ²: the inverse of
+/// the expected GLS information Σ_k n π_k E_k' Σ_kk⁻¹ E_k under the true covariance and dropout pattern.
 double expected_variance(const Design& d, double n1, double n2) {
   const int T = d.visits;
   mmrm::Stats st;
@@ -314,7 +317,7 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
         k = last >= T ? T : static_cast<int>(last);
       }
       for (int t = 0; t < T; ++t) {
-        double v = g == 0 ? d.delta * (t + 1) / T : 0;  // the difference grows linearly to δ at the last visit
+        double v = 0;
         for (int c = 0; c <= t; ++c) v += d.chol[t * TMAX + c] * e[c];
         y[t] = v;
       }
@@ -327,21 +330,22 @@ sim::Outcome mmrm_study(const Design& d, long n1, long n2, long rep, std::uint64
     }
   }
   sim::Outcome o;
+  const double shift = d.delta / d.sd;  // the difference at the last visit, left out of the simulated outcomes
   // completers: pooled t-test at the last visit
   bool comp = false;
   if (ccount[0] >= 2 && ccount[1] >= 2) {
     const double m1 = csum[0] / ccount[0], m2 = csum[1] / ccount[1];
     const double ss = css[0] - ccount[0] * m1 * m1 + css[1] - ccount[1] * m2 * m2, df = ccount[0] + ccount[1] - 2;
     const double se = std::sqrt(ss / df * (1 / ccount[0] + 1 / ccount[1]));
-    comp = se > 0 && simc::p_value((m1 - m2) / se, z ? INFINITY : df, a) < alpha;
+    comp = se > 0 && simc::p_value(simc::t_stat(m1 - m2 + shift, se), z ? INFINITY : df, a) < alpha;
   }
   const mmrm::Fit f = mmrm::fit(st, true);
   bool mm = false;
   if (f.ok) {
     o.df = z ? INFINITY : f.observed_last - 2;
-    mm = o.df > 0 && simc::p_value(f.delta / f.se, o.df, a) < alpha;
-    o.estimate = f.delta;
-    o.se = f.se;
+    mm = o.df > 0 && simc::p_value(simc::t_stat(f.delta + shift, f.se), o.df, a) < alpha;
+    o.estimate = (f.delta + shift) * d.sd;
+    o.se = f.se * d.sd;
   }
   o.also = (mm ? 1u : 0u) | (comp ? 2u : 0u);
   if (an == MMRM && !f.ok) {
@@ -461,10 +465,9 @@ Procedure mmrm_proc() {
     auto approx = [&](double n1) {
       const double n2 = n2_of(n1);
       const double keep1 = d.retained(0, d.visits), keep2 = d.retained(1, d.visits);
-      const double var = an == MMRM ? expected_variance(d, n1, n2)
-                                    : d.sd * d.sd * (1 / (n1 * keep1) + 1 / (n2 * keep2));
-      const double df = n1 * keep1 + n2 * keep2 - 2;
-      return z || !(df > 0) ? z_power(d.delta / std::sqrt(var), alpha, a) : t_power(d.delta / std::sqrt(var), df, alpha, a);
+      const double var = an == MMRM ? expected_variance(d, n1, n2) : 1 / (n1 * keep1) + 1 / (n2 * keep2);
+      const double df = n1 * keep1 + n2 * keep2 - 2, ncp = d.delta / d.sd / std::sqrt(var);
+      return z || !(df > 0) ? z_power(ncp, alpha, a) : t_power(ncp, df, alpha, a);
     };
     if (s.solve == "n") {
       if (d.delta == 0) throw CalcError("δ is zero; power cannot exceed alpha");

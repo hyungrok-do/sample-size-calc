@@ -327,7 +327,8 @@ Procedure glmm_cluster() {
              "The SD of the random intercept may be at most 6 on the logit scale (a latent ICC of 0.92): beyond "
              "it, clusters are almost all-or-none and the Wald test breaks down.",
              "Studies whose fit does not converge (for example when every cluster of a group has the same outcome) "
-             "count as not rejecting and are reported as failed fits.",
+             "count as not rejecting and are reported as failed fits; when they are more than half of the studies, "
+             "no simulated power is given.",
              "The quick approximation compares the population-averaged proportions with each cluster weighted by "
              "size / (p(1 − p)(1 + (size − 1)ρ)), averaged over the size distribution."};
   p.references = {"Li, P. & Redden, D. T. (2015). Comparing denominator degrees of freedom approximations for the "
