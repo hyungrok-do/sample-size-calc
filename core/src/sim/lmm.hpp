@@ -25,9 +25,12 @@
 // rank) computed entry by entry in closed form (q ≤ 2); both stay valid at
 // the boundary (singular D).  σ² is profiled out; the relative
 // covariance factor Λ (G = ΛΛ') is optimized: Brent's method for a random
-// intercept, Nelder–Mead for a random intercept and slope.  Tests of c'β use
-// a t statistic with Satterthwaite's degrees of freedom (as lmerTest does),
-// from the numerical Hessian of the REML criterion in (σ², D).
+// intercept, Nelder–Mead for a random intercept and slope (with Newton's
+// method from exact derivatives where either stops short of a minimum).  Tests
+// of c'β use a t statistic with Satterthwaite's degrees of freedom (as lmerTest
+// does), from the Hessian of the REML criterion in (σ², D): by finite
+// differences for a random intercept in clusters of up to 100 observations on
+// average, exact for larger ones and for random slopes.
 #pragma once
 
 #include <cstdint>
@@ -149,8 +152,13 @@ struct Data {
   std::vector<Arm> arms;  // with q = 1 only; taken after the patterns
   /// Random effects (q = 2) whose covariates take two values only (a random slope with two visits): σ² and D are
   /// not told apart then, only the covariance of the two measurements is, and a D of rank 1 (θ2 = 0) reaches each
-  /// one once, so the fit holds D there.
+  /// one once, so the fit holds D there.  It does so as well in a study none of whose clusters has more observations
+  /// than random effects (no subject measured three times).
   bool two_rows = false;
+  /// Called with poll_arg as each evaluation of the criterion begins, when set: a caller whose evaluations are long
+  /// (a million cluster sizes) checks there whether to stop, and throws to stop the fit or the test.
+  void (*poll)(const void*) = nullptr;
+  const void* poll_arg = nullptr;
   double observations() const;
   double clusters() const;
 };
@@ -175,7 +183,7 @@ struct Wald {
   double se = 0;
   double df = 0;
   double t = 0;
-  bool fallback = false;  // Satterthwaite's df unavailable (boundary), `fallback_df` used
+  bool fallback = false;  // Satterthwaite's df unavailable (no positive definite Hessian), the given df used
 };
 
 /// t test of c'β = 0; df_method: 0 Satterthwaite, 1 the given df, 2 normal (df = ∞).

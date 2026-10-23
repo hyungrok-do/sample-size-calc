@@ -294,9 +294,26 @@ TEST_CASE("lmm: Satterthwaite's degrees of freedom keep their digits with cluste
   }
 }
 
+namespace {
+
+/// Whether this build fuses a multiply and an add written in separate statements into one rounding (GCC's default
+/// where the CPU has fused multiply-adds, clang with -ffp-contract=fast).
+bool fuses_across_statements() {
+  volatile double va = 1 + std::ldexp(1.0, -30), vc = -(1 + std::ldexp(1.0, -29));
+  const double a = va, c = vc;
+  const double t = a * a;  // 1 + 2⁻²⁹ + 2⁻⁶⁰, rounded to 1 + 2⁻²⁹
+  return t + c != 0;
+}
+
+}  // namespace
+
 TEST_CASE("lmm: clusters kept by arm and size fit as their patterns do, to the bit") {
   // a cluster-randomized study with sizes that vary (a few shared, most of their own), as one Pattern per arm and
-  // size in the order the sizes first appear, and as the same sizes in two Arms
+  // size in the order the sizes first appear, and as the same sizes in two Arms.  The same to the bit, also where a
+  // multiply and an add in one expression are fused (clang on ARM); a build that fuses them across statements as well
+  // forms other roundings in the two loops, and the fits agree to 10⁻¹¹
+  const bool exact = !fuses_across_statements();
+  auto same = [&](double a, double b) { return exact ? a == b : std::fabs(a - b) <= 1e-9 * std::fabs(a); };
   for (const double icc : {0.0, 0.05, 0.6}) {
     sim::Rng rng(29);
     lmm::Data by_pattern, by_arm;
@@ -335,13 +352,13 @@ TEST_CASE("lmm: clusters kept by arm and size fit as their patterns do, to the b
     const double theta0 = std::sqrt(icc / (1 - icc));
     const lmm::Fit a = lmm::fit(by_pattern, &theta0), b = lmm::fit(by_arm, &theta0);
     CHECK(a.ok && b.ok);
-    CHECK(a.theta[0] == b.theta[0] && a.sigma2 == b.sigma2 && a.criterion == b.criterion);
-    for (int i = 0; i < 2; ++i) CHECK(a.beta[i] == b.beta[i]);
-    for (int i = 0; i < 4; ++i) CHECK(a.cov[i] == b.cov[i]);
+    CHECK(same(a.theta[0], b.theta[0]) && same(a.sigma2, b.sigma2) && same(a.criterion, b.criterion));
+    for (int i = 0; i < 2; ++i) CHECK(same(a.beta[i], b.beta[i]));
+    for (int i = 0; i < 4; ++i) CHECK(same(a.cov[i], b.cov[i]));
     const double c[2] = {0, 1};
     for (int method = 0; method < 3; ++method) {
       const lmm::Wald wa = lmm::wald(by_pattern, a, c, method, 78), wb = lmm::wald(by_arm, b, c, method, 78);
-      CHECK(wa.estimate == wb.estimate && wa.se == wb.se && wa.df == wb.df && wa.fallback == wb.fallback);
+      CHECK(same(wa.estimate, wb.estimate) && same(wa.se, wb.se) && same(wa.df, wb.df) && wa.fallback == wb.fallback);
     }
   }
   // arms are clusters with a random intercept alone
@@ -588,6 +605,56 @@ TEST_CASE("lmm: Satterthwaite's degrees of freedom do not depend on where time s
   CHECK_CLOSE(w[1].estimate, w[0].estimate, 1e-7, 0);
   CHECK_CLOSE(w[1].se, w[0].se, 1e-6, 0);
   CHECK_CLOSE(w[1].df, w[0].df, 1e-5, 0);
+}
+
+TEST_CASE("lmm: Satterthwaite's degrees of freedom near and on the boundary are those of a 100-digit REML fit") {
+  // three studies of 40 subjects a group, seen at 2 to 5 of the times 0 to 4: (0) intercepts and slopes correlated
+  // −0.98, (1) intercepts 27 residual SDs apart and correlated 0.94 with the slopes, (2) random effects 50 times
+  // below the residual SD, a fit on the boundary (D of rank 1).  The references are a 100-digit REML fit's, with
+  // Satterthwaite's degrees of freedom from its Hessian in (σ², D), and on the boundary in (σ², w) with D = w w'.
+  // Finite differences in D gave 56.680, 77.489 and 47.506
+  const double times[5] = {0, 1, 2, 3, 4};
+  const double df[3] = {56.7161720545904, 77.7528139168801, 67.9058834608781};
+  const double se[3] = {0.09939461649374425, 0.16973847996159128, 0.09713963746633636};
+  for (int kind = 0; kind < 3; ++kind) {
+    lmm::Data d;
+    d.p = 4;
+    d.q = 2;
+    d.patterns.resize(10);
+    std::vector<double> x[10], z[10];
+    for (int g = 0; g < 2; ++g)
+      for (int k = 1; k <= 5; ++k) {
+        const int i = g * 5 + k - 1;
+        for (int j = 0; j < k; ++j) {
+          x[i].insert(x[i].end(), {1.0, g == 0 ? 1.0 : 0.0, times[j], g == 0 ? times[j] : 0.0});
+          z[i].insert(z[i].end(), {1.0, times[j]});
+        }
+        d.patterns[i].set_design(k, 4, 2, x[i].data(), z[i].data());
+      }
+    for (int g = 0; g < 2; ++g)
+      for (int u = 0; u < 40; ++u) {
+        const int k = 2 + u % 4, i = g * 5 + k - 1;
+        double b0, b1, y[5];
+        if (kind == 0) {
+          b0 = 0.1 * std::cos(1.3 * u + g), b1 = 0.05 * std::sin(2.1 * u + 0.7 * g);
+        } else if (kind == 1) {
+          b0 = 10 * std::cos(1.3 * u + g), b1 = 0.099 * b0 + 0.14 * std::sin(2.1 * u + 0.7 * g);
+        } else {
+          b0 = 0.02 * std::cos(1.3 * u + g), b1 = 0.01 * std::sin(2.1 * u + 0.7 * g);
+        }
+        for (int j = 0; j < k; ++j)
+          y[j] = b0 + b1 * times[j] + (kind == 1 ? 0.5 : 1) * std::sin(3.7 * u + 1.1 * j + 0.3 * g);
+        d.patterns[i].add_cluster(4, 2, x[i].data(), z[i].data(), y);
+      }
+    const double theta0[3] = {1, 0, 1}, c[4] = {0, 0, 0, 1};
+    const lmm::Fit f = lmm::fit(d, theta0);
+    CHECK(f.ok);
+    CHECK(f.boundary == (kind == 2));
+    const lmm::Wald w = lmm::wald(d, f, c, 0, 78);
+    CHECK(!w.fallback);
+    CHECK_CLOSE(w.df, df[kind], 1e-6, 0);
+    CHECK_CLOSE(w.se, se[kind], 1e-7, 0);
+  }
 }
 
 TEST_CASE("lmm: a fit that cannot tell a group's slope apart has no estimate") {

@@ -24,6 +24,7 @@ namespace ssc::sim {
 struct Outcome {
   bool reject = false;
   bool failed = false;   // the analysis failed (counted as not rejecting)
+  bool design_failure = false;  // with failed: the data's design gave no estimate (not the arithmetic)
   double estimate = NAN;  // estimated effect
   double se = NAN;        // its standard error
   double df = NAN;        // degrees of freedom of the test
@@ -39,6 +40,7 @@ struct Summary {
   long reps = 0;
   long rejections = 0;
   long failures = 0;
+  long design_failures = 0;  // failures that the data's design caused (Outcome::design_failure)
   long df_fallbacks = 0;  // studies whose test used the fixed degrees of freedom in place of its own
   double power = NAN;  // rejection rate
   double se = NAN;     // Monte Carlo standard error √(p(1 − p)/R)
@@ -78,6 +80,7 @@ class Accumulator {
     ++s_.reps;
     if (o.failed) {
       ++s_.failures;
+      if (o.design_failure) ++s_.design_failures;
       return;
     }
     if (o.reject) ++s_.rejections;

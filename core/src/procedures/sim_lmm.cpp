@@ -111,17 +111,24 @@ void set_origin(LongDesign& d, double t0) {
 /// mean t̄ and spread S = Σ (t − t̄)², E = σ² (Z'Z)⁻¹ + G is the covariance of a subject's least-squares level and
 /// slope, |E| = σ⁴/(k S) + σ² (v/S + s²/k) + |M|² (v and s² the variances of the level at t̄ and of the slope),
 /// a sum of positive terms, and the information is Σ_k p_k E⁻¹ (a subject seen at one time tells only the level
-/// there).
+/// there).  The visits' mean and spread are taken from the visit nearest t0 (from t0 itself when the visits span
+/// it): from a t0 far beyond them, the visits' times lose their spacing (lines that cross 10¹⁸ time units before
+/// visits at 0, 1 and 2 put all three at 1 in units of τ, and the origin went back to 0).
 double steady_shift(const LongDesign& d, double& share) {
   const std::vector<double> prob = visit_probs(d);
   const double s2 = d.se1 * d.se1, slope2 = d.m10 * d.m10 + d.m11 * d.m11, det_m = d.m00 * d.m11 - d.m01 * d.m10;
   const double g_aa = d.m00 * d.m00 + d.m01 * d.m01, g_as = d.m00 * d.m10 + d.m01 * d.m11;
+  const double ref = std::clamp(d.t0, d.times.front(), d.times.back()), offset = (ref - d.t0) / d.tau;
   double maa = 0, mas = 0, mss = 0;
   for (std::size_t k = 1; k <= d.times.size(); ++k) {
     const double p = prob[k - 1], dk = static_cast<double>(k);
     double mean = 0, ss = 0;
-    for (std::size_t j = 0; j < k; ++j) mean += d.time(j) / dk;
-    for (std::size_t j = 0; j < k; ++j) ss += (d.time(j) - mean) * (d.time(j) - mean);
+    for (std::size_t j = 0; j < k; ++j) mean += (d.times[j] - ref) / d.tau / dk;
+    for (std::size_t j = 0; j < k; ++j) {
+      const double t = (d.times[j] - ref) / d.tau;
+      ss += (t - mean) * (t - mean);
+    }
+    mean = offset + mean;  // from t0
     const double la = d.m00 + mean * d.m10, lb = d.m01 + mean * d.m11, v = la * la + lb * lb;
     if (ss > 0) {
       const double det = s2 * s2 / (dk * ss) + s2 * (v / ss + slope2 / dk) + det_m * det_m;
@@ -282,6 +289,24 @@ double long_se(const LongDesign& d, double n1, double n2) {
   return std::sqrt(cov[3 * 4 + 3]) * (d.unit / d.tau);
 }
 
+/// Whether a simulated study's subjects leave the model without an estimate, whatever the arithmetic: a group none of
+/// whose subjects was measured twice tells nothing of its slope, and with random slopes and no subject measured three
+/// times (two visits, or heavy dropout), the subjects seen twice, less one for each group's means, must be two or
+/// more, or the covariance of the two measurements is not determined (with one subject left over, the REML criterion
+/// falls without bound as it turns singular).  With heavy dropout and few subjects this is common, and it is the
+/// design's doing, not an extreme input's: such a study counts as not rejecting.
+bool long_unidentified(const lmm::Data& data, int K) {
+  double twice[2] = {0, 0}, thrice = 0;
+  for (int g = 0; g < 2; ++g)
+    for (int k = 2; k <= K; ++k) {
+      const double count = data.patterns[static_cast<std::size_t>(g * K + k - 1)].count;
+      twice[g] += count;
+      if (k > 2) thrice += count;
+    }
+  if (twice[0] == 0 || twice[1] == 0) return true;
+  return data.q == 2 && thrice == 0 && (twice[0] - 1) + (twice[1] - 1) < 2;
+}
+
 /// One simulated study.  The analysis estimates the group means and slopes freely, so adding them to the
 /// outcome changes the estimate of δ by exactly δ and nothing else: the subjects are simulated without them
 /// (in the analysis units, only their random effects and errors), and δ is added to the estimate, which keeps
@@ -329,9 +354,13 @@ sim::Outcome long_study(const LongDesign& d, const LongPatterns& designs, long n
       pt.add_sums(4, 1, xy, &level, syy);
     }
   }
+  sim::Outcome o;
+  if (long_unidentified(data, K)) {
+    o.failed = o.design_failure = true;
+    return o;
+  }
   double theta[3];
   long_lambda(d, theta);
-  sim::Outcome o;
   const lmm::Fit f = lmm::fit(data, theta);
   if (!f.ok) {
     o.failed = true;
@@ -511,7 +540,12 @@ Procedure longitudinal() {
         approx(n1);  // first: where it cannot be computed, neither can the simulated power
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm, simc::Failures::Numerical);
+      // studies whose subjects leave the model without an estimate count as not rejecting, as a design that
+      // often gives too few subjects measured twice deserves; only failures of the arithmetic in more than half of
+      // the studies withhold the power
+      const bool numerical = 2 * (sm.failures - sm.design_failures) > sm.reps;
+      simc::put_summary(s, r, sm, numerical ? simc::Failures::Numerical : simc::Failures::Design,
+                        sm.design_failures == sm.reps ? "each had a group with too few subjects measured twice" : "");
       r.set("approx_power", approx(n1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
       if (sm.df_fallbacks > 0) r.set("df_fallbacks", static_cast<double>(sm.df_fallbacks));
@@ -659,13 +693,16 @@ class SizeIndex {
 /// estimated difference by exactly μ1 − μ2 and nothing else: the clusters are simulated around 0, in units of
 /// σ, and the difference is added to the estimate (sums of squares of outcomes far from 0, or of 10¹⁶⁰ σ, would
 /// lose the digits the variance estimates need, or overflow).  A study of a million clusters takes about a second,
-/// so the token is checked within it.
+/// so the token is checked within it: as the clusters are drawn, and as each evaluation of the REML criterion begins,
+/// in the fit and in Satterthwaite's degrees of freedom (some 20 ms apart with a million sizes).
 sim::Outcome cluster_study(const ClusterDesign& d, long k1, long k2, double diff, long rep, std::uint64_t seed,
                            int dfm, double alpha, Alt a, const RunContext& ctx) {
   lmm::Data data;
   data.p = 2;
   data.q = 1;
   data.arms.resize(2);
+  data.poll = [](const void* c) { static_cast<const RunContext*>(c)->check(); };
+  data.poll_arg = &ctx;
   for (int g = 0; g < 2; ++g) {
     lmm::Arm& arm = data.arms[static_cast<std::size_t>(g)];
     arm.x[0] = 1, arm.x[1] = g == 0 ? 1 : 0;  // X = (1, group), the same on every row of a cluster
@@ -689,7 +726,6 @@ sim::Outcome cluster_study(const ClusterDesign& d, long k1, long k2, double diff
   sim::Outcome o;
   const double theta = d.sb / d.se;
   const lmm::Fit f = lmm::fit(data, &theta);
-  ctx.check();
   if (!f.ok) {
     o.failed = true;
     return o;
