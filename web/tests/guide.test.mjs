@@ -129,7 +129,10 @@ test('changing an ancestor clears dependent choices, retaining additional requir
 test('unknown, conditional, or numerical presets fail instead of silently applying defaults', () => {
   const proc = schemas.get('prop.two');
   assert.throws(() => prepareSelection(proc, { procedure: proc.id, inputs: { test: 'unknown' } }));
-  assert.throws(() => prepareSelection(proc, { procedure: proc.id, inputs: { p1: '0.7' } }));
+  // a number in an address is refused with a message that says so, not as an unavailable choice
+  assert.throws(() => prepareSelection(proc, { procedure: proc.id, inputs: { p1: '0.7' } }),
+    /An address carries only the study choices; “P1 \(Group 1 Proportion under H1\)” is a number/);
+  assert.throws(() => prepareSelection(proc, { procedure: proc.id, inputs: { test: 'unknown' } }), /is unavailable/);
   assert.throws(() => prepareSelection(proc, { procedure: proc.id, solve_for: 'unknown' }));
   assert.throws(() => prepareSelection(proc, { procedure: 'unknown' }));
   const conditional = { id: 'conditional', solve_for: [{ value: 'n' }], params: [

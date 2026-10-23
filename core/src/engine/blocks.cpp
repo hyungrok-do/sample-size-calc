@@ -183,7 +183,11 @@ TwoN solve_two_group_n(const Scenario& s, const std::function<double(double, dou
   }
   if (a == "pct") {
     const double pct = s("pct1");
-    double lo = 2 * min_n;
+    // from the total at which the smaller share reaches min_n (counting up from 2 min_n took 10^7 steps, a second,
+    // at a percentage of 1e-300); both groups grow with the total, so the first total that holds is the same
+    const double share = std::fmin(pct, 100 - pct) / 100;
+    double lo = std::fmax(2 * min_n, std::floor((min_n - 0.5) / share) - 1);
+    if (!(lo <= 1e7)) throw CalcError("the percentage leaves one group empty");
     while (true) {
       const TwoN t = split_pct(lo, pct);
       if (t.n1 >= min_n && t.n2 >= min_n) break;

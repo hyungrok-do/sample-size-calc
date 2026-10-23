@@ -744,6 +744,78 @@ def test_a_median_of_about_zero_has_every_subject_with_the_event():
     assert not row.get("_error") and "nan" not in row["_statement"], row
 
 
+def test_hazards_whose_sum_overflows_keep_their_share_of_events():
+    """With event and dropout hazards of 1e308 each, their sum overflowed and the event probability came out 1
+    (half the answer); the share of events is that of any equal pair of hazards."""
+    rows = [first_row(run("surv.logrank", "n", {**base_inputs("surv.logrank"), "survin": "hazard", "lam2": h,
+                                                "eta": h, "hr": "0.5"})) for h in ("1e3", "1e307", "1e308", "1.7e308")]
+    assert all(r is not None for r in rows), rows
+    assert len({r["n"] for r in rows}) == 1, [r["n"] for r in rows]
+
+
+@pytest.mark.parametrize("dropout", ["0.9999999999", "0.999999", "0.9999985"])
+def test_a_dropout_table_never_shows_a_count_past_any_study(dropout):
+    """Each group's inflated size, and the total's (which two groups just under 10^15 take past it)."""
+    res = run("means.two.t", "power", {**base_inputs("means.two.t"), "n1": "1000000000", "dropout": dropout})
+    assert first_row(res) is not None
+    for row in (res.get("dropout") or {}).get("rows", []):
+        assert all(abs(v) <= 1e15 for k, v in row.items() if k.endswith(("_inflated", "_dropouts"))), row
+
+
+def test_hazards_whose_sum_overflows_follow_the_time_at_risk():
+    """No time at risk refuses every pair of hazards, the overflowing one too; a tiny one gives the probability
+    of the pairs just below the overflow."""
+    base = {**base_inputs("surv.logrank"), "survin": "hazard", "hr": "0.5"}
+    for h in ("8.9e307", "1e308"):
+        row = run("surv.logrank", "n", {**base, "lam2": h, "eta": h, "accrual": "0", "follow": "0"})["rows"][0]
+        assert row.get("_error"), row
+    rows = [first_row(run("surv.logrank", "n", {**base, "lam2": h, "eta": h, "accrual": "0", "follow": "1e-309"}))
+            for h in ("8.9e307", "1e308")]
+    assert abs(rows[0]["n"] - rows[1]["n"]) <= 0.15 * rows[0]["n"], rows
+
+
+@pytest.mark.parametrize("pid,inputs", [
+    ("prop.two", {}), ("prop.two", {"test": "fisher"}), ("prop.cc", {"method": "exact"}),
+    ("prop.two.ni", {"method": "exact"}), ("prop.two.equiv", {"method": "exact"}),
+])
+def test_an_exact_search_for_a_power_its_sums_cannot_reach_ends(pid, inputs):
+    """A target power of 1 - 1e-14 is past what the exact sums resolve: the search climbed toward 10^7 a group and
+    ran for minutes (prop.two over 300 s); past its budget it now uses the normal approximation and says so."""
+    start = time.perf_counter()
+    row = first_row(run(pid, "n", {**base_inputs(pid), **inputs, "power": "0.99999999999999"}))
+    assert time.perf_counter() - start < 30
+    assert row is not None and any("normal approximation was used" in t for t in row.get("_notes", [])), row
+
+
+def test_a_tiny_percentage_is_refused_at_once():
+    start = time.perf_counter()
+    row = run("means.two.welch", "n", {**base_inputs("means.two.welch"), "alloc": "pct", "pct1": "5e-324"})["rows"][0]
+    assert row.get("_error") == "the percentage leaves one group empty" and time.perf_counter() - start < 0.5
+    row = first_row(run("means.two.welch", "n", {**base_inputs("means.two.welch"), "alloc": "pct", "pct1": "0.01"}))
+    assert row["n1"] >= 2 and row["n2"] >= 2
+
+
+def test_a_zero_width_space_is_read_as_nothing():
+    """"0<ZWSP>.4" looks like 0.4 in the field; it was read as the two values 0 and .4."""
+    res = run("agree.icc", "n", {**base_inputs("agree.icc"), "rho0": "0\u200b.4"})
+    assert [r["rho0"] for r in res["rows"]] == [0.4]
+
+
+def test_a_robust_simulation_whose_values_overflow_ends():
+    """An outlier SD multiple of 5e307 or more made the draws inf / inf: the midranks of a NaN never ended, and the
+    run could not be cancelled natively (CLI, MCP time limits). Past about 1.3e154 the outliers' variance overflows
+    and every value would be 0: such a multiple is refused."""
+    for solve in ("power", "n"):
+        start = time.perf_counter()
+        res = run("sim.means.robust", solve, {**base_inputs("sim.means.robust"), "dist": "contaminated",
+                                              "kout": "1e308", "reps": "100"})
+        assert time.perf_counter() - start < 10
+        assert "k is too large to simulate" in res["rows"][0].get("_error", ""), res["rows"][0]
+    row = first_row(run("sim.means.robust", "power", {**base_inputs("sim.means.robust"), "dist": "contaminated",
+                                                      "kout": "1e100", "reps": "100"}))
+    assert row is not None and row["exkurt"] is not None and row["exkurt"] > 0, row
+
+
 def test_odds_ratio_messages_speak_of_odds():
     row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "scale": "or", "or0": "1e308"})["rows"][0]
     assert "(odds OR0 times those of P2), must lie strictly between 0 and 1" in row["_error"], row
@@ -753,9 +825,9 @@ def test_odds_ratio_messages_speak_of_odds():
 
 def test_text_that_acts_on_a_message_is_written_out():
     """A right-to-left override typed in a field turned the rest of the error line around."""
-    res = run("means.two.ni", "n", {**base_inputs("means.two.ni"), "power": "\u202e0.8", "sigma": "1\u200d"})
+    res = run("means.two.ni", "n", {**base_inputs("means.two.ni"), "power": "\u202e0.8", "sigma": "1\u2066"})
     assert res["input_errors"]["power"] == "could not read '\\u{202E}0.8' as a number"
-    assert "\\u{200D}" in res["input_errors"]["sigma"] and "\u200d" not in res["input_errors"]["sigma"]
+    assert "\\u{2066}" in res["input_errors"]["sigma"] and "\u2066" not in res["input_errors"]["sigma"]
 
 
 def test_an_unknown_choice_is_an_input_error():

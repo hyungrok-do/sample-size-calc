@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, firefox, webkit } from 'playwright';
+import { watchViolations } from './csp.mjs';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
@@ -28,6 +29,12 @@ const base = `http://127.0.0.1:${server.address().port}/`;
 const kind = process.env.SSC_BROWSER ?? 'chromium';
 const browser = await { chromium, firefox, webkit }[kind].launch(kind === 'chromium'
   ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined, args: ['--disable-dev-shm-usage'] } : {});
+const violations = [];  // what the page's Content-Security-Policy blocked
+async function newContext(options) {
+  const context = await browser.newContext(options);
+  await watchViolations(context, violations);
+  return context;
+}
 
 let failed = 0;
 async function check(name, fn) {
@@ -41,7 +48,7 @@ async function check(name, fn) {
 }
 const errors = [];
 async function open(url, options = {}) {
-  const context = await browser.newContext({ serviceWorkers: 'block', ...options });
+  const context = await newContext({ serviceWorkers: 'block', ...options });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`${url}: ${e.message}`));
   await page.goto(url);
@@ -252,7 +259,7 @@ try {
     await q.context().close();
   });
   await check('a search typed while the engine loads is applied once it is ready', async () => {
-    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const context = await newContext({ serviceWorkers: 'block' });
     await context.route('**/engine/*.wasm*', async (r) => { await new Promise((x) => setTimeout(x, 3000)); await r.continue(); });
     const q = await context.newPage();
     q.on('pageerror', (e) => errors.push(`slow load: ${e.message}`));
@@ -268,7 +275,7 @@ try {
   if (kind === 'chromium') {
     async function fallBack(name, route, timeout) {
       await check(name, async () => {
-        const context = await browser.newContext({ serviceWorkers: 'block' });
+        const context = await newContext({ serviceWorkers: 'block' });
         await route(context);
         const q = await context.newPage();
         q.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
@@ -288,7 +295,7 @@ try {
       const trap = `if (request.inputs?.mu1 === '13.13'${onlyMultiCore ? " && variant === 'ssc_web_mt'" : ''}) throw new WebAssembly.RuntimeError('unreachable');`;
       const body = source.replace('run: (M, { request, maxRows = Infinity }) => {', `run: (M, { request, maxRows = Infinity }) => {\n    ${trap}`);
       assert.notEqual(body, source);
-      const context = await browser.newContext({ serviceWorkers: 'block' });
+      const context = await newContext({ serviceWorkers: 'block' });
       await context.route('**/worker.js*', (r) => r.fulfill({ body, contentType: 'text/javascript', headers: isolation }));
       const q = await context.newPage();
       q.on('pageerror', (e) => errors.push(`crash: ${e.message}`));
@@ -320,6 +327,7 @@ try {
   }
 
   await check('no page errors', async () => { assert.equal(errors.length, 0, errors.join(' | ')); });
+  await check('the Content-Security-Policy blocked nothing', async () => { assert.equal(violations.length, 0, violations.join(' | ')); });
 } finally {
   await browser.close();
   server.close();

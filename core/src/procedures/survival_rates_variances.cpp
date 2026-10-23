@@ -14,9 +14,12 @@ using namespace blocks;
 // until A + F has an event, with event hazard lam and censoring hazard eta.
 double event_prob(double lam, double eta, double A, double F) {
   const double h = lam + eta;
-  if (!(h > 0)) return 0;
-  // a hazard so large (a median of about 0) that each subject has the event, or drops out, at once
-  if (std::isinf(h)) return std::isinf(eta) ? (std::isinf(lam) ? NAN : 0) : 1;
+  if (!(h > 0) || !(A + F > 0)) return 0;
+  // an infinite hazard (a median of about 0): each subject has the event, or drops out, at once
+  if (std::isinf(lam) || std::isinf(eta)) return std::isinf(eta) ? (std::isinf(lam) ? NAN : 0) : 1;
+  // two finite hazards whose sum overflows: the probability depends on hazard × time and on lam / h only, so it is
+  // that of half of each over twice the time
+  if (std::isinf(h)) return event_prob(lam / 2, eta / 2, 2 * A, 2 * F);
   const double frac = lam / h;
   if (A <= 0) return frac * -std::expm1(-h * F);
   // 1 − e^{−hF}(1 − e^{−hA})/(hA), written without cancellation for small hazards (a median of millions of

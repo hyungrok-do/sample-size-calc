@@ -139,8 +139,27 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK(rlo.find("\u202e") == std::string::npos);
   CHECK(message("1\\u0000x").find("\\u{0}") != std::string::npos);  // NUL, escaped in the request
   CHECK(message("0.0\u0301").find("\\u{301}") != std::string::npos);
-  CHECK(message("1\u200dx").find("\\u{200D}") != std::string::npos);
+  CHECK(message("1\u2066x").find("\\u{2066}") != std::string::npos);
+  // the zero-width characters show nothing and are read as nothing: "0<ZWSP>.4" is the 0.4 the field shows
+  CHECK_EQ(first_mu1("0\u200b.4"), 0.4);
+  CHECK_EQ(first_mu1("1\u200d2\u2060"), 12.0);
   CHECK_EQ(parse::quoted("abc\u00e9"), std::string("abc\u00e9"));
+  // marks of any script, and enclosing ones, are written out; letters and symbols of common scripts are not
+  CHECK_EQ(parse::quoted("\u05b0abc"), std::string("\\u{5B0}abc"));
+  CHECK_EQ(parse::quoted("\u0489\u064e\u093c"), std::string("\\u{489}\\u{64E}\\u{93C}"));
+  CHECK_EQ(parse::quoted("\u03bc \u2264 \u00bd \u4e2d"), std::string("\u03bc \u2264 \u00bd \u4e2d"));
+  // the digits of other scripts, with the Arabic separators
+  CHECK_EQ(parse::quoted("\u06f0\u066b\u06f0\u06f5 \u0665\u066a \u0662\u066c\u0665 \u0e50.\u0e55 \u09e6.\u09eb"),
+           std::string("\u06f0\u066b\u06f0\u06f5 \u0665\u066a \u0662\u066c\u0665 \u0e50.\u0e55 \u09e6.\u09eb"));
+  // bytes that are not UTF-8 stay bytes (the JSON writer shows U+FFFD), never a character they could spell
+  CHECK_EQ(parse::quoted("a\x85" "b"), std::string("a\x85" "b"));
+  CHECK_EQ(parse::quoted("a\xc0\x80" "b"), std::string("a\xc0\x80" "b"));
+  CHECK_EQ(parse::quoted("a\xf0\x82\x80\xae" "b"), std::string("a\xf0\x82\x80\xae" "b"));
+  CHECK_EQ(parse::quoted("a\xe2\x80"), std::string("a\xe2\x80"));
+  // the cut counts the text as written: 37 controls give at most 40 bytes and the ellipsis
+  CHECK(parse::quoted(std::string(37, '\x1f')).size() <= 40 + std::string("\u2026").size());
+  CHECK_EQ(parse::quoted(std::string(40, 'x')), std::string(40, 'x'));
+  CHECK_EQ(parse::quoted(std::string(41, 'x')), std::string(40, 'x') + "\u2026");
   // objects and arrays nested beyond any request are refused, not followed into a stack overflow
   std::string deep = R"({"procedure":"means.two.t","inputs":{"x":)";
   for (int i = 0; i < 100000; ++i) deep += '[';
