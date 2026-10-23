@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -14,11 +15,25 @@ namespace ssc::procs {
 
 using blocks::Alt;
 
+/// A share α/k of the level: α/2 for each tail of a two-sided test, α/k for each of k comparisons.  The share of
+/// the smallest alphas (α/2 of α = 5e-324) rounds to 0, whose critical value is infinite, so that no study would
+/// reach any power; it stays at the smallest positive double, the tail a one-sided test at that α has.
+inline double alpha_share(double alpha, double k) {
+  const double share = alpha / k;
+  return share == 0 && alpha > 0 ? std::numeric_limits<double>::denorm_min() : share;
+}
+
+/// α/2, the level of each tail of a two-sided test.
+inline double half_alpha(double alpha) { return alpha_share(alpha, 2); }
+
+/// The level of the tail in which a test rejects: α/2 for each tail of a two-sided test, α for a one-sided one.
+inline double tail_alpha(double alpha, Alt alt) { return alt == Alt::Two ? half_alpha(alpha) : alpha; }
+
 /// Power of a test whose statistic is N(ncp, 1) under H1 (known variance).
 inline double z_power(double ncp, double alpha, Alt alt) {
   using namespace stats;
   if (alt == Alt::Two) {
-    const double z = qnorm(alpha / 2, false);
+    const double z = qnorm(half_alpha(alpha), false);
     return pnorm(ncp - z) + pnorm(-ncp - z);
   }
   const double z = qnorm(alpha, false);
@@ -30,7 +45,7 @@ inline double t_power(double ncp, double df, double alpha, Alt alt) {
   using namespace stats;
   if (!(df > 0)) return NAN;
   if (alt == Alt::Two) {
-    const double t = qt(alpha / 2, df, false);
+    const double t = qt(half_alpha(alpha), df, false);
     return pnt(t, df, ncp, false) + pnt(-t, df, ncp, true);
   }
   const double t = qt(alpha, df, false);
@@ -40,7 +55,7 @@ inline double t_power(double ncp, double df, double alpha, Alt alt) {
 /// Normal-approximation sample size multiplier ((z_α' + z_β)²).
 inline double z_factor(double alpha, double power, Alt alt) {
   using namespace stats;
-  const double za = qnorm(alt == Alt::Two ? alpha / 2 : alpha, false);
+  const double za = qnorm(tail_alpha(alpha, alt), false);
   const double zb = qnorm(power);
   return (za + zb) * (za + zb);
 }

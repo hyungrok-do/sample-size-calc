@@ -43,7 +43,9 @@ double expect_sd_ratio(F&& f, double df, double umax = INFINITY, double eps_abs 
 /// concluded when  EL + t·SÊ < d < EU − t·SÊ  with t the 1 − α quantile.
 inline double tost_power(double el, double eu, double delta, double se, double df, double alpha) {
   using namespace stats;
-  if (!(eu > el) || !(se > 0)) return 0;
+  if (!(eu > el)) return 0;
+  if (se == 0) return el < delta && delta < eu ? 1.0 : 0.0;  // underflowed (a CV of 5e-324): the estimate is exact
+  if (!(se > 0)) return 0;
   const double a = (eu - delta) / se;
   const double b = (el - delta) / se;
   if (!std::isfinite(df) || df > 1e7) {

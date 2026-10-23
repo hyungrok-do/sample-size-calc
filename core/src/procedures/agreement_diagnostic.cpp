@@ -25,7 +25,7 @@ double icc_power(double n, double k, double rho0, double rho1, double alpha, Alt
   const double df1 = n - 1, df2 = n * (k - 1);
   if (!(df1 > 0 && df2 > 0)) return NAN;
   const double ratio = icc_c(rho0, k) / icc_c(rho1, k);
-  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double side = tail_alpha(alpha, a);
   double pw = 0;
   if (a != Alt::Lower) pw += pf(qf(side, df1, df2, false) * ratio, df1, df2, false);
   if (a != Alt::Upper) pw += pf(qf(side, df1, df2, true) * ratio, df1, df2, true);
@@ -101,7 +101,7 @@ Procedure icc() {
         solve::NSearch o;
         o.lo = 2;
         // Fisher-type normal approximation for a starting value
-        const double z = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false) + stats::qnorm(s("power"));
+        const double z = stats::qnorm(tail_alpha(alpha, a), false) + stats::qnorm(s("power"));
         const double d = std::log(icc_c(rho1, k) / icc_c(rho0, k));
         o.guess = 2 * k * z * z / ((k - 1) * d * d) + 2;
         n = solve::min_n([&](double x) { return icc_power(x, k, rho0, rho1, alpha, a); }, s("power"), o, &ctx);
@@ -170,7 +170,7 @@ double kappa_min(double pi) { return -std::min(pi, 1 - pi) / std::max(pi, 1 - pi
 double kappa_power(double n, double k0, double k1, double pi, double alpha, Alt a) {
   using namespace stats;
   const double s0 = std::sqrt(kappa_q(k0, pi) / n), s1 = std::sqrt(kappa_q(k1, pi) / n);
-  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double side = tail_alpha(alpha, a);
   const double z = qnorm(side, false), d = k1 - k0;
   double pw = 0;
   if (a != Alt::Lower) pw += pnorm((d - z * s0) / s1);
@@ -231,7 +231,7 @@ Procedure kappa() {
       throw CalcError("κ1 lies on the side opposite to the one-sided alternative");
     double n;
     if (s.solve == "n") {
-      const double z0 = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false), z1 = stats::qnorm(s("power"));
+      const double z0 = stats::qnorm(tail_alpha(alpha, a), false), z1 = stats::qnorm(s("power"));
       const double guess = std::pow(z0 * std::sqrt(kappa_q(k0, pi)) + z1 * std::sqrt(kappa_q(k1, pi)), 2) /
                            ((k1 - k0) * (k1 - k0));
       solve::NSearch o;
@@ -293,7 +293,7 @@ double auc_var(double A, double n1, double n0) {
 double auc_power(double n1, double n0, double a0, double a1, double alpha, Alt a) {
   using namespace stats;
   const double s0 = std::sqrt(auc_var(a0, n1, n0)), s1 = std::sqrt(auc_var(a1, n1, n0));
-  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double side = tail_alpha(alpha, a);
   const double z = qnorm(side, false), d = a1 - a0;
   double pw = 0;
   if (a != Alt::Lower) pw += pnorm((d - z * s0) / s1);
@@ -764,7 +764,7 @@ Procedure paired_diagnostic() {
         normal ? 1e8 : std::fmin(1e9, std::floor(1e6 / std::max(use_se ? prev : 0.0, use_sp ? 1 - prev : 0.0)));
     double n;
     if (s.solve == "n") {
-      const double za = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false), zb = stats::qnorm(s("power"));
+      const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
       auto connor = [&](const PairedCells& c) {  // pairs needed by Connor's formula
         const double psi = c.p10 + c.p01, d = c.p10 - c.p01;
         return std::pow(za * std::sqrt(psi) + zb * std::sqrt(psi - d * d), 2) / (d * d);

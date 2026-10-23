@@ -660,7 +660,7 @@ double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCa
     const double sd1 = std::sqrt(psi - delta * delta);
     const double rn = std::sqrt(static_cast<double>(n));
     if (a == Alt::Two) {
-      const double z = qnorm(alpha / 2, false);
+      const double z = qnorm(half_alpha(alpha), false);
       return std::min(1.0, pnorm((rn * delta - z * std::sqrt(psi)) / sd1) + pnorm((-rn * delta - z * std::sqrt(psi)) / sd1));
     }
     const double z = qnorm(alpha, false);
@@ -669,7 +669,7 @@ double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCa
   // exact conditional binomial test, unconditional power: sum over the number m of discordant pairs
   const BinomWindow wm = binom_window(n, psi);
   const double pi = p10 / psi;
-  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double side = tail_alpha(alpha, a);
   double total = 0;
   int cu = -1, cl = -2;  // critical values of the previous m (−1, −2: not known)
   for (int m = wm.lo; m <= wm.hi; ++m) {
@@ -786,7 +786,7 @@ Procedure mcnemar() {
       if ((a == Alt::Upper && p10 < p01) || (a == Alt::Lower && p10 > p01))
         throw CalcError("the effect has the sign opposite to the one-sided alternative");
       const double psi = p10 + p01, d = p10 - p01;
-      const double za = stats::qnorm(a == Alt::Two ? s("alpha") / 2 : s("alpha"), false), zb = stats::qnorm(s("power"));
+      const double za = stats::qnorm(tail_alpha(s("alpha"), a), false), zb = stats::qnorm(s("power"));
       solve::NSearch o;
       o.lo = 1;
       o.guess = std::ceil(std::pow(za * std::sqrt(psi) + zb * std::sqrt(psi - d * d), 2) / (d * d));
@@ -1046,7 +1046,7 @@ Procedure cluster_props() {
       const double s1 = std::sqrt(de * (p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2));
       const double d = p1 - p2;
       if (a == Alt::Two) {
-        const double z = qnorm(alpha / 2, false);
+        const double z = qnorm(half_alpha(alpha), false);
         return std::min(1.0, pnorm((d - z * s0) / s1) + pnorm((-d - z * s0) / s1));
       }
       const double z = qnorm(alpha, false);

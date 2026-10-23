@@ -339,7 +339,7 @@ SSC_REGISTER(kruskal);
 // Sign test (exact binomial)
 // =====================================================================================
 double sign_power(int n, double p, double alpha, Alt a, double* actual = nullptr) {
-  const double side = a == Alt::Two ? alpha / 2 : alpha;
+  const double side = tail_alpha(alpha, a);
   const int cu = a == Alt::Lower ? n + 1 : upper_critical(n, 0.5, side);
   const int cl = a == Alt::Upper ? -1 : lower_critical(n, 0.5, side);
   if (actual) *actual = two_tail_prob(n, 0.5, cl, cu);
@@ -396,7 +396,7 @@ Procedure sign_test() {
       solve::NSearch o;
       o.lo = 1;
       o.monotone = false;
-      const double za = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false), zb = stats::qnorm(s("power"));
+      const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
       o.guess = std::ceil(std::pow(za * 0.5 + zb * std::sqrt(pp * (1 - pp)), 2) / ((pp - 0.5) * (pp - 0.5)));
       n = static_cast<int>(solve::min_n([&](double x) { return sign_power(static_cast<int>(x), pp, alpha, a); }, s("power"), o, &ctx));
     } else {

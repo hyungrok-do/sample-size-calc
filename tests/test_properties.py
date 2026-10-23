@@ -744,6 +744,165 @@ def test_a_median_of_about_zero_has_every_subject_with_the_event():
     assert not row.get("_error") and "nan" not in row["_statement"], row
 
 
+@pytest.mark.parametrize("pid,solve", [("reg.cox", "n"), ("rates.two.poisson", "n"), ("means.two.t", "n"),
+                                       ("corr.one", "n"), ("prop.paired.mcnemar", "n"), ("cluster.sw", "g"),
+                                       ("rates.one.poisson", "n")])
+def test_a_two_sided_alpha_whose_half_rounds_to_zero(pid, solve):
+    """Half of an alpha of 5e-324 rounded to 0, whose critical value is infinite: the target "cannot be reached
+    with a sample size up to 100000000".  Each tail keeps 5e-324, the tail of a one-sided test at that level, and
+    the smallest alphas need more subjects than 1e-300 does."""
+    base = {**base_inputs(pid), "alpha": "5e-324"}
+    two = first_row(run(pid, solve, base))
+    larger = first_row(run(pid, solve, {**base, "alpha": "1e-300"}))
+    assert two and larger, (two, larger)
+    key = next(k for k in ("n", "g") if k in two)
+    assert two[key] >= larger[key], (two, larger)
+    if "alternative" in params(pid):
+        one = first_row(run(pid, solve, {**base, "alternative": "upper"}))
+        assert one and one[key] == two[key], (one, two)
+
+
+@pytest.mark.parametrize("pid,solve,key", [("sim.lmm.cluster", "k", "k1"), ("sim.lmm.longitudinal", "n", "n1")])
+def test_a_simulation_at_a_two_sided_alpha_whose_half_rounds_to_zero(pid, solve, key):
+    rows = [first_row(run(pid, solve, {**base_inputs(pid), "alpha": a, "reps": "100"})) for a in ("5e-324", "1e-300")]
+    assert rows[0] and rows[1] and rows[0][key] > rows[1][key], rows
+
+
+def test_the_exact_test_of_a_correlation_at_a_subnormal_alpha():
+    """t² overflowed beyond 1e154: a critical correlation of 0, and 4 subjects reaching any power."""
+    base = base_inputs("corr.one")
+    for alpha in ("1e-320", "5e-324"):
+        row = first_row(run("corr.one", "n", {**base, "alpha": alpha}))
+        assert row["n"] > first_row(run("corr.one", "n", {**base, "alpha": "1e-300"}))["n"], row
+
+
+def test_a_cv_whose_square_underflows():
+    """√ln(1 + CV²) underflowed to 0 below a CV of about 1e-162: no power at any size, and no sample size."""
+    base = base_inputs("means.be.ratio")
+    small = first_row(run("means.be.ratio", "n", {**base, "cv": "1e-15"}))
+    assert small["n"] == 4
+    for cv in ("1e-300", "5e-324"):
+        row = first_row(run("means.be.ratio", "n", {**base, "cv": cv}))
+        assert row["n"] == 4 and row["sw"] == float(cv), row
+        row = first_row(run("means.be.ratio", "power", {**base, "cv": cv, "n": "24"}))
+        assert row["power"] > 0.999999, row
+
+
+@pytest.mark.parametrize("pid,key", [("prop.two.ci", "n1"), ("prop.one.ci", "n")])
+@pytest.mark.parametrize("conf", ["1e-15", "1e-300"])
+def test_an_interval_at_a_confidence_near_zero(pid, key, conf):
+    """Two-sided limits close on the estimate as the confidence goes to 0, to a width of 0 or of a rounding error;
+    the search took that for a degenerate size and said the target width "cannot be reached"."""
+    for method in [o["value"] for o in params(pid)["method"]["options"]]:
+        inputs = {**base_inputs(pid), "conf": conf, "method": method}
+        row = first_row(run(pid, "n", inputs))
+        assert row and 0 <= row["width"] <= float(inputs["width"]), (method, row)
+        if method in ("newcombe", "wald", "wilson", "ac", "jeffreys"):
+            assert row[key] == 1, (method, row)
+    row = first_row(run("prop.two.ci", "width", {**base_inputs("prop.two.ci"), "conf": "1e-300", "n1": "100"}))
+    assert row["width"] == 0
+
+
+def test_squares_that_underflow_in_a_variance():
+    """σ² and D² underflowed to 0: a stepped-wedge variance of 0/0, a search for a mean difference from 0 to 0, a
+    slope variance σe²/Sxx of infinity."""
+    base = base_inputs("cluster.sw")
+    for solve, key in (("power", "power"), ("g", "g"), ("m", "m")):
+        rows = [first_row(run("cluster.sw", solve, {**base, "sigma": s})) for s in ("1e-300", "1e-150")]
+        assert rows[0] and rows[0][key] == rows[1][key], rows
+    base = base_inputs("means.two.t")
+    one = first_row(run("means.two.t", "mu1", {**base, "sigma": "1"}))
+    for sigma in (1e-8, 1e-15, 1e-160, 1e-300):
+        row = first_row(run("means.two.t", "mu1", {**base, "sigma": repr(sigma)}))
+        assert row["mu1"] / sigma == pytest.approx(one["mu1"], rel=1e-9) and row["power"] == pytest.approx(0.8)
+    res = run("means.two.slopes", "delta", {**base_inputs("means.two.slopes"), "duration": "1e-160"})
+    assert res["rows"][0]["_error"] == "D (the time from first to last measurement) is too small to compute with"
+    res = run("means.two.slopes", "delta", {**base_inputs("means.two.slopes"), "timing": "custom",
+                                            "times": "0 1e-160 2e-160"})
+    assert res["rows"][0]["_error"] == "the measurement times are too close together to compute with"
+
+
+@pytest.mark.parametrize("pid,solve,inputs,says", [
+    # a power of 1 at proportions near 0, from variances that underflowed to 0 ("8 cases and 8 controls")
+    ("prop.cc", "n", {"p0": "5e-324"}, "the proportions are too small to compute with"),
+    ("prop.two", "n", {"es": "or", "p2": "5e-324"}, "the proportions are too small to compute with"),
+    ("prop.cc", "power", {"m": "1e-15"}, "M is too small: there would be no controls"),
+    # a power of 1 from ∞/∞ ("group sample sizes of 1 and 1")
+    ("rates.two.poisson", "n", {"time": "5e-324"}, "the exposure time t is too small to compute with"),
+    ("rates.two.poisson", "power", {"lam2": "5e-324"}, "the expected events per subject (λ × t) are too small"),
+    ("rates.two.negbin", "n", {"r0": "5e-324"}, "the expected events per subject (rate × time) are too small"),
+    # boundaries that spend nothing (power 0, "cannot be reached")
+    ("gs.means", "n", {"alpha": "1e-300"}, "alpha is too small to compute with"),
+    ("gs.props", "power", {"alpha": "5e-324", "boundary": "wt_obf"}, "alpha is too small to compute with"),
+])
+def test_an_input_too_small_to_compute_with_is_named(pid, solve, inputs, says):
+    row = run(pid, solve, {**base_inputs(pid), **inputs})["rows"][0]
+    assert says in row.get("_error", ""), row
+
+
+@pytest.mark.parametrize("pid,solve,alpha", [("gs.logrank", "power", "1e-10"), ("gs.means", "power", "1e-12"),
+                                             ("gs.means", "n", "1e-15"), ("gs.props", "n", "1e-15")])
+def test_a_group_sequential_design_at_a_small_alpha(pid, solve, alpha):
+    """The other rejection region adds less than a rounding error to the fixed design's power at a small alpha,
+    which left its drift unbracketed ("the answer cannot be computed")."""
+    row = first_row(run(pid, solve, {**base_inputs(pid), "alpha": alpha}))
+    assert row and row["inflation"] == pytest.approx(1, abs=1e-3), row
+
+
+@pytest.mark.parametrize("pid,solve,scale,fixed", [
+    ("means.crossover", "delta", "sigma", {}), ("means.one.t", "mu1", "sigma", {"mu0": "0"}),
+    ("means.paired.t", "mud", "sdd", {"sdtype": "sdd", "mud0": "0"}),
+    ("means.two.repeated", "mu1", "sigma", {"mu2": "0"}), ("means.two.ancova", "mu1", "sigma", {"mu2": "0"}),
+    ("means.two.cluster", "mu1", "sigma", {"mu2": "0"}), ("reg.slope", "b1", "sigma", {"b0": "0"})])
+def test_an_effect_solved_at_a_small_sd_scales_with_it(pid, solve, scale, fixed):
+    """The search's tolerance was 1e-12 absolute below 1: at an SD of 1e-15 the effect was the first value tried
+    (the SD itself), and at 1e-8 it was off in the fourth digit."""
+    base = {**base_inputs(pid), **fixed, scale: "1"}
+    unit = first_row(run(pid, solve, base))[solve]
+    for sd in (1e-8, 1e-15, 1e-160):
+        row = first_row(run(pid, solve, {**base, scale: repr(sd)}))
+        assert row and row[solve] / sd == pytest.approx(unit, rel=1e-6), (sd, row)
+
+
+@pytest.mark.parametrize("pid,inputs,solve", [
+    ("means.two.welch", {"sd1": 1, "sd2": 1.5, "mu1": 1, "mu2": 0}, "n"),
+    ("means.two.welch", {"sd1": 1, "sd2": 1.5, "mu2": 0}, "mu1"),
+    ("means.paired.t", {"sdtype": "corr", "sd1": 1, "sd2": 1, "mud": 0.5, "mud0": 0}, "n"),
+    ("means.two.slopes", {"sdb": 0.5, "sde": 1, "delta": 0.5}, "n"),
+    ("means.two.slopes", {"sdb": 0.5, "sde": 1}, "delta")])
+def test_sds_whose_squares_underflow_together(pid, inputs, solve):
+    """Every SD and mean difference scaled by 1e-80 or 1e-300: the Welch degrees of freedom (from the variances'
+    squares, which underflow below SDs of 1e-77), the paired SD and the slopes' SD gave other answers, or none."""
+    base = base_inputs(pid)
+    one = first_row(run(pid, solve, {**base, **{k: str(v) for k, v in inputs.items()}}))
+    for f in (1e-80, 1e-300):
+        scaled = {k: repr(v * f) if isinstance(v, (int, float)) else v for k, v in inputs.items()}
+        row = first_row(run(pid, solve, {**base, **scaled}))
+        assert row, (f, row)
+        if solve == "n":
+            assert row["n"] == one["n"] and row["power"] == pytest.approx(one["power"], rel=1e-9), (f, row, one)
+        else:
+            assert row[solve] / f == pytest.approx(one[solve], rel=1e-9), (f, row, one)
+
+
+@pytest.mark.parametrize("pid", ["sim.lmm.cluster", "sim.glmm.cluster"])
+def test_a_cluster_size_cv_whose_square_underflows(pid):
+    """1/CV² was infinite below a CV of about 1e-154 and every cluster had 10⁹ subjects (a simulated power of
+    100% at the defaults of sim.lmm.cluster, 86% at a CV of 1e-8): the sizes are all the mean, as for a CV of 0."""
+    base = {**base_inputs(pid), "reps": "100"}
+    rows = [first_row(run(pid, "power", {**base, "cv": cv})) for cv in ("0", "1e-160", "5e-324")]
+    for row in rows[1:]:
+        assert row["power"] == rows[0]["power"] and row["approx_power"] == rows[0]["approx_power"], (row, rows[0])
+
+
+@pytest.mark.parametrize("key,says", [("med_d", "the median time to death is too short to compute with"),
+                                      ("med_h", "the median time to the non-fatal event is too short to compute with")])
+def test_a_win_ratio_median_of_about_zero(key, says):
+    """An infinite hazard made every simulated time no number: a simulated power of 0 with no approximation."""
+    row = run("sim.winratio", "power", {**base_inputs("sim.winratio"), key: "5e-324", "reps": "100"})["rows"][0]
+    assert row.get("_error") == says, row
+
+
 def test_odds_ratio_messages_speak_of_odds():
     row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "scale": "or", "or0": "1e308"})["rows"][0]
     assert "(odds OR0 times those of P2), must lie strictly between 0 and 1" in row["_error"], row

@@ -113,10 +113,13 @@ double two_prop_normal(const TwoPropTest& T, double n1, double n2, double p1, do
   const double s0 = T.test == "zunpool" ? s1 : std::sqrt(pb * qb * (1 / n1 + 1 / n2));
   const double cc = (T.test == "zpoolcc" || T.test == "fisher") ? 0.5 * (1 / n1 + 1 / n2) : 0;
   const double d = p1 - p2;
+  // variances P(1 − P)/n that underflow to 0 (proportions near 5e-324) would make a difference between them
+  // infinitely significant, a power of 1 (an infinite count, which makes them no number, is said by the runner)
+  if (d != 0 && (s0 == 0 || s1 == 0)) throw CalcError("the proportions are too small to compute with");
   auto up = [&](double z) { return pnorm((d - cc - z * s0) / s1); };
   auto lo = [&](double z) { return pnorm((-d - cc - z * s0) / s1); };
   if (T.alt == Alt::Two) {
-    const double z = qnorm(T.alpha / 2, false);
+    const double z = qnorm(half_alpha(T.alpha), false);
     return std::min(1.0, up(z) + lo(z));
   }
   const double z = qnorm(T.alpha, false);
@@ -185,7 +188,7 @@ double two_prop_exact(const TwoPropTest& T, double n1d, double n2d, double p1, d
     for (double v : part) s += v;
     return stats::clamp01(s);
   }
-  const double zc = stats::qnorm(T.alt == Alt::Two ? T.alpha / 2 : T.alpha, false);
+  const double zc = stats::qnorm(tail_alpha(T.alpha, T.alt), false);
   const std::size_t nr = static_cast<std::size_t>(w1.hi - w1.lo + 1);
   std::vector<double> part(nr, 0.0);
   auto body = [&](std::size_t k) {
@@ -334,7 +337,7 @@ Procedure two_props() {
       if (p1 == p2) throw CalcError("P1 equals P2");
       if ((a == Alt::Upper && p1 < p2) || (a == Alt::Lower && p1 > p2))
         throw CalcError("P1 − P2 has the sign opposite to the one-sided alternative");
-      const double za = stats::qnorm(a == Alt::Two ? s("alpha") / 2 : s("alpha"), false), zb = stats::qnorm(s("power"));
+      const double za = stats::qnorm(tail_alpha(s("alpha"), a), false), zb = stats::qnorm(s("power"));
       const double pb = (p1 + p2) / 2;
       const double g = std::pow(za * std::sqrt(2 * pb * (1 - pb)) + zb * std::sqrt(p1 * (1 - p1) + p2 * (1 - p2)), 2) /
                        ((p1 - p2) * (p1 - p2));
@@ -555,8 +558,10 @@ Procedure two_props_ci() {
       o.guess = std::ceil(z * z * (p1 * (1 - p1) + p2 * (1 - p2) / s("r")) / (e * e));
       o.hi = 1e8;
       o.goal = "the target width";
+      // a one-sided bound at or beyond the estimate is a degenerate size; a two-sided interval at a confidence near
+      // 0 closes on the estimate itself (a width of 0, or a rounding error either side of it) at every size
       n1 = solve::min_n_staying(
-          [&](double x) { const double w = diff_ci_at(s, x).width; return w > 0 && w <= target; }, o, &ctx);
+          [&](double x) { const double w = diff_ci_at(s, x).width; return (two || w > 0) && w <= target; }, o, &ctx);
       r.set("target_width", target);
     } else {
       n1 = s("n1");
@@ -731,7 +736,7 @@ Procedure case_control() {
       if ((a == Alt::Upper && p1 < p0) || (a == Alt::Lower && p1 > p0))
         throw CalcError("the odds ratio is on the side opposite to the one-sided alternative");
       // Schlesselman's formula for the number of cases
-      const double za = stats::qnorm(a == Alt::Two ? s("alpha") / 2 : s("alpha"), false), zb = stats::qnorm(s("power"));
+      const double za = stats::qnorm(tail_alpha(s("alpha"), a), false), zb = stats::qnorm(s("power"));
       const double pb = (p1 + m * p0) / (1 + m);
       const double g = std::pow(za * std::sqrt((1 + 1 / m) * pb * (1 - pb)) + zb * std::sqrt(p1 * (1 - p1) + p0 * (1 - p0) / m), 2) /
                        ((p1 - p0) * (p1 - p0));
@@ -744,6 +749,7 @@ Procedure case_control() {
           t, [&](double c, double k) { return power(c, k, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
     } else {
       n = {s("ncase"), controls(s("ncase"))};
+      if (!(n.n2 >= 1)) throw CalcError("M is too small: there would be no controls (M × cases, rounded up)");
       if (s.solve == "power") {
         p1 = s.is("es", "p1") ? s("p1") : case_exposure(s("or"), p0);
       } else {
@@ -858,7 +864,7 @@ double matched_power(double n, double odds_ratio, double p0, double phi, int M, 
   if (!(s1 > 0)) return NAN;
   auto tail = [&](double d, double z) { return pnorm((rn * d - z * s0) / s1); };
   if (a == Alt::Two) {
-    const double z = qnorm(alpha / 2, false);
+    const double z = qnorm(half_alpha(alpha), false);
     return std::min(1.0, tail(mo.delta, z) + tail(-mo.delta, z));
   }
   return tail(a == Alt::Upper ? mo.delta : -mo.delta, qnorm(alpha, false));
@@ -918,7 +924,7 @@ Procedure matched_case_control() {
       if ((a == Alt::Upper && odds_ratio < 1) || (a == Alt::Lower && odds_ratio > 1))
         throw CalcError("the odds ratio is on the side opposite to the one-sided alternative");
       const Matched mo = matched_moments(odds_ratio, p0, phi, M);
-      const double za = stats::qnorm(a == Alt::Two ? alpha / 2 : alpha, false), zb = stats::qnorm(s("power"));
+      const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
       solve::NSearch o;
       o.lo = 1;
       o.hi = 1e8;

@@ -340,6 +340,14 @@ void spend_beta(Design& d, double alpha, const std::vector<double>& ainc, const 
   d.eta_design = eta;
 }
 
+// Increments of alpha of at most TINY are not spent (their boundaries are infinite): a design that could spend
+// none of its alpha would never reject.
+void check_spent(const std::vector<double>& inc) {
+  for (double v : inc)
+    if (v > TINY) return;
+  throw CalcError("alpha is too small to compute with");
+}
+
 }  // namespace
 
 Design make_design(const std::vector<double>& t, double alpha, bool two_sided, const Efficacy& eff,
@@ -365,6 +373,7 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
 
   if (eff.kind == Efficacy::Kind::Spending) {
     const auto ainc = increments(eff.spend, t, alpha);
+    check_spent(ainc);
     if (futility && fut.kind == Futility::Kind::BetaSpending) {
       d.a.assign(K, -INFINITY);
       d.beta_spent.assign(K, 0.0);
@@ -374,6 +383,7 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
     }
     spend_alpha(d, ainc, az, r);
   } else {
+    check_spent({alpha});
     wang_tsiatis(d, alpha, eff.delta, az, check, r);
   }
   if (futility) set_fixed_futility(d, fut.z);

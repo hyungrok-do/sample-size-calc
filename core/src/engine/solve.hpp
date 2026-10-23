@@ -169,7 +169,11 @@ double solve_increasing(F&& f, double target, double a, double b, double b_max, 
   if (std::isnan(fa) || std::isnan(fb))  // the power is undefined there (an overflow at extreme inputs)
     throw CalcError(std::string("the power is undefined for some values of ") + what +
                     "; check for an extreme value among the inputs");
-  return numerics::brent([&](double x) { return f(x) - target; }, a, b, fa, fb, tol * std::fmax(1.0, std::fabs(b)));
+  // tol is absolute below 1 and relative above; for a root so small that tol would exceed a millionth of it (the
+  // mean difference for an SD of 1e-8), it is relative there too, or the answer would be the first value tried
+  const double size = std::fmax(std::fabs(a), std::fabs(b));
+  const double scale = size < 1e6 * tol ? size : std::fmax(1.0, std::fabs(b));
+  return numerics::brent([&](double x) { return f(x) - target; }, a, b, fa, fb, tol * scale);
 }
 
 /// Root of f(x) = target for f decreasing on [a, b] (e.g. power vs. a quantity

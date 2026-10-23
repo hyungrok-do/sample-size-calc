@@ -403,7 +403,7 @@ ComboNull combo_null(const Design& d, double p, double alpha, Alt a, int threads
     return 1 - nph::mvn_probability(4, lo, hi, out.r, threads);
   };
   // between the critical values of a single test and of Bonferroni's correction for four
-  const double q = a == Alt::Two ? alpha / 2 : alpha;
+  const double q = tail_alpha(alpha, a);
   const double lo = stats::qnorm(q, false), hi = stats::qnorm(q / 4, false);
   const double flo = exceed(lo) - alpha, fhi = exceed(hi) - alpha;
   out.c = flo <= 0 ? lo : (fhi >= 0 ? hi : numerics::brent([&](double c) { return exceed(c) - alpha; }, lo, hi, flo,

@@ -9,6 +9,8 @@
 
 #include "engine/runner.hpp"
 #include "engine/solve.hpp"
+#include "procedures/common.hpp"
+#include "procedures/sim_common.hpp"
 #include "sim/simulate.hpp"
 #include "stats/dispatch.hpp"
 #include "stats/numerics.hpp"
@@ -142,7 +144,7 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
       // loops that a value rounding to 0 or infinity stopped from advancing (and that Stop could not end)
       {"sim.surv.nph", "power", R"({"med2":"5e-324"})", "too short to compute with"},
       {"sim.surv.nph", "n", R"({"med2":"1e-320"})", "too short to compute with"},
-      {"rates.one.poisson", "power", R"({"alpha":"5e-324","test":"exact"})", "too small to compute with"},
+      {"rates.one.poisson", "power", R"({"alpha":"5e-324","test":"exact"})", ""},  // each tail at 5e-324
       {"sim.means.robust", "power", R"({"dist":"lognormal","skew":"1e-9"})", ""},
       {"sim.means.robust", "n", R"({"dist":"gamma","skew":"-1e-8"})", ""},
       {"diag.paired", "n", R"({"method":"exact","goal":"se","prev":"1e-303"})", "cannot be reached"},
@@ -165,6 +167,77 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
       ::ssc::test::report_failure(std::string(c.procedure) + " " + c.inputs + ": '" + m + "'", __FILE__, __LINE__);
     ::ssc::test::count_check();
   }
+}
+
+TEST_CASE("extremes: a share of the smallest alpha stays positive") {
+  CHECK_EQ(procs::half_alpha(0.05), 0.025);
+  CHECK_EQ(procs::half_alpha(1e-323), 5e-324);
+  CHECK_EQ(procs::half_alpha(5e-324), 5e-324);  // half of it rounds to 0
+  CHECK_EQ(procs::alpha_share(5e-324, 3), 5e-324);
+  CHECK_EQ(procs::tail_alpha(0.05, blocks::Alt::Two), 0.025);
+  CHECK_EQ(procs::tail_alpha(0.05, blocks::Alt::Upper), 0.05);
+}
+
+TEST_CASE("extremes: tiny and subnormal inputs give an answer, or a message that says which is too small") {
+  struct Case {
+    const char* procedure;
+    const char* solve;
+    const char* inputs;
+    const char* says;  // part of the message, or "" for an answer
+  };
+  // each used to say that the target "cannot be reached", or gave an answer computed from a 0 or an infinity
+  const Case cases[] = {
+      // half of a two-sided alpha of 5e-324 rounded to 0, an infinite critical value
+      {"reg.cox", "n", R"({"alpha":"5e-324"})", ""},
+      {"rates.two.poisson", "n", R"({"alpha":"5e-324"})", ""},
+      {"sim.lmm.cluster", "k", R"({"alpha":"5e-324"})", ""},
+      {"sim.multiarm", "n", R"({"alpha":"5e-324","adjust":"bonferroni"})", ""},
+      // squares that underflowed to 0: CV², σ², D²
+      {"means.be.ratio", "n", R"({"cv":"1e-300"})", ""},
+      {"means.be.ratio", "power", R"({"cv":"5e-324"})", ""},
+      {"cluster.sw", "power", R"({"sigma":"1e-300"})", ""},
+      {"means.two.t", "mu1", R"({"sigma":"1e-300"})", ""},
+      {"means.two.slopes", "delta", R"({"duration":"1e-160"})", "D (the time from first to last measurement)"},
+      // SDs whose squares underflow together: the Welch degrees of freedom, the paired SD, the slopes' SD
+      {"means.two.welch", "mu1", R"({"sd1":"1e-300","sd2":"1e-300"})", ""},
+      {"means.paired.t", "mud", R"({"sdtype":"corr","sd1":"1e-300","sd2":"1e-300"})", ""},
+      {"means.two.slopes", "delta", R"({"sdb":"1e-300","sde":"1e-300"})", ""},
+      // intervals at a confidence near 0 close on the estimate
+      {"prop.two.ci", "n", R"({"conf":"1e-300"})", ""},
+      {"prop.one.ci", "n", R"({"conf":"1e-15","method":"wilson"})", ""},
+      // proportions, rates and alphas too small to compute with
+      {"prop.cc", "n", R"({"p0":"5e-324"})", "proportions are too small to compute with"},
+      {"prop.two", "n", R"({"es":"or","p2":"5e-324"})", "proportions are too small to compute with"},
+      {"rates.two.poisson", "n", R"({"time":"5e-324"})", "exposure time t is too small"},
+      {"rates.two.negbin", "power", R"({"r0":"5e-324"})", "are too small to compute with"},
+      {"gs.means", "n", R"({"alpha":"1e-300"})", "alpha is too small to compute with"},
+      {"gs.logrank", "power", R"({"alpha":"5e-324","boundary":"wt_obf"})", "alpha is too small to compute with"},
+      {"sim.winratio", "power", R"({"med_d":"5e-324"})", "the median time to death is too short to compute with"},
+  };
+  for (const Case& c : cases) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const json::Value res = run(c.procedure, c.solve, c.inputs);
+    const std::string m = message(res);
+    if (seconds_since(t0) > 5 || (*c.says ? m.find(c.says) == std::string::npos : !m.empty()))
+      ::ssc::test::report_failure(std::string(c.procedure) + " " + c.inputs + ": '" + m + "'", __FILE__, __LINE__);
+    ::ssc::test::count_check();
+  }
+}
+
+TEST_CASE("extremes: an effect on a tiny scale is solved to the tolerance relative to it") {
+  // a tolerance of 1e-12 absolute took the first value tried (the scale itself) for the root 2.5 × scale
+  for (double scale : {1e-8, 1e-15, 1e-160}) {
+    auto power = [&](double x) { return stats::pnorm(x / scale - 2.5); };
+    CHECK_CLOSE(solve::solve_increasing(power, 0.5, 0, scale, 1e9 * scale, 1e-12), 2.5 * scale, 1e-9, 0);
+  }
+}
+
+TEST_CASE("extremes: cluster sizes at a CV whose square underflows are all the mean") {
+  // 1/CV² was infinite, and every size 10⁹
+  const procs::simc::ClusterSizes sizes(20, 1e-160);
+  sim::Rng rng(1, 2);
+  CHECK_EQ(sizes.draw(rng), 20L);
+  CHECK(sizes.grid() == std::vector<double>{20});
 }
 
 TEST_CASE("extremes: requests that took minutes or gigabytes end at once with an answer or a message") {

@@ -370,10 +370,13 @@ sim::Outcome winratio_study(const Design& d, long n1, long n2, long rep, std::ui
 Design design_of(const Scenario& s) {
   Design d;
   d.lam_d = LN2 / s("med_d");
+  // the hazard of a median of about 5e-324 is infinite, and every simulated time no number
+  if (!std::isfinite(d.lam_d)) throw CalcError("the median time to death is too short to compute with");
   d.hr_d = s("hr_d");
   d.event = !s.is("tier2", "none");
   if (d.event) {
     d.lam_h = LN2 / s("med_h");
+    if (!std::isfinite(d.lam_h)) throw CalcError("the median time to the non-fatal event is too short to compute with");
     d.hr_h = s("hr_h");
   }
   d.score = s.is("tier3", "score");

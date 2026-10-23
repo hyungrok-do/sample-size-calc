@@ -295,12 +295,16 @@ double direction(const Scenario& s, double effect) {
 // the group-sequential power, two-sided power counts both rejection regions.
 double fixed_drift(const Scenario& s, double power, double scale) {
   const double a = s("alpha");
-  const double one_tail = scale * stats::qnorm(two_sided(s) ? a / 2 : a, false) + stats::qnorm(power);
+  const double one_tail = scale * stats::qnorm(two_sided(s) ? half_alpha(a) : a, false) + stats::qnorm(power);
   if (!two_sided(s)) return one_tail;
-  const double c = scale * stats::qnorm(a / 2, false);
+  const double c = scale * stats::qnorm(half_alpha(a), false);
   auto excess = [&](double eta) { return stats::pnorm(eta - c) + stats::pnorm(-eta - c) - power; };
-  if (excess(0) >= 0) return NAN;
-  return numerics::brent(excess, 0, one_tail, 1e-13);  // the other region only adds power
+  const double at_zero = excess(0);
+  if (at_zero >= 0) return NAN;
+  // the other region only adds power: at a tiny alpha, less than the rounding error of the one region's
+  const double at_one = excess(one_tail);
+  if (!(at_one >= 0)) return one_tail;
+  return numerics::brent(excess, 0, one_tail, at_zero, at_one, 1e-13);
 }
 
 // Drift needed for the target power.

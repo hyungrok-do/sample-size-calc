@@ -418,7 +418,9 @@ Procedure bioequivalence() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double alpha = s("alpha"), cv = s("cv"), th0 = s("theta0"), th1 = s("theta1"), th2 = s("theta2");
     if (!(th0 > th1 && th0 < th2)) throw CalcError("the true ratio must lie strictly between the limits");
-    const double sw = std::sqrt(std::log1p(cv * cv));
+    // √ln(1 + CV²) = CV(1 − CV²/4 + …) is CV itself to double precision below 1e-8 (computed, CV² underflows to 0
+    // below about 1e-162, and so did the log-scale SD)
+    const double sw = cv < 1e-8 ? cv : std::sqrt(std::log1p(cv * cv));
     const bool cross = s.is("design", "2x2");
     auto P = [&](double n) {
       const double se = sw * std::sqrt((cross ? 2.0 : 4.0) / n);
