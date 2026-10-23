@@ -34,6 +34,8 @@ struct Design {
   double m = 20;
   double delta = 0.3;
   double sa = 0, sc = 0, se = 1;  // SDs of the cluster effect, the cluster-period effect and a subject's error
+                                  // in units of the total SD σ
+  double unit = 1;                // σ: the outcome's unit in the simulated trials and in the approximation
   bool hooper = false;            // analysis with a cluster-period effect (on the cluster-period means)
   int periods() const { return steps + 1; }
   int p() const { return steps + 2; }
@@ -45,6 +47,17 @@ void design_row(const Design& d, int s, int j, double* x) {
   x[0] = 1;
   if (j >= 1) x[j] = 1;
   x[d.p() - 1] = j >= s ? 1 : 0;
+}
+
+/// Row of period j for a cluster switching at step s minus the cluster's mean row (every period has as many
+/// rows): what is left of it within the cluster, exactly 0 for the intercept, which a large cluster variance
+/// would otherwise weigh against digits.  Each period is 1/T of the mean row, and the treatment (T − s)/T.
+void within_row(const Design& d, int s, int j, double* dev) {
+  const int T = d.periods(), p = d.p();
+  design_row(d, s, j, dev);
+  dev[0] = 0;
+  for (int a = 1; a < T; ++a) dev[a] -= 1.0 / T;
+  dev[p - 1] -= static_cast<double>(T - s) / T;
 }
 
 /// One pattern per sequence: the design of a cluster switching at step s.  Subject level (m rows per period,
@@ -59,22 +72,26 @@ lmm::Data patterns(const Design& d, double clusters_per_step) {
     lmm::Pattern pt;
     pt.count = clusters_per_step;
     pt.n = std::llround(w * T);
-    double x[lmm::PMAX];
+    double x[lmm::PMAX], dev[lmm::PMAX];
     for (int j = 0; j < T; ++j) {
       design_row(d, s, j, x);
-      for (int a = 0; a < p; ++a) {
-        for (int b = 0; b < p; ++b) pt.xx[a * p + b] += w * x[a] * x[b];
-        pt.zx[a] += w * x[a];
-      }
+      for (int a = 0; a < p; ++a) pt.zx[a] += w * x[a];
       pt.zz[0] += w;
+    }
+    pt.set_coefficients(p, 1);
+    // X'(I − P)X: the rows' deviations from the cluster's mean row (every period has w rows)
+    for (int j = 0; j < T; ++j) {
+      within_row(d, s, j, dev);
+      for (int a = 0; a < p; ++a)
+        for (int b = 0; b < p; ++b) pt.xx[a * p + b] += w * dev[a] * dev[b];
     }
     data.patterns.push_back(pt);
   }
   return data;
 }
 
-/// Variance of the treatment estimate under the true model (generalized least squares on the cluster-period
-/// means: residual variance σc² + σe²/m, random cluster intercept σa²).
+/// Variance of the treatment estimate under the true model, in units of σ² (generalized least squares on the
+/// cluster-period means: residual variance σc² + σe²/m, random cluster intercept σa²).
 double gls_variance(const Design& d, double g) {
   Design means = d;
   means.hooper = true;
@@ -90,6 +107,10 @@ double gls_variance(const Design& d, double g) {
 /// subjects; the analysis with cluster-period effects fits the means, and when that fit puts the
 /// cluster-period variance below zero (the means vary less than their subjects alone would make them) it
 /// refits on the subjects without it, as REML constrained to a non-negative variance (lme4) does.
+///
+/// The period effects and the treatment effect are estimated freely, so adding them to the outcome changes
+/// the estimate of δ by exactly δ and nothing else: the trial is simulated without them, in units of σ, and δ/σ
+/// is added to the estimate.
 sim::Outcome sw_study(const Design& d, const lmm::Data& means, const lmm::Data& subjects, long g, long rep,
                       std::uint64_t seed, int dfm, double alpha, Alt a) {
   lmm::Data subj = subjects, mean = means;
@@ -99,27 +120,33 @@ sim::Outcome sw_study(const Design& d, const lmm::Data& means, const lmm::Data& 
   for (int s = 1; s <= d.steps; ++s) {
     lmm::Pattern& ps = subj.patterns[static_cast<std::size_t>(s - 1)];  // add_sums counts the clusters
     lmm::Pattern& pm = mean.patterns[static_cast<std::size_t>(s - 1)];
+    double dev_x[SMAX + 1][lmm::PMAX];  // the periods' rows within the cluster, the same for all its clusters
+    for (int j = 0; j < T; ++j) within_row(d, s, j, dev_x[j]);
     for (long c = 0; c < g; ++c) {
       Rng rng(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(s), static_cast<std::uint64_t>(c));
       const double cluster = d.sa * rng.normal();
-      double xs[lmm::PMAX] = {}, zs[1] = {0}, ys = 0, xm[lmm::PMAX] = {}, zm[1] = {0}, ym = 0, x[lmm::PMAX];
+      // the cluster-period means are the cluster effect plus r_j; the deviations of r_j from their mean (and the
+      // subjects' sums of squares around the means) are what lies within the cluster
+      double r[SMAX + 1], rsum = 0, ss = 0;
       for (int j = 0; j < T; ++j) {
-        design_row(d, s, j, x);
-        // the cluster-period mean (period effects 0) and the within sum of squares
-        const double avg = d.delta * x[p - 1] + cluster + d.sc * rng.normal() + d.se / std::sqrt(dm) * rng.normal();
-        const double ss = dm > 1 ? d.se * d.se * rng.chisq(dm - 1) : 0;
-        within += ss;
-        for (int k = 0; k < p; ++k) {
-          xs[k] += dm * avg * x[k];
-          xm[k] += avg * x[k];
-        }
-        zs[0] += dm * avg;
-        zm[0] += avg;
-        ys += ss + dm * avg * avg;
-        ym += avg * avg;
+        r[j] = d.sc * rng.normal() + d.se / std::sqrt(dm) * rng.normal();
+        ss += dm > 1 ? d.se * d.se * rng.chisq(dm - 1) : 0;
+        rsum += r[j];
       }
-      ps.add_sums(p, 1, xs, zs, ys);
-      if (d.hooper) pm.add_sums(p, 1, xm, zm, ym);
+      within += ss;
+      double xs[lmm::PMAX] = {}, xm[lmm::PMAX] = {}, ym = 0;
+      for (int j = 0; j < T; ++j) {
+        const double* x = dev_x[j];
+        const double dev = r[j] - rsum / T;
+        for (int k = 0; k < p; ++k) {
+          xs[k] += dm * dev * x[k];
+          xm[k] += dev * x[k];
+        }
+        ym += dev * dev;
+      }
+      const double level = cluster + rsum / T;  // the cluster's mean
+      ps.add_sums(p, 1, xs, &level, ss + dm * ym);
+      if (d.hooper) pm.add_sums(p, 1, xm, &level, ym);
     }
   }
   sim::Outcome o;
@@ -148,9 +175,10 @@ sim::Outcome sw_study(const Design& d, const lmm::Data& means, const lmm::Data& 
   c[p - 1] = 1;
   const double clusters = static_cast<double>(g * d.steps);
   const lmm::Wald w = lmm::wald(*data, f, c, dfm, clusters - 2);
-  o.reject = simc::p_value(w.t, w.df, a) < alpha;
-  o.estimate = w.estimate;
-  o.se = w.se;
+  const double estimate = w.estimate + d.delta / d.unit;
+  o.reject = simc::p_value(simc::t_stat(estimate, w.se), w.df, a) < alpha;
+  o.estimate = estimate * d.unit;
+  o.se = w.se * d.unit;
   o.df = w.df;
   return o;
 }
@@ -162,9 +190,10 @@ Design design_of(const Scenario& s) {
   d.m = s("m");
   d.delta = s("delta");
   const double sigma = s("sigma"), icc = s("icc"), cac = s("cac");
-  d.sa = sigma * std::sqrt(icc * cac);
-  d.sc = sigma * std::sqrt(icc * (1 - cac));
-  d.se = sigma * std::sqrt(1 - icc);
+  d.sa = std::sqrt(icc * cac);
+  d.sc = std::sqrt(icc * (1 - cac));
+  d.se = std::sqrt(1 - icc);
+  d.unit = sigma;
   d.hooper = s.is("analysis", "hooper");
   return d;
 }
@@ -260,7 +289,7 @@ Procedure stepped_wedge_sim() {
     const int dfm = simc::df_method(s);
     auto approx = [&](double g) {
       const double v = gls_variance(d, g), clusters = g * d.steps;
-      const double ncp = d.delta / std::sqrt(v);
+      const double ncp = d.delta / d.unit / std::sqrt(v);
       // Satterthwaite's degrees of freedom for the treatment effect are large (it is estimated mostly within
       // clusters), so the normal distribution stands in for them
       return dfm != 1 || clusters <= 2 ? z_power(ncp, alpha, a) : t_power(ncp, clusters - 2, alpha, a);

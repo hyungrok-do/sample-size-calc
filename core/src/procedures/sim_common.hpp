@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -88,6 +89,14 @@ inline double p_value(double t, double df, Alt a) {
   return a == Alt::Upper ? pt(t, df, false) : pt(t, df, true);
 }
 
+/// t statistic estimate / se (0 without a positive se); one too large to represent is still a rejection, so it is
+/// kept at the largest finite value rather than infinity, which p_value treats as no statistic.
+inline double t_stat(double estimate, double se) {
+  if (!(se > 0)) return 0;
+  const double t = estimate / se;
+  return std::isinf(t) ? std::copysign(std::numeric_limits<double>::max(), t) : t;
+}
+
 /// p-value of the Mann–Whitney test with the normal approximation, the tie correction and a continuity
 /// correction (as R's wilcox.test with exact = FALSE); `w` the rank sum of group 1 minus n1(n1 + 1)/2.
 inline double rank_sum_p(double w, double n1, double n2, double ties, Alt a) {
@@ -104,8 +113,14 @@ inline double rank_sum_p(double w, double n1, double n2, double ties, Alt a) {
 /// Replicates of the exploratory evaluations of a sample-size search.
 inline long explore_reps(long reps) { return std::min(reps, std::max(100L, reps / 4)); }
 
-/// Cells of a simulated power estimate.
+/// Cells of a simulated power estimate.  Studies whose analysis failed count as not rejecting, which is a fair
+/// account of a few of them; when they are most of the studies, the share that rejected says more about the
+/// analysis than about the design, and no power is given.
 inline void put_summary(const Scenario& s, Row& r, const sim::Summary& sm) {
+  if (2 * sm.failures > sm.reps)
+    throw CalcError("the simulated power cannot be computed: " + grouped(static_cast<double>(sm.failures)) +
+                    " of the " + grouped(static_cast<double>(sm.reps)) +
+                    " simulated studies could not be analyzed; check for an extreme value");
   if (s.solve != "power") r.set("target_power", s("power"));
   r.set("power", sm.power);
   r.set("power_se", sm.se);

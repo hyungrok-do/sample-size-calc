@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -787,6 +788,71 @@ def test_mixed_model_simulations_do_not_depend_on_the_units():
     days = first_row(run("sim.lmm.longitudinal", "power", {**base, "delta": repr(0.5 / 365.25), "sd1": repr(0.5 / 365.25),
                                                            "duration": "1461"}, threads=1))
     assert years["power"] == days["power"] and years["mean_df"] == pytest.approx(days["mean_df"], rel=1e-4)
+
+
+def simulate_and_approximate(pid: str, inputs: Dict[str, str]):
+    sim = first_row(ssc.run(pid, "power", inputs, threads=2, power_curve=False))
+    approx = first_row(ssc.run(pid, "power", inputs, power_curve=False, approximate=True))
+    return sim, approx
+
+
+def test_mixed_model_simulations_agree_with_their_approximation_when_one_input_dwarfs_the_others():
+    """A follow-up of 10⁶ time units, an intercept SD 10⁵ times the residual SD, a difference of 10¹⁶⁰ or a σ of
+    10¹⁶⁰ once made each simulated study's sums of squares lose every digit of its residual variation, or
+    overflow: the simulations reported a power near 0 (the approximation near 1, or near α), from fits that
+    looked fine or that had all failed.  The approximations of the cluster and stepped-wedge designs squared σ,
+    and gave α for a difference of one σ when σ was 10¹⁶⁰."""
+    reps = 400
+    cases = [("sim.lmm.longitudinal", {"duration": "1000000"}), ("sim.lmm.longitudinal", {"duration": "400000"}),
+             ("sim.lmm.longitudinal", {"sd0": "100000"}), ("sim.lmm.longitudinal", {"delta": "1e160"}),
+             ("sim.lmm.longitudinal", {"sd1": "1e100"}), ("sim.lmm.longitudinal", {"re": "intercepts", "sd0": "1e100"}),
+             ("sim.lmm.longitudinal", {"timing": "custom", "times": "1000000 1000001 1000003"}),
+             ("sim.lmm.cluster", {"mu1": "1e160"}), ("sim.lmm.cluster", {"sigma": "1e160"}),
+             ("sim.lmm.cluster", {"sigma": "1e160", "mu1": "1e160"}), ("sim.lmm.cluster", {"mu1": "1e12"}),
+             ("sim.sw", {"delta": "1e160"}), ("sim.sw", {"sigma": "1e160"}),
+             ("sim.sw", {"sigma": "1e160", "delta": "1e160"}),
+             ("sim.sw", {"icc": "0.999999", "analysis": "hooper", "cac": "0.5"}), ("sim.mmrm", {"delta": "1e10"}),
+             ("sim.mmrm", {"sd": "1e160"})]
+    for pid, extra in cases:
+        sim, approx = simulate_and_approximate(pid, {**extra, "reps": str(reps)})
+        assert sim is not None and approx is not None, (pid, extra)
+        assert sim["failures"] == 0, (pid, extra)
+        p = approx["power"]
+        tolerance = 4 * math.sqrt(max(p * (1 - p), 0.01) / reps) + 0.03  # the approximation's own bias is small
+        assert sim["power"] == pytest.approx(p, abs=tolerance), (pid, extra)
+
+
+def test_mixed_model_simulations_ignore_what_the_analysis_ignores():
+    """With complete data the test of the slopes is the two-sample t-test on the subjects' least-squares slopes,
+    whatever the intercepts' SD: the simulated power once fell from 98% to 42% at an SD of 10⁵ and came back at
+    10⁶.  Two visits 10⁶ time units after the origin are like any two visits one time unit apart: the simulated
+    power there was once 1.8% (38% at times 0 and 1).  And beside a σ of 10¹⁶⁰, μ1 − μ2 = 0.5 is nothing: the
+    power is that of equal means."""
+    base = {"reps": "400"}
+    rows = [first_row(run("sim.lmm.longitudinal", "power", {**base, "sd0": sd0}, threads=2))
+            for sd0 in ("1", "1e5", "1e6", "1e100")]
+    assert len({r["power"] for r in rows}) == 1
+    assert max(r["mean_delta"] for r in rows) - min(r["mean_delta"] for r in rows) < 1e-9
+    near, far = (first_row(run("sim.lmm.longitudinal", "power", {**base, "timing": "custom", "times": times},
+                               threads=2)) for times in ("0 1", "1000000 1000001"))
+    assert far["power"] == near["power"] and far["approx_power"] == pytest.approx(near["approx_power"], rel=1e-9)
+    null = first_row(run("sim.lmm.cluster", "power", {**base, "mu1": "0"}, threads=2))
+    for sigma in ("1e150", "1e160"):
+        assert first_row(run("sim.lmm.cluster", "power", {**base, "sigma": sigma}, threads=2))["power"] == null["power"]
+
+
+def test_a_simulation_whose_fits_mostly_fail_has_no_power():
+    """Studies whose analysis failed count as not rejecting; when nearly all of them failed, a power near 0 was
+    reported all the same: an MMRM with almost every patient of a group gone by the last visit (the model cannot
+    be fitted), and variance components 10¹⁰⁰ times apart in a random-slope model (their squares overflow)."""
+    res = run("sim.mmrm", "power", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"}, threads=2)
+    error = res["rows"][0].get("_error", "")
+    failed = re.search(r"cannot be computed: (\d+) of the 200 simulated studies could not be analyzed", error)
+    assert failed and int(failed.group(1)) > 100, error
+    res = run("sim.lmm.longitudinal", "power", {"sde": "1e-100", "reps": "200"}, threads=2)
+    assert "200 of the 200 simulated studies could not be analyzed" in res["rows"][0].get("_error", "")
+    approx = ssc.run("sim.lmm.longitudinal", "power", {"sde": "1e-100"}, power_curve=False, approximate=True)
+    assert "cannot be computed" in approx["rows"][0].get("_error", "")
 
 
 def test_the_win_ratio_approximation_is_alpha_with_no_effect():

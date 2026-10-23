@@ -6,6 +6,55 @@
 
 namespace ssc::sim::lmm {
 
+namespace {
+
+/// Whether a 2 × 2 Z'Z has full rank: one whose determinant is negligible next to the product of its diagonal
+/// (one visit, or visits at the same time) has rank 1.
+bool full_rank(const double* a) { return a[0] * a[3] - a[1] * a[2] > 1e-12 * a[0] * a[3]; }
+
+/// Rank of Z'Z (q ≤ 2).
+int rank(const double* a, int q) {
+  if (q == 2 && full_rank(a)) return 2;
+  return a[0] + (q == 2 ? a[3] : 0) > 0 ? 1 : 0;
+}
+
+/// Row r of (I − P)X: x_r minus z_r times X's coefficients on Z.
+void within_row(const double* xr, const double* zr, const double* coef, int p, int q, double* res) {
+  for (int b = 0; b < p; ++b) {
+    res[b] = xr[b];
+    for (int i = 0; i < q; ++i) res[b] -= zr[i] * coef[i * p + b];
+  }
+}
+
+}  // namespace
+
+void Pattern::set_coefficients(int p, int q) {
+  // the Moore–Penrose inverse (of a 2 × 2 Z'Z of rank 1, A⁺ = A / tr(A)²), and C = A⁺ Z'X with the adjugate
+  // applied before dividing by the determinant, so that a column of X that is a column of Z, or a multiple of
+  // one (the intercept, the time, the group), gets coefficients of exactly 0 and 1 and leaves exactly nothing
+  // within the cluster: a rounding error there would be weighed against the between-cluster information, which
+  // a large variance component makes tiny
+  const double* a = zz;
+  if (q == 1) {
+    zi[0] = a[0] > 0 ? 1 / a[0] : 0;
+    for (int b = 0; b < p; ++b) cx[b] = a[0] > 0 ? zx[b] / a[0] : 0;
+  } else if (full_rank(a)) {
+    const double det = a[0] * a[3] - a[1] * a[2];
+    zi[0] = a[3] / det, zi[1] = -a[1] / det, zi[2] = -a[2] / det, zi[3] = a[0] / det;
+    for (int b = 0; b < p; ++b) {
+      cx[b] = (a[3] * zx[b] - a[1] * zx[p + b]) / det;
+      cx[p + b] = (a[0] * zx[p + b] - a[2] * zx[b]) / det;
+    }
+  } else {
+    const double tr = a[0] + a[3];
+    for (int i = 0; i < 4; ++i) zi[i] = tr > 0 ? a[i] / (tr * tr) : 0;
+    for (int b = 0; b < p; ++b) {
+      cx[b] = tr > 0 ? (a[0] * zx[b] + a[1] * zx[p + b]) / (tr * tr) : 0;
+      cx[p + b] = tr > 0 ? (a[2] * zx[b] + a[3] * zx[p + b]) / (tr * tr) : 0;
+    }
+  }
+}
+
 void Pattern::set_design(long rows, int p, int q, const double* x, const double* z) {
   n = rows;
   std::fill(std::begin(xx), std::end(xx), 0.0);
@@ -14,32 +63,54 @@ void Pattern::set_design(long rows, int p, int q, const double* x, const double*
   for (long r = 0; r < rows; ++r) {
     const double* xr = x + r * p;
     const double* zr = z + r * q;
-    for (int a = 0; a < p; ++a)
-      for (int b = 0; b < p; ++b) xx[a * p + b] += xr[a] * xr[b];
     for (int i = 0; i < q; ++i) {
       for (int j = 0; j < q; ++j) zz[i * q + j] += zr[i] * zr[j];
       for (int b = 0; b < p; ++b) zx[i * p + b] += zr[i] * xr[b];
     }
   }
+  set_coefficients(p, q);
+  // X'(I − P)X from the rows' residuals on Z (none when the cluster has no more rows than Z has rank)
+  if (rows <= rank(zz, q)) return;
+  for (long r = 0; r < rows; ++r) {
+    double res[PMAX];
+    within_row(x + r * p, z + r * q, cx, p, q, res);
+    for (int a = 0; a < p; ++a)
+      for (int b = 0; b < p; ++b) xx[a * p + b] += res[a] * res[b];
+  }
 }
 
 void Pattern::add_cluster(int p, int q, const double* x, const double* z, const double* y) {
-  double sx[PMAX] = {}, sz[QMAX] = {}, syy = 0;
-  for (long r = 0; r < n; ++r) {
-    const double v = y[r];
-    for (int a = 0; a < p; ++a) sx[a] += x[r * p + a] * v;
-    for (int i = 0; i < q; ++i) sz[i] += z[r * q + i] * v;
-    syy += v * v;
-  }
-  add_sums(p, q, sx, sz, syy);
+  const double none[QMAX] = {};
+  add_cluster(p, q, x, z, none, y);
 }
 
-void Pattern::add_sums(int p, int q, const double* xy_, const double* zy_, double yy_) {
+void Pattern::add_cluster(int p, int q, const double* x, const double* z, const double* u, const double* e) {
+  // e's coefficients on Z give b = u + (Z'Z)⁺ Z'e and e's residuals; X'(I − P)e from X's residuals
+  double ze[QMAX] = {}, coef_e[QMAX] = {};
+  for (long r = 0; r < n; ++r)
+    for (int i = 0; i < q; ++i) ze[i] += z[r * q + i] * e[r];
+  for (int i = 0; i < q; ++i)
+    for (int j = 0; j < q; ++j) coef_e[i] += zi[i * q + j] * ze[j];
+  double sx[PMAX] = {}, sb[QMAX], syy = 0;
+  if (n > rank(zz, q)) {
+    for (long r = 0; r < n; ++r) {
+      double v = e[r], res[PMAX];
+      for (int i = 0; i < q; ++i) v -= z[r * q + i] * coef_e[i];
+      within_row(x + r * p, z + r * q, cx, p, q, res);
+      for (int a = 0; a < p; ++a) sx[a] += res[a] * v;
+      syy += v * v;
+    }
+  }
+  for (int i = 0; i < q; ++i) sb[i] = u[i] + coef_e[i];
+  add_sums(p, q, sx, sb, syy);
+}
+
+void Pattern::add_sums(int p, int q, const double* xy_, const double* b_, double yy_) {
   count += 1;
   for (int a = 0; a < p; ++a) xy[a] += xy_[a];
   for (int i = 0; i < q; ++i) {
-    zy[i] += zy_[i];
-    for (int j = 0; j < q; ++j) zyzy[i * q + j] += zy_[i] * zy_[j];
+    b[i] += b_[i];
+    for (int j = 0; j < q; ++j) bb[i * q + j] += b_[i] * b_[j];
   }
   yy += yy_;
 }
@@ -47,8 +118,8 @@ void Pattern::add_sums(int p, int q, const double* xy_, const double* zy_, doubl
 void Pattern::clear_responses() {
   count = 0;
   std::fill(std::begin(xy), std::end(xy), 0.0);
-  std::fill(std::begin(zy), std::end(zy), 0.0);
-  std::fill(std::begin(zyzy), std::end(zyzy), 0.0);
+  std::fill(std::begin(b), std::end(b), 0.0);
+  std::fill(std::begin(bb), std::end(bb), 0.0);
   yy = 0;
 }
 
@@ -118,58 +189,61 @@ struct Gls {
   double rss = 0;       // (y − Xβ̂)'V*⁻¹(y − Xβ̂)
 };
 
+/// For a cluster with Z'Z = A (and A⁺ = ai): W = K⁻¹ A, the between-cluster part of V*⁻¹ in the coordinates b,
+/// and |K| = |I + A G|; false unless V* is positive definite.  Computed so that nothing cancels: for a 2 × 2 A
+/// of full rank, |K| = 1 + tr(AG) + |A||G| and W = (A⁻¹ + G)⁻¹, whose determinant is |K|/|A|; for a
+/// 1 × 1 A, or one of rank 1, W = A / (1 + tr(AG)).
+bool between(const double* a, const double* ai, const double* g, int q, double* w, double& detk) {
+  const double tr_ag = q == 1 ? a[0] * g[0] : a[0] * g[0] + a[1] * g[2] + a[2] * g[1] + a[3] * g[3];
+  if (q == 1 || !full_rank(a)) {
+    detk = 1 + tr_ag;
+    if (!(detk > 0)) return false;
+    for (int i = 0; i < q * q; ++i) w[i] = a[i] / detk;
+    return true;
+  }
+  const double det_a = a[0] * a[3] - a[1] * a[2];
+  detk = 1 + tr_ag + det_a * (g[0] * g[3] - g[1] * g[2]);
+  const double e00 = ai[0] + g[0], e11 = ai[3] + g[3], e01 = 0.5 * (ai[1] + g[1] + ai[2] + g[2]);
+  if (!(detk > 0) || !(e00 > 0)) return false;
+  const double det_e = detk / det_a;
+  w[0] = e11 / det_e, w[1] = w[2] = -e01 / det_e, w[3] = e00 / det_e;
+  return true;
+}
+
 bool gls(const Data& d, const double* g, Gls& w) {
-  const int p = d.p, q = d.q;
+  const int p = d.p, q = std::min(d.q, QMAX);  // bounded, so that the compiler unrolls the loops over Z's columns
   std::fill(w.m, w.m + p * p, 0.0);
   std::fill(w.v, w.v + p, 0.0);
   double s = 0;
   w.logdet_k = 0;
   for (const Pattern& pt : d.patterns) {
     if (pt.count == 0) continue;
-    // K = I + Z'Z G and H = G K⁻¹ (symmetric), so that V*⁻¹ = I − Z H Z'
-    double h[QMAX * QMAX], detk;
-    if (q == 1) {
-      const double k = 1 + pt.zz[0] * g[0];
-      if (!(k > 0)) return false;
-      detk = k;
-      h[0] = g[0] / k;
-    } else {
-      const double* z = pt.zz;
-      const double k00 = 1 + z[0] * g[0] + z[1] * g[2], k01 = z[0] * g[1] + z[1] * g[3];
-      const double k10 = z[2] * g[0] + z[3] * g[2], k11 = 1 + z[2] * g[1] + z[3] * g[3];
-      detk = k00 * k11 - k01 * k10;
-      if (!(detk > 0)) return false;
-      const double i00 = k11 / detk, i01 = -k01 / detk, i10 = -k10 / detk, i11 = k00 / detk;
-      h[0] = g[0] * i00 + g[1] * i10;
-      h[3] = g[2] * i01 + g[3] * i11;
-      h[1] = h[2] = 0.5 * (g[0] * i01 + g[1] * i11 + g[2] * i00 + g[3] * i10);
-    }
+    double wm[QMAX * QMAX], detk;
+    if (!between(pt.zz, pt.zi, g, q, wm, detk)) return false;
     w.logdet_k += pt.count * std::log(detk);
-    // H Z'X (q × p) and H Σ Z'y (q)
-    double hzx[QMAX * PMAX], hzy[QMAX];
-    for (int i = 0; i < q; ++i) {
-      hzy[i] = 0;
-      for (int b = 0; b < p; ++b) hzx[i * p + b] = 0;
-      for (int j = 0; j < q; ++j) {
-        hzy[i] += h[i * q + j] * pt.zy[j];
-        for (int b = 0; b < p; ++b) hzx[i * p + b] += h[i * q + j] * pt.zx[j * p + b];
+    // W C (q × p), C = (Z'Z)⁺ Z'X the coefficients of X on Z
+    double wc[QMAX * PMAX];
+    for (int i = 0; i < q; ++i)
+      for (int b = 0; b < p; ++b) {
+        double t = 0;
+        for (int j = 0; j < q; ++j) t += wm[i * q + j] * pt.cx[j * p + b];
+        wc[i * p + b] = t;
       }
-    }
     const double c = pt.count;
     for (int a = 0; a < p; ++a) {
       for (int b = a; b < p; ++b) {
         double t = 0;
-        for (int i = 0; i < q; ++i) t += pt.zx[i * p + a] * hzx[i * p + b];
-        w.m[a * p + b] += c * (pt.xx[a * p + b] - t);
+        for (int i = 0; i < q; ++i) t += pt.cx[i * p + a] * wc[i * p + b];
+        w.m[a * p + b] += c * (pt.xx[a * p + b] + t);
       }
       double t = 0;
-      for (int i = 0; i < q; ++i) t += pt.zx[i * p + a] * hzy[i];
-      w.v[a] += pt.xy[a] - t;
+      for (int i = 0; i < q; ++i) t += wc[i * p + a] * pt.b[i];
+      w.v[a] += pt.xy[a] + t;
     }
     double tr = 0;
     for (int i = 0; i < q; ++i)
-      for (int j = 0; j < q; ++j) tr += h[i * q + j] * pt.zyzy[j * q + i];
-    s += pt.yy - tr;
+      for (int j = 0; j < q; ++j) tr += wm[i * q + j] * pt.bb[j * q + i];
+    s += pt.yy + tr;
   }
   for (int a = 0; a < p; ++a)
     for (int b = 0; b < a; ++b) w.m[a * p + b] = w.m[b * p + a];
@@ -453,11 +527,14 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     if (tt > 0 && nn > 0) tau = std::sqrt(tt / nn);
   }
   const double unit[4] = {1, 1, q == 2 ? tau : 1, tau * tau};
+  // a variance's step is relative to itself (a step relative to the other variance as well would be most of it
+  // when that one is 10⁴ times larger), the covariance's to the geometric mean of the two variances
   double h[4];
-  const double dscale =
-      q == 1 ? std::fabs(phi[k - 1]) : std::sqrt(std::fabs(phi[1] * phi[3] * unit[3]));
-  for (int j = 0; j < k; ++j)
-    h[j] = j == 0 ? 1e-4 * s2 : 1e-4 * (std::fabs(phi[j]) * unit[j] + dscale + 1e-2 * s2) / unit[j];
+  const double dscale = q == 2 ? std::sqrt(std::fabs(phi[1] * phi[3] * unit[3])) : 0;
+  for (int j = 0; j < k; ++j) {
+    const double size = std::fabs(phi[j]) * unit[j];
+    h[j] = j == 0 ? 1e-4 * s2 : 1e-4 * ((j == 2 ? size + dscale : 2 * size) + 1e-2 * s2) / unit[j];
+  }
   double hess[16], grad[4], x[4];
   const double f0 = crit(phi);
   bool ok = std::isfinite(f0);

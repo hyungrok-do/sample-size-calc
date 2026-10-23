@@ -297,6 +297,59 @@ TEST_CASE("lmm: random slopes on complete balanced data reproduce the two-stage 
   CHECK_CLOSE(w.df, 2 * n - 2, 1e-3, 0);
 }
 
+TEST_CASE("lmm: random effects that dwarf the residual SD leave the two-stage analysis intact") {
+  // the same design with the subjects' intercepts 10⁸ or 10¹⁰⁰ residual SDs apart, or their slopes spreading
+  // them 10⁵ residual SDs apart over a follow-up of 10⁶ time units: y'y, and Z'y, are then almost all
+  // between-subject variation, which once lost the digits of the residual sum of squares (the slopes' standard
+  // error came out 1.6 and 48 times too large, and any number with intercepts 10¹⁰⁰ apart)
+  const int n = 25, K = 5;
+  struct Scale {
+    double intercept, time, slope;
+  };
+  for (const Scale sc : {Scale{1, 1, 1}, Scale{1e8, 1, 1}, Scale{1e100, 1, 1}, Scale{1, 2.5e5, 2.5e5}}) {
+    lmm::Data d;
+    d.p = 4;
+    d.q = 2;
+    d.patterns.resize(2);
+    double times[K], x[2][K * 4], z[K * 2];
+    for (int j = 0; j < K; ++j) times[j] = j * sc.time;
+    std::vector<double> slopes[2];
+    sim::Rng rng(5);
+    for (int g = 0; g < 2; ++g) {
+      const double ind = g == 0 ? 1 : 0;
+      for (int j = 0; j < K; ++j) {
+        x[g][4 * j] = 1, x[g][4 * j + 1] = ind, x[g][4 * j + 2] = times[j], x[g][4 * j + 3] = ind * times[j];
+        z[2 * j] = 1, z[2 * j + 1] = times[j];
+      }
+      d.patterns[g].set_design(K, 4, 2, x[g], z);
+      for (int u = 0; u < n; ++u) {
+        // y = Z u + e: the subject's line and the errors around it
+        const double line[2] = {2 + sc.intercept * rng.normal(), (0.4 * ind + 0.5 * rng.normal()) * sc.slope / sc.time};
+        double e[K], st = 0, se = 0, stt = 0, ste = 0;
+        for (int j = 0; j < K; ++j) {
+          e[j] = 0.5 * rng.normal();
+          st += times[j], se += e[j], stt += times[j] * times[j], ste += times[j] * e[j];
+        }
+        slopes[g].push_back(line[1] + (ste - st * se / K) / (stt - st * st / K));
+        d.patterns[g].add_cluster(4, 2, x[g], z, line, e);
+      }
+    }
+    double mean[2] = {0, 0}, ss = 0;
+    for (int g = 0; g < 2; ++g) {
+      for (double v : slopes[g]) mean[g] += v / n;
+      for (double v : slopes[g]) ss += (v - mean[g]) * (v - mean[g]);
+    }
+    const double theta0[3] = {2 * sc.intercept, 0, sc.slope / sc.time};
+    const lmm::Fit f = lmm::fit(d, theta0);
+    CHECK(f.ok);
+    const double c[4] = {0, 0, 0, 1};
+    const lmm::Wald w = lmm::wald(d, f, c, 0, 0);
+    CHECK_CLOSE(w.estimate, mean[0] - mean[1], 1e-7, 0);
+    CHECK_CLOSE(w.se, std::sqrt(ss / (2 * n - 2) * 2.0 / n), 1e-5, 0);
+    if (sc.intercept < 1e100) CHECK_CLOSE(w.df, 2 * n - 2, 1e-3, 0);  // beyond, the Hessian over/underflows
+  }
+}
+
 TEST_CASE("lmm: the pattern formulas equal a dense REML likelihood with dropout") {
   // unbalanced data (monotone dropout), random intercepts and slopes, compared with V built in full
   const double times[4] = {0, 1, 3, 6};

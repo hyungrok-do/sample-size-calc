@@ -125,8 +125,9 @@ Another thread can watch progress and cancel it through the token.
   (`"simulation"` or `"approximation"`), and for a simulation `power_lo` and
   `power_hi` (95% Wilson interval), `power_se` (Monte Carlo standard error),
   `approx_power` (the analytic approximation), `reps`, `seed`, `failures`
-  (studies whose model could not be fitted, counted as not rejecting) and
-  `mean_df`. Columns without a value in any row are left out, so an
+  (studies whose model could not be fitted, counted as not rejecting; when
+  they are more than half of the studies, the row has an `_error` instead of a
+  power) and `mean_df`. Columns without a value in any row are left out, so an
   approximation has no Monte Carlo columns. The result reports
   `"approximate": true` for an approximation. Results depend only on the seed:
   every simulated cluster or subject draws from its own random stream, so the
