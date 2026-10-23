@@ -801,6 +801,21 @@ def test_a_zero_width_space_is_read_as_nothing():
     assert [r["rho0"] for r in res["rows"]] == [0.4]
 
 
+def test_a_robust_simulation_whose_values_overflow_ends():
+    """An outlier SD multiple of 5e307 or more made the draws inf / inf: the midranks of a NaN never ended, and the
+    run could not be cancelled natively (CLI, MCP time limits). Past about 1.3e154 the outliers' variance overflows
+    and every value would be 0: such a multiple is refused."""
+    for solve in ("power", "n"):
+        start = time.perf_counter()
+        res = run("sim.means.robust", solve, {**base_inputs("sim.means.robust"), "dist": "contaminated",
+                                              "kout": "1e308", "reps": "100"})
+        assert time.perf_counter() - start < 10
+        assert "k is too large to simulate" in res["rows"][0].get("_error", ""), res["rows"][0]
+    row = first_row(run("sim.means.robust", "power", {**base_inputs("sim.means.robust"), "dist": "contaminated",
+                                                      "kout": "1e100", "reps": "100"}))
+    assert row is not None and row["exkurt"] is not None and row["exkurt"] > 0, row
+
+
 def test_odds_ratio_messages_speak_of_odds():
     row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "scale": "or", "or0": "1e308"})["rows"][0]
     assert "(odds OR0 times those of P2), must lie strictly between 0 and 1" in row["_error"], row

@@ -140,8 +140,15 @@ Shape shape_of(const Scenario& s) {
     z.eps = s("eps");
     z.k = s("kout");
     const double var = (1 - z.eps) + z.eps * z.k * z.k;
+    // past about 1.3e154 the outliers' variance passes the largest double: every value would be standardized to 0
+    if (!std::isfinite(var))
+      throw CalcError("the outliers' SD multiple k is too large to simulate (its square passes the largest number)");
     z.c = std::sqrt(var);
     z.exkurt = 3 * ((1 - z.eps) + z.eps * z.k * z.k * z.k * z.k) / (var * var) - 3;
+    if (!std::isfinite(z.exkurt)) {  // k^4 passes the largest double where k^2 does not
+      const double w = z.k * z.k / var;
+      z.exkurt = 3 * ((1 - z.eps) / var / var + z.eps * w * w) - 3;
+    }
     z.words = "a normal distribution with " + fpct(z.eps, 0) + " outliers (SD × " + fnum(z.k) + ")";
   } else if (d == "uniform") {
     z.kind = Shape::Uniform;
@@ -175,6 +182,7 @@ sim::Outcome robust_study(const Design& d, long n1, long n2, long rep, std::uint
   all.reserve(static_cast<std::size_t>(n1 + n2));
   double sum[2] = {0, 0}, ss[2] = {0, 0};
   const long n[2] = {n1, n2};
+  sim::Outcome o;
   for (int g = 0; g < 2; ++g) {
     Rng rng(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(g + 1));
     const double mu = g == 0 ? d.mu1 : d.mu2, sd = g == 0 ? d.sd1 : d.sd2;
@@ -182,6 +190,12 @@ sim::Outcome robust_study(const Design& d, long n1, long n2, long rep, std::uint
     double mean = 0, m2 = 0;
     for (long i = 0; i < n[g]; ++i) {
       const double x = mu + sd * d.shape.draw(rng);
+      // a value past the largest double (an outlier SD multiple near 1e308 gives inf / inf) leaves no study to
+      // analyze: the ranks of a NaN never end, as its ties are never equal
+      if (!std::isfinite(x)) {
+        o.failed = true;
+        return o;
+      }
       all.emplace_back(x, g);
       const double delta = x - mean;
       mean += delta / static_cast<double>(i + 1);
@@ -192,7 +206,6 @@ sim::Outcome robust_study(const Design& d, long n1, long n2, long rep, std::uint
   }
   const double a1 = static_cast<double>(n1), a2 = static_cast<double>(n2);
   const double diff = sum[0] - sum[1], v1 = ss[0] / (a1 - 1), v2 = ss[1] / (a2 - 1);
-  sim::Outcome o;
   // pooled t
   const double dfp = a1 + a2 - 2, sp2 = (ss[0] + ss[1]) / dfp, sep = std::sqrt(sp2 * (1 / a1 + 1 / a2));
   const bool rej_pooled = sep > 0 && simc::p_value(diff / sep, dfp, a) < alpha;
