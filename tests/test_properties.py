@@ -1071,18 +1071,91 @@ def test_mixed_model_simulations_ignore_what_the_analysis_ignores():
         assert first_row(run("sim.lmm.cluster", "power", {**base, "sigma": sigma}, threads=2))["power"] == null["power"]
 
 
-def test_a_simulation_whose_fits_mostly_fail_has_no_power():
-    """Studies whose analysis failed count as not rejecting; when nearly all of them failed, a power near 0 was
-    reported all the same: an MMRM with almost every patient of a group gone by the last visit (the model cannot
-    be fitted), and variance components 10¹⁰⁰ times apart in a random-slope model (their squares overflow)."""
-    res = run("sim.mmrm", "power", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"}, threads=2)
-    error = res["rows"][0].get("_error", "")
-    failed = re.search(r"cannot be computed: (\d+) of the 200 simulated studies could not be analyzed", error)
-    assert failed and int(failed.group(1)) > 100, error
-    res = run("sim.lmm.longitudinal", "power", {"sde": "1e-100", "reps": "200"}, threads=2)
-    assert "200 of the 200 simulated studies could not be analyzed" in res["rows"][0].get("_error", "")
-    approx = ssc.run("sim.lmm.longitudinal", "power", {"sde": "1e-100"}, power_curve=False, approximate=True)
-    assert "cannot be computed" in approx["rows"][0].get("_error", "")
+def test_a_simulation_whose_studies_fail_by_design_still_has_a_power():
+    """Studies whose analysis fails count as not rejecting.  Where the design makes them fail (an MMRM with nearly
+    every patient of a group gone, a win ratio with no wins or no losses, a GLMM with a rare outcome in small
+    clusters), more than half of them failing once turned the row into an error that said to check for an extreme
+    value: the power is given with the count, and refused only when no study could be analyzed."""
+    for pid, inputs in (("sim.mmrm", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"}),
+                        ("sim.winratio", {"test": "wr", "n1": "2", "reps": "200"}),
+                        ("sim.glmm.cluster", {"p1": "0.3", "p2": "0.001", "m": "5", "reps": "200"})):
+        res = run(pid, "power", inputs, threads=2)
+        row = first_row(res)
+        assert row is not None and row["failures"] > 100, (pid, res["rows"][0])
+        assert f"{row['failures']:.0f} simulated studies could not be analyzed and count as not rejecting" in \
+            row["_statement"], row["_statement"]
+    res = run("sim.winratio", "power", {"test": "wr", "n1": "10", "med_d": "600", "med_h": "240", "follow": "1",
+                                        "accrual": "1", "reps": "200"}, threads=2)
+    assert res["rows"][0].get("_error") == ("the simulated power cannot be computed: none of the 200 simulated "
+                                            "studies could be analyzed (each had no wins or no losses, so no finite "
+                                            "win ratio)")
+
+
+def test_visits_close_together_far_from_time_zero_keep_what_they_tell():
+    """Two visits one time unit apart, long before a last visit at time 0: from time 0, their Z'Z looked singular,
+    and the analysis dropped the random slope's spread in their difference (and the simulation left it out of the
+    data), so that both agreed on 95.5% where the exact GLS power is 70.5%.  The approximation is now that power
+    (to the z test) whatever the distance, and the simulation the same as a thousand units before time 0."""
+    exact = 0.705418  # 50-digit GLS: each subject's slope shows in its level far from time 0
+    base = {"timing": "custom", "sd1": "10", "dropout": "0.2", "df": "z", "reps": "400"}
+    near = {delta: first_row(run("sim.lmm.longitudinal", "power", {**base, "times": "-1001 -1000 0", "delta": delta},
+                                 threads=2)) for delta in ("5", "0")}
+    for distance in (1e6, 1e9, 1e15):
+        times = f"{-(distance + 1):.17g} {-distance:.17g} 0"
+        for delta in ("5", "0"):
+            inputs = {**base, "times": times, "delta": delta}
+            approx = first_row(ssc.run("sim.lmm.longitudinal", "power", inputs, power_curve=False, approximate=True))
+            sim = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+            assert approx["power"] == pytest.approx(exact if delta == "5" else 0.05, abs=1e-6), (times, delta)
+            assert sim["power"] == near[delta]["power"], (times, delta)
+
+
+def test_robust_and_multiarm_simulations_do_not_depend_on_where_the_means_lie():
+    """Each group is simulated around the reference group's mean (each arm around the control's): means of 10¹⁶
+    once swamped an SD of 2, which gave the t-tests a type I error of 35% and the multi-arm comparisons none at
+    all.  Means 10¹⁶ away give the power of means at 0, study for study."""
+    robust = {**base_inputs("sim.means.robust"), "dist": "normal", "sd1": "2", "sd2": "2", "n1": "30", "reps": "400"}
+    for diff in (0, 2):
+        near = first_row(run("sim.means.robust", "power", {**robust, "mu1": str(diff), "mu2": "0"}, threads=2))
+        far = first_row(run("sim.means.robust", "power", {**robust, "mu1": repr(1e16 + diff), "mu2": "1e16"},
+                            threads=2))
+        assert [far[k] for k in ("power_t", "power_welch", "power_mw")] == \
+            [near[k] for k in ("power_t", "power_welch", "power_mw")], diff
+    multi = {**base_inputs("sim.multiarm"), "sigma": "2", "reps": "1000"}
+    for mu in ((0, 0, 0), (2, 0, 0)):
+        near = first_row(run("sim.multiarm", "power", {**multi, "mu0": "0", "mu": " ".join(map(str, mu))}, threads=2))
+        far = first_row(run("sim.multiarm", "power", {**multi, "mu0": "1e16",
+                                                      "mu": " ".join(repr(1e16 + m) for m in mu)}, threads=2))
+        assert far["power"] == near["power"] and far["power_all"] == near["power_all"], mu
+
+
+def test_satterthwaite_degrees_of_freedom_with_a_residual_sd_far_below_the_random_slopes():
+    """With random slopes 10⁸⁰ residual SDs apart over the follow-up, the squares of the finite-difference steps
+    passed below the smallest double, and every study fell back to N − 2 degrees of freedom without a word."""
+    base = {"n1": "10", "dropout": "0.5", "sd1": "1e30", "duration": "1e30", "delta": "2e30", "reps": "200"}
+    rows = [first_row(run("sim.lmm.longitudinal", "power", {**base, "sde": sde}, threads=2))
+            for sde in ("1e-20", "1e-30")]
+    assert rows[0]["mean_df"] == pytest.approx(rows[1]["mean_df"], rel=1e-5) and rows[0]["mean_df"] < 17, rows
+
+
+def test_random_slopes_that_dwarf_the_intercepts_away_from_time_zero_are_refused_not_misreported():
+    """With slopes 10⁸ or 10¹⁵ times as variable as the intercepts at time 0 and visits at 1, 2 and 4, a subject's
+    level at the visits all but follows from its slope, and the slopes' variance came out of rounding noise: an
+    approximate power of 100% where the exact GLS power is 8.6%, and simulated powers of 63%.  Such inputs now say
+    that the answer cannot be computed, and give no simulated power; where enough digits are left (slopes 10⁶ times
+    as variable, visits 10¹⁰ time units from 0), the approximation is the exact power."""
+    refused = "the answer cannot be computed for these inputs; check for an extreme value"
+    for sd1 in (1e8, 1e15):
+        inputs = {"timing": "custom", "times": "1 2 4", "sd1": f"{sd1:g}", "rho": "0.5", "dropout": "0.3",
+                  "delta": f"{0.25 * sd1:g}", "n1": "10", "df": "z", "reps": "200"}
+        approx = ssc.run("sim.lmm.longitudinal", "power", inputs, power_curve=False, approximate=True)
+        assert approx["rows"][0].get("_error") == refused, (sd1, approx["rows"][0])
+        sim = run("sim.lmm.longitudinal", "power", inputs, threads=2)["rows"][0]
+        assert sim.get("_error") == refused and "power" not in sim, (sd1, sim)
+    inputs = {"timing": "custom", "times": "10000000000 10000000001 10000000003", "sd1": "1e6", "rho": "0.5",
+              "dropout": "0.3", "delta": "250000", "n1": "10", "df": "z"}
+    approx = first_row(ssc.run("sim.lmm.longitudinal", "power", inputs, power_curve=False, approximate=True))
+    assert approx["power"] == pytest.approx(0.0864997, abs=1e-4)  # 50-digit GLS
 
 
 def test_the_win_ratio_approximation_is_alpha_with_no_effect():

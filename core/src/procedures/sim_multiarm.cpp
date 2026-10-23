@@ -42,6 +42,7 @@ struct Design {
   int k = 0;                       // treatment arms
   double mu0 = 0, sigma = 1;
   std::array<double, KMAX> mu{};   // treatment means
+  double origin = 0;               // the arms are simulated around it: μ0 when the means are far from 0 next to σ
   Alt alt = Alt::Two;
   Adjust adjust = Adjust::Dunnett;
   Goal goal = Goal::Any;
@@ -229,14 +230,14 @@ double goal_power(const Design& d, const Exact& e) {
 sim::Outcome multiarm_study(const Design& d, const Sizes& n, double c, long rep, std::uint64_t seed) {
   const double df = n.df(d.k);
   Rng r0(seed, static_cast<std::uint64_t>(rep), 0);
-  const double ybar0 = d.mu0 + d.sigma / std::sqrt(n.n0) * r0.normal();
+  const double ybar0 = (d.mu0 - d.origin) + d.sigma / std::sqrt(n.n0) * r0.normal();
   const double s = d.sigma * std::sqrt(stats::qchisq(r0.uniform(), df) / df);
   const double se = s * std::sqrt(1 / n.n + 1 / n.n0), sign = d.alt == Alt::Lower ? -1 : 1;
   std::array<double, KMAX> t{}, pv{};
   for (int i = 0; i < d.k; ++i) {
     Rng ri(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(i + 1));
-    const double ybar = d.mu[i] + d.sigma / std::sqrt(n.n) * ri.normal();
-    t[i] = sign * (ybar - ybar0) / se;
+    const double ybar = (d.mu[i] - d.origin) + d.sigma / std::sqrt(n.n) * ri.normal();
+    t[i] = simc::t_stat(sign * (ybar - ybar0), se);
     pv[i] = d.alt == Alt::Two ? 2 * stats::pt(std::fabs(t[i]), df, false) : stats::pt(t[i], df, false);
   }
   unsigned rejected = 0;
@@ -288,6 +289,11 @@ Design design_of(const Scenario& s) {
   std::copy(mu.begin(), mu.end(), d.mu.begin());
   d.mu0 = s("mu0");
   d.sigma = s("sigma");
+  // means far from 0 next to σ would swamp the variation of the simulated arms (μ0 = μi = 10¹⁶ with σ = 2 gave
+  // no rejection at all): they are simulated around the control's mean instead (others exactly as given)
+  double far = std::fabs(d.mu0);
+  for (int i = 0; i < d.k; ++i) far = std::fmax(far, std::fabs(d.mu[i]));
+  if (!(far < 1e6 * d.sigma)) d.origin = d.mu0;
   d.alt = alt(s);
   d.alpha = s("alpha");
   d.r0 = s("r0");

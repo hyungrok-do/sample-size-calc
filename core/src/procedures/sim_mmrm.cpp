@@ -523,7 +523,8 @@ Procedure mmrm_proc() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
+      simc::put_summary(s, r, sm, simc::Failures::Design,
+                        "the model needs patients of both groups measured at every visit");
       r.set("approx_power", approx(n1));
       r.set("power_mmrm", sm.also_power(MMRM));
       r.set("power_completers", sm.also_power(COMPLETERS));

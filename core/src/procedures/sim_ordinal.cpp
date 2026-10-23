@@ -477,7 +477,8 @@ Procedure ordinal() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm);
+      simc::put_summary(s, r, sm, simc::Failures::Design,
+                        "the model could not be fitted, as when one group's outcomes all lie beyond the other's");
       r.set("approx_power", approx(n1));
       r.set("power_wald", sm.also_power(WALD));
       r.set("power_lr", sm.also_power(LR));

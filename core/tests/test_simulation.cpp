@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "engine/runner.hpp"
+#include "procedures/sim_common.hpp"
 #include "sim/lmm.hpp"
 #include "sim/random.hpp"
 #include "stats/stats.hpp"
@@ -322,6 +323,8 @@ TEST_CASE("lmm: random effects that dwarf the residual SD leave the two-stage an
         z[2 * j] = 1, z[2 * j + 1] = times[j];
       }
       d.patterns[g].set_design(K, 4, 2, x[g], z);
+      double rx[K * 4];
+      d.patterns[g].within_rows(4, 2, x[g], z, rx);
       for (int u = 0; u < n; ++u) {
         // y = Z u + e: the subject's line and the errors around it
         const double line[2] = {2 + sc.intercept * rng.normal(), (0.4 * ind + 0.5 * rng.normal()) * sc.slope / sc.time};
@@ -331,7 +334,7 @@ TEST_CASE("lmm: random effects that dwarf the residual SD leave the two-stage an
           st += times[j], se += e[j], stt += times[j] * times[j], ste += times[j] * e[j];
         }
         slopes[g].push_back(line[1] + (ste - st * se / K) / (stt - st * st / K));
-        d.patterns[g].add_cluster(4, 2, x[g], z, line, e);
+        d.patterns[g].add_effects(4, 2, rx, z, line, e);
       }
     }
     double mean[2] = {0, 0}, ss = 0;
@@ -346,7 +349,40 @@ TEST_CASE("lmm: random effects that dwarf the residual SD leave the two-stage an
     const lmm::Wald w = lmm::wald(d, f, c, 0, 0);
     CHECK_CLOSE(w.estimate, mean[0] - mean[1], 1e-7, 0);
     CHECK_CLOSE(w.se, std::sqrt(ss / (2 * n - 2) * 2.0 / n), 1e-5, 0);
-    if (sc.intercept < 1e100) CHECK_CLOSE(w.df, 2 * n - 2, 1e-3, 0);  // beyond, the Hessian over/underflows
+    CHECK(!w.fallback);  // the Hessian in units of its steps: their squares once overflowed at 10¹⁰⁰
+    CHECK_CLOSE(w.df, 2 * n - 2, 1e-3, 0);
+  }
+}
+
+TEST_CASE("lmm: two visits close together and far from where the random effects are given keep what they tell") {
+  // visits at −1000001, −1000000 and 0 (in units of τ = 1000001) and the random effects given at time 0: from
+  // there, the first two visits' Z'Z is singular to within 10⁻¹², and was once taken as of rank 1, which dropped
+  // the random slope's spread in their difference (a power of 96% for an exact 70.5%).  With Z from the first
+  // visit and G at time 0 through S, the GLS variance of the slope difference is that of a 50-digit calculation;
+  // with a slope SD that the two visits cannot see, the direction is left within the subject (rank 1), and the
+  // variance is as close
+  const double tau = 1000001, s[4] = {1, -1, 0, 1};  // the first visit is τ before time 0
+  struct Case {
+    double sd1, exact;  // the exact variance per τ², 10 subjects of each group with two visits and 40 with three
+  };
+  for (const Case cs : {Case{10, 4000008000004.08}, Case{1e-9, 0.0733334511111115}}) {
+    const double g[4] = {1, 0, 0, cs.sd1 * tau * (cs.sd1 * tau)};
+    lmm::Data d;
+    d.p = 4;
+    d.q = 2;
+    for (int grp = 0; grp < 2; ++grp)
+      for (int k = 2; k <= 3; ++k) {
+        const double z[6] = {1, 0, 1, 1 / tau, 1, 1};  // time from the first visit
+        const double ind = grp == 0 ? 1 : 0, c[8] = {1, ind, 0, 0, 0, 0, 1, ind};
+        lmm::Pattern pt;
+        pt.set_spanned(k, 4, 2, z, c, s, g);
+        CHECK(pt.rank_z == (k == 2 && cs.sd1 < 1 ? 1 : 2));
+        pt.count = k == 2 ? 10 : 40;
+        d.patterns.push_back(pt);
+      }
+    double cov[lmm::PMAX * lmm::PMAX];
+    CHECK(lmm::beta_covariance(d, 1, g, cov, g[0] * g[3]));
+    CHECK_CLOSE(cov[15], cs.exact, 1e-10, 0);
   }
 }
 
@@ -404,6 +440,38 @@ TEST_CASE("lmm: the pattern formulas equal a dense REML likelihood with dropout"
 }
 
 // ------------------------------------------------------------------ simulated power
+
+TEST_CASE("sim: a power is refused only when no study was analyzed, or the arithmetic broke down in most") {
+  // studies that fail by design (no wins or no losses, a model that cannot be fitted to the few subjects left)
+  // count as not rejecting, a fair account of a small design; refusing once more than half failed turned such
+  // designs into errors that said to check for an extreme value
+  namespace simc = procs::simc;
+  Scenario s;
+  s.solve = "power";
+  s.num["seed"] = 1;
+  auto outcome = [&](long failures, simc::Failures kind) {
+    sim::Summary sm;
+    sm.reps = 400;
+    sm.failures = failures;
+    sm = sim::with_rejections(sm, 0);
+    Row r;
+    try {
+      simc::put_summary(s, r, sm, kind, "each had no wins or no losses");
+    } catch (const CalcError& e) {
+      return std::string(e.what());
+    }
+    CHECK(r.num("power") == 0 && r.num("failures") == static_cast<double>(failures));
+    return std::string();
+  };
+  CHECK(outcome(399, simc::Failures::Design).empty());
+  CHECK(outcome(400, simc::Failures::Design) ==
+        "the simulated power cannot be computed: none of the 400 simulated studies could be analyzed (each had no "
+        "wins or no losses)");
+  CHECK(outcome(200, simc::Failures::Numerical).empty());
+  CHECK(outcome(201, simc::Failures::Numerical) ==
+        "the simulated power cannot be computed: 201 of the 400 simulated studies could not be analyzed; check for "
+        "an extreme value");
+}
 
 TEST_CASE("sim: quick approximations equal the closed-form procedures") {
   const json::Value a = first_row(

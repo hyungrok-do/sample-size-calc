@@ -126,9 +126,13 @@ Another thread can watch progress and cancel it through the token.
   `power_hi` (95% Wilson interval), `power_se` (Monte Carlo standard error),
   `approx_power` (the analytic approximation), `reps`, `seed`, `failures`
   (studies whose model could not be fitted, counted as not rejecting; when
-  they are more than half of the studies, the row has an `_error` instead of a
-  power) and `mean_df`. Columns without a value in any row are left out, so an
-  approximation has no Monte Carlo columns. The result reports
+  none could be, the row has an `_error` instead of a power, and so it has
+  when more than half could not be in the simulations whose analyses fail
+  only when the arithmetic breaks down: the longitudinal, cluster and
+  stepped-wedge mixed models and the two-sample tests on skewed or
+  heavy-tailed data) and `mean_df`. Columns
+  without a value in any row are left out, so an approximation has no Monte
+  Carlo columns. The result reports
   `"approximate": true` for an approximation. Results depend only on the seed:
   every simulated cluster or subject draws from its own random stream, so the
   thread count never changes them, and a larger study contains the units of a

@@ -113,14 +113,28 @@ inline double rank_sum_p(double w, double n1, double n2, double ties, Alt a) {
 /// Replicates of the exploratory evaluations of a sample-size search.
 inline long explore_reps(long reps) { return std::min(reps, std::max(100L, reps / 4)); }
 
-/// Cells of a simulated power estimate.  Studies whose analysis failed count as not rejecting, which is a fair
-/// account of a few of them; when they are most of the studies, the share that rejected says more about the
-/// analysis than about the design, and no power is given.
-inline void put_summary(const Scenario& s, Row& r, const sim::Summary& sm) {
-  if (2 * sm.failures > sm.reps)
+/// What a simulated study whose analysis failed says about the design.
+enum class Failures {
+  Design,     // the design gives that study no answer (no wins or no losses, every cluster of a group with the same
+              // outcome, too few patients left at a visit), so that not rejecting is a fair account of it
+  Numerical,  // the arithmetic broke down (a likelihood past the largest number), which says nothing of the design
+};
+
+/// Cells of a simulated power estimate.  Studies whose analysis failed count as not rejecting.  No power is given
+/// when none could be analyzed, or when failures are numerical breakdowns and more than half of the studies: the
+/// share that rejected would then say more about the arithmetic than about the design.  `why` says what makes a
+/// study fail, for the message when none could be analyzed.
+inline void put_summary(const Scenario& s, Row& r, const sim::Summary& sm, Failures kind = Failures::Design,
+                        const std::string& why = "") {
+  const std::string extreme = kind == Failures::Numerical ? "; check for an extreme value" : "";
+  if (sm.reps > 0 && sm.failures == sm.reps)
+    throw CalcError("the simulated power cannot be computed: none of the " +
+                    grouped(static_cast<double>(sm.reps)) + " simulated studies could be analyzed" +
+                    (why.empty() ? "" : " (" + why + ")") + extreme);
+  if (kind == Failures::Numerical && 2 * sm.failures > sm.reps)
     throw CalcError("the simulated power cannot be computed: " + grouped(static_cast<double>(sm.failures)) +
                     " of the " + grouped(static_cast<double>(sm.reps)) +
-                    " simulated studies could not be analyzed; check for an extreme value");
+                    " simulated studies could not be analyzed" + extreme);
   if (s.solve != "power") r.set("target_power", s("power"));
   r.set("power", sm.power);
   r.set("power_se", sm.se);
