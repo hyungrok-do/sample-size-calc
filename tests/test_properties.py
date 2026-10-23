@@ -753,11 +753,25 @@ def test_hazards_whose_sum_overflows_keep_their_share_of_events():
     assert len({r["n"] for r in rows}) == 1, [r["n"] for r in rows]
 
 
-def test_a_dropout_table_never_shows_a_count_past_any_study():
-    res = run("means.two.t", "power", {**base_inputs("means.two.t"), "n1": "1000000000", "dropout": "0.9999999999"})
+@pytest.mark.parametrize("dropout", ["0.9999999999", "0.999999", "0.9999985"])
+def test_a_dropout_table_never_shows_a_count_past_any_study(dropout):
+    """Each group's inflated size, and the total's (which two groups just under 10^15 take past it)."""
+    res = run("means.two.t", "power", {**base_inputs("means.two.t"), "n1": "1000000000", "dropout": dropout})
     assert first_row(res) is not None
     for row in (res.get("dropout") or {}).get("rows", []):
         assert all(abs(v) <= 1e15 for k, v in row.items() if k.endswith(("_inflated", "_dropouts"))), row
+
+
+def test_hazards_whose_sum_overflows_follow_the_time_at_risk():
+    """No time at risk refuses every pair of hazards, the overflowing one too; a tiny one gives the probability
+    of the pairs just below the overflow."""
+    base = {**base_inputs("surv.logrank"), "survin": "hazard", "hr": "0.5"}
+    for h in ("8.9e307", "1e308"):
+        row = run("surv.logrank", "n", {**base, "lam2": h, "eta": h, "accrual": "0", "follow": "0"})["rows"][0]
+        assert row.get("_error"), row
+    rows = [first_row(run("surv.logrank", "n", {**base, "lam2": h, "eta": h, "accrual": "0", "follow": "1e-309"}))
+            for h in ("8.9e307", "1e308")]
+    assert abs(rows[0]["n"] - rows[1]["n"]) <= 0.15 * rows[0]["n"], rows
 
 
 @pytest.mark.parametrize("pid,inputs", [

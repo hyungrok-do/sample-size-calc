@@ -719,7 +719,7 @@ json::Value run_request(const json::Value& req, Token* token) {
         tot += n;
         tot_inf += ni;
       }
-      if (!ok) continue;
+      if (!ok || (has_total && !(tot_inf <= MAX_COUNT))) continue;
       if (has_total) {
         x.set(proc->dropout_total, tot);
         x.set(proc->dropout_total + "_inflated", tot_inf);

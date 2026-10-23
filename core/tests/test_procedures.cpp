@@ -148,6 +148,9 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK_EQ(parse::quoted("\u05b0abc"), std::string("\\u{5B0}abc"));
   CHECK_EQ(parse::quoted("\u0489\u064e\u093c"), std::string("\\u{489}\\u{64E}\\u{93C}"));
   CHECK_EQ(parse::quoted("\u03bc \u2264 \u00bd \u4e2d"), std::string("\u03bc \u2264 \u00bd \u4e2d"));
+  // the digits of other scripts, with the Arabic separators
+  CHECK_EQ(parse::quoted("\u06f0\u066b\u06f0\u06f5 \u0665\u066a \u0662\u066c\u0665 \u0e50.\u0e55 \u09e6.\u09eb"),
+           std::string("\u06f0\u066b\u06f0\u06f5 \u0665\u066a \u0662\u066c\u0665 \u0e50.\u0e55 \u09e6.\u09eb"));
   // bytes that are not UTF-8 stay bytes (the JSON writer shows U+FFFD), never a character they could spell
   CHECK_EQ(parse::quoted("a\x85" "b"), std::string("a\x85" "b"));
   CHECK_EQ(parse::quoted("a\xc0\x80" "b"), std::string("a\xc0\x80" "b"));
