@@ -78,6 +78,9 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v${{ matrix.playwright }}-noble
       options: --user 1001 --ipc=host
+    defaults:
+      run:
+        shell: bash  # in a container the default is sh, which has no ${GITHUB_SHA::7}
     env:
       SSC_BROWSER: ${{ matrix.browser }}
     steps:
