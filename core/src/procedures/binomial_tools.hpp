@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "engine/procedure.hpp"
@@ -120,6 +121,41 @@ inline double exact_search_work(double n1, double n2, double p1, double p2, bool
 
 /// Above this work (a few seconds), exact searches use the normal approximation instead.
 constexpr double EXACT_SEARCH_BUDGET = 2.5e8;
+
+/// The work an exact sample-size search has enumerated.  A search judged within its budget at the normal
+/// approximation's size can still climb far past it: with a target power so close to 1 that the enumeration's
+/// rounding never reaches it, it went on to sizes of millions and ran for minutes.  Past eight budgets the search
+/// gives up and is made again on the normal approximation (the procedure says so, as when it is judged too long
+/// at the start).
+struct ExactSearch {
+  struct TooLong {};
+  bool on = false;
+  double spent = 0;
+  void count(double work) {
+    if (on && (spent += work) > 8 * EXACT_SEARCH_BUDGET) throw TooLong{};
+  }
+  // search() on the exact power while `exact`, again on the normal approximation if that goes on too long (whose
+  // own "cannot be reached" then says which method found it: the exact power can level off above a target that
+  // the approximation's stays below)
+  template <class F>
+  auto run(bool& exact, bool& fell_back, F&& search) -> decltype(search()) {
+    if (!exact) return search();
+    on = true;
+    try {
+      auto n = search();
+      on = false;
+      return n;
+    } catch (const TooLong&) {
+      on = false;
+      exact = false, fell_back = true;
+    }
+    try {
+      return search();
+    } catch (const CalcError& e) {
+      throw CalcError(std::string(e.what()) + " (by the normal approximation: the exact search went past its budget)");
+    }
+  }
+};
 
 /// Whether a point of the power curves is to use the normal approximation: enumerating every point at the work
 /// of its series' largest one (the work given, at RunContext::curve_last) would take the curves past the exact

@@ -316,11 +316,13 @@ Procedure two_props() {
     const TwoPropTest T{s.s("test"), a, s("alpha")};
     bool exact = s.is("method", "exact");
     bool fell_back = false;
+    ExactSearch search;
     auto power = [&](double n1, double n2, double x) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
       // judged at its curve's largest point (in either group)
       const TwoN last = ctx.curve_last ? two_group_n(*ctx.curve_last) : TwoN{n1, n2};
       if (exact && !on_curve_too_long(ctx, exact_power_work(last.n1, last.n2, x, p2, T.test == "fisher"))) {
+        search.count(exact_power_work(n1, n2, x, p2, T.test == "fisher"));
         const double pw = two_prop_exact(T, n1, n2, x, p2, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
@@ -342,8 +344,10 @@ Procedure two_props() {
       const double ratio = s.is("alloc", "ratio") ? s("r") : 1.0, g1 = g * (1 + 1 / ratio) / 2;
       if (exact && exact_search_work(g1, ratio * g1, p1, p2, T.test == "fisher") > EXACT_SEARCH_BUDGET)
         exact = false, fell_back = true;
-      n = solve_two_group_n(
-          s, [&](double a1, double a2) { return power(a1, a2, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
+      n = search.run(exact, fell_back, [&] {
+        return solve_two_group_n(
+            s, [&](double a1, double a2) { return power(a1, a2, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
+      });
     } else {
       n = two_group_n(s);
       if (s.solve == "power") {
@@ -710,6 +714,7 @@ Procedure case_control() {
     const TwoPropTest T{s.s("test"), a, s("alpha")};
     bool exact = s.is("method", "exact");
     bool fell_back = false;
+    ExactSearch search;
     auto controls = [&](double cases) { return std::ceil(m * cases - 1e-9); };
     auto power = [&](double n1, double n2, double x) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
@@ -717,6 +722,7 @@ Procedure case_control() {
       const double last1 = ctx.curve_last ? (*ctx.curve_last)("ncase") : n1;
       const double last2 = ctx.curve_last ? controls(last1) : n2;
       if (exact && !on_curve_too_long(ctx, exact_power_work(last1, last2, x, p0, T.test == "fisher"))) {
+        search.count(exact_power_work(n1, n2, x, p0, T.test == "fisher"));
         const double pw = two_prop_exact(T, n1, n2, x, p0, ctx);
         if (!std::isnan(pw)) return pw;
         fell_back = true;
@@ -740,8 +746,10 @@ Procedure case_control() {
       Scenario t = s;  // the two-group search with controls = M × cases
       t.sel["alloc"] = "ratio";
       t.num["r"] = m;
-      n = solve_two_group_n(
-          t, [&](double c, double k) { return power(c, k, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
+      n = search.run(exact, fell_back, [&] {
+        return solve_two_group_n(
+            t, [&](double c, double k) { return power(c, k, p1); }, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
+      });
     } else {
       n = {s("ncase"), controls(s("ncase"))};
       if (s.solve == "power") {

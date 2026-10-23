@@ -158,6 +158,10 @@ double tost_power_normal(const NiSpec& L, const NiSpec& U, double n1, double n2,
 
 constexpr double MAX_CELLS = 4e7;
 
+// A table's score tests cost about seven times the cell of a z-test, the unit of the exact budgets (as measured: 3.5
+// against 0.5 ns a cell; the two tests of an equivalence share the loop over tables and cost about as much as one).
+constexpr double FM_CELL_COST = 7;
+
 // Exact power of a set of score tests that must all reject (one for NI, two for TOST); NaN when the
 // enumeration is too large (the callers then use the normal approximation).
 double fm_power_exact(const std::vector<NiSpec>& tests, double n1d, double n2d, double p1, double p2,
@@ -386,11 +390,13 @@ Procedure two_prop_ni() {
                       ", must lie strictly between 0 and 1");
     bool exact = s.is("method", "exact");
     bool fell_back = false;
+    ExactSearch search;
     auto P = [&](double n1, double n2) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
-      // judged at its curve's largest point (in either group)
+      // judged at its curve's largest point (in either group), at the cost of its score test
       const TwoN last = ctx.curve_last ? two_group_n(*ctx.curve_last) : TwoN{n1, n2};
-      if (exact && !on_curve_too_long(ctx, exact_power_work(last.n1, last.n2, p1, p2))) {
+      if (exact && !on_curve_too_long(ctx, FM_CELL_COST * exact_power_work(last.n1, last.n2, p1, p2))) {
+        search.count(FM_CELL_COST * exact_power_work(n1, n2, p1, p2));
         const double v = fm_power_exact({S}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;
@@ -413,8 +419,10 @@ Procedure two_prop_ni() {
       }
       // the groups the search tries: with a ratio allocation, group 2 is R times group 1
       const double ratio = s.is("alloc", "ratio") ? s("r") : 1.0, g1 = g * (1 + 1 / ratio) / 2;
-      if (exact && exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
-      n = solve_two_group_n(s, P, s("power"), 2, std::ceil(g), !exact, ctx, 1e7);
+      if (exact && FM_CELL_COST * exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET)
+        exact = false, fell_back = true;
+      n = search.run(exact, fell_back,
+                     [&] { return solve_two_group_n(s, P, s("power"), 2, std::ceil(g), !exact, ctx, 1e7); });
     } else {
       n = two_group_n(s);
     }
@@ -568,11 +576,13 @@ Procedure two_prop_equiv() {
     const NiSpec L{sc, lo, true, alpha}, U{sc, hi, false, alpha};
     bool exact = s.is("method", "exact");
     bool fell_back = false;
+    ExactSearch search;
     auto P = [&](double n1, double n2) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
-      // judged at its curve's largest point (in either group); two tests a table
+      // judged at its curve's largest point (in either group), at the cost of its score tests
       const TwoN last = ctx.curve_last ? two_group_n(*ctx.curve_last) : TwoN{n1, n2};
-      if (exact && !on_curve_too_long(ctx, 2 * exact_power_work(last.n1, last.n2, p1, p2))) {
+      if (exact && !on_curve_too_long(ctx, FM_CELL_COST * exact_power_work(last.n1, last.n2, p1, p2))) {
+        search.count(FM_CELL_COST * exact_power_work(n1, n2, p1, p2));
         const double v = fm_power_exact({L, U}, n1, n2, p1, p2, ctx);
         if (!std::isnan(v)) return v;
         fell_back = true;
@@ -586,11 +596,12 @@ Procedure two_prop_equiv() {
       const double zf = stats::qnorm(alpha, false) +
                         stats::qnorm(std::fabs(m - (ml + mu) / 2) < 1e-12 ? 1 - (1 - s("power")) / 2 : s("power"));
       const double g = group_guess(sc, zf * zf, p1, p2, gap);
-      // two score tests per table
       // the groups the search tries: with a ratio allocation, group 2 is R times group 1
       const double ratio = s.is("alloc", "ratio") ? s("r") : 1.0, g1 = g * (1 + 1 / ratio) / 2;
-      if (exact && 2 * exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET) exact = false, fell_back = true;
-      n = solve_two_group_n(s, P, s("power"), 2, g, !exact, ctx, 1e7);
+      if (exact && FM_CELL_COST * exact_search_work(g1, ratio * g1, p1, p2) > EXACT_SEARCH_BUDGET)
+        exact = false, fell_back = true;
+      n = search.run(exact, fell_back,
+                     [&] { return solve_two_group_n(s, P, s("power"), 2, g, !exact, ctx, 1e7); });
     } else {
       n = two_group_n(s);
     }

@@ -93,8 +93,11 @@ std::string plain(const std::string& s) {
     const auto b = [&](std::size_t k) { return k < s.size() ? static_cast<unsigned char>(s[k]) : 0u; };
     if (b(i) == 0xC2 && b(i + 1) == 0xA0) {  // no-break space
       out += ' ', i += 2;
-    } else if (b(i) == 0xE2 && b(i + 1) == 0x80 && ((b(i + 2) >= 0x80 && b(i + 2) <= 0x8B) || b(i + 2) == 0xAF)) {
-      out += ' ', i += 3;  // en/em/thin/hair/zero-width spaces, narrow no-break space
+    } else if (b(i) == 0xE2 && b(i + 1) == 0x80 && ((b(i + 2) >= 0x80 && b(i + 2) <= 0x8A) || b(i + 2) == 0xAF)) {
+      out += ' ', i += 3;  // en/em/thin/hair spaces, narrow no-break space
+    } else if (b(i) == 0xE2 && ((b(i + 1) == 0x80 && b(i + 2) >= 0x8B && b(i + 2) <= 0x8D) ||
+                                (b(i + 1) == 0x81 && b(i + 2) == 0xA0))) {
+      i += 3;  // zero-width space, non-joiner, joiner, word joiner: unseen, so read as nothing ("0<ZWSP>.4" is 0.4)
     } else if (b(i) == 0xE2 && b(i + 1) == 0x81 && b(i + 2) == 0x9F) {  // medium mathematical space
       out += ' ', i += 3;
     } else if (b(i) == 0xE3 && b(i + 1) == 0x80 && b(i + 2) == 0x80) {  // ideographic space

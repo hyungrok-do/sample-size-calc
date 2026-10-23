@@ -139,7 +139,10 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK(rlo.find("\u202e") == std::string::npos);
   CHECK(message("1\\u0000x").find("\\u{0}") != std::string::npos);  // NUL, escaped in the request
   CHECK(message("0.0\u0301").find("\\u{301}") != std::string::npos);
-  CHECK(message("1\u200dx").find("\\u{200D}") != std::string::npos);
+  CHECK(message("1\u2066x").find("\\u{2066}") != std::string::npos);
+  // the zero-width characters show nothing and are read as nothing: "0<ZWSP>.4" is the 0.4 the field shows
+  CHECK_EQ(first_mu1("0\u200b.4"), 0.4);
+  CHECK_EQ(first_mu1("1\u200d2\u2060"), 12.0);
   CHECK_EQ(parse::quoted("abc\u00e9"), std::string("abc\u00e9"));
   // marks of any script, and enclosing ones, are written out; letters and symbols of common scripts are not
   CHECK_EQ(parse::quoted("\u05b0abc"), std::string("\\u{5B0}abc"));
