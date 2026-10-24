@@ -307,8 +307,8 @@ Procedure kappa() {
     const auto [k1, k0] = fnum_apart(r.num("kappa1"), r.num("kappa0"));
     return "A sample of " + fint(r.num("n")) + " subjects rated by two raters " + achieves_singular(s, r) +
            " to detect a kappa of " + k1 + " when the value under the null hypothesis is " + k0 +
-           ", assuming a proportion of positive ratings of " + fnum(r.num("prev")) + ", using a " + alt_words(alt(s)) +
-           " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
+           ", assuming a proportion of positive ratings of " + fnum_fine(r.num("prev")) + ", using a " +
+           alt_words(alt(s)) + " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"κ0, κ1", "Cohen's kappa under the null and the alternative hypotheses."},
                    {"π", "Probability that a rater classifies a subject as positive (equal for both raters)."},
@@ -614,7 +614,7 @@ Procedure sens_spec() {
     }
     // both counts are rounded down, so they can add up to one less than N
     return "A total of " + fint(r.num("n")) + " subjects (" + fint(r.num("nd")) + " with and " + fint(r.num("nn")) +
-           " without the condition: the expected numbers at a prevalence of " + fnum(r.num("prev")) +
+           " without the condition: the expected numbers at a prevalence of " + fnum_fine(r.num("prev")) +
            ", rounded down) " + achieves_singular(s, r) +
            " to show " + what + " with exact one-sided binomial tests at α = " + fnum(r.num("alpha")) +
            (s.is("goal", "both") ? " each (power: both tests significant)." : ".");
@@ -887,14 +887,19 @@ Procedure paired_diagnostic() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    // the two tests' values apart from each other (0.90001 and 0.9, not 0.9 and 0.9), a prevalence never as 0 or 1
     std::string what;
-    if (!s.is("goal", "sp"))
-      what = "the sensitivities " + fnum(r.num("se1")) + " and " + fnum(r.num("se2"));
+    if (!s.is("goal", "sp")) {
+      const auto [se1, se2] = fnum_apart(r.num("se1"), r.num("se2"));
+      what = "the sensitivities " + se1 + " and " + se2;
+    }
     if (s.is("goal", "both")) what += " and ";
-    if (!s.is("goal", "se"))
-      what += "the specificities " + fnum(r.num("sp1")) + " and " + fnum(r.num("sp2"));
+    if (!s.is("goal", "se")) {
+      const auto [sp1, sp2] = fnum_apart(r.num("sp1"), r.num("sp2"));
+      what += "the specificities " + sp1 + " and " + sp2;
+    }
     return "A total of " + fint(r.num("n")) + " subjects (" + fint(r.num("nd")) + " with and " + fint(r.num("nn")) +
-           " without the condition: the expected numbers at a prevalence of " + fnum(r.num("prev")) +
+           " without the condition: the expected numbers at a prevalence of " + fnum_fine(r.num("prev")) +
            ", rounded down), each given both tests, " + achieves_singular(s, r) + " to detect the difference between " +
            what + " of the two tests using " + alt_words(alt(s)) + " McNemar " +
            (s.is("goal", "both") ? "tests" : "test") +

@@ -3,9 +3,9 @@
 
 #include <cmath>
 #include <initializer_list>
-#include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "procedures/common.hpp"
 
@@ -61,10 +61,23 @@ inline std::string fnum_from(double x, double ref, int decimals = 4) {
   return fnum_apart(x, ref).first;
 }
 
-/// b for a when they differ by no more than the rounding of a's computation from b, a few units in the last place
-/// (P1 from P2 and an odds ratio of 1: 0.5999999999999999 for 0.6), which a statement does not show as a difference.
-inline double unrounded(double a, double b) {
-  return std::fabs(a - b) <= 4 * std::numeric_limits<double>::epsilon() * std::fmax(std::fabs(a), std::fabs(b)) ? b : a;
+/// The texts of values a statement lists together (a trend's proportions), with the digits it takes to tell each
+/// from every other as fnum_apart tells two apart: 0.1, 0.10001, 0.2, not 0.1, 0.1, 0.2.
+inline std::vector<std::string> fnum_apart_all(const std::vector<double>& x) {
+  std::vector<std::string> t(x.size());
+  std::vector<double> shown(x.size());
+  for (int extra = 0; extra <= 13; ++extra) {
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      t[i] = fnum_digits(x[i], extra);
+      if (!text::parse_double(t[i], shown[i])) shown[i] = NAN;
+    }
+    bool apart = true;
+    for (std::size_t i = 0; i < x.size() && apart; ++i)
+      for (std::size_t j = i + 1; j < x.size() && apart; ++j)
+        apart = std::fabs((shown[i] - shown[j]) - (x[i] - x[j])) <= 0.05 * std::fabs(x[i] - x[j]);
+    if (apart) break;
+  }
+  return t;
 }
 
 /// A probability with four decimals, or with the digits fnum_fine gives it when four show it as 0 or 1, which it is

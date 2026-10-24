@@ -2,6 +2,7 @@
 // cluster-randomized designs (Hussey & Hughes).
 #include <sstream>
 
+#include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 
 namespace ssc::procs {
@@ -167,8 +168,8 @@ Procedure trend() {
     r.set("N", total);
     put_power(s, r, trend_power(t, n, alpha, a));
     r.set("sizes", list_text(ni));
-    std::string props;  // never a proportion of 0.99999 as 1
-    for (double x : t.p) props += (props.empty() ? "" : ", ") + fnum_fine(x);
+    std::string props;  // never a proportion of 0.99999 as 1, nor 0.10001 as 0.1 next to 0.1
+    for (const auto& x : fnum_apart_all(t.p)) props += (props.empty() ? "" : ", ") + x;
     r.set("props", props);
     r.set("scores", list_text(t.d));
     r.set("k", static_cast<double>(t.p.size()));

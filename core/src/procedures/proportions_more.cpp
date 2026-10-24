@@ -381,6 +381,12 @@ double p1_from(const Scenario& s, double p2) {
   return p1;
 }
 
+// P1 as a statement shows it: P1 from an odds ratio of 1 is P2 to a rounding error (0.5999999999999999 for 0.6),
+// which is no difference.
+double p1_stated(const Scenario& s, const Row& r) {
+  return s.is("es", "or") && s("or1") == 1 ? r.num("p2") : r.num("p1");
+}
+
 Scale scale_of(const Scenario& s) {
   return s.is("scale", "ratio") ? Scale::Ratio : (s.is("scale", "or") ? Scale::Odds : Scale::Diff);
 }
@@ -655,11 +661,11 @@ Procedure two_prop_ni() {
   p.statement = [](const Scenario& s, const Row& r) {
     const Scale sc = scale_of(s);
     const std::string q = sc == Scale::Ratio ? "P1/P2" : (sc == Scale::Odds ? "OR" : "P1 − P2");
-    // a ratio's boundary apart from 1, no effect (0.99999 is not 1), and the proportions from each other (P1 from an
-    // odds ratio of 1 is P2 to a rounding error, which is no difference)
+    // the boundary apart from no effect, a ratio's from 1 (0.99999 is not 1) and a difference from 0 (0.00016, not
+    // 0.0002), and the proportions from each other
     const double b0 = r.num(sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0"));
-    const std::string b = sc == Scale::Diff ? fnum(b0) : fnum_from(b0, 1);
-    const auto [p1, p2] = fnum_apart(unrounded(r.num("p1"), r.num("p2")), r.num("p2"));
+    const std::string b = sc == Scale::Diff ? fnum_apart(b0, 0).first : fnum_from(b0, 1);
+    const auto [p1, p2] = fnum_apart(p1_stated(s, r), r.num("p2"));
     const bool up = s.is("h1", "upper");
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
            " for the one-sided " + (sc == Scale::Odds ? "Miettinen–Nurminen" : "Farrington–Manning") +
@@ -763,10 +769,12 @@ Procedure two_prop_equiv() {
     const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
     const double p2 = s("p2"), p1 = p1_from(s, p2), alpha = s("alpha");
     const double lo = s(lkey), hi = s(ukey), act = actual_measure(s, sc, p1, p2);
-    if (!(act > lo && act < hi))
+    // on a limit itself the power is the size of the tests, which no sample size raises above alpha
+    if (s.solve == "n" ? !(act > lo && act < hi) : !(act >= lo && act <= hi))
       throw CalcError("the actual " + std::string(sc == Scale::Ratio ? "ratio P1/P2" : (sc == Scale::Odds ? "odds ratio"
                                                                                                         : "difference")) +
-                      " must lie inside the equivalence limits");
+                      (s.solve == "n" ? " must lie inside the equivalence limits"
+                                      : " cannot lie outside the equivalence limits"));
     if (sc == Scale::Ratio && !(hi * p2 < 1))
       throw CalcError("the upper equivalence limit, P1 = RU × P2 = " + fnum(hi * p2) + ", must lie below 1");
     const NiSpec L{sc, lo, true, alpha}, U{sc, hi, false, alpha};
@@ -835,10 +843,9 @@ Procedure two_prop_equiv() {
     const Scale sc = scale_of(s);
     const char* lkey = sc == Scale::Ratio ? "rl" : (sc == Scale::Odds ? "orl" : "dl");
     const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
-    // the limits apart from each other (0.99999 and 1.00001, not 1 and 1), and the proportions too (P1 from an odds
-    // ratio of 1 is P2 to a rounding error, which is no difference)
+    // the limits apart from each other (0.99999 and 1.00001, not 1 and 1), and the proportions too
     const auto [lo, hi] = fnum_apart(r.num(lkey), r.num(ukey));
-    const auto [p1, p2] = fnum_apart(unrounded(r.num("p1"), r.num("p2")), r.num("p2"));
+    const auto [p1, p2] = fnum_apart(p1_stated(s, r), r.num("p2"));
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
            " to conclude that " + quantity(sc) + " lies between " + lo + " and " + hi +
            " using two one-sided score tests at α = " + fnum(r.num("alpha")) + " each, when P1 = " + p1 + " and P2 = " +
@@ -1189,9 +1196,10 @@ Procedure chisq() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    // w with the digits that keep it to within 5% (0.00016, not 0.0002)
     return "A total sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) +
-           " to detect an effect size of w = " + fnum(r.num("w")) + " with a chi-square test on " + fint(r.num("df")) +
-           " degrees of freedom at α = " + fnum(r.num("alpha")) + ".";
+           " to detect an effect size of w = " + fnum_apart(r.num("w"), 0).first + " with a chi-square test on " +
+           fint(r.num("df")) + " degrees of freedom at α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"w", "Cohen's effect size √Σ(P1ᵢ − P0ᵢ)²/P0ᵢ."},
                    {"DF", "Degrees of freedom: k − 1 for goodness of fit, (r − 1)(c − 1) for an r × c table."},

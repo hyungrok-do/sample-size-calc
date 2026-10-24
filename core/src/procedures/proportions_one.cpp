@@ -241,9 +241,11 @@ Procedure one_prop() {
     static const std::map<std::string, std::string> names = {
         {"exact", "exact binomial test"}, {"zp0", "z-test using P0"}, {"zphat", "z-test using P̂"},
         {"zp0cc", "continuity-corrected z-test using P0"}, {"zphatcc", "continuity-corrected z-test using P̂"}};
+    // the proportions apart from each other, and the difference from 0 (0.00016, not 0.0002)
     const auto [p0, p1] = fnum_apart(r.num("p0"), r.num("p1"));
     std::string t = "A sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) +
-                    " to detect a difference of " + fnum(r.num("diff")) + " between the null proportion P0 = " + p0 +
+                    " to detect a difference of " + fnum_apart(r.num("diff"), 0).first +
+                    " between the null proportion P0 = " + p0 +
                     " and the actual proportion P1 = " + p1 + " using a " + alt_words(alt(s)) + " " +
                     names.at(s.s("test")) + " with a target significance level of " + fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual significance level " + fprob(r.num("actual_alpha")) + ")";
@@ -417,11 +419,12 @@ Procedure one_prop_ci() {
         {"ac", "Agresti–Coull"}, {"jeffreys", "Jeffreys"}, {"wald", "Wald"}};
     const bool two = s.is("sides", "two");
     const double w = r.num("width");
-    std::string where = (two ? "with a width of " : "whose bound lies at a distance of ") + fnum_fine(w);
+    // the width with the digits that keep it to within 5% (0.00016, not 0.0002)
+    std::string where = (two ? "with a width of " : "whose bound lies at a distance of ") + fnum_apart(w, 0).first;
     if (!two && near_estimate(w, r.num("p")))
       where = "whose bound lies within a rounding error of the estimate";
     else if (!two && w < 0)
-      where = "whose bound lies " + fnum_fine(-w) + (s.is("sides", "upper") ? " below" : " above") +
+      where = "whose bound lies " + fnum_apart(-w, 0).first + (s.is("sides", "upper") ? " below" : " above") +
               " the estimate, on the wrong side of it (" +
               (s.is("method", "jeffreys") ? JEFFREYS_WRONG_SIDE : "at this confidence") + ")";
     return "A sample of " + fint(r.num("n")) + " gives a " + (two ? "two-sided " : "one-sided ") +

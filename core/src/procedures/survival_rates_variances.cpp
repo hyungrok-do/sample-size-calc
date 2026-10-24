@@ -378,8 +378,10 @@ Procedure logrank_ni() {
     const bool worse = s.is("hazdir", "worse");
     if (worse && !(margin > 1)) throw CalcError("when a higher hazard is worse, the margin must exceed 1");
     if (!worse && !(margin < 1)) throw CalcError("when a higher hazard is better, the margin must be below 1");
-    if (worse ? !(hr < margin) : !(hr > margin))
-      throw CalcError("the actual hazard ratio must lie on the non-inferior side of the margin");
+    // on the margin itself the power is alpha, which no sample size raises
+    if (s.solve == "n" ? (worse ? !(hr < margin) : !(hr > margin)) : (worse ? hr > margin : hr < margin))
+      throw CalcError(s.solve == "n" ? "the actual hazard ratio must lie on the non-inferior side of the margin"
+                                     : "the actual hazard ratio cannot lie on the inferior side of the margin");
     const auto d = logrank_design(s, hr);
     if (!(d.p1 > 0 || d.p2 > 0)) throw CalcError("no events are expected with this accrual and follow-up");
     TwoN n;
@@ -488,18 +490,19 @@ PoisRegion pois_region(bool exact, double mu0, double alpha, Alt a) {
 
 double pois_power(const PoisRegion& r, double mu) { return stats::clamp01(pois_at_least(r.cu, mu) + pois_at_most(r.cl, mu)); }
 
-// Beyond 2^53 expected events the counts that can be stored are no longer every whole number, and beyond about 1e26
-// they lie so far apart next to the standard deviation that the critical counts, and so the powers, were far off (a
-// two-sided exact test of size 1 at 1e33 events). There the critical counts are kept as their distances from μ0, and
-// the tails are the normal ones with the Poisson skewness and a continuity correction (Edgeworth; their error is of
-// the order of 1/μ): up and lo are the distances of the upper and lower critical counts (NaN: no such tail),
-// dmu = μ − μ0.
-constexpr double POIS_FAR = 9007199254740992.0;
+// Beyond 1e15 expected events pois_region no longer steps to the critical counts, and beyond 2^53 the counts that can
+// be stored are no longer every whole number; beyond about 1e26 they lie so far apart next to the standard deviation
+// that the critical counts, and so the powers, were far off (a two-sided exact test of size 1 at 1e33 events). There
+// the critical counts are kept as their distances from μ0, and the tails are the normal ones with the Poisson
+// skewness and a continuity correction (Edgeworth; their error is of the order of 1/μ): up and lo are the distances
+// of the upper and lower critical counts (NaN: no such tail), dmu = μ − μ0.
+constexpr double POIS_FAR = 1e15;
 
 double pois_power_far(double up, double lo, double mu, double dmu) {
   using namespace stats;
   const double sd = std::sqrt(mu);
-  auto skew = [&](double w) { return dnorm(w) * (w * w - 1) / (6 * sd); };
+  // none far out in a tail, where w² overflows next to a density of 0 (μ1 a rounding error above 0)
+  auto skew = [&](double w) { return std::fabs(w) < 40 ? dnorm(w) * (w * w - 1) / (6 * sd) : 0.0; };
   double pw = 0;
   if (!std::isnan(up)) {
     const double w = (up - 0.5 - dmu) / sd;  // P(X ≥ μ0 + up)
@@ -512,14 +515,48 @@ double pois_power_far(double up, double lo, double mu, double dmu) {
   return clamp01(pw);
 }
 
+// The distances from μ0 of the critical counts (NaN: no such tail), placed as pois_region places them; f0, the
+// fraction of μ0, makes them whole counts.
+std::pair<double, double> pois_region_far(bool exact, double mu0, double alpha, Alt a) {
+  const double side = tail_alpha(alpha, a);
+  const double z = stats::qnorm(side, false), sd0 = std::sqrt(mu0), f0 = mu0 - std::floor(mu0);
+  double up = NAN, lo = NAN;
+  if (!exact) {
+    if (a != Alt::Lower) up = std::floor(f0 + z * sd0) + 1 - f0;  // X > μ0 + z√μ0
+    if (a != Alt::Upper) lo = std::ceil(f0 - z * sd0) - 1 - f0;   // X < μ0 − z√μ0
+    return {up, lo};
+  }
+  // from the normal quantile with the skewness and continuity terms, then stepped by the tails themselves while a
+  // step of one still changes the distance (the exact test never exceeds alpha)
+  const bool step = z * sd0 < 1e15;
+  if (a != Alt::Lower) {  // smallest with P(X ≥ μ0 + up) ≤ side
+    up = std::ceil(f0 + z * sd0 + (z * z - 1) / 6 + 0.5) - f0;
+    while (step && pois_power_far(up - 1, NAN, mu0, 0) <= side) up -= 1;
+    while (step && pois_power_far(up, NAN, mu0, 0) > side) up += 1;
+  }
+  if (a != Alt::Upper) {  // largest with P(X ≤ μ0 + lo) ≤ side
+    lo = std::floor(f0 - z * sd0 + (z * z - 1) / 6 - 0.5) - f0;
+    while (step && pois_power_far(NAN, lo, mu0, 0) > side) lo -= 1;
+    while (step && pois_power_far(NAN, lo + 1, mu0, 0) <= side) lo += 1;
+  }
+  return {up, lo};
+}
+
 struct OnePoisResult {
   double power, actual_alpha;
   PoisRegion region;
   bool exact;  // power from the Poisson distribution (else the normal approximation)
 };
 
-OnePoisResult one_pois_eval(const Scenario& s, double n, double lam1) {
-  const double exposure = n * s("time"), mu0 = s("lam0") * exposure, mu1 = lam1 * exposure;
+// The power at λ1 with n subjects, and the size.  d, when given, is λ1 − λ0 itself: with many events the difference
+// a power needs can be finer than the doubles next to λ0 (8.9e-17 next to λ0 = 1 at 1e33 events, where they lie
+// 2.2e-16 apart).  Beyond 1e15 events μ1 − μ0 is taken from the difference of the rates, of which μ1 and μ0 keep few
+// digits or none.
+OnePoisResult one_pois_eval(const Scenario& s, double n, double lam1, double d = NAN) {
+  const double lam0 = s("lam0"), exposure = n * s("time"), mu0 = lam0 * exposure;
+  const bool far = mu0 >= POIS_FAR;
+  const double mu1 = std::isnan(d) ? lam1 * exposure : mu0 + d * exposure;
+  const double dmu = !std::isnan(d) ? d * exposure : far ? (lam1 - lam0) * exposure : mu1 - mu0;
   const double alpha = s("alpha");
   const Alt a = alt(s);
   OnePoisResult res;
@@ -528,30 +565,24 @@ OnePoisResult one_pois_eval(const Scenario& s, double n, double lam1) {
     const double z = stats::qnorm(tail_alpha(alpha, a), false);
     const double s0 = std::sqrt(mu0), s1 = std::sqrt(mu1);
     double pw = 0;
-    if (a != Alt::Lower) pw += stats::pnorm((mu1 - mu0 - z * s0) / s1);
-    if (a != Alt::Upper) pw += stats::pnorm((mu0 - mu1 - z * s0) / s1);
+    if (a != Alt::Lower) pw += stats::pnorm((dmu - z * s0) / s1);
+    if (a != Alt::Upper) pw += stats::pnorm((-dmu - z * s0) / s1);
     res.power = stats::clamp01(pw);
     res.actual_alpha = NAN;
     return res;
   }
   const bool exact_test = s.is("test", "exact");
-  res.region = pois_region(exact_test, mu0, alpha, a);
-  if (mu0 < POIS_FAR) {
+  if (!far) {
+    res.region = pois_region(exact_test, mu0, alpha, a);
     res.power = pois_power(res.region, mu1);
     res.actual_alpha = pois_power(res.region, mu0);
     return res;
   }
-  // the critical counts as pois_region places them, as distances from μ0 (f0, its fraction, makes them whole)
-  const double z = stats::qnorm(tail_alpha(alpha, a), false), sd0 = std::sqrt(mu0), f0 = mu0 - std::floor(mu0);
-  double up = NAN, lo = NAN;
-  if (exact_test) {
-    if (a != Alt::Lower) up = std::ceil(f0 + z * sd0 + (z * z - 1) / 6) - f0;
-    if (a != Alt::Upper) lo = std::floor(f0 - z * sd0 + (z * z - 1) / 6) - f0;
-  } else {
-    if (a != Alt::Lower) up = std::floor(f0 + z * sd0) + 1 - f0;
-    if (a != Alt::Upper) lo = std::ceil(f0 - z * sd0) - 1 - f0;
-  }
-  res.power = pois_power_far(up, lo, mu1, (lam1 - s("lam0")) * exposure);
+  const auto [up, lo] = pois_region_far(exact_test, mu0, alpha, a);
+  // the counts shown: exact up to 2^53, beyond it the nearest that can be stored
+  res.region.cu = std::isnan(up) ? INFINITY : mu0 + up;
+  res.region.cl = std::isnan(lo) ? -1 : mu0 + lo;
+  res.power = pois_power_far(up, lo, mu1, dmu);
   res.actual_alpha = pois_power_far(up, lo, mu0, 0);
   return res;
 }
@@ -648,11 +679,21 @@ Procedure one_poisson() {
         const bool up = a == Alt::Upper || (a == Alt::Two && !s.is("l1dir", "below"));
         auto f = [&](double x) { return one_pois_eval(s, n, x).power; };
         const double target = s("power");
-        if (up) {
-          // as far as a rate inside the accepted inputs (1e30) and at least 1e12·λ0
-          lam1 = solve::solve_increasing(f, target, lam0, 2 * lam0, std::fmax(1e12 * lam0, 1e30), 1e-12, "λ1", "λ0");
+        // as far as a rate inside the accepted inputs (1e30) and at least 1e12·λ0
+        const double last = std::fmax(1e12 * lam0, 1e30);
+        if (!up && f(1e-300) < target) throw CalcError("the target power cannot be reached with this N for any λ1 < λ0");
+        if (lam0 * (n * t) >= POIS_FAR) {
+          // the difference d = |λ1 − λ0| by itself, which can be finer than the doubles next to λ0 (one_pois_eval),
+          // then the double next to λ0 ± d that reaches the target, refused when none keeps d (solve::reach)
+          const double sign = up ? 1 : -1;
+          auto g = [&](double x) { return one_pois_eval(s, n, lam0 + sign * x, sign * x).power; };
+          const double d = solve::solve_increasing(g, target, 0, up ? lam0 : lam0 / 2, up ? last - lam0 : lam0 - 1e-300,
+                                                   1e-12, "λ1");
+          lam1 = solve::reach(f, lam0 + sign * d, up ? last : 1e-300, up, target, lam0, sign * d, "λ1", "λ0",
+                              "the target power cannot be reached for any admissible value of λ1");
+        } else if (up) {
+          lam1 = solve::solve_increasing(f, target, lam0, 2 * lam0, last, 1e-12, "λ1", "λ0");
         } else {
-          if (f(1e-300) < target) throw CalcError("the target power cannot be reached with this N for any λ1 < λ0");
           lam1 = solve::solve_decreasing(f, target, lam0, lam0 / 2, 1e-300, 1e-12, "λ1", "λ0");
         }
       }
@@ -693,7 +734,7 @@ Procedure one_poisson() {
                     alt_words(alt(s)) + " " +
                     (s.is("test", "exact") ? "exact Poisson test" : "z-test") + " with a target significance level of " +
                     fnum(r.num("alpha"));
-    if (r.has("actual_alpha")) t += " (actual significance level " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
+    if (r.has("actual_alpha")) t += " (actual significance level " + fprob(r.num("actual_alpha")) + ")";
     return t + ".";
   };
   p.definitions = {{"N", "Number of subjects."},
@@ -724,16 +765,26 @@ SSC_REGISTER(one_poisson);
 // A test of two rates finds group 1's rate the higher only with an event in group 1, and group 2's only with one in
 // group 2: the power of each side is at most the chance of such an event, 1 − e^log_none. With next to no events
 // expected in a group the normal approximation breaks down (the variance under H1 dwarfs the one under H0 and both
-// sides tend to 1/2: a two-sided power of 100% with 1e-58 events expected), and a side's power above that chance by
-// more than the precision shown is refused; an n search goes on to the first sizes that give no side such a power.
+// sides tend to 1/2: a two-sided power of 100% with 1e-58 events expected), and so it does where overdispersed
+// counts gather a group's events in so few subjects that it likely has none (a dispersion of 1e6 leaves 10
+// subjects expecting 100 events a chance of 0.00016 of any); a side's power above that chance by more than the
+// precision shown is refused, and an n search goes on to the first sizes that give no side such a power.
 bool beyond_events(double side_power, double log_none) { return side_power + std::expm1(log_none) > 5e-5; }
 
-void check_rate_events(int group, double side_power, double log_none, double events) {
-  if (beyond_events(side_power, log_none))
-    throw CalcError("group " + std::to_string(group) + " expects only " + fnum_fine(events) +
-                    (events == 1 ? " event" : " events") + ", and without one no test finds its rate the higher, but "
-                    "the normal approximation gives that a power of " + power_text(side_power) +
-                    ": it fails with so few events");
+// `kappa`: the dispersion of negative binomial counts (0 for Poisson ones, whose chance of no event is e^−events).
+void check_rate_events(int group, double side_power, double log_none, double events, double kappa = 0) {
+  if (!beyond_events(side_power, log_none)) return;
+  const std::string g = "group " + std::to_string(group), power = power_text(side_power);
+  // as many events Poisson-distributed would allow that power: it is the dispersion that leaves so little chance
+  if (kappa > 0 && !beyond_events(side_power, -events))
+    throw CalcError(g + " expects " + fnum_fine(events) + " events, but with a dispersion of " + fnum(kappa) +
+                    " they gather in so few subjects that its chance of any is only " +
+                    text::format_g(-std::expm1(log_none), 3) + "; without one no test finds its rate the higher, but "
+                    "the normal approximation gives that a power of " + power + ": it fails with so little chance of "
+                    "an event");
+  throw CalcError(g + " expects only " + fnum_fine(events) + (events == 1 ? " event" : " events") +
+                  ", and without one no test finds its rate the higher, but the normal approximation gives that a "
+                  "power of " + power + ": it fails with so few events");
 }
 
 const char* FEW_EVENTS = "A group expects fewer than 10 events; the normal approximation of the test is rough with so few.";
@@ -747,8 +798,8 @@ TwoN sizes_with_events(const Scenario& s, const std::function<double(double, dou
   try {
     const TwoN m = solve_two_group_n(s, [&](double n1, double n2) { return possible(n1, n2) ? P(n1, n2) : 0.0; },
                                      s("power"), 1, n.n1, true, ctx);
-    r.notes.push_back("Smaller samples leave a group so few events that the normal approximation gives the test more "
-                      "power than the chance of an event allows; this is the smallest that does not.");
+    r.notes.push_back("Smaller samples leave a group so little chance of an event that the normal approximation gives "
+                      "the test more power than that chance allows; this is the smallest that does not.");
     return m;
   } catch (const CalcError&) {
     return n;
@@ -986,8 +1037,8 @@ Procedure two_negbin() {
       n = two_group_n(s);
     }
     const auto [up, down] = sides(n.n1, n.n2);
-    check_rate_events(1, up, n.n1 * log_none(r1 * mt), n.n1 * r1 * mt);
-    check_rate_events(2, down, n.n2 * log_none(r0 * mt), n.n2 * r0 * mt);
+    check_rate_events(1, up, n.n1 * log_none(r1 * mt), n.n1 * r1 * mt, kappa);
+    check_rate_events(2, down, n.n2 * log_none(r0 * mt), n.n2 * r0 * mt, kappa);
     put_two_group(r, n);
     put_power(s, r, P(n.n1, n.n2));
     if (std::fmin(n.n1 * r1, n.n2 * r0) * mt < 10) r.notes.push_back(FEW_EVENTS);

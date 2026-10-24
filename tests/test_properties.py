@@ -2396,11 +2396,22 @@ def test_a_two_sided_logistic_power_counts_both_sides():
     ("prop.one", {"p0": "0.5", "p1": "0.50000001", "method": "normal", "test": "zp0"},
      "P0 = 0.5 and the actual proportion P1 = 0.50000001 "),
     ("prop.one.simon", {"p0": "0.99999", "p1": "0.999999"}, "For P0 = 0.99999 versus P1 = 0.999999,"),
-    ("prop.trend", {"props": "0.1 0.99999 0.2"}, "response proportions 0.1, 0.99999, 0.2 ")])
+    ("prop.trend", {"props": "0.1 0.99999 0.2"}, "response proportions 0.1, 0.99999, 0.2 "),
+    ("prop.trend", {"props": "0.1 0.10001 0.2"}, "response proportions 0.1, 0.10001, 0.2 "),
+    # only P1 from an odds ratio of 1 is P2 to a rounding error: a difference that is given is shown
+    ("prop.two", {"es": "diff", "d1": "3e-16", "p2": "0.6", "method": "normal"},
+     "P1 = 0.6000000000000003 and P2 = 0.6 (difference 3.331e-16, "),
+    ("prop.two", {"p1": "0.30016", "p2": "0.3", "method": "normal"}, "(difference 0.00016, ratio 1.00053, "),
+    ("prop.one", {"p0": "0.5", "p1": "0.500123"}, "a difference of 0.00012 between the null proportion P0 = 0.5 "),
+    ("prop.two.ni", {"scale": "diff", "d0": "-0.00016", "es": "diff", "d1": "0.05"}, "H0: P1 − P2 ≤ -0.00016 "),
+    ("prop.chisq", {"w": "0.00016"}, "an effect size of w = 0.00016 "),
+    ("gs.props", {"p1": "0.30001", "p2": "0.3"}, "to detect P1 = 0.30001 versus P2 = 0.3 "),
+    ("diag.paired", {"se1": "0.90001", "se2": "0.9"}, "the sensitivities 0.90001 and 0.9 "),
+    ("agree.kappa", {"prev": "0.99999", "kappa0": "0.4", "kappa1": "0.6"}, "positive ratings of 0.99999,")])
 def test_proportion_statements_show_values_apart(pid, inputs, says):
     """Proportion statements showed a value as its neighbor: 'ratio 1' for 0.99991, 'ICC 1' for 0.99999, 'P1 = 0.3
-    and P2 = 0.3' for two that differ, 'actual 0.0000' for a size of 4.6e-15, '100.0%' for an exposure of 99.9995%;
-    and 'difference -1.11e-16' for an odds ratio of 1."""
+    and P2 = 0.3' for two that differ, 'actual 0.0000' for a size of 4.6e-15, '100.0%' for an exposure of 99.9995%,
+    'difference 0.0002' for 0.00016; and 'difference -1.11e-16' for an odds ratio of 1."""
     stmt = first_row(run(pid, "power", {**base_inputs(pid), **inputs}))["_statement"]
     assert says in stmt, stmt
 
@@ -2429,8 +2440,25 @@ def test_a_poisson_rate_with_more_events_than_doubles_count():
             assert row["actual_alpha"] == pytest.approx(0.05, abs=1e-9), (n, alt, row)
     row = first_row(run("rates.one.poisson", "n", {**base, "lam1": "1.000000000000001", "power": "0.8"}))
     assert row["n"] == 7, row
+    # the difference it needs, (1.96 + 0.8416)·√(1/1e33), finer than the doubles next to λ0 = 1 (it said 1.753e-16)
     msg = run("rates.one.poisson", "lam1", {**base, "n": "1000"})["rows"][0]["_error"]
-    assert "cannot be told apart from" in msg, msg
+    assert msg.startswith("λ1 cannot be told apart from λ0 = 1: the difference of 8.859e-17 it needs is lost to "
+                          "rounding"), msg
+    # the normal approximation takes μ1 − μ0 from λ1 − λ0, not from two products that keep few of its digits:
+    # Φ(2.2204e-16·5e31/√5e31 − 1.96) = 0.3485 (it gave 0.2469)
+    row = first_row(run("rates.one.poisson", "power", {**base, "lam1": "1.0000000000000002", "n": "50", "test": "z",
+                                                       "method": "normal"}))
+    assert row["power"] == pytest.approx(0.348524, abs=1e-6), row
+
+
+@pytest.mark.parametrize("time", ["2e15", "1e17", "9007199254740994"])
+def test_an_exact_poisson_test_never_exceeds_alpha_with_many_events(time):
+    """Beyond 1e15 expected events the exact test's critical counts came from the normal quantile alone and could lie
+    a count inside the true ones: a size of 0.05 + 1.1e-10 at 1e17 events (two-sided), 0.05 + 1.7e-9 at 5e15."""
+    base = {**base_inputs("rates.one.poisson"), "lam0": "1", "lam1": "1", "time": time, "n": "1"}
+    for alt in ("two", "upper", "lower"):
+        row = first_row(run("rates.one.poisson", "power", {**base, "alternative": alt}))
+        assert 0.05 - 1e-8 < row["actual_alpha"] <= 0.05, (alt, row)
 
 
 def test_two_rates_with_next_to_no_events():
@@ -2449,7 +2477,14 @@ def test_two_rates_with_next_to_no_events():
     # approximation gave it 99.97%
     row = first_row(run("rates.two.poisson", "n", {**base_inputs("rates.two.poisson"), "method": "h1", "alpha": "0.25",
                                                    "alloc": "n2", "n2": "500", "lam1": "6.25", "lam2": "1"}))
-    assert row["n1"] == 2 and row["_notes"][0].startswith("Smaller samples leave a group so few events"), row
+    assert row["n1"] == 2 and row["_notes"][0].startswith("Smaller samples leave a group so little chance of an "
+                                                          "event"), row
+    # with overdispersed counts many expected events can still leave a group little chance of any: a dispersion of
+    # 1e6 gathers group 1's 100 in so few subjects that the chance of an event is 0.00016, below a side's 2.5%
+    msg = run("rates.two.negbin", "power", {**base, "kappa": "1e6", "r0": "10", "rr": "1", "n1": "10", "n2": "10",
+                                            "time": "1"})["rows"][0]["_error"]
+    assert msg.startswith("group 1 expects 100 events, but with a dispersion of 1000000 they gather in so few "
+                          "subjects that its chance of any is only 0.000161;"), msg
 
 
 def test_a_win_ratio_loss_rate_next_to_zero_changes_nothing():
@@ -2481,3 +2516,22 @@ def test_a_one_sided_bound_on_the_wrong_side_of_the_estimate_says_why():
         msg = run(pid, "n", {**base_inputs(pid), **inputs, "sides": "upper", "conf": "0.500000000000001",
                              "width": "0.01"})["rows"][0]["_error"]
         assert msg.startswith("the confidence is so close to 50% that the bound lies within a rounding error"), msg
+
+
+@pytest.mark.parametrize("pid,inputs", [
+    ("surv.logrank.ni", {"hr": "1.3"}),
+    ("means.one.equiv", {"delta": "0.5"}),
+    ("means.two.equiv", {"delta": "-0.5"}),
+    ("means.be.ratio", {"theta0": "1.25"}),
+    ("prop.two.equiv", {"es": "diff", "d1": "0.1", "n1": "500", "n2": "500"})])
+def test_a_non_inferiority_or_equivalence_margin_has_at_most_the_power_alpha(pid, inputs):
+    """On the margin, or on an equivalence limit, the power is the test's size, as means.two.ni and prop.two.ni give
+    it; these refused it ('the true difference must lie strictly between the equivalence limits').  A sample size
+    still cannot be solved for, and beyond the margin the power is still refused."""
+    row = first_row(run(pid, "power", {**base_inputs(pid), **inputs}))
+    assert row and 0 < row["power"] <= row["alpha"] + 1e-12, row  # (t-tests on few subjects: well below alpha)
+    assert "_error" in run(pid, "n", {**base_inputs(pid), **inputs})["rows"][0]
+    key, value = next(iter(inputs.items()))
+    beyond = {"hr": "1.4", "delta": "0.6" if value == "0.5" else "-0.6", "theta0": "1.3", "es": "diff"}[key]
+    outside = {**inputs, key: beyond} if key != "es" else {**inputs, "d1": "0.11"}
+    assert "_error" in run(pid, "power", {**base_inputs(pid), **outside})["rows"][0]

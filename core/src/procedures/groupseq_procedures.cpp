@@ -4,6 +4,7 @@
 #include <memory>
 #include <set>
 
+#include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 #include "procedures/groupseq.hpp"
 #include "util/memo.hpp"
@@ -674,9 +675,10 @@ Procedure gs_props() {
   };
   p.columns = [](const Scenario& s) { return gs_columns(s, {col("p1", "P1", "num"), col("p2", "P2", "num")}); };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));  // 0.30001 versus 0.3, not 0.3 versus 0.3
     return "A group-sequential design with " + design_words(s, r) + " and a maximum of " + fint(r.num("n1")) + " and " +
-           fint(r.num("n2")) + " subjects per group " + achieves_singular(s, r) + " to detect P1 = " + fnum(r.num("p1")) +
-           " versus P2 = " + fnum(r.num("p2")) + " with the " +
+           fint(r.num("n2")) + " subjects per group " + achieves_singular(s, r) + " to detect P1 = " + p1 +
+           " versus P2 = " + p2 + " with the " +
            (s.is("stat", "pooled") ? "pooled" : "unpooled") + " z-test. The expected total sample size is " +
            fnum(r.num("en1"), 1) + " under H1 and " + fnum(r.num("en0"), 1) + " under H0.";
   };

@@ -405,13 +405,13 @@ Procedure two_props() {
                                                              {"zunpool", "unpooled z-test"},
                                                              {"zpoolcc", "continuity-corrected z-test"},
                                                              {"fisher", "Fisher's exact test"}};
-    // the proportions apart from each other, and the ratios from 1, their value of no effect; P1 from an odds ratio
-    // of 1 is P2 to a rounding error, which is no difference
-    const bool same = unrounded(r.num("p1"), r.num("p2")) == r.num("p2");
+    // the proportions apart from each other, the difference from 0 and the ratios from 1, their values of no effect;
+    // P1 from an odds ratio of 1 is P2 to a rounding error (0.5999999999999999 for 0.6), which is no difference
+    const bool same = r.num("p1") == r.num("p2") || (s.solve != "p1" && s.is("es", "or") && s("or1") == 1);
     const auto [p1, p2] = fnum_apart(same ? r.num("p2") : r.num("p1"), r.num("p2"));
     std::string t = "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
                     " to detect a difference between the group proportions P1 = " + p1 + " and P2 = " + p2 +
-                    " (difference " + fnum(same ? 0.0 : r.num("diff")) + ", ratio " +
+                    " (difference " + fnum_apart(same ? 0.0 : r.num("diff"), 0).first + ", ratio " +
                     fnum_from(same ? 1.0 : r.num("ratio"), 1, 3) + ", odds ratio " +
                     fnum_from(same ? 1.0 : r.num("or"), 1, 3) + ") using a " + alt_words(alt(s)) + " " +
                     names.at(s.s("test")) + " at a target significance level of " + fnum(r.num("alpha"));
@@ -647,11 +647,12 @@ Procedure two_props_ci() {
     const bool two = s.is("sides", "two");
     const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));
     const double w = r.num("width");
-    std::string where = (two ? "with a width of " : "whose bound lies at a distance of ") + fnum_fine(w);
+    // the width with the digits that keep it to within 5% (0.00016, not 0.0002)
+    std::string where = (two ? "with a width of " : "whose bound lies at a distance of ") + fnum_apart(w, 0).first;
     if (!two && near_estimate(w, r.num("p1"), r.num("p2")))
       where = "whose bound lies within a rounding error of the estimate";
     else if (!two && w < 0)
-      where = "whose bound lies " + fnum_fine(-w) + (s.is("sides", "upper") ? " below" : " above") +
+      where = "whose bound lies " + fnum_apart(-w, 0).first + (s.is("sides", "upper") ? " below" : " above") +
               " the estimate, on the wrong side of it (" + (s.is("method", "ac") ? AC_WRONG_SIDE : "at this confidence") +
               ")";
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " give a " +
