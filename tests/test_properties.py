@@ -948,24 +948,20 @@ def test_squares_that_underflow_in_a_variance():
     assert row["delta"] * 1e-30 == pytest.approx(one["delta"], rel=1e-9), row
 
 
-def test_an_input_too_small_to_compute_with_is_named():
-    row = run("prop.cc", "power", {**base_inputs("prop.cc"), "m": "1e-15"})["rows"][0]
-    assert "M is too small: there would be no controls" in row.get("_error", ""), row
-
-
-def test_the_rule_for_the_number_of_controls_is_said_in_every_mode():
-    """Controls are M × cases rounded up, a product within 1e-9 above a whole number counting as that number, so that
-    one of 1e-9 or less leaves none: the message said "(M × cases, rounded up)", which makes such a product 1, and the
-    n solve spoke of an allocation ratio and group 2."""
+def test_a_tiny_number_of_controls_per_case_leaves_one_control():
+    """Controls are M × cases rounded up, which gives at least 1 however small M is, as group 2 of the means' interval
+    and cluster designs has (rounded up after taking off 1e-9, a product of 1e-9 or less left none, refused as "M is
+    too small: there would be no controls").  The n solve, which starts at 2 in each group, says when no number of
+    cases gives 2 controls."""
     base = {**base_inputs("prop.cc"), "method": "normal"}
-    says = "M is too small: there would be no controls (M × cases is 1e-9 or less)"
+    for solve in ("power", "or"):
+        one = first_row(run("prop.cc", solve, {**base, "m": "0.01", "ncase": "100"}))
+        for m in ("1e-11", "1e-15", "1e-30"):
+            row = first_row(run("prop.cc", solve, {**base, "m": m, "ncase": "100"}))
+            assert row and row["nctrl"] == 1 and row["power"] == one["power"], (solve, m, row)
     for m in ("1e-11", "1e-30"):
-        for solve in ("power", "or"):
-            row = run("prop.cc", solve, {**base, "m": m, "ncase": "100"})["rows"][0]
-            assert row.get("_error") == says, (solve, m, row)
         row = run("prop.cc", "n", {**base, "m": m})["rows"][0]
         assert row.get("_error") == "M is too small: even 10000000 cases would have fewer than 2 controls", (m, row)
-    assert first_row(run("prop.cc", "power", {**base, "m": "1e-11", "ncase": "101"}))["nctrl"] == 1
 
 
 @pytest.mark.parametrize("pid,solve,inputs,key,says", [
@@ -1170,8 +1166,31 @@ def test_a_win_ratio_median_of_about_zero(key):
 
 
 def test_an_implied_p1_that_rounds_to_one_is_named():
+    """A P1 a rounding error below 1 was said to be 1; the message now says how far below 1 it lies."""
     row = run("prop.two.ni", "n", {**base_inputs("prop.two.ni"), "es": "or", "or1": "1e30"})["rows"][0]
-    assert row["_error"] == "the implied P1 = 1 is not strictly between 0 and 1", row
+    assert row["_error"] == "the implied P1 = 1 − 6.667e-31 rounds to 1; it must lie strictly between 0 and 1 by " \
+                            "more than that", row
+    for es, key, value, p2 in (("diff", "d1", "0.49999999999999994", "0.5"), ("ratio", "r1", "1.4285714285714286", "0.7")):
+        row = run("prop.two.ni", "power", {**base_inputs("prop.two.ni"), "es": es, key: value, "p2": p2})["rows"][0]
+        assert "rounds to 1" in row["_error"], row
+    row = run("prop.two.ni", "power", {**base_inputs("prop.two.ni"), "es": "ratio", "r1": "1.4285714285714288",
+                                       "p2": "0.7"})["rows"][0]
+    assert row["_error"] == "the implied P1 = 1 + 1.142e-16 is not strictly between 0 and 1", row
+
+
+def test_a_boundary_p1_a_rounding_error_below_one_has_its_size():
+    """P1 on the boundary of H0, P2 + D0 or R0 × P2, was refused as 1 (and outside (0, 1)) once it rounded to 1,
+    though it lies below 1 and q1_at keeps 1 − P1.  Its exact size now agrees with 50-digit enumerations; one that
+    lies a rounding error above 1 is refused, saying so."""
+    base = {**base_inputs("prop.two.ni"), "method": "exact", "alloc": "sep", "n1": "30", "n2": "30", "h1": "lower",
+            "alpha": "0.025", "es": "props", "p1": "0.5"}
+    for scale, key, value, p2, size in (("diff", "d0", "0.49999999999999994", "0.5", 0.021386972628533886778),
+                                        ("ratio", "r0", "1.4285714285714286", "0.7", 0.030154943102089302044)):
+        row = first_row(run("prop.two.ni", "power", {**base, "scale": scale, key: value, "p2": p2}))
+        assert row["actual_alpha"] == pytest.approx(size, rel=1e-14, abs=0), (scale, row)
+    row = run("prop.two.ni", "power", {**base, "scale": "diff", "d0": "0.5000000000000001", "p2": "0.5"})["rows"][0]
+    assert row["_error"] == "the boundary of the null hypothesis, P1 = 1 + 1.11e-16 (P2 + D0), must lie strictly " \
+                            "between 0 and 1", row
 
 
 @pytest.mark.parametrize("method", ["normal", "exact"])
@@ -1281,6 +1300,24 @@ def test_score_tests_at_proportions_near_0_or_1_by_the_normal_approximation(scal
     assert row["power"] == pytest.approx(power, rel=1e-12, abs=0), row
 
 
+@pytest.mark.parametrize("inputs,power", [
+    ({"p1": "1e-9", "p2": "0.600000001", "d0": "-0.6", "n1": "2", "n2": "1000000000"}, 0.025000000739583647),
+    ({"p1": "2e-9", "p2": "0.600000001", "d0": "-0.6", "n1": "2", "n2": "1000000000"}, 0.049662335449841362),
+    ({"p1": "1e-9", "p2": "0.300000001", "d0": "-0.3", "n1": "2", "n2": "1000000000", "h1": "lower"},
+     0.024999999226623556),
+    ({"p1": "0.447994", "p2": "4.96967e-06", "d0": "0.448552096999", "n1": "10000000", "n2": "184", "h1": "lower"},
+     0.86742103626777525599)])
+def test_a_difference_margin_with_very_unequal_groups_by_the_normal_approximation(inputs, power):
+    """Where the other group's proportion lies near |D0|, its part of the score cubic's coefficient, v·δ − (1 − v)·σ,
+    cancelled by as much as that group's weight: with groups of 2 and 1e9 the power was 1.3e-9 off (7.9e-10 at
+    D0 = −0.3; now taken as v − σ).  And where ph1 − ph2 and D0 cancel with |D0| below 1/2, the rounding error of
+    ph1 − ph2 is much of the numerator, over a variance that an estimate near 0 makes small: 2e-14 off with groups of
+    1e7 and 184 (it is now added back at every margin).  The references evaluate the same formula to 60 digits."""
+    row = first_row(run("prop.two.ni", "power", {"scale": "diff", "method": "normal", "alloc": "sep", "h1": "upper",
+                                                 "alpha": "0.025", "es": "props", **inputs}))
+    assert row["power"] == pytest.approx(power, rel=1e-14, abs=0), row
+
+
 @pytest.mark.parametrize("method,inputs", [
     ("exact", {"p1": "0.001", "p2": "0.2", "n1": "50", "r0": "1e-17", "h1": "lower"}),
     ("exact", {"p1": "1e-25", "p2": "0.2", "n1": "50", "r0": "1e-17", "h1": "lower"}),
@@ -1334,49 +1371,56 @@ def test_a_given_odds_ratio_is_reported_as_given(pid, inputs):
     assert row and row[key] == float(inputs["or1" if "or1" in inputs else "or"]), row
 
 
-def test_a_cluster_ratio_that_leaves_group_2_no_clusters_is_refused():
-    """k2 = k1 × the ratio, rounded up, was 0: a power of 100% (from min(1, NaN + NaN)), as the k solve refuses.  A
-    product within 1e-9 above a whole number counts as that number, so that one of 1e-9 or less leaves group 2 none,
-    which the message of either mode says (the power's spoke of rounding up, which makes such a product 1)."""
+def test_a_tiny_cluster_ratio_leaves_group_2_one_cluster():
+    """k2 = k1 × the ratio, rounded up, was 0: a power of 100% (from min(1, NaN + NaN)).  Rounded up, it is at least
+    1 however small the ratio is, as in the means' cluster design (rounded up after taking off 1e-9, a product of 1e-9
+    or less left group 2 no clusters, which was refused)."""
     base = base_inputs("prop.two.cluster")
-    says = "the cluster ratio is too small: group 2 would have no clusters (k1 × the cluster ratio is 1e-9 or less)"
+    one = first_row(run("prop.two.cluster", "power", {**base, "k1": "10", "kr": "0.1"}))
     for kr in ("1e-12", "5e-11"):
-        row = run("prop.two.cluster", "power", {**base, "k1": "10", "kr": kr})["rows"][0]
-        assert row.get("_error") == says, row
+        row = first_row(run("prop.two.cluster", "power", {**base, "k1": "10", "kr": kr}))
+        assert row and row["k2"] == 1 and row["power"] == one["power"] and row["power"] < 1, row
     row = run("prop.two.cluster", "k", {**base, "kr": "1e-30"})["rows"][0]
-    assert row.get("_error") == says, row
-    assert first_row(run("prop.two.cluster", "power", {**base, "k1": "11", "kr": "1e-10"}))["k2"] == 1
+    assert row.get("_error") == ("the target power cannot be reached with a sample size up to 100000000 (group 2 has "
+                                 "1 cluster at every k1 up to that: k1 × the cluster ratio is 1 or less)"), row
 
 
-def test_an_allocation_ratio_that_leaves_group_2_of_an_interval_no_subjects_is_refused():
+def test_a_tiny_allocation_ratio_leaves_group_2_of_an_interval_one_subject():
     """N2 = R × N1, rounded up, was 0: the Wald limits were 0/0, which their clamps made −1 and 1, a width of 2 given
-    as an answer (Agresti–Caffo gave a finite interval for the empty group, Newcombe no answer), and a one-sided bound
-    pressed against 1 met a target width with 1 and 0 subjects.  As with the cluster ratio, a product of 1e-9 or less
-    leaves group 2 no subjects, and both modes say so."""
+    as an answer (Agresti–Caffo gave a finite interval for the empty group, Newcombe no answer).  Rounded up, it is at
+    least 1 however small R is, as in the means' interval (rounded up after taking off 1e-9, a product of 1e-9 or less
+    was refused for leaving group 2 no subjects)."""
     base = base_inputs("prop.two.ci")
-    says = "the allocation ratio is too small: group 2 would have no subjects (R × N1 is 1e-9 or less)"
-    for method in ("wald", "waldcc", "ac", "newcombe"):
-        row = run("prop.two.ci", "width", {**base, "method": method, "n1": "10", "r": "5e-11"})["rows"][0]
-        assert row.get("_error") == says, (method, row)
-    row = run("prop.two.ci", "n", {**base, "r": "1e-30"})["rows"][0]
-    assert row.get("_error") == says, row
+    for method in ("wald", "waldcc", "ac", "newcombe", "newcombecc"):
+        one = first_row(run("prop.two.ci", "width", {**base, "method": method, "n1": "10", "r": "0.05"}))
+        row = first_row(run("prop.two.ci", "width", {**base, "method": method, "n1": "10", "r": "5e-11"}))
+        assert row and row["n2"] == 1 and row["width"] == one["width"], (method, row)
     row = first_row(run("prop.two.ci", "n", {**base, "method": "wald", "sides": "upper", "p1": "0.3", "p2": "0.2",
                                              "r": "5e-11", "width": "1"}))
-    assert row["n1"] == 21 and row["n2"] == 1, row
-    assert first_row(run("prop.two.ci", "width", {**base, "n1": "11", "r": "1e-10"}))["n2"] == 1
+    assert row["n1"] == 1 and row["n2"] == 1, row
 
 
 def test_mcnemars_normal_approximation_where_p10_rounds_to_one():
     """ψ − (P10 − P01)², the variance of a pair's difference, cancelled to 0 once P10 rounded to 1 (ψ = 1 and an odds
-    ratio of 1e30): with a critical value of exactly √n the numerator was 0 as well, and min(1, no number) made the
-    power 100%, which the n solve took (the one-sided test had no answer).  The power there is 50% (0.5 − 8e-16, the
-    formula to 60 digits).  ψ = 1 could also come out a rounding error above 1 from P10 and P01, refused as P10 + P01
-    exceeding 1."""
+    ratio of 1e30): with a critical value of √n the numerator was 0 as well, and min(1, no number) made the power
+    100%, which the n solve took (the one-sided test had no answer).  The variance is now 4e-30, and the power steps
+    from 0 to 1 within the rounding of the critical value: at α = 0.0455002638963584 (z = 2 + 1.03e-16) and 4 pairs
+    it is 0.4795 to 60 digits, where the engine gave 0.5 (z rounded to 2) or 0.544 (fused multiply-adds), so it is
+    refused rather than shown, and so is an n that such a power decided.  Away from the step it is 0 or 1.  ψ = 1
+    could also come out a rounding error above 1 from P10 and P01, refused as P10 + P01 exceeding 1."""
     base = {**base_inputs("prop.paired.mcnemar"), "method": "normal", "es": "or", "psi": "1", "orr": "1e30"}
     for alternative, alpha in (("two", "0.0455002638963584"), ("upper", "0.0227501319481792")):
-        row = first_row(run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha,
-                                                              "n": "4"}))
-        assert row["power"] == pytest.approx(0.5, abs=1e-12), (alternative, row)
+        res = run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha, "n": "4"})
+        assert first_row(res) is None, (alternative, res)
+        assert "variance of only 4e-30" in res["rows"][0]["_error"], (alternative, res)
+        assert first_row(run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha,
+                                                              "n": "5"}))["power"] == 1
+        assert first_row(run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha,
+                                                              "n": "3"}))["power"] == 0
+        res = run("prop.paired.mcnemar", "n", {**base, "alternative": alternative, "alpha": alpha, "power": "0.8"})
+        assert first_row(res) is None and "with 4 pairs cannot be computed" in res["rows"][0]["_error"], res
+    row = first_row(run("prop.paired.mcnemar", "n", {**base, "alternative": "two", "alpha": "0.05", "power": "0.8"}))
+    assert row["n"] == 4 and row["power"] == 1, row
     for method in ("exact", "normal"):
         row = first_row(run("prop.paired.mcnemar", "power", {**base, "method": method, "orr": "9.08406134939307e-05",
                                                               "alternative": "two", "alpha": "0.05", "n": "50"}))

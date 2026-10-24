@@ -120,7 +120,8 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
   // 1e300, subnormal ones) are refused, as the next test checks
   const Case cases[] = {
       {"means.two.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
-      {"prop.two.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
+      // group 2 has 1 cluster at any k1, which limits the power
+      {"prop.two.cluster", "k", R"({"kr":"1e-30"})", "group 2 has 1 cluster at every k1"},
       {"diag.auc", "n", R"({"ratio":"1e-30"})", "ratio of controls to cases is too small"},
       {"sim.lmm.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
       {"sim.glmm.cluster", "k", R"({"kr":"1e-30"})", "cluster ratio is too small"},
@@ -507,9 +508,10 @@ TEST_CASE("extremes: odds-ratio limits far from 1 never lower the power, and an 
     CHECK(ni > 0.99);
     CHECK_CLOSE(power("prop.two.ni", common + R"(,"h1":"lower","or0":"1e30")"), ni, 1e-9, 0);
   }
-  // a cluster ratio that leaves group 2 no clusters gave a power of 100%
-  const std::string empty = message(run("prop.two.cluster", "power", R"({"k1":"10","kr":"1e-12"})"));
-  CHECK(empty.find("group 2 would have no clusters") != std::string::npos);
+  // a cluster ratio that left group 2 no clusters gave a power of 100%; rounded up, it leaves one
+  const auto tiny = run("prop.two.cluster", "power", R"({"k1":"10","kr":"1e-12"})").get("rows").elements().at(0);
+  CHECK_EQ(tiny.get("k2").as_number(NAN), 1.0);
+  CHECK(tiny.get("power").as_number(NAN) < 1);
 }
 
 TEST_CASE("extremes: difference margins next to 0 and ratio margins far from 1 keep the tables' variances") {
