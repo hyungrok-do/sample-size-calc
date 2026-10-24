@@ -3,7 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <limits>
+#include <locale>
+#include <sstream>
 #include <utility>
 
 #include "util/numtext.hpp"
@@ -176,6 +180,13 @@ std::vector<Token> tokenize(const std::string& s, std::size_t max_tokens, std::s
                                 "' as a number (separate several values with spaces)";
         return {};
       }
+      // a number too small for a double is not 0: it is read as the smallest double of its sign, so that it is
+      // refused for its size as 1e-31 is, not taken for 0 ('1e-400' was)
+      if (v == 0) {
+        bool digit = false;  // other than 0, before any exponent
+        for (std::size_t k = i; k < j && s[k] != 'e' && s[k] != 'E'; ++k) digit = digit || (s[k] >= '1' && s[k] <= '9');
+        if (digit) v = std::copysign(std::numeric_limits<double>::denorm_min(), v);
+      }
       if (j < s.size() && s[j] == '%') {
         err = "could not read '" + quoted(s.substr(i, j - i + 1)) +
               "': write the number without '%' (a probability as a decimal, such as 0.8)";
@@ -237,59 +248,158 @@ Decimal decimal(const std::string& t, double v) {
   return d;
 }
 
-// A whole number: its sign and decimal digits, without leading zeros (none for 0, which is not negative)
+// A whole number: its sign and its digits in base 10^9, least significant first, without leading zeros (none for 0,
+// which is not negative).  Sums of numbers typed with exponents far apart (1e-300 and 1e300) have hundreds of digits.
 struct Whole {
   bool neg = false;
-  std::string digits;
+  std::vector<std::uint32_t> limbs;
 };
 
-int compare_digits(const std::string& x, const std::string& y) {
-  if (x.size() != y.size()) return x.size() < y.size() ? -1 : 1;
-  const int c = x.compare(y);
-  return (c > 0) - (c < 0);
-}
+constexpr std::uint32_t BASE = 1000000000;
 
-// x + y, or x - y where x >= y, of the digits of two whole numbers
-std::string add_digits(const std::string& x, const std::string& y, bool subtract) {
-  std::string out;  // least significant digit first
-  int carry = 0;
-  for (std::size_t k = 0; k < x.size() || k < y.size() || carry; ++k) {
-    const int dx = k < x.size() ? x[x.size() - 1 - k] - '0' : 0, dy = k < y.size() ? y[y.size() - 1 - k] - '0' : 0;
-    const int d = subtract ? dx - dy - carry : dx + dy + carry;
-    carry = subtract ? d < 0 : d > 9;
-    out += static_cast<char>('0' + (d + 10) % 10);
+// The whole number written with the decimal digits t
+std::vector<std::uint32_t> limbs_of(const std::string& t) {
+  std::vector<std::uint32_t> out;
+  for (std::size_t end = t.size(); end > 0;) {
+    const std::size_t begin = end > 9 ? end - 9 : 0;
+    std::uint32_t limb = 0;
+    for (std::size_t k = begin; k < end; ++k) limb = 10 * limb + static_cast<std::uint32_t>(t[k] - '0');
+    out.push_back(limb);
+    end = begin;
   }
-  while (!out.empty() && out.back() == '0') out.pop_back();
-  return std::string(out.rbegin(), out.rend());
+  while (!out.empty() && out.back() == 0) out.pop_back();
+  return out;
 }
 
-Whole plus(const Whole& x, const Whole& y) {
-  if (x.neg == y.neg) return {x.neg, add_digits(x.digits, y.digits, false)};
-  const int c = compare_digits(x.digits, y.digits);
-  if (c == 0) return {};
-  return c > 0 ? Whole{x.neg, add_digits(x.digits, y.digits, true)}
-               : Whole{y.neg, add_digits(y.digits, x.digits, true)};
+int compare_limbs(const std::vector<std::uint32_t>& x, const std::vector<std::uint32_t>& y) {
+  if (x.size() != y.size()) return x.size() < y.size() ? -1 : 1;
+  for (std::size_t k = x.size(); k-- > 0;)
+    if (x[k] != y[k]) return x[k] < y[k] ? -1 : 1;
+  return 0;
+}
+
+// x += y, of magnitudes
+void add_limbs(std::vector<std::uint32_t>& x, const std::vector<std::uint32_t>& y) {
+  if (x.size() < y.size()) x.resize(y.size(), 0);
+  std::uint32_t carry = 0;
+  for (std::size_t k = 0; k < x.size() && (k < y.size() || carry); ++k) {
+    const std::uint32_t d = x[k] + (k < y.size() ? y[k] : 0) + carry;  // below 2^31
+    carry = d >= BASE;
+    x[k] = carry ? d - BASE : d;
+  }
+  if (carry) x.push_back(1);
+}
+
+// x = x - y where x > y, or x = y - x where y > x (`reverse`), of magnitudes
+void subtract_limbs(std::vector<std::uint32_t>& x, const std::vector<std::uint32_t>& y, bool reverse) {
+  if (x.size() < y.size()) x.resize(y.size(), 0);
+  std::uint32_t borrow = 0;
+  for (std::size_t k = 0; k < x.size() && (reverse || k < y.size() || borrow); ++k) {
+    const std::uint32_t yk = k < y.size() ? y[k] : 0, from = reverse ? yk : x[k], take = (reverse ? x[k] : yk) + borrow;
+    borrow = from < take;
+    x[k] = borrow ? from + BASE - take : from - take;
+  }
+  while (!x.empty() && x.back() == 0) x.pop_back();
+}
+
+// x += y
+void plus(Whole& x, const Whole& y) {
+  if (y.limbs.empty()) return;
+  if (x.limbs.empty() || x.neg == y.neg) {
+    x.neg = y.neg;
+    add_limbs(x.limbs, y.limbs);
+    return;
+  }
+  const int c = compare_limbs(x.limbs, y.limbs);
+  if (c == 0) {
+    x = Whole{};
+  } else {
+    subtract_limbs(x.limbs, y.limbs, c < 0);
+    if (c < 0) x.neg = y.neg;
+  }
+}
+
+Whole negative(Whole w) {
+  if (!w.limbs.empty()) w.neg = !w.neg;
+  return w;
 }
 
 int compare(const Whole& x, const Whole& y) {
   if (x.neg != y.neg) return x.neg ? -1 : 1;
-  const int c = compare_digits(x.digits, y.digits);
+  const int c = compare_limbs(x.limbs, y.limbs);
   return x.neg ? -c : c;
 }
 
-// The double nearest w * 10^e
-double nearest(const Whole& w, long e) {
-  if (w.digits.empty()) return 0;
+// x * m, of a magnitude and a factor below 2^32
+std::vector<std::uint32_t> times(const std::vector<std::uint32_t>& x, std::uint64_t m) {
+  std::vector<std::uint32_t> out;
+  std::uint64_t carry = 0;
+  for (std::size_t k = 0; k < x.size() || carry; ++k) {
+    carry += (k < x.size() ? x[k] : 0) * m;  // below 2^62 + 2^33
+    out.push_back(static_cast<std::uint32_t>(carry % BASE));
+    carry /= BASE;
+  }
+  while (!out.empty() && out.back() == 0) out.pop_back();
+  return out;
+}
+
+// The decimal digits of the limbs of w from its most significant down to limb `last`
+std::string digits_of(const std::vector<std::uint32_t>& w, std::size_t last) {
+  std::string out = std::to_string(w.back());
+  for (std::size_t k = w.size() - 1; k-- > last;) {
+    char d[9];
+    for (std::uint32_t j = 9, x = w[k]; j-- > 0; x /= 10) d[j] = static_cast<char>('0' + x % 10);
+    out.append(d, 9);
+  }
+  return out;
+}
+
+// Decimal text read as the double nearest it, as text::parse_double reads it, from one stream for all the values of a
+// range: making a stream takes longer than reading a number from it
+class Reader {
+ public:
+  Reader() { in_.imbue(std::locale::classic()); }
+  double operator()(const std::string& t) {
+    in_.clear();
+    in_.str(t);
+    double v = 0;
+    if (!(in_ >> v)) text::parse_double(t, v);  // out of the doubles' range, which it handles
+    return v;
+  }
+
+ private:
+  std::istringstream in_;
+};
+
+// The double nearest w * 10^e.  One too small for a double is the smallest double of its sign, not 0, as a number
+// typed so is.
+double nearest(const Whole& w, long e, Reader& read) {
+  if (w.limbs.empty()) return 0;
+  const std::size_t n = w.limbs.size();
   double v = 0;
-  if (w.digits.size() <= 15 && e >= -22 && e <= 22) {
+  if ((n == 1 || (n == 2 && w.limbs[1] < 1000000)) && e >= -22 && e <= 22) {
     // a whole number below 2^53 and a power of ten up to 1e22 are doubles exactly: one product or quotient rounds once
     static const double ten[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
                                  1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
-    for (char c : w.digits) v = 10 * v + (c - '0');
+    v = (n == 2 ? w.limbs[1] * 1e9 : 0) + w.limbs[0];
     v = e >= 0 ? v * ten[e] : v / ten[-e];
+  } else if (n < 12) {
+    v = read(digits_of(w.limbs, 0) + "e" + std::to_string(e));
   } else {
-    text::parse_double(w.digits + "e" + std::to_string(e), v);
+    // 100 digits or more, which take microseconds to read: its first 19 digits t, from the three leading limbs.
+    // Where every digit after them is 0, w is t times the power of ten of t's last digit; where one is not, w lies
+    // between that and t + 1 times it, and where those two round to the same double, so does w.  Only where they do
+    // not is every digit read.
+    const std::string lead = digits_of(w.limbs, n - 3), t = lead.substr(0, 19);
+    const long last = e + 9 * static_cast<long>(n - 3) + static_cast<long>(lead.size()) - 19;
+    const std::string exp = "e" + std::to_string(last);
+    bool rest = lead.find_first_not_of('0', 19) != std::string::npos;
+    for (std::size_t k = 0; k < n - 3 && !rest; ++k) rest = w.limbs[k] != 0;
+    v = read(t + exp);
+    if (rest && read(std::to_string(std::stoull(t) + 1) + exp) != v)
+      v = read(digits_of(w.limbs, 0) + "e" + std::to_string(e));
   }
+  if (v == 0) v = std::numeric_limits<double>::denorm_min();
   return w.neg ? -v : v;
 }
 
@@ -339,34 +449,51 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
         res.error = "range step must not be zero";
         return res;
       }
-      const bool down = (b - a) * step < 0;
-      if (down) step = -step;  // allow "10 to 1 by 1" (descending)
-      const double count = std::floor((b - a) / step + 1e-9) + 1;
-      if (count > static_cast<double>(max_values) || res.values.size() + static_cast<std::size_t>(count) > max_values) {
-        res.error = "too many values (limit " + std::to_string(max_values) + ")";
-        return res;
-      }
-      res.ends.push_back(a);
-      res.ends.push_back(b);
       // a + k * step from the decimals typed, so the start is the value typed, so is the end where the steps reach
-      // it (each is checked as it would be alone), and a range that crosses 0 has 0 among its values.  The count
-      // allows a step past the end by a billionth of a step ('0 to 0.6666666666 by 0.11111111111' has 7 values): that
-      // value is the end.
+      // it (each is checked as it would be alone), and a range that crosses 0 has 0 among its values.  The steps go
+      // toward the end whatever the sign of the step ("10 to 1 by 1" descends), and the count allows a step past the
+      // end by a billionth of a step ('0 to 0.6666666666 by 0.11111111111' has 7 values): that value is the end.
+      // The count is worked out from the decimals too: in doubles, the rounding of the ends shifts (b - a) / step
+      // by more than that billionth once the start is a million steps or more ('1.96 to 1.9600003 by 0.00000001'
+      // lost its end).
       const Decimal da = decimal(toks[i].text, a), db = decimal(toks[i + 2].text, b);
-      Decimal ds = used == 5 ? decimal(toks[i + 4].text, toks[i + 4].value) : Decimal{false, "1", 0};
-      if (down) ds.neg = !ds.neg;
+      const Decimal ds = used == 5 ? decimal(toks[i + 4].text, toks[i + 4].value) : Decimal{false, "1", 0};
       long e = ds.exp;  // the exponent of the least significant digit typed (the step is not 0)
       for (const Decimal* d : {&da, &db})
         if (!d->digits.empty()) e = std::min(e, d->exp);
       const auto whole = [&](const Decimal& d) {
         if (d.digits.empty()) return Whole{};
-        return Whole{d.neg, d.digits + std::string(static_cast<std::size_t>(d.exp - e), '0')};
+        return Whole{d.neg, limbs_of(d.digits + std::string(static_cast<std::size_t>(d.exp - e), '0'))};
       };
-      const Whole s = whole(ds), end = whole(db);
-      Whole v = whole(da);
-      for (long k = 0; k < static_cast<long>(count); ++k) {
-        if (k > 0) v = plus(v, s);
-        res.values.push_back(k == 0 ? a : compare(v, end) * (step > 0 ? 1 : -1) >= 0 ? b : nearest(v, e));
+      const Whole start = whole(da), end = whole(db);
+      Whole length = end, s = whole(ds);
+      plus(length, negative(start));
+      s.neg = length.neg;
+      // the steps k with k * step <= (end - start) + step / 10^9, in whole numbers k * step * 10^9 <= (end - start)
+      // * 10^9 + step, are those with k * step <= (end - start) + step without its last limb (10^9 is a limb)
+      std::vector<std::uint32_t> reach = length.limbs;
+      if (!s.limbs.empty()) add_limbs(reach, std::vector<std::uint32_t>(s.limbs.begin() + 1, s.limbs.end()));
+      const std::size_t room = max_values - res.values.size();
+      if (compare_limbs(times(s.limbs, room), reach) <= 0) {  // room + 1 values or more
+        res.error = "too many values (limit " + std::to_string(max_values) + ")";
+        return res;
+      }
+      std::size_t steps = 0, over = room;  // steps reach no further than the end allows, over does
+      while (over - steps > 1) {
+        const std::size_t mid = steps + (over - steps) / 2;
+        if (compare_limbs(times(s.limbs, mid), reach) <= 0) {
+          steps = mid;
+        } else {
+          over = mid;
+        }
+      }
+      res.ends.push_back(a);
+      res.ends.push_back(b);
+      Whole v = start;
+      Reader read;
+      for (std::size_t k = 0; k <= steps; ++k) {
+        if (k > 0) plus(v, s);
+        res.values.push_back(k == 0 ? a : compare(v, end) * (length.neg ? -1 : 1) >= 0 ? b : nearest(v, e, read));
       }
       i += used;
       continue;

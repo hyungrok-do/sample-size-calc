@@ -111,11 +111,12 @@ worker always checks the page itself with the server.
   30 cores or more could need more than that. After such a row, the page runs
   the calculation again with one study at a time, as the one-thread engine
   does, which can take many times longer. The first answer stays on show
-  meanwhile, and stays if that run is stopped or fails. If the engine stops
-  during a calculation (it traps, or has no memory left even for an answer),
-  the page starts a fresh one at once. After the multi-core engine, it uses
-  the one-thread engine for the rest of the visit and runs the calculation
-  again; otherwise it explains what happened.
+  meanwhile, and stays if that run is stopped, fails or refuses the whole
+  request (for want of memory, say). If the engine stops during a calculation
+  (it traps, or has no memory left even for an answer), the page starts a
+  fresh one at once. After the multi-core engine, it uses the one-thread
+  engine for the rest of the visit and runs the calculation again; otherwise
+  it explains what happened.
 - No leaks were found:
   - The engine's allocated memory is identical after every round of all
     methods, the error cases and requests the engine refuses.

@@ -365,6 +365,19 @@ try {
       assert.match(await q.textContent('#timing'), /^Stopped: the rows without enough memory were not calculated/);
       await q.context().close();
     });
+    await check('the multi-core answer stays when one thread refuses the whole request', async () => {
+      // the refusal (the engine's answer without memory for the request) was shown in its place, and its rows lost
+      const memoryRow = "{ _error: 'there is not enough memory to compute the answer for these inputs' }";
+      const refusal = "{ ok: false, error: 'There is not enough memory for this calculation: use fewer combinations' }";
+      const q = await changedWorker((source) => source.replace('const result = JSON.parse(text);',
+        `let result = JSON.parse(text);\n        if (request.inputs?.mu1 === '13.13' && variant === 'ssc_web_mt' && !request.options.threads) Object.assign(result, { threads: 4, rows: [result.rows[0], ${memoryRow}] });\n        if (request.inputs?.mu1 === '13.13' && request.options.threads === 1) result = ${refusal};`), false);
+      await q.waitForFunction(() => /not calculated again/.test(document.getElementById('timing').textContent), null,
+        { timeout: 120000 });
+      assert.ok(await q.$('#result .statement'), 'the first answer is kept');
+      assert.equal(await q.locator('#result tbody tr').count(), 2);
+      assert.match(await q.textContent('#timing'), /not calculated again: There is not enough memory for this calculation/);
+      await q.context().close();
+    });
     await fallBack('without the multi-core engine file, the one-thread engine calculates', (c) =>
       c.route('**/engine/ssc_web_mt.wasm*', (r) => r.fulfill({ status: 404, body: '' })), 30000);
     const glue = await readFile(resolve(web, 'engine/ssc_web_mt.mjs'), 'utf8');

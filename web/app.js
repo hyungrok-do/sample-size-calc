@@ -486,6 +486,12 @@ async function calculate(event) {
         request.options.threads = 1;
         continue;
       }
+      // the second run's answer may be a refusal of the whole request (the engine's own memory, say): rendered, it
+      // would take every row the multi-core engine answered with it
+      if (shown && !result.ok) {
+        setBusy(false, asked() ? `The rows without enough memory were not calculated again: ${brief(String(result.error ?? ''))}` : '');
+        return;
+      }
       setBusy(false, '');
       if (asked()) renderResult(result, engineMs);
     } catch (e) {

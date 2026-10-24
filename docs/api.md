@@ -49,11 +49,11 @@ Another thread can watch progress and cancel it through the token.
   space is fine, `0.8, 0.9`, but `0.8,0.9` is refused, since `2,500` could be a
   thousands separator). It can also be a range: `10 to 100 by 10`, or `10 to 100`
   with step 1; `10-20` is refused rather than read as 10 and −20. A range's
-  values are worked out from the decimals as typed, exactly (a number with
-  more significant digits than a double holds, from its double's 17), and
-  each is the double nearest its decimal: `0 to 1 by 0.1` ends at 1, `-0.3 to
-  0.3 by 0.1` has 0 in the middle, and `0.9 to 0 by 0.3` ends at 0, so an
-  input that must be greater than 0 refuses it. A range starts at its first number as typed,
+  values, and how many there are, are worked out from the decimals as typed,
+  exactly (a number with more significant digits than a double holds, from
+  its double's 17), and each is the double nearest its decimal: `0 to 1 by
+  0.1` ends at 1, `-0.3 to 0.3 by 0.1` has 0 in the middle, and `0.9 to 0 by
+  0.3` ends at 0, so an input that must be greater than 0 refuses it. A range starts at its first number as typed,
   and ends at its second as typed where the steps reach it, or pass it by no
   more than a billionth of a step (`0 to 0.6666666666 by 0.11111111111` ends
   at 0.6666666666); otherwise it ends at its last step before the second
@@ -172,7 +172,9 @@ Another thread can watch progress and cancel it through the token.
   thread count never changes them, and a larger study contains the units of a
   smaller one. The token's progress advances smoothly while a simulation runs.
 - **`dropout`** appears for procedures with a dropout-rate input. It lists sample
-  sizes inflated by 1/(1 − rate) and the expected number of dropouts.
+  sizes inflated by 1/(1 − rate), rounded up (worked out exactly from the rate
+  as typed, where it has at most 15 decimals), and the expected number of
+  dropouts.
 - **`plots`** has two kinds of entry:
 
   | `kind` | What it plots |

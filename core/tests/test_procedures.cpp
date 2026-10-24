@@ -235,6 +235,28 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK(parse::numbers("0.1000000000000000000001 to 0.3 by 0.1").values == std::vector<double>({0.1, 0.2, 0.3}));
   CHECK(parse::numbers("5e-324 to 1.5e-323 by 5e-324").values == std::vector<double>({5e-324, 1e-323, 1.5e-323}));
   CHECK(parse::numbers("1.7e308 to 1.5e308 by 1e307").values == std::vector<double>({1.7e308, 1.6e308, 1.5e308}));
+  // the count is that of the decimals too: in doubles, the rounding of the ends shifted (b - a) / step by more than a
+  // billionth once the start was a million steps or more, which dropped an end the steps reach, or added one they
+  // miss by more than a billionth of a step
+  CHECK_EQ(parse::numbers("1.96 to 1.9600003 by 0.00000001").values.size(), std::size_t{31});
+  CHECK_EQ(parse::numbers("1.96 to 1.9600003 by 0.00000001").values.back(), 1.9600003);
+  CHECK(parse::numbers("650.00002 to 650 by 0.00002").values == std::vector<double>({650.00002, 650}));
+  CHECK_EQ(parse::numbers("0.9999999 to 1 by 0.00000001").values.back(), 1.0);
+  CHECK_EQ(parse::numbers("2000 to 2000.000034 by 0.000002").values.size(), std::size_t{18});
+  CHECK_EQ(parse::numbers("171.503517 to 171.50357199999998 by 0.000001").values.size(), std::size_t{55});
+  CHECK_EQ(parse::numbers("171.503517 to 171.50357199999998 by 0.000001").values.back(), 171.503571);
+  CHECK_EQ(parse::numbers("5 0 to 9998").values.size(), std::size_t{10000});
+  CHECK(parse::numbers("5 6 0 to 9998").error.find("too many") != std::string::npos);
+  CHECK(parse::numbers("0 to 1e30 by 1e-30").error.find("too many") != std::string::npos);
+  // ends with exponents far apart (sums of 700 digits) give the doubles nearest their decimals too
+  const auto far = parse::numbers("1e-400 to 9.999e299 by 1e296").values;
+  CHECK_EQ(far.size(), std::size_t{10000});
+  CHECK_EQ(far.at(1), 1e296);
+  CHECK_EQ(far.at(4321), 4.321e299);
+  CHECK_EQ(far.back(), 9.999e299);
+  // a number too small for a double is not 0, but the smallest double of its sign: so it is refused for its size
+  CHECK(parse::numbers("1e-400 -2e-324 0e-500").values == std::vector<double>({5e-324, -5e-324, 0}));
+  CHECK(parse::numbers("0 to 2e-340 by 1e-340").values == std::vector<double>({0, 5e-324, 5e-324}));
   CHECK(parse::numbers("0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
   CHECK(parse::vectors("1 2; 0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
   // characters that would act on the message are written out: a right-to-left override, a joiner, NUL, a
