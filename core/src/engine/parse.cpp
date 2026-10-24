@@ -1,5 +1,6 @@
 #include "engine/parse.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -193,11 +194,103 @@ std::vector<Token> tokenize(const std::string& s, std::size_t max_tokens, std::s
   return out;
 }
 
-double tidy(double v) {
-  // remove floating-point noise from generated range values (e.g. 0.30000000000000004)
-  if (v == 0 || !std::isfinite(v)) return v;
-  double r;
-  return text::parse_double(text::format_g(v, 12), r) ? r : v;
+// A range's values are worked out from the decimals typed, exactly, and each is then rounded to a double once: in
+// doubles, a + k * step leaves rounding noise (0.1 + 2 * 0.1 is 0.30000000000000004, -0.3 + 3 * 0.1 is 5.6e-17,
+// -0.4999999999 + 2 * 0.25 is 1.00000008e-10), and rounding it to fewer digits loses digits typed.
+
+// A number as typed: (-1)^neg * digits * 10^exp, its digits without leading or trailing zeros (none for 0)
+struct Decimal {
+  bool neg = false;
+  std::string digits;
+  long exp = 0;
+};
+
+// The decimal of a number token v (text::parse_double's syntax: a sign, digits with a point, an exponent).  One with
+// more significant digits than a double holds, or an exponent no double has, is taken as v's 17 digits.
+Decimal decimal(const std::string& t, double v) {
+  Decimal d;
+  std::size_t i = 0;
+  if (i < t.size() && (t[i] == '+' || t[i] == '-')) d.neg = t[i++] == '-';
+  for (bool point = false; i < t.size() && (std::isdigit(static_cast<unsigned char>(t[i])) || (t[i] == '.' && !point));
+       ++i) {
+    if (t[i] == '.') {
+      point = true;
+    } else {
+      d.digits += t[i];
+      if (point) --d.exp;
+    }
+  }
+  if (i < t.size() && (t[i] == 'e' || t[i] == 'E')) {
+    const bool down = ++i < t.size() && t[i] == '-';
+    if (i < t.size() && (t[i] == '+' || t[i] == '-')) ++i;
+    long e = 0;
+    for (; i < t.size() && std::isdigit(static_cast<unsigned char>(t[i])); ++i)
+      e = std::min(10 * e + (t[i] - '0'), 1000000L);  // far past any double's
+    d.exp += down ? -e : e;
+  }
+  const std::size_t first = d.digits.find_first_not_of('0');
+  if (first == std::string::npos) return {};
+  const std::size_t last = d.digits.find_last_not_of('0');
+  d.exp += static_cast<long>(d.digits.size() - 1 - last);
+  d.digits = d.digits.substr(first, last + 1 - first);
+  if (d.digits.size() > 17 || d.exp < -400 || d.exp > 400) return decimal(text::format_g(v, 17), v);
+  return d;
+}
+
+// A whole number: its sign and decimal digits, without leading zeros (none for 0, which is not negative)
+struct Whole {
+  bool neg = false;
+  std::string digits;
+};
+
+int compare_digits(const std::string& x, const std::string& y) {
+  if (x.size() != y.size()) return x.size() < y.size() ? -1 : 1;
+  const int c = x.compare(y);
+  return (c > 0) - (c < 0);
+}
+
+// x + y, or x - y where x >= y, of the digits of two whole numbers
+std::string add_digits(const std::string& x, const std::string& y, bool subtract) {
+  std::string out;  // least significant digit first
+  int carry = 0;
+  for (std::size_t k = 0; k < x.size() || k < y.size() || carry; ++k) {
+    const int dx = k < x.size() ? x[x.size() - 1 - k] - '0' : 0, dy = k < y.size() ? y[y.size() - 1 - k] - '0' : 0;
+    const int d = subtract ? dx - dy - carry : dx + dy + carry;
+    carry = subtract ? d < 0 : d > 9;
+    out += static_cast<char>('0' + (d + 10) % 10);
+  }
+  while (!out.empty() && out.back() == '0') out.pop_back();
+  return std::string(out.rbegin(), out.rend());
+}
+
+Whole plus(const Whole& x, const Whole& y) {
+  if (x.neg == y.neg) return {x.neg, add_digits(x.digits, y.digits, false)};
+  const int c = compare_digits(x.digits, y.digits);
+  if (c == 0) return {};
+  return c > 0 ? Whole{x.neg, add_digits(x.digits, y.digits, true)}
+               : Whole{y.neg, add_digits(y.digits, x.digits, true)};
+}
+
+int compare(const Whole& x, const Whole& y) {
+  if (x.neg != y.neg) return x.neg ? -1 : 1;
+  const int c = compare_digits(x.digits, y.digits);
+  return x.neg ? -c : c;
+}
+
+// The double nearest w * 10^e
+double nearest(const Whole& w, long e) {
+  if (w.digits.empty()) return 0;
+  double v = 0;
+  if (w.digits.size() <= 15 && e >= -22 && e <= 22) {
+    // a whole number below 2^53 and a power of ten up to 1e22 are doubles exactly: one product or quotient rounds once
+    static const double ten[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
+                                 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+    for (char c : w.digits) v = 10 * v + (c - '0');
+    v = e >= 0 ? v * ten[e] : v / ten[-e];
+  } else {
+    text::parse_double(w.digits + "e" + std::to_string(e), v);
+  }
+  return w.neg ? -v : v;
 }
 
 }  // namespace
@@ -206,7 +299,7 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
   Numbers res;
   // read before the value count could be checked, it took memory and seconds
   if (raw.size() > MAX_TEXT && (raw.size() > 4 * MAX_TEXT || characters(raw) > MAX_TEXT)) {
-    res.error = "the text is too long (limit 200,000 characters)";
+    res.error = "the text is too long (limit 300,000 characters)";
     return res;
   }
   const std::string text = plain(raw);
@@ -246,7 +339,8 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
         res.error = "range step must not be zero";
         return res;
       }
-      if ((b - a) * step < 0) step = -step;  // allow "10 to 1 by 1" (descending)
+      const bool down = (b - a) * step < 0;
+      if (down) step = -step;  // allow "10 to 1 by 1" (descending)
       const double count = std::floor((b - a) / step + 1e-9) + 1;
       if (count > static_cast<double>(max_values) || res.values.size() + static_cast<std::size_t>(count) > max_values) {
         res.error = "too many values (limit " + std::to_string(max_values) + ")";
@@ -254,14 +348,25 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
       }
       res.ends.push_back(a);
       res.ends.push_back(b);
-      // the start is a value as typed, and so is the end where the steps reach it: each is checked as it would be
-      // alone.  Between them, a value is rounded to 12 digits, and where a range crosses 0 the sum leaves rounding
-      // noise (-0.3 + 3 * 0.1 is 5.6e-17, -3e-15 + 3 * 1e-15 is 3.9e-31): a value within a billionth of a step of
-      // the end or of 0 is that (the count above allows as much for rounding)
-      const double near = 1e-9 * std::fabs(step);
+      // a + k * step from the decimals typed, so the start is the value typed, so is the end where the steps reach
+      // it (each is checked as it would be alone), and a range that crosses 0 has 0 among its values.  The count
+      // allows a step past the end by a billionth of a step ('0 to 0.6666666666 by 0.11111111111' has 7 values): that
+      // value is the end.
+      const Decimal da = decimal(toks[i].text, a), db = decimal(toks[i + 2].text, b);
+      Decimal ds = used == 5 ? decimal(toks[i + 4].text, toks[i + 4].value) : Decimal{false, "1", 0};
+      if (down) ds.neg = !ds.neg;
+      long e = ds.exp;  // the exponent of the least significant digit typed (the step is not 0)
+      for (const Decimal* d : {&da, &db})
+        if (!d->digits.empty()) e = std::min(e, d->exp);
+      const auto whole = [&](const Decimal& d) {
+        if (d.digits.empty()) return Whole{};
+        return Whole{d.neg, d.digits + std::string(static_cast<std::size_t>(d.exp - e), '0')};
+      };
+      const Whole s = whole(ds), end = whole(db);
+      Whole v = whole(da);
       for (long k = 0; k < static_cast<long>(count); ++k) {
-        const double v = a + static_cast<double>(k) * step;
-        res.values.push_back(k == 0 ? a : std::fabs(v - b) < near ? b : std::fabs(v) < near ? 0 : tidy(v));
+        if (k > 0) v = plus(v, s);
+        res.values.push_back(k == 0 ? a : compare(v, end) * (step > 0 ? 1 : -1) >= 0 ? b : nearest(v, e));
       }
       i += used;
       continue;
@@ -280,7 +385,7 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
 Vectors vectors(const std::string& text, std::size_t max_vectors) {
   Vectors res;
   if (text.size() > MAX_TEXT && (text.size() > 4 * MAX_TEXT || characters(text) > MAX_TEXT)) {
-    res.error = "the text is too long (limit 200,000 characters)";
+    res.error = "the text is too long (limit 300,000 characters)";
     return res;
   }
   std::size_t start = 0, total = 0;

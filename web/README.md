@@ -94,21 +94,28 @@ worker always checks the page itself with the server.
   drawing a hundred rows per frame. With 20,000 scenarios, the page's longest
   pause is about 0.1 s, against 8.5 s when every row was drawn at once.
 - The one-thread engine uses about 21 MB for most calculations. Simulations
-  keep only a block of studies at a time, though one study of a very large
-  design (hundreds of thousands of clusters) can need a gigabyte or more. The
+  keep only a block of studies at a time. One study of the largest design a
+  simulation allows (a million subjects, measurements or clusters; 200,000
+  patients for the win ratio) needs at most about 56 MB more, measured in the
+  native engine: 56 MB for yes/no outcomes in a million clusters, 55 MB for
+  continuous ones, 39 MB for survival with a million subjects, 27 MB for the
+  win ratio, 16 MB for two skewed groups and 1 MB or less for the others. The
   multi-core engine starts with 128 MB of shared memory, more than the largest
   answer needs (20,000 scenarios: 100 MB), because Safari's engine (WebKit)
   stopped it the first time its shared memory had to grow. WebAssembly memory
   never shrinks, so after an answer that grows the engine beyond its start
   (and beyond 64 MB), the page replaces the engine once it is idle and online.
 - A scenario that needs more memory than the engine can have (2 GB) says so
-  in its row. The multi-core engine simulates several studies at once, and
-  they share its 2 GB: after such a row, the page runs the calculation again
-  with one study at a time, as the one-thread engine does. If the engine
-  stops during a calculation (it traps, or has no memory left even for an
-  answer), the page starts a fresh one at once. After the multi-core engine,
-  it uses the one-thread engine for the rest of the visit and runs the
-  calculation again; otherwise it explains what happened.
+  in its row. The multi-core engine simulates as many studies at once as the
+  computer has cores, and they share its 2 GB: with the largest designs, some
+  30 cores or more could need more than that. After such a row, the page runs
+  the calculation again with one study at a time, as the one-thread engine
+  does, which can take many times longer. The first answer stays on show
+  meanwhile, and stays if that run is stopped or fails. If the engine stops
+  during a calculation (it traps, or has no memory left even for an answer),
+  the page starts a fresh one at once. After the multi-core engine, it uses
+  the one-thread engine for the rest of the visit and runs the calculation
+  again; otherwise it explains what happened.
 - No leaks were found:
   - The engine's allocated memory is identical after every round of all
     methods, the error cases and requests the engine refuses.
@@ -181,7 +188,8 @@ workflow runs it before publishing.
 
 `web/build.sh` writes the sources it built the engines from to
 `web/engine/source.txt`: the commit, and a hash of the changes from it to the
-engine's files that git tracks. `npm test`, `test:browser` and `test:page`
+engine's files that git tracks and of the files there that it does not (CMake
+builds every `core/src/*.cpp`). `npm test`, `test:browser` and `test:page`
 warn when the engines were built from other sources than the ones beside them,
 since they then test another engine.
 

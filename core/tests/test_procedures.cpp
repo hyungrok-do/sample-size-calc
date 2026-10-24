@@ -162,27 +162,53 @@ TEST_CASE("procedures: typed and pasted numbers") {
   CHECK_EQ(first_mu1("\u22120.5"), -0.5);
   CHECK_EQ(first_mu1("0.75\u00a0"), 0.75);
   CHECK_EQ(first_mu1("\u2009 0.25\u202f"), 0.25);
-  // a long text is refused before it is read; the limit counts characters, not bytes
-  CHECK(message(std::string(200001, '1')).find("too long") != std::string::npos);
+  // a long text is refused before it is read; the limit counts characters, not bytes, and holds 10,000 values of 28
+  // characters with a comma and a space between them
+  CHECK(message(std::string(300001, '1')).find("too long") != std::string::npos);
+  std::string full;
+  for (int i = 0; i < 10000; ++i) full += (i ? ", " : "") + std::string("-1.234567890123456789012e-05");
+  CHECK_EQ(full.size(), std::size_t{299998});
+  CHECK_EQ(parse::numbers(full).values.size(), std::size_t{10000});
   std::string accents;
-  for (int i = 0; i < 200000; ++i) accents += "\u00e9";
+  for (int i = 0; i < 300000; ++i) accents += "\u00e9";
   CHECK(message(accents).find("too long") == std::string::npos);
-  // a range that crosses or reaches 0 has 0 among its values, not the rounding noise of a + k * step, at any scale
-  // (0.9 - 3 * 0.3 is 1.1e-16, 0.3 - 3 * 0.1 is -5.6e-17)
+  // a range's values are those of the decimals typed, each the double nearest it: a range that crosses or reaches 0
+  // has 0 among its values, at any scale, not the rounding noise of a + k * step (0.9 - 3 * 0.3 is 1.1e-16, 0.3 - 3 *
+  // 0.1 is -5.6e-17), and a value near 0 has all its digits (-0.4999999999 + 2 * 0.25 is 1.00000008e-10)
   CHECK_EQ(parse::numbers("-0.3 to 0.3 by 0.1").values.at(3), 0.0);
   CHECK_EQ(parse::numbers("-3e-15 to 3e-15 by 1e-15").values.at(3), 0.0);
   CHECK_EQ(parse::numbers("0.3e-29 to -0.3e-29 by 1e-30").values.at(3), 0.0);
   CHECK_EQ(parse::numbers("0.9 to 0 by 0.3").values.at(3), 0.0);
   CHECK_EQ(parse::numbers("0.3 to 0 by 0.1").values.at(3), 0.0);
-  // its start is kept as typed, and so is its end where the steps reach it, while the values between are rounded to
-  // 12 digits; both ends as typed are kept besides, reached or not
+  CHECK(parse::numbers("-0.4999999999 to 0.5 by 0.25").values ==
+        std::vector<double>({-0.4999999999, -0.2499999999, 1e-10, 0.2500000001, 0.5}));
+  CHECK_EQ(parse::numbers("-0.00004999999999 to 0.00005 by 0.00001").values.at(5), 1e-14);
+  CHECK(parse::numbers("0 to 1 by 0.1").values ==
+        std::vector<double>({0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1}));
+  CHECK_EQ(parse::numbers("1e-30 to 1e30 by 2.5e29").values.at(4), 1e30);
+  // its start is the value typed, and so is its end where the steps reach it; the values between keep every digit
+  // (rounded to 12, 100000.0000001 to 100000.0000004 were all 100000, and 0.9999999999991 was 1)
   CHECK_EQ(parse::numbers("1e-12 to 1 by 0.5").values.at(0), 1e-12);
   CHECK(parse::numbers("0.99999999999999 to 0.99999999999999").values == std::vector<double>({0.99999999999999}));
   CHECK(parse::numbers("0.1234567890123456 to 1 by 0.5").values ==
-        std::vector<double>({0.1234567890123456, 0.623456789012}));
+        std::vector<double>({0.1234567890123456, 0.6234567890123456}));
   CHECK(parse::numbers("0.9 to 0.99999999999999 by 0.09999999999999").values ==
         std::vector<double>({0.9, 0.99999999999999}));
+  CHECK(parse::numbers("100000 to 100000.0000003 by 0.0000001").values ==
+        std::vector<double>({100000, 100000.0000001, 100000.0000002, 100000.0000003}));
+  CHECK_EQ(parse::numbers("0.999999999999 to 0.9999999999999 by 1e-13").values.at(1), 0.9999999999991);
   CHECK(parse::numbers("0 to 0.3 by 0.1").values == std::vector<double>({0, 0.1, 0.2, 0.3}));
+  // a value short of the end is not the end ('0.3333333333 to 1 by 0.3333333333' ends at 0.9999999999, below a limit
+  // of 1), while a step past it by a billionth of a step or less, which the count allows, is
+  CHECK(parse::numbers("0.3333333333 to 1 by 0.3333333333").values ==
+        std::vector<double>({0.3333333333, 0.6666666666, 0.9999999999}));
+  CHECK_EQ(parse::numbers("10 to 20.0000000005 by 1").values.back(), 20.0);
+  CHECK_EQ(parse::numbers("0 to 0.6666666666 by 0.11111111111").values.back(), 0.6666666666);
+  CHECK_EQ(parse::numbers("0 to 0.6666666666 by 0.11111111111").values.size(), std::size_t{7});
+  // numbers typed with more digits than a double holds, and the exponents of the smallest and largest doubles
+  CHECK(parse::numbers("0.1000000000000000000001 to 0.3 by 0.1").values == std::vector<double>({0.1, 0.2, 0.3}));
+  CHECK(parse::numbers("5e-324 to 1.5e-323 by 5e-324").values == std::vector<double>({5e-324, 1e-323, 1.5e-323}));
+  CHECK(parse::numbers("1.7e308 to 1.5e308 by 1e307").values == std::vector<double>({1.7e308, 1.6e308, 1.5e308}));
   CHECK(parse::numbers("0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
   CHECK(parse::vectors("1 2; 0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
   // characters that would act on the message are written out: a right-to-left override, a joiner, NUL, a

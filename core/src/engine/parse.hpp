@@ -25,10 +25,12 @@ struct Vectors {
   std::string error;
 };
 
-/// The longest input text read: 10,000 values of up to 19 characters each, with a space between them.
-constexpr std::size_t MAX_TEXT = 200000;
+/// The longest input text read: 10,000 values of up to 28 characters each, with a comma and a space between them (a
+/// double written in full takes up to 25: -0.0000012345678901234567 from JavaScript, -1.234567890123456789e-05 from
+/// numpy's savetxt).
+constexpr std::size_t MAX_TEXT = 300000;
 
-/// Text from a request quoted in a message, at most 40 bytes of it as written (a field can hold 200,000 characters,
+/// Text from a request quoted in a message, at most 40 bytes of it as written (a field can hold 300,000 characters,
 /// and a page lays out an unbroken word slowly): printable ASCII and the letters, digits and symbols of common scripts
 /// as they are, any other character (controls, bidirectional and joining format characters, combining marks) as
 /// \u{...}, and bytes that are not UTF-8 as they are.

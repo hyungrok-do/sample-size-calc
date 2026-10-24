@@ -1025,9 +1025,9 @@ def test_values_at_the_size_limits_are_allowed():
     ("means.crossover", {"delta": "-3e-15 to 3e-15 by 1e-15"}, "delta"),
 ])
 def test_a_range_that_crosses_0_has_0_among_its_values(pid, inputs, key):
-    """Where a range crosses 0, a + k * step leaves rounding noise: the label 5.55111512313e-17 for '-0.3 to 0.3 by
-    0.1', and 3.9e-31 for '-3e-15 to 3e-15 by 1e-15', which was refused as below 1e-30 though the user typed no such
-    value.  A value within a billionth of a step of 0 is 0."""
+    """Where a range crosses 0, a + k * step in doubles leaves rounding noise: the label 5.55111512313e-17 for '-0.3
+    to 0.3 by 0.1', and 3.9e-31 for '-3e-15 to 3e-15 by 1e-15', which was refused as below 1e-30 though the user typed
+    no such value.  The values are worked out from the decimals typed, exactly."""
     res = run(pid, "power", {**base_inputs(pid), **inputs})
     assert res["ok"] and len(res["rows"]) == 7 and res["rows"][3][key] == 0, res
     assert all("_error" not in r for r in res["rows"]), res
@@ -1035,12 +1035,24 @@ def test_a_range_that_crosses_0_has_0_among_its_values(pid, inputs, key):
 
 @pytest.mark.parametrize("pid,solve,inputs,says", [
     # the start of a range, and its end where the steps reach it, as typed: checked as each would be alone (rounded to
-    # 12 digits, 5.0000000000001 was 5 and 0.99999999999999 was 1)
+    # 12 digits, 5.0000000000001 was 5 and 0.99999999999999 was 1); so are the values between
     ("sim.lmm.cluster", "power", {"cv": "5.0000000000001 to 5.0000000000001"}, {"cv": "values must be at most 5"}),
     ("means.two.t", "power", {"n1": "10.0000000000001 to 12"}, {"n1": "values must be whole numbers"}),
     ("means.two.t", "power", {"mu1": "0.5 to 0.9999999999999 by 0.4999999999999", "mu2": "1"}, [0.5, 0.9999999999999]),
     ("means.two.t", "n", {"power": "0.99999999999999 to 0.99999999999999"}, [0.99999999999999]),
     ("means.two.t", "n", {"power": "0.5 to 1 by 0.2"}, [0.5, 0.7, 0.9]),  # an end the steps do not reach is no value
+    ("means.two.t", "n", {"power": "0.999999999999 to 0.9999999999998 by 3e-13"},
+     [0.999999999999, 0.9999999999993, 0.9999999999996]),
+    # nor is it where the last step falls short of it by less than a billionth of a step: '0.3333333333 to 1 by
+    # 0.3333333333' ends at 0.9999999999, below the limit of 1, and the count n1 '10 to 20.0000000005' at 20
+    ("means.two.t", "n", {"power": "0.3333333333 to 1 by 0.3333333333"}, [0.3333333333, 0.6666666666, 0.9999999999]),
+    ("means.two.t", "power", {"n1": "18 to 20.0000000005 by 1"}, [18, 19, 20]),
+    # the values between are those of the decimals typed, near 0 too (-0.4999999999 + 2 * 0.25 is 1.00000008e-10 in
+    # doubles, and was 0 when a value within a billionth of a step of 0 was taken for 0)
+    ("means.two.t", "power", {"mu1": "-0.4999999999 to 0.5 by 0.25"},
+     [-0.4999999999, -0.2499999999, 1e-10, 0.2500000001, 0.5]),
+    ("means.two.t", "power", {"mu1": "100000 to 100000.0000003 by 0.0000001", "mu2": "100000.5"},
+     [100000, 100000.0000001, 100000.0000002, 100000.0000003]),
     # a range that ends at 0 has 0 among its values, whichever side the rounding noise of the sum fell on (0.9 - 3 *
     # 0.3 is 1.1e-16, 0.3 - 3 * 0.1 is -5.6e-17)
     ("means.two.t", "n", {"alpha": "0.9 to 0 by 0.3"}, {"alpha": "values must be greater than 0"}),
@@ -1054,6 +1066,14 @@ def test_the_ends_of_a_range_are_values_as_typed(pid, solve, inputs, says):
     else:
         key = next(iter(inputs))
         assert res["ok"] and [r.get("target_" + key, r.get(key)) for r in res["rows"]] == says, res
+
+
+def test_a_list_of_10000_doubles_from_python_is_read():
+    """The API writes a list with str() and spaces: 10,000 doubles of up to 23 characters (-1.2345678901234567e-05)
+    take 236,434 characters, more than the earlier limit of 200,000."""
+    values = [-(1 + k / 10000) * 1.2345678901234567e-05 for k in range(10000)]
+    res = run("means.two.t", "power", {**base_inputs("means.two.t"), "mu1": values}, threads=2)
+    assert res["ok"] and [r["mu1"] for r in res["rows"]] == values, res.get("input_errors")
 
 
 def test_a_list_of_group_means_that_crosses_0_is_computed():

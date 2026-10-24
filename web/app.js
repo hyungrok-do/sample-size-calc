@@ -183,7 +183,7 @@ function field(p, initial = p.default ?? '') {
     // characters each took seconds to show again, and up to 2 GB)
     input = el('input', {
       id, type: 'text', value: initial, autocomplete: 'off', spellcheck: 'false', inputmode: inputmode(p),
-      maxlength: 200001, oninput: () => input.removeAttribute('aria-invalid'),
+      maxlength: 300001, oninput: () => input.removeAttribute('aria-invalid'),
     });
   }
   // two lines of help, all of it on a click (and on hover, and for screen readers): it never grows by itself
@@ -472,13 +472,16 @@ async function calculate(event) {
   setBusy(true, state.proc.simulation ? 'Simulating…' : 'Calculating…');
   // the answer goes only under the form it was computed from (not one opened or reset since)
   const asked = () => state.form === form && state.solve === request.solve_for;
-  let restarted = false;
+  let restarted = false, shown = false;
   for (;;) {
     try {
       const { result, engineMs } = await engine.run(request, MAX_ROWS);
       // the multi-core engine simulates several studies at once, and they share its 2 GB: a scenario that ran out of
-      // memory there may fit with one study at a time, as on the one-thread engine
+      // memory there may fit with one study at a time, as on the one-thread engine.  Its answer stays on show while
+      // that runs, and after it if it is stopped or fails
       if (result.threads > 1 && !request.options.threads && result.rows?.some(outOfMemory) && asked()) {
+        renderResult(result, engineMs);
+        shown = true;
         setBusy(true, 'Calculating again with one thread…');
         request.options.threads = 1;
         continue;
@@ -492,8 +495,13 @@ async function calculate(event) {
         setBusy(true, 'Calculating again with one thread…');
         continue;
       }
-      setBusy(false, e.stopped ? 'Stopped.' : '');
-      if (!e.stopped && asked()) showError(e.message);
+      if (shown && asked()) {
+        setBusy(false, e.stopped ? 'Stopped: the rows without enough memory were not calculated again.'
+          : `The rows without enough memory were not calculated again: ${brief(e.message)}`);
+      } else {
+        setBusy(false, e.stopped ? 'Stopped.' : '');
+        if (!e.stopped && asked()) showError(e.message);
+      }
     }
     return;
   }
