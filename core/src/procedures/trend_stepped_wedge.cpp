@@ -130,6 +130,7 @@ Procedure trend() {
       vec("props", "Response Proportions by Group", "0.1 0.15 0.2 0.25")
           .grp(G_EFFECT)
           .sym("Proportions")
+          .range(0, 1, true, true)
           .sugg({"0.1 0.15 0.2 0.25", "0.2 0.2 0.3", "0.05 0.1 0.2"})
           .hint("The share of subjects you expect to respond in each group, listed in the order of the groups "
                 "(e.g. by increasing dose)."),
@@ -166,7 +167,9 @@ Procedure trend() {
     r.set("N", total);
     put_power(s, r, trend_power(t, n, alpha, a));
     r.set("sizes", list_text(ni));
-    r.set("props", list_text(t.p));
+    std::string props;  // never a proportion of 0.99999 as 1
+    for (double x : t.p) props += (props.empty() ? "" : ", ") + fnum_fine(x);
+    r.set("props", props);
     r.set("scores", list_text(t.d));
     r.set("k", static_cast<double>(t.p.size()));
     r.set("alpha", alpha);
@@ -231,13 +234,15 @@ struct SwEffect {
 };
 
 SwEffect sw_effect(const Scenario& s) {
+  // with no effect the power is alpha, which neither more clusters nor larger ones raise
+  const bool power = s.solve == "power";
   if (s.is("outcome", "binary")) {
     const double p1 = s("p1"), p2 = s("p2");
-    if (p1 == p2) throw CalcError("P1 equals P2");
+    if (p1 == p2 && !power) throw CalcError("P1 equals P2");
     return {p1 - p2, (p1 * (1 - p1) + p2 * (1 - p2)) / 2};
   }
   const double d = s("delta"), sd = s("sigma");
-  if (d == 0) throw CalcError("δ = 0: there is no effect to detect");
+  if (d == 0 && !power) throw CalcError("δ = 0: there is no effect to detect");
   // σ² underflows to 0 for a σ below about 1e-154 (the variance would be 0/0): it is then 1 in units of σ
   if (sd * sd < stats::DBL_MIN_) return {d, 1.0, sd};
   return {d, sd * sd};

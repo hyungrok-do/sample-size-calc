@@ -488,6 +488,30 @@ PoisRegion pois_region(bool exact, double mu0, double alpha, Alt a) {
 
 double pois_power(const PoisRegion& r, double mu) { return stats::clamp01(pois_at_least(r.cu, mu) + pois_at_most(r.cl, mu)); }
 
+// Beyond 2^53 expected events the counts that can be stored are no longer every whole number, and beyond about 1e26
+// they lie so far apart next to the standard deviation that the critical counts, and so the powers, were far off (a
+// two-sided exact test of size 1 at 1e33 events). There the critical counts are kept as their distances from μ0, and
+// the tails are the normal ones with the Poisson skewness and a continuity correction (Edgeworth; their error is of
+// the order of 1/μ): up and lo are the distances of the upper and lower critical counts (NaN: no such tail),
+// dmu = μ − μ0.
+constexpr double POIS_FAR = 9007199254740992.0;
+
+double pois_power_far(double up, double lo, double mu, double dmu) {
+  using namespace stats;
+  const double sd = std::sqrt(mu);
+  auto skew = [&](double w) { return dnorm(w) * (w * w - 1) / (6 * sd); };
+  double pw = 0;
+  if (!std::isnan(up)) {
+    const double w = (up - 0.5 - dmu) / sd;  // P(X ≥ μ0 + up)
+    pw += pnorm(w, false) + skew(w);
+  }
+  if (!std::isnan(lo)) {
+    const double w = (lo + 0.5 - dmu) / sd;  // P(X ≤ μ0 + lo)
+    pw += pnorm(w) - skew(w);
+  }
+  return clamp01(pw);
+}
+
 struct OnePoisResult {
   double power, actual_alpha;
   PoisRegion region;
@@ -510,9 +534,25 @@ OnePoisResult one_pois_eval(const Scenario& s, double n, double lam1) {
     res.actual_alpha = NAN;
     return res;
   }
-  res.region = pois_region(s.is("test", "exact"), mu0, alpha, a);
-  res.power = pois_power(res.region, mu1);
-  res.actual_alpha = pois_power(res.region, mu0);
+  const bool exact_test = s.is("test", "exact");
+  res.region = pois_region(exact_test, mu0, alpha, a);
+  if (mu0 < POIS_FAR) {
+    res.power = pois_power(res.region, mu1);
+    res.actual_alpha = pois_power(res.region, mu0);
+    return res;
+  }
+  // the critical counts as pois_region places them, as distances from μ0 (f0, its fraction, makes them whole)
+  const double z = stats::qnorm(tail_alpha(alpha, a), false), sd0 = std::sqrt(mu0), f0 = mu0 - std::floor(mu0);
+  double up = NAN, lo = NAN;
+  if (exact_test) {
+    if (a != Alt::Lower) up = std::ceil(f0 + z * sd0 + (z * z - 1) / 6) - f0;
+    if (a != Alt::Upper) lo = std::floor(f0 - z * sd0 + (z * z - 1) / 6) - f0;
+  } else {
+    if (a != Alt::Lower) up = std::floor(f0 + z * sd0) + 1 - f0;
+    if (a != Alt::Upper) lo = std::ceil(f0 - z * sd0) - 1 - f0;
+  }
+  res.power = pois_power_far(up, lo, mu1, (lam1 - s("lam0")) * exposure);
+  res.actual_alpha = pois_power_far(up, lo, mu0, 0);
   return res;
 }
 
@@ -681,6 +721,40 @@ SSC_REGISTER(one_poisson);
 // =====================================================================================
 // Two Poisson rates
 // =====================================================================================
+// A test of two rates finds group 1's rate the higher only with an event in group 1, and group 2's only with one in
+// group 2: the power of each side is at most the chance of such an event, 1 − e^log_none. With next to no events
+// expected in a group the normal approximation breaks down (the variance under H1 dwarfs the one under H0 and both
+// sides tend to 1/2: a two-sided power of 100% with 1e-58 events expected), and a side's power above that chance by
+// more than the precision shown is refused; an n search goes on to the first sizes that give no side such a power.
+bool beyond_events(double side_power, double log_none) { return side_power + std::expm1(log_none) > 5e-5; }
+
+void check_rate_events(int group, double side_power, double log_none, double events) {
+  if (beyond_events(side_power, log_none))
+    throw CalcError("group " + std::to_string(group) + " expects only " + fnum_fine(events) +
+                    (events == 1 ? " event" : " events") + ", and without one no test finds its rate the higher, but "
+                    "the normal approximation gives that a power of " + power_text(side_power) +
+                    ": it fails with so few events");
+}
+
+const char* FEW_EVENTS = "A group expects fewer than 10 events; the normal approximation of the test is rough with so few.";
+
+// Sizes `n` from an n search at which a side's power exceeds the chance of the events it needs (`possible` is false):
+// the smallest from which none does, with a note, or `n` itself (refused by check_rate_events) when no sizes up to the
+// search's limit qualify.
+TwoN sizes_with_events(const Scenario& s, const std::function<double(double, double)>& P,
+                       const std::function<bool(double, double)>& possible, const TwoN& n, Row& r,
+                       const RunContext& ctx) {
+  try {
+    const TwoN m = solve_two_group_n(s, [&](double n1, double n2) { return possible(n1, n2) ? P(n1, n2) : 0.0; },
+                                     s("power"), 1, n.n1, true, ctx);
+    r.notes.push_back("Smaller samples leave a group so few events that the normal approximation gives the test more "
+                      "power than the chance of an event allows; this is the smallest that does not.");
+    return m;
+  } catch (const CalcError&) {
+    return n;
+  }
+}
+
 Procedure two_poisson() {
   Procedure p;
   p.id = "rates.two.poisson";
@@ -735,14 +809,18 @@ Procedure two_poisson() {
     if (!std::isfinite(1 / (t * std::fmin(l1, l2))))
       throw CalcError("the expected events per subject (λ × t) are too small to compute with");
     const double lr = std::log(l1 / l2);
-    auto P = [&](double n1, double n2) {
+    // the chances of rejecting with group 1's rate the higher and with group 2's (0 for a side the test does not have)
+    auto sides = [&](double n1, double n2) -> std::pair<double, double> {
       const double v1 = 1 / (n1 * t * l1) + 1 / (n2 * t * l2);
       const double lbar = (n1 * l1 + n2 * l2) / (n1 + n2);
       const double v0 = s.is("method", "h1") ? v1 : (1 / (n1 * t) + 1 / (n2 * t)) / lbar;
       const double zt = qnorm(tail_alpha(alpha, a), false);
       auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
-      if (a == Alt::Two) return clamp01(tail(lr) + tail(-lr));  // a NaN stays NaN (std::min(1.0, x) gives 1)
-      return tail(a == Alt::Upper ? lr : -lr);
+      return {a != Alt::Lower ? tail(lr) : 0.0, a != Alt::Upper ? tail(-lr) : 0.0};
+    };
+    auto P = [&](double n1, double n2) {
+      const auto [up, down] = sides(n1, n2);
+      return a == Alt::Two ? clamp01(up + down) : up + down;  // a NaN stays NaN (std::min(1.0, x) gives 1)
     };
     TwoN n;
     if (s.solve == "n") {
@@ -751,14 +829,20 @@ Procedure two_poisson() {
         throw CalcError("the rate ratio λ1/λ2 lies on the side opposite to the one-sided alternative");
       const double g = z_factor(alpha, s("power"), a) * (1 / l1 + 1 / l2) / t / (lr * lr);
       n = solve_two_group_n(s, P, s("power"), 1, std::ceil(g), true, ctx);
+      auto possible = [&](double n1, double n2) {
+        const auto [up, down] = sides(n1, n2);
+        return !beyond_events(up, -n1 * l1 * t) && !beyond_events(down, -n2 * l2 * t);
+      };
+      if (!possible(n.n1, n.n2)) n = sizes_with_events(s, P, possible, n, r, ctx);
     } else {
       n = two_group_n(s);
     }
+    const auto [up, down] = sides(n.n1, n.n2);
+    check_rate_events(1, up, -n.n1 * l1 * t, n.n1 * l1 * t);
+    check_rate_events(2, down, -n.n2 * l2 * t, n.n2 * l2 * t);
     put_two_group(r, n);
     put_power(s, r, P(n.n1, n.n2));
-    if (std::fmin(n.n1 * l1, n.n2 * l2) * t < 10)
-      r.notes.push_back("A group expects fewer than 10 events; the normal approximation of the test is rough with so "
-                        "few.");
+    if (std::fmin(n.n1 * l1, n.n2 * l2) * t < 10) r.notes.push_back(FEW_EVENTS);
     r.set("lam1", l1);
     r.set("lam2", l2);
     r.set("ratio", l1 / l2);
@@ -860,7 +944,9 @@ Procedure two_negbin() {
     if (!std::isfinite(1 / (mt * std::fmin(r0, r1))))
       throw CalcError("the expected events per subject (rate × time) are too small to compute with");
     const std::string& m = s.s("method");
-    auto P = [&](double n1, double n2) {
+    // the chances of rejecting with the treatment rate the higher and with the control rate (0 for a side the test
+    // does not have)
+    auto sides = [&](double n1, double n2) -> std::pair<double, double> {
       // n1: treatment (rate r1), n2: control (rate r0)
       const double v1 = (1 / (mt * r1) + kappa) / n1 + (1 / (mt * r0) + kappa) / n2;
       double v0;
@@ -875,9 +961,14 @@ Procedure two_negbin() {
       const double lr = std::log(rr);
       const double zt = qnorm(tail_alpha(alpha, a), false);
       auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
-      if (a == Alt::Two) return clamp01(tail(lr) + tail(-lr));  // a NaN stays NaN (std::min(1.0, x) gives 1)
-      return tail(a == Alt::Upper ? lr : -lr);
+      return {a != Alt::Lower ? tail(lr) : 0.0, a != Alt::Upper ? tail(-lr) : 0.0};
     };
+    auto P = [&](double n1, double n2) {
+      const auto [up, down] = sides(n1, n2);
+      return a == Alt::Two ? clamp01(up + down) : up + down;  // a NaN stays NaN (std::min(1.0, x) gives 1)
+    };
+    // the chance that a subject with mean count μ has no event: (1 + κμ)^(−1/κ), e^(−μ) for κ = 0
+    auto log_none = [&](double mu) { return kappa > 0 ? -std::log1p(kappa * mu) / kappa : -mu; };
     TwoN n;
     if (s.solve == "n") {
       if (rr == 1) throw CalcError("a rate ratio of 1 has no effect to detect");
@@ -886,11 +977,20 @@ Procedure two_negbin() {
       const double v = (1 / (mt * r1) + kappa) + (1 / (mt * r0) + kappa);
       n = solve_two_group_n(s, P, s("power"), 1, std::ceil(z_factor(alpha, s("power"), a) * v / (std::log(rr) * std::log(rr))),
                             true, ctx);
+      auto possible = [&](double n1, double n2) {
+        const auto [up, down] = sides(n1, n2);
+        return !beyond_events(up, n1 * log_none(r1 * mt)) && !beyond_events(down, n2 * log_none(r0 * mt));
+      };
+      if (!possible(n.n1, n.n2)) n = sizes_with_events(s, P, possible, n, r, ctx);
     } else {
       n = two_group_n(s);
     }
+    const auto [up, down] = sides(n.n1, n.n2);
+    check_rate_events(1, up, n.n1 * log_none(r1 * mt), n.n1 * r1 * mt);
+    check_rate_events(2, down, n.n2 * log_none(r0 * mt), n.n2 * r0 * mt);
     put_two_group(r, n);
     put_power(s, r, P(n.n1, n.n2));
+    if (std::fmin(n.n1 * r1, n.n2 * r0) * mt < 10) r.notes.push_back(FEW_EVENTS);
     r.set("r1", r1);
     r.set("r0", r0);
     r.set("rr", rr);

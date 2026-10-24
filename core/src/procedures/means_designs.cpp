@@ -146,7 +146,7 @@ Procedure anova() {
       num("f", "f (Cohen's Effect Size σm/σ)", "0.25")
           .grp(G_EFFECT)
           .sym("f")
-          .above(0)
+          .at_least(0)
           .sugg({"0.1", "0.25", "0.4", "0.1 0.25 0.4"})
           .hint("Cohen's f: the SD of the group means divided by the within-group SD. By Cohen's conventions 0.10 "
                 "is small, 0.25 medium and 0.40 large.")
@@ -170,7 +170,9 @@ Procedure anova() {
       o.lo = 2;
       if (!spare(o.hi)) throw CalcError(single + " for any n up to " + text::format_g(o.hi, 10) + no_df);
       d = anova_design(s, o.lo);
-      if (!(d.f > 0)) throw CalcError("the group means are all equal; there is no effect to detect");
+      if (!(d.f > 0))
+        throw CalcError(s.is("estype", "f") ? "f = 0: there is no effect to detect"
+                                            : "the group means are all equal; there is no effect to detect");
       o.guess = (z_factor(alpha, s("power"), Alt::Two) + 2.0 * (d.k - 1)) / (d.k * d.f * d.f) + 1;
       const double n = solve::min_n([&](double x) { return anova_power(anova_design(s, x), alpha); }, s("power"), o, &ctx);
       d = anova_design(s, n);

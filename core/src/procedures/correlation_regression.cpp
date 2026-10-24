@@ -423,7 +423,7 @@ Procedure multiple_regression() {
       num("r2t", "ΔR² (R² Due to Tested Predictors)", "0.1")
           .grp(G_EFFECT)
           .sym("ΔR²")
-          .range(0, 1, true, true)
+          .range(0, 1, false, true)
           .sugg({"0.02", "0.13", "0.26", "0.05 0.1 0.15"})
           .hint("The share of the outcome's variance that the tested predictors add to the control predictors. "
                 "Without control predictors, Cohen calls 0.02 small, 0.13 medium and 0.26 large.")
@@ -466,6 +466,8 @@ Procedure multiple_regression() {
       r2t = s("r2t");
       if (!(r2c + r2t < 1)) throw CalcError("R² of the control and tested predictors must sum to less than 1");
       if (s.solve == "n") {
+        // with no effect the power is alpha, which no sample size raises
+        if (r2t == 0) throw CalcError("ΔR² = 0: there is no effect to detect");
         solve::NSearch o;
         o.lo = a + b + 2;
         const double f2 = f2_of(r2t);
@@ -716,10 +718,14 @@ Procedure logistic() {
     using namespace stats;
     const double p0 = s("p0"), orr = s("orr"), r2 = s("r2"), alpha = s("alpha");
     const Alt a = alt(s);
-    if (orr == 1) throw CalcError("an odds ratio of 1 has no effect to detect");
+    // with no effect the power is alpha, which no sample size raises
+    if (orr == 1 && s.solve == "n") throw CalcError("an odds ratio of 1 has no effect to detect");
     if ((a == Alt::Upper && orr < 1) || (a == Alt::Lower && orr > 1))
       throw CalcError("the odds ratio is on the side opposite to the one-sided alternative");
     const double za = qnorm(tail_alpha(alpha, a), false);
+    // a two-sided test also rejects on the side away from the effect: without that tail the power of no effect
+    // would be alpha/2
+    const double other = a == Alt::Two ? 1 : 0;
     std::function<double(double)> P;
     double p1 = NAN;
     if (s.is("xtype", "binary")) {
@@ -727,13 +733,17 @@ Procedure logistic() {
       const double o1 = orr * p0 / (1 - p0);
       p1 = o1 / (1 + o1);
       const double pb = (1 - B) * p0 + B * p1;
+      const double crit = za * std::sqrt(pb * (1 - pb) / B), sd1 = std::sqrt(p0 * (1 - p0) + p1 * (1 - p1) * (1 - B) / B);
       P = [=](double n) {
-        const double num = std::sqrt(n * (1 - r2) * (1 - B)) * std::fabs(p1 - p0) - za * std::sqrt(pb * (1 - pb) / B);
-        return pnorm(num / std::sqrt(p0 * (1 - p0) + p1 * (1 - p1) * (1 - B) / B));
+        const double shift = std::sqrt(n * (1 - r2) * (1 - B)) * std::fabs(p1 - p0);
+        return pnorm((shift - crit) / sd1) + other * pnorm((-shift - crit) / sd1);
       };
     } else {
       const double b = std::log(orr);
-      P = [=](double n) { return pnorm(std::sqrt(n * (1 - r2) * p0 * (1 - p0)) * std::fabs(b) - za); };
+      P = [=](double n) {
+        const double shift = std::sqrt(n * (1 - r2) * p0 * (1 - p0)) * std::fabs(b);
+        return pnorm(shift - za) + other * pnorm(-shift - za);
+      };
     }
     double n;
     if (s.solve == "n") {
@@ -857,7 +867,8 @@ Procedure cox() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double hr = s("hr"), pe = s("pevent"), r2 = s("r2"), alpha = s("alpha");
     const Alt a = alt(s);
-    if (hr == 1) throw CalcError("a hazard ratio of 1 has no effect to detect");
+    // with no effect the power is alpha, which no sample size raises
+    if (hr == 1 && s.solve == "n") throw CalcError("a hazard ratio of 1 has no effect to detect");
     const double var = s.is("xtype", "binary") ? s("px") * (1 - s("px")) : s("sx") * s("sx");
     const double drift_per_event = std::sqrt((1 - r2) * var) * std::log(hr);
     auto P = [&](double n) { return z_power(std::sqrt(n * pe) * drift_per_event, alpha, a); };

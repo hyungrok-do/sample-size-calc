@@ -8,6 +8,7 @@
 #include <limits>
 #include <mutex>
 
+#include "procedures/apart.hpp"
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
 #include "procedures/proportion_ci.hpp"
@@ -404,13 +405,17 @@ Procedure two_props() {
                                                              {"zunpool", "unpooled z-test"},
                                                              {"zpoolcc", "continuity-corrected z-test"},
                                                              {"fisher", "Fisher's exact test"}};
+    // the proportions apart from each other, and the ratios from 1, their value of no effect; P1 from an odds ratio
+    // of 1 is P2 to a rounding error, which is no difference
+    const bool same = unrounded(r.num("p1"), r.num("p2")) == r.num("p2");
+    const auto [p1, p2] = fnum_apart(same ? r.num("p2") : r.num("p1"), r.num("p2"));
     std::string t = "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
-                    " to detect a difference between the group proportions P1 = " + fnum_fine(r.num("p1")) +
-                    " and P2 = " + fnum_fine(r.num("p2")) + " (difference " + fnum(r.num("diff")) + ", ratio " +
-                    fnum(r.num("ratio"), 3) + ", odds ratio " + fnum(r.num("or"), 3) + ") using a " +
-                    alt_words(alt(s)) + " " + names.at(s.s("test")) + " at a target significance level of " +
-                    fnum(r.num("alpha"));
-    if (r.has("actual_alpha")) t += " (actual " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
+                    " to detect a difference between the group proportions P1 = " + p1 + " and P2 = " + p2 +
+                    " (difference " + fnum(same ? 0.0 : r.num("diff")) + ", ratio " +
+                    fnum_from(same ? 1.0 : r.num("ratio"), 1, 3) + ", odds ratio " +
+                    fnum_from(same ? 1.0 : r.num("or"), 1, 3) + ") using a " + alt_words(alt(s)) + " " +
+                    names.at(s.s("test")) + " at a target significance level of " + fnum(r.num("alpha"));
+    if (r.has("actual_alpha")) t += " (actual " + fprob(r.num("actual_alpha")) + ")";
     // large samples use the normal approximation, and say so in a note
     const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
     return t + (enumerated ? "; power was computed by exact enumeration." : "; power uses the normal approximation.");
@@ -486,6 +491,16 @@ DiffCi diff_ci_at(const Scenario& s, double n1) {
     c.width = s.is("sides", "upper") ? c.ci.hi - (p1 - p2) : (p1 - p2) - c.ci.lo;
   return c;
 }
+
+// A one-sided bound's distance from the estimate within the rounding of the bound, as at a confidence a rounding
+// error above 50%: its sign then means nothing.
+bool near_estimate(double w, double p1, double p2) { return std::fabs(w) <= 1e-13 * std::fmax(p1, p2); }
+
+// Why an Agresti–Caffo bound can lie on the wrong side of the estimate (a distance below 0), as at a confidence not
+// far above 50% for proportions far apart; the other intervals contain the estimate.
+const char* const AC_WRONG_SIDE =
+    "the success and failure that the Agresti–Caffo interval adds to each group pull its center toward no difference "
+    "by more than its margin at this confidence";
 
 Procedure two_props_ci() {
   Procedure p;
@@ -573,10 +588,30 @@ Procedure two_props_ci() {
       o.lo = solve::first_whole([&](double x) { return ci_n2(s, x) >= 1; }, 1, o.hi, CI_NO_GROUP_2);
       o.guess = std::ceil(z * z * (p1 * (1 - p1) + p2 * (1 - p2) / s("r")) / (e * e));
       o.goal = "the target width";
-      // a one-sided bound at or beyond the estimate is a degenerate size; a two-sided interval at a confidence near
-      // 0 closes on the estimate itself (a width of 0, or a rounding error either side of it) at every size
-      n1 = solve::min_n_staying(
-          [&](double x) { const double w = diff_ci_at(s, x).width; return (two || w > 0) && w <= target; }, o, &ctx);
+      // a one-sided bound at the estimate, on its wrong side or within a rounding error of it is a degenerate size;
+      // a two-sided interval at a confidence near 0 closes on the estimate itself (a width of 0, or a rounding error
+      // either side of it) at every size
+      auto ok = [&](double x) {
+        const double w = diff_ci_at(s, x).width;
+        return (two || (w > 0 && !near_estimate(w, p1, p2))) && w <= target;
+      };
+      try {
+        n1 = solve::min_n_staying(ok, o, &ctx);
+      } catch (const CalcError&) {
+        // a one-sided bound that is still on the wrong side of the estimate, or within a rounding error of it, at
+        // the largest size: the reason, not only that the width was not reached
+        const double w = diff_ci_at(s, o.hi).width;
+        if (two || (w > 0 && !near_estimate(w, p1, p2))) throw;
+        if (near_estimate(w, p1, p2))
+          throw CalcError("the confidence is so close to 50% that the bound lies within a rounding error of the "
+                          "estimate, where its distance cannot be computed");
+        throw CalcError(std::string("the bound lies on the wrong side of the estimate for every sample size up to ") +
+                        text::format_g(o.hi, 10) + ": " + (s.is("method", "ac") ? AC_WRONG_SIDE : "at this confidence"));
+      }
+      if (!two && n1 > o.lo && s.is("method", "ac") &&
+          (diff_ci_at(s, n1 - 1).width <= 0 || near_estimate(diff_ci_at(s, n1 - 1).width, p1, p2)))
+        r.notes.push_back("Smaller samples put the bound on the wrong side of the estimate (" + std::string(AC_WRONG_SIDE) +
+                          "); this is the smallest that puts it beyond.");
       r.set("target_width", target);
     } else {
       n1 = s("n1");
@@ -610,11 +645,19 @@ Procedure two_props_ci() {
         {"newcombe", "Newcombe hybrid score"}, {"newcombecc", "continuity-corrected Newcombe hybrid score"},
         {"ac", "Agresti–Caffo"}, {"wald", "Wald"}, {"waldcc", "continuity-corrected Wald"}};
     const bool two = s.is("sides", "two");
+    const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));
+    const double w = r.num("width");
+    std::string where = (two ? "with a width of " : "whose bound lies at a distance of ") + fnum_fine(w);
+    if (!two && near_estimate(w, r.num("p1"), r.num("p2")))
+      where = "whose bound lies within a rounding error of the estimate";
+    else if (!two && w < 0)
+      where = "whose bound lies " + fnum_fine(-w) + (s.is("sides", "upper") ? " below" : " above") +
+              " the estimate, on the wrong side of it (" + (s.is("method", "ac") ? AC_WRONG_SIDE : "at this confidence") +
+              ")";
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " give a " +
            (two ? "two-sided " : "one-sided ") + level_text(r.num("conf")) + " " + names.at(s.s("method")) +
-           " confidence interval for the difference of two proportions " +
-           (two ? "with a width of " : "whose bound lies at a distance of ") + fnum(r.num("width")) +
-           " when the observed proportions equal " + fnum(r.num("p1")) + " and " + fnum(r.num("p2")) + ".";
+           " confidence interval for the difference of two proportions " + where + " when the observed proportions "
+           "equal " + p1 + " and " + p2 + ".";
   };
   p.definitions = {{"N1, N2", "Group sample sizes; N2 = R·N1 rounded up."},
                    {"Width", "Upper minus lower limit (two-sided) or distance from P1 − P2 to the bound (one-sided)."},
@@ -637,6 +680,27 @@ SSC_REGISTER(two_props_ci);
 // Exposure among the cases whose odds are the odds ratio times those among the controls.
 double case_exposure(double odds_ratio, double p0) { return odds_ratio * p0 / (1 - p0 + odds_ratio * p0); }
 double odds_ratio_of(double p1, double p0) { return p1 / (1 - p1) / (p0 / (1 - p0)); }
+
+// The exposures among cases and controls as percentages with one decimal, or with the decimals it takes to keep
+// their difference to within 5% and to show neither as 0% or 100%, which it is not (99.9995% among cases and
+// 99.999% among controls, not 100.0% for both).
+std::pair<std::string, std::string> pct_apart(double a, double b) {
+  auto pct = [](double p, int d) {
+    const double x = 100 * p;
+    return x != 0 && x < 1e-3 ? text::format_g(x, d) : text::format_fixed(x, d);
+  };
+  auto off = [](double p, double shown) { return (shown == 0 && p != 0) || (shown == 100 && p != 1); };
+  std::string ta, tb;
+  for (int d = 1; d <= 17; ++d) {
+    ta = pct(a, d);
+    tb = pct(b, d);
+    double va, vb;
+    if (text::parse_double(ta, va) && text::parse_double(tb, vb) && !off(a, va) && !off(b, vb) &&
+        std::fabs((va - vb) - 100 * (a - b)) <= 0.05 * 100 * std::fabs(a - b))
+      break;
+  }
+  return {ta + "%", tb + "%"};
+}
 
 ParamDef exposure_param() {
   return num("p0", "P0 (Exposure Prevalence among Controls)", "0.3")
@@ -827,12 +891,12 @@ Procedure case_control() {
                                                              {"zunpool", "unpooled z-test"},
                                                              {"zpoolcc", "continuity-corrected chi-square test"},
                                                              {"fisher", "Fisher's exact test"}};
+    const auto [e1, e0] = pct_apart(r.num("p1"), r.num("p0"));
     std::string t = fint(r.num("ncase")) + " cases and " + fint(r.num("nctrl")) + " controls " + achieves(s, r) +
-                    " to detect an odds ratio of exposure of " + fnum(r.num("or"), 3) + " (exposure " +
-                    fpct(r.num("p1")) + " among cases and " + fpct(r.num("p0")) + " among controls) using a " +
-                    alt_words(alt(s)) + " " + names.at(s.s("test")) + " at a target significance level of " +
-                    fnum(r.num("alpha"));
-    if (r.has("actual_alpha")) t += " (actual " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
+                    " to detect an odds ratio of exposure of " + fnum_from(r.num("or"), 1, 3) + " (exposure " + e1 +
+                    " among cases and " + e0 + " among controls) using a " + alt_words(alt(s)) + " " +
+                    names.at(s.s("test")) + " at a target significance level of " + fnum(r.num("alpha"));
+    if (r.has("actual_alpha")) t += " (actual " + fprob(r.num("actual_alpha")) + ")";
     const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
     return t + (enumerated ? "; power was computed by exact enumeration." : "; power uses the normal approximation.");
   };
@@ -1018,10 +1082,11 @@ Procedure matched_case_control() {
   };
   p.statement = [](const Scenario& s, const Row& r) {
     const int M = static_cast<int>(r.num("mctl"));
+    const auto [e1, e0] = pct_apart(r.num("p1"), r.num("p0"));
     return fint(r.num("n")) + " matched sets of one case and " + (M == 1 ? "one control" : fint(M) + " controls") +
            " (" + fint(r.num("ntotal")) + " subjects) " + achieves(s, r) + " to detect an odds ratio of exposure of " +
-           fnum(r.num("or"), 3) + " (exposure " + fpct(r.num("p1")) + " among cases and " + fpct(r.num("p0")) +
-           " among controls, correlation of exposure within sets " + fnum(r.num("phi")) + ") using a " +
+           fnum_from(r.num("or"), 1, 3) + " (exposure " + e1 + " among cases and " + e0 +
+           " among controls, correlation of exposure within sets " + fnum_fine(r.num("phi")) + ") using a " +
            alt_words(alt(s)) + " conditional test at α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"Sets", "Matched sets: one case with M matched controls."},

@@ -173,9 +173,10 @@ Procedure mann_whitney() {
     const bool noether = s.is("method", "noether");
     std::function<double(double, double)> P;
     double guess = NAN;
+    // with no effect the power is alpha, which no sample size raises
     if (noether) {
       const double pg = s("pgt");
-      if (pg == 0.5) throw CalcError("P(X1 > X2) = 0.5 means no effect");
+      if (pg == 0.5 && s.solve == "n") throw CalcError("P(X1 > X2) = 0.5 means no effect");
       if (s.solve == "n" && ((a == Alt::Upper && (pg - 0.5) < 0) || (a == Alt::Lower && (pg - 0.5) > 0)))
         throw CalcError("P(X1 > X2) lies on the side opposite to the one-sided alternative");
       P = [=](double n1, double n2) {
@@ -185,7 +186,7 @@ Procedure mann_whitney() {
       if (s.solve == "n") guess = z_factor(alpha, s("power"), a) / (12 * 0.25 * (pg - 0.5) * (pg - 0.5)) / 2;
     } else {
       const double are = are_of(s), d = s("delta"), sigma = s("sigma");
-      if (d == 0) throw CalcError("δ = 0: there is no shift to detect");
+      if (d == 0 && s.solve == "n") throw CalcError("δ = 0: there is no shift to detect");
       if (s.solve == "n" && ((a == Alt::Upper && d < 0) || (a == Alt::Lower && d > 0)))
         throw CalcError("δ has the sign opposite to the one-sided alternative");
       P = [=](double n1, double n2) {
@@ -285,7 +286,8 @@ Procedure kruskal() {
     for (double m : mu) ss += (m - mu[0] - mbar) * (m - mu[0] - mbar);
     const double sigma = s("sigma"), alpha = s("alpha"), are = are_of(s);
     const double f2 = ss / k / (sigma * sigma);
-    if (!(f2 > 0)) throw CalcError("the group means are all equal");
+    // with no effect the power is alpha, which no sample size raises
+    if (!(f2 > 0) && s.solve == "n") throw CalcError("the group means are all equal");
     if (!std::isfinite(f2))
       throw CalcError("the effect size is too large to compute with (σ is tiny next to the spread of the means)");
     auto P = [&](double n) {

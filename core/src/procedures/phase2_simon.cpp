@@ -7,6 +7,7 @@
 // promising when more than r of all n patients respond.
 #include <algorithm>
 
+#include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 
 namespace ssc::procs {
@@ -264,6 +265,7 @@ void oc_table(Row& r, const Design& d, double p0, double p1) {
   const double step = (p1 - p0) / 4.0;
   if (p0 - step > 0) ps.insert(ps.begin(), p0 - step);
   if (p1 + step < 1) ps.push_back(p1 + step);
+  ps.erase(std::unique(ps.begin(), ps.end()), ps.end());  // one row when P1 = P0
   for (double p : ps) {
     const OC oc = characteristics(d.r1, d.n1, d.r, d.n, p);
     t.rows.push_back({Cell(p), Cell(oc.pet), Cell(oc.reject), Cell(oc.en)});
@@ -365,9 +367,12 @@ Procedure simon() {
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double p0 = s("p0"), p1 = s("p1"), alpha = s("alpha");
-    if (!(p1 > p0)) throw CalcError("P1 must be larger than P0");
+    // a given design's power at P1 = P0 is its type I error; a design search needs P1 above P0
+    const bool designing = s.solve == "n";
+    if (designing ? !(p1 > p0) : p1 < p0)
+      throw CalcError(designing ? "P1 must be larger than P0" : "P1 cannot be smaller than P0");
     Design d;
-    if (s.solve == "n") {
+    if (designing) {
       const double power = s("power");
       if (!(power > alpha)) throw CalcError("the power must exceed alpha");
       const SearchResult sr = search(p0, p1, alpha, power, static_cast<int>(s("nmax")), ctx);
@@ -427,14 +432,18 @@ Procedure simon() {
     const std::string kind = s.solve == "n" ? (s.is("criterion", "minimax") ? "minimax" : "optimal") : "given";
     const int r1 = static_cast<int>(r.num("r1")), n1 = static_cast<int>(r.num("n1")),
               rr = static_cast<int>(r.num("r")), n = static_cast<int>(r.num("n"));
-    return "For P0 = " + fnum(r.num("p0")) + " versus P1 = " + fnum(r.num("p1")) + ", the " + kind +
+    // the rates apart from each other, and probabilities never as 0 or 1, which they are not
+    const auto [p0, p1] = fnum_apart(r.num("p0"), r.num("p1"));
+    const double pet = r.num("pet0");
+    const std::string pet_text = fnum(pet, 3) == "0" || fnum(pet, 3) == "1" ? fnum_fine(pet) : fnum(pet, 3);
+    return "For P0 = " + p0 + " versus P1 = " + p1 + ", the " + kind +
            " two-stage design enters " + fint(n1) + " patients in stage 1 and stops for futility if " +
            (r1 == 0 ? std::string("no patient responds") : fint(r1) + " or fewer respond") + "; otherwise " +
            fint(n - n1) +
            " more patients are entered (" + fint(n) + " in total) and the treatment is considered promising if more "
-           "than " + fint(rr) + " respond. Its exact one-sided type I error is " + fnum(r.num("actual_alpha"), 4) +
-           " (target " + fnum(r.num("alpha")) + ") and its power is " + fnum(r.num("power"), 4) +
-           ". When P = P0 the trial stops after stage 1 with probability " + fnum(r.num("pet0"), 3) +
+           "than " + fint(rr) + " respond. Its exact one-sided type I error is " + fnum_fine(r.num("actual_alpha")) +
+           " (target " + fnum(r.num("alpha")) + ") and its power is " + fnum_fine(r.num("power")) +
+           ". When P = P0 the trial stops after stage 1 with probability " + pet_text +
            " and the expected sample size is " + fnum(r.num("en0"), 1) + ".";
   };
   p.definitions = {

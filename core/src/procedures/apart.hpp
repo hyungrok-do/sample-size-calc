@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -49,6 +50,28 @@ inline std::pair<std::string, std::string> fnum_apart(double a, double b, std::i
       break;
   }
   return t;
+}
+
+/// x with fnum's `decimals`, or with the digits fnum_apart takes to tell it from ref when those do not keep its
+/// distance from ref to within 5% (a ratio of P1/P2 = 0.99991, not 1, the ratio of no effect).
+inline std::string fnum_from(double x, double ref, int decimals = 4) {
+  const std::string t = blocks::fnum(x, decimals);
+  double v;
+  if (x == ref || (text::parse_double(t, v) && std::fabs(v - x) <= 0.05 * std::fabs(x - ref))) return t;
+  return fnum_apart(x, ref).first;
+}
+
+/// b for a when they differ by no more than the rounding of a's computation from b, a few units in the last place
+/// (P1 from P2 and an odds ratio of 1: 0.5999999999999999 for 0.6), which a statement does not show as a difference.
+inline double unrounded(double a, double b) {
+  return std::fabs(a - b) <= 4 * std::numeric_limits<double>::epsilon() * std::fmax(std::fabs(a), std::fabs(b)) ? b : a;
+}
+
+/// A probability with four decimals, or with the digits fnum_fine gives it when four show it as 0 or 1, which it is
+/// not (an exact test's size of 3.2e-07, not 0.0000).
+inline std::string fprob(double p) {
+  const std::string t = text::format_fixed(p, 4);
+  return p > 0 && p < 1 && (t == "0.0000" || t == "1.0000") ? fnum_fine(p) : t;
 }
 
 }  // namespace ssc::procs

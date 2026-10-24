@@ -135,7 +135,8 @@ Procedure icc() {
     } else {
       rho1 = s("rho1");
       if (!(rho1 > -1 / (k - 1))) throw CalcError("ρ1 must exceed −1/(k − 1)");
-      if (rho1 == rho0) throw CalcError("ρ1 equals ρ0");
+      // with no effect the power is alpha, which no sample size raises
+      if (rho1 == rho0 && s.solve == "n") throw CalcError("ρ1 equals ρ0");
       if ((a == Alt::Upper && rho1 < rho0) || (a == Alt::Lower && rho1 > rho0))
         throw CalcError("ρ1 lies on the side opposite to the one-sided alternative");
       if (s.solve == "n") {
@@ -269,7 +270,8 @@ Procedure kappa() {
     const double kmin = kappa_min(pi);
     if (!(k0 >= kmin && k1 >= kmin))
       throw CalcError("with π = " + fnum(pi) + ", kappa cannot be below " + fnum(kmin, 4));
-    if (k1 == k0) throw CalcError("κ1 equals κ0");
+    // with no effect the power is alpha, which no sample size raises
+    if (k1 == k0 && s.solve == "n") throw CalcError("κ1 equals κ0");
     if ((a == Alt::Upper && k1 < k0) || (a == Alt::Lower && k1 > k0))
       throw CalcError("κ1 lies on the side opposite to the one-sided alternative");
     double n;
@@ -389,7 +391,8 @@ Procedure auc() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double a0 = s("auc0"), a1 = s("auc1"), ratio = s("ratio"), alpha = s("alpha");
     const Alt a = alt(s);
-    if (a1 == a0) throw CalcError("AUC1 equals AUC0");
+    // with no effect the power is alpha, which no sample size raises
+    if (a1 == a0 && s.solve == "n") throw CalcError("AUC1 equals AUC0");
     if ((a == Alt::Upper && a1 < a0) || (a == Alt::Lower && a1 > a0))
       throw CalcError("AUC1 lies on the side opposite to the one-sided alternative");
     auto controls = [&](double n1) { return solve::round_up(n1 * ratio); };
@@ -526,8 +529,13 @@ Procedure sens_spec() {
     const bool use_se = !s.is("goal", "sp"), use_sp = !s.is("goal", "se");
     const double se0 = use_se ? s("se0") : NAN, se1 = use_se ? s("se1") : NAN;
     const double sp0 = use_sp ? s("sp0") : NAN, sp1 = use_sp ? s("sp1") : NAN;
-    if (use_se && !(se1 > se0)) throw CalcError("Se1 must exceed Se0");
-    if (use_sp && !(sp1 > sp0)) throw CalcError("Sp1 must exceed Sp0");
+    // the tests are one-sided; at Se1 = Se0 (or Sp1 = Sp0) the power is the exact test's size, which no sample
+    // size raises above alpha
+    const bool n_mode = s.solve == "n";
+    if (use_se && (n_mode ? !(se1 > se0) : se1 < se0))
+      throw CalcError(n_mode ? "Se1 must exceed Se0" : "Se1 cannot be smaller than Se0");
+    if (use_sp && (n_mode ? !(sp1 > sp0) : sp1 < sp0))
+      throw CalcError(n_mode ? "Sp1 must exceed Sp0" : "Sp1 cannot be smaller than Sp0");
     // subjects with / without the condition: whole numbers not exceeding the expected counts
     auto nd = [&](double n) { return std::floor(n * prev + 1e-9); };
     auto nn = [&](double n) { return std::floor(n * (1 - prev) + 1e-9); };
@@ -775,7 +783,9 @@ Procedure paired_diagnostic() {
     const Alt a = alt(s);
     PairedCells se, sp;
     auto check = [&](double x1, double x2, const char* name) {
-      if (x1 == x2) throw CalcError(std::string("the two ") + name + " are equal; there is no difference to detect");
+      // with no difference the power is the test's size, which no sample size raises above alpha
+      if (x1 == x2 && s.solve == "n")
+        throw CalcError(std::string("the two ") + name + " are equal; there is no difference to detect");
       if ((a == Alt::Upper && x1 < x2) || (a == Alt::Lower && x1 > x2))
         throw CalcError(std::string("the difference in ") + name + " is on the side opposite to the one-sided "
                         "alternative");

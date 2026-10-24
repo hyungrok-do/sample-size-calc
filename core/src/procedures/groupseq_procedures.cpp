@@ -543,7 +543,8 @@ Procedure gs_means() {
                                "groups."));
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double diff = s("mu1") - s("mu2"), sigma = s("sigma");
-    if (diff == 0) throw CalcError("μ1 equals μ2");
+    // with no effect the power is the design's type I error, which no sample size raises
+    if (diff == 0 && s.solve == "n") throw CalcError("μ1 equals μ2");
     auto eta_of = [&](double n1, double n2) { return directed(s, diff / (sigma * std::sqrt(1 / n1 + 1 / n2))); };
     if (eta_of(10, 10) < 0) throw CalcError("the difference has the sign opposite to the one-sided alternative");
     const DesignPtr info = gs_design(s, ctx);
@@ -628,7 +629,8 @@ Procedure gs_props() {
                                "0 and 1."));
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double p1 = s("p1"), p2 = s("p2"), diff = p1 - p2;
-    if (diff == 0) throw CalcError("P1 equals P2");
+    // with no effect the power is the design's type I error, which no sample size raises
+    if (diff == 0 && s.solve == "n") throw CalcError("P1 equals P2");
     const bool pooled = s.is("stat", "pooled");
     // standard errors under H1 and (pooled) under H0 for group sizes n1, n2
     auto se1 = [&](double n1, double n2) { return std::sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2); };
@@ -752,7 +754,8 @@ Procedure gs_logrank() {
     p.params.push_back(q);
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double hr = s("hr"), lam2 = std::log(2.0) / s("med2"), lam1 = hr * lam2;
-    if (hr == 1) throw CalcError("HR = 1: there is no effect to detect");
+    // with no effect the power is the design's type I error, which no sample size raises
+    if (hr == 1 && s.solve == "n") throw CalcError("HR = 1: there is no effect to detect");
     if (s("accrual") + s("follow") <= 0) throw CalcError("the study duration (accrual + follow-up) must be positive");
     const double pe1 = gs_event_prob(lam1, s("accrual"), s("follow")), pe2 = gs_event_prob(lam2, s("accrual"), s("follow"));
     auto events = [&](double n1, double n2) { return n1 * pe1 + n2 * pe2; };

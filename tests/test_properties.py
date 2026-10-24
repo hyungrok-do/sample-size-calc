@@ -2303,3 +2303,181 @@ def test_group_sequential_boundaries_at_the_smallest_alpha(bound, alt):
             keys = [c["key"] for c in table["columns"]]
             p = table["rows"][-1][keys.index("p")] * (2 if alt == "two" else 1)
             assert p <= alpha and row["inflation"] >= 1, (looks, alpha, p / alpha, row["inflation"])
+
+
+@pytest.mark.parametrize("pid,inputs", [
+    ("means.two.ancova", {"mu1": "0", "mu2": "0"}),
+    ("means.rm.anova", {"means": "0.7 0.7 0.7"}),
+    ("means.rm.anova", {"estype": "f", "f": "0"}),
+    ("means.anova", {"estype": "f", "f": "0"}),
+    ("prop.chisq", {"w": "0"}),
+    ("prop.chisq", {"es": "gof", "p0s": "0.25 0.25 0.25 0.25", "p1s": "0.25 0.25 0.25 0.25"}),
+    ("reg.multiple", {"r2t": "0"}),
+    ("reg.logistic", {"orr": "1"}),
+    ("reg.logistic", {"orr": "1", "xtype": "normal"}),
+    ("reg.cox", {"hr": "1"}),
+    ("nonpar.kruskal", {"means": "0 0 0"}),
+    ("nonpar.mannwhitney", {"delta": "0"}),
+    ("nonpar.mannwhitney", {"method": "noether", "pgt": "0.5"}),
+    ("gs.means", {"mu1": "0", "mu2": "0"}),
+    ("gs.props", {"p1": "0.35", "p2": "0.35"}),
+    ("gs.logrank", {"hr": "1"}),
+    ("agree.icc", {"rho0": "0.4", "rho1": "0.4"}),
+    ("agree.kappa", {"kappa0": "0.4", "kappa1": "0.4"}),
+    ("diag.auc", {"auc0": "0.5", "auc1": "0.5"}),
+    ("cluster.sw", {"delta": "0"}),
+    ("cluster.sw", {"outcome": "binary", "p1": "0.2", "p2": "0.2"})])
+def test_a_zero_effect_has_the_power_alpha(pid, inputs):
+    """With no effect the power is the test's size, alpha, as means.two.t gives it; these refused it ('μ1 equals μ2',
+    'δ = 0: there is no shift to detect', 'values must be greater than 0'), and a range crossing 0 showed an error row
+    in the middle.  A sample size still cannot be solved for."""
+    for alt in (["two", "upper", "lower"] if "alternative" in params(pid) else [None]):
+        extra = {"alternative": alt} if alt else {}
+        row = first_row(run(pid, "power", {**base_inputs(pid), **inputs, **extra}))
+        assert row and row["power"] == pytest.approx(row["alpha"], abs=1e-9), (alt, row)
+        size_mode = "n" if "n" in modes(pid) else "g"
+        assert "_error" in run(pid, size_mode, {**base_inputs(pid), **inputs, **extra})["rows"][0], alt
+
+
+@pytest.mark.parametrize("pid,inputs", [
+    ("prop.paired.mcnemar", {"p10": "0.25", "p01": "0.25"}),
+    ("prop.paired.mcnemar", {"es": "or", "orr": "1"}),
+    ("diag.sens", {"se1": "0.7", "se0": "0.7", "sp1": "0.8", "sp0": "0.8"}),
+    ("diag.paired", {"se1": "0.9", "se2": "0.9"}),
+    ("means.coprimary", {"deltas": "0 0.3"}),
+    ("prop.one.simon", {"p0": "0.1", "p1": "0.1"})])
+def test_a_zero_effect_has_at_most_the_power_alpha(pid, inputs):
+    """Exact tests, one-sided tests and tests that must all succeed reject with probability at most alpha when there
+    is no effect (a Simon design with its exact type I error); they refused to say so."""
+    row = first_row(run(pid, "power", {**base_inputs(pid), **inputs}))
+    assert row and 0 < row["power"] <= row["alpha"] + 1e-12, row
+    if "actual_alpha" in row:
+        assert row["power"] == row["actual_alpha"], row
+    assert "_error" in run(pid, "n", {**base_inputs(pid), **inputs})["rows"][0]
+
+
+@pytest.mark.parametrize("pid,key", [("gs.means", "mu1"), ("means.two.ancova", "mu1"), ("nonpar.mannwhitney", "delta"),
+                                     ("cluster.sw", "delta")])
+def test_a_range_of_effects_through_zero_has_no_error_row(pid, key):
+    res = run(pid, "power", {**base_inputs(pid), key: "-0.3 to 0.3 by 0.1"})
+    rows = res["rows"]
+    assert len(rows) == 7 and not any("_error" in r for r in rows), rows
+    assert rows[3]["power"] == pytest.approx(rows[3]["alpha"], abs=1e-9) and rows[3]["power"] < rows[4]["power"]
+
+
+def test_a_two_sided_logistic_power_counts_both_sides():
+    """Hsieh's power counted only the side of the effect, which left a two-sided test of no effect with alpha/2."""
+    base = base_inputs("reg.logistic")
+    near = first_row(run("reg.logistic", "power", {**base, "orr": "1.0001", "alternative": "two"}))
+    assert near["power"] == pytest.approx(0.05, abs=1e-4), near
+    one = first_row(run("reg.logistic", "power", {**base, "orr": "2", "alternative": "upper", "alpha": "0.025"}))
+    two = first_row(run("reg.logistic", "power", {**base, "orr": "2", "alternative": "two"}))
+    assert 0 < two["power"] - one["power"] < 1e-4, (one, two)  # the far side: about 1.7e-5 at a power of 57%
+
+
+@pytest.mark.parametrize("pid,inputs,says", [
+    ("prop.two", {"p1": "0.9999", "p2": "0.99999"}, "(difference -9e-05, ratio 0.99991, odds ratio 0.1)"),
+    ("prop.two", {"p1": "0.30000001", "p2": "0.3", "method": "normal"}, "P1 = 0.30000001 and P2 = 0.3 "),
+    ("prop.two", {"p1": "0.9999", "p2": "0.99999"}, "(actual 4.602e-15)"),
+    # P1 from P2 = 0.6 and an odds ratio of 1 is 0.5999999999999999: no difference to show
+    ("prop.two", {"es": "or", "or1": "1", "p2": "0.6", "method": "normal"},
+     "P1 = 0.6 and P2 = 0.6 (difference 0, ratio 1, odds ratio 1)"),
+    ("prop.two.equiv", {"es": "or", "or1": "1", "p2": "0.6"}, "when P1 = 0.6 and P2 = 0.6."),
+    ("prop.two.cluster", {"icc": "0.99999"}, "with ICC 0.99999 "),
+    ("prop.two.cluster", {"p1": "0.99999", "p2": "0.9999"}, "to detect P1 = 0.99999 versus P2 = 0.9999 "),
+    ("prop.two.ni", {"scale": "ratio", "r0": "0.99999", "p1": "0.5", "p2": "0.5"}, "H0: P1/P2 ≤ 0.99999 "),
+    ("prop.two.equiv", {"scale": "ratio", "rl": "0.99999", "ru": "1.00001"}, "lies between 0.99999 and 1.00001 "),
+    ("prop.paired.mcnemar", {"p10": "0.25000001", "p01": "0.25"},
+     "P10 = 0.25000001 and P01 = 0.25 (odds ratio 1.00000004)"),
+    ("prop.cc", {"p0": "0.99999", "or": "2", "method": "normal"},
+     "(exposure 99.9995% among cases and 99.9990% among controls)"),
+    ("prop.cc.matched", {"or": "1.0001"}, "odds ratio of exposure of 1.0001 (exposure 30.002% among cases and "
+                                          "30.000% among controls,"),
+    ("prop.one", {"p0": "0.5", "p1": "0.50000001", "method": "normal", "test": "zp0"},
+     "P0 = 0.5 and the actual proportion P1 = 0.50000001 "),
+    ("prop.one.simon", {"p0": "0.99999", "p1": "0.999999"}, "For P0 = 0.99999 versus P1 = 0.999999,"),
+    ("prop.trend", {"props": "0.1 0.99999 0.2"}, "response proportions 0.1, 0.99999, 0.2 ")])
+def test_proportion_statements_show_values_apart(pid, inputs, says):
+    """Proportion statements showed a value as its neighbor: 'ratio 1' for 0.99991, 'ICC 1' for 0.99999, 'P1 = 0.3
+    and P2 = 0.3' for two that differ, 'actual 0.0000' for a size of 4.6e-15, '100.0%' for an exposure of 99.9995%;
+    and 'difference -1.11e-16' for an odds ratio of 1."""
+    stmt = first_row(run(pid, "power", {**base_inputs(pid), **inputs}))["_statement"]
+    assert says in stmt, stmt
+
+
+def test_list_inputs_state_their_limits():
+    """Lists of proportions or effects declared no limits: a proportion of 1e-31 got 'values must be 0 or between
+    1e-30 and 1e30 in size', one of 1.5 a row error."""
+    for pid, key, value, says in (("prop.trend", "props", "0.1 1.5", "values must be less than 1"),
+                                  ("prop.trend", "props", "0.1 0", "values must be greater than 0"),
+                                  ("prop.trend", "props", "0.1 1e-31", "values must be at least 1e-30"),
+                                  ("means.coprimary", "deltas", "0.3 -0.1", "values must be at least 0"),
+                                  ("means.coprimary", "diffs", "3 -1", "values must be at least 0"),
+                                  ("means.coprimary", "sds", "10 0", "values must be greater than 0")):
+        res = run(pid, "power", {**base_inputs(pid), "es": "raw" if key != "deltas" else "std", key: value})
+        assert res["input_errors"] == {key: says}, (pid, key, value, res.get("input_errors"))
+
+
+def test_a_poisson_rate_with_more_events_than_doubles_count():
+    """Beyond about 1e26 expected events the counts that can be stored lie so far apart that the exact test's
+    critical counts fell on μ0: a size of 1 (two-sided) or 0.5 at 1e33 events, and λ1 refused as 'the target power
+    must exceed the power with no effect'."""
+    base = {**base_inputs("rates.one.poisson"), "lam0": "1", "time": "1e30"}
+    for n in ("10", "1000", "1000000000"):
+        for alt in ("two", "upper"):
+            row = first_row(run("rates.one.poisson", "power", {**base, "lam1": "1", "n": n, "alternative": alt}))
+            assert row["actual_alpha"] == pytest.approx(0.05, abs=1e-9), (n, alt, row)
+    row = first_row(run("rates.one.poisson", "n", {**base, "lam1": "1.000000000000001", "power": "0.8"}))
+    assert row["n"] == 7, row
+    msg = run("rates.one.poisson", "lam1", {**base, "n": "1000"})["rows"][0]["_error"]
+    assert "cannot be told apart from" in msg, msg
+
+
+def test_two_rates_with_next_to_no_events():
+    """With rates of 1e-30 the negative binomial test claimed a power of 100% for 1e-58 expected events; it now
+    refuses where a side's power exceeds the chance of the events it needs, an n search goes on to the first sizes
+    where none does, and a group with fewer than 10 is noted."""
+    base = base_inputs("rates.two.negbin")
+    msg = run("rates.two.negbin", "power", {**base, "r0": "1e-30", "rr": "1e-30", "time": "1e-30", "kappa": "0"})
+    assert msg["rows"][0]["_error"].endswith("it fails with so few events"), msg["rows"][0]
+    row = first_row(run("rates.two.negbin", "power", {**base, "r0": "0.001", "rr": "0.7"}))
+    assert row["_notes"] == ["A group expects fewer than 10 events; the normal approximation of the test is rough "
+                             "with so few."], row
+    msg = run("rates.two.poisson", "power", {**base_inputs("rates.two.poisson"), "lam1": "1e-30", "lam2": "1"})
+    assert msg["rows"][0]["_error"].startswith("group 1 expects only 5e-29 events"), msg["rows"][0]
+    # one subject in group 1 expects 6.25 events, so that a side of the test can have a power of 99.81% at most; the
+    # approximation gave it 99.97%
+    row = first_row(run("rates.two.poisson", "n", {**base_inputs("rates.two.poisson"), "method": "h1", "alpha": "0.25",
+                                                   "alloc": "n2", "n2": "500", "lam1": "6.25", "lam2": "1"}))
+    assert row["n1"] == 2 and row["_notes"][0].startswith("Smaller samples leave a group so few events"), row
+
+
+def test_a_win_ratio_loss_rate_next_to_zero_changes_nothing():
+    """A loss to follow-up drawn from the patients' own stream moved every later draw: the approximate power was
+    0.5607 at a loss rate of 0 and 0.5598 at 1e-16."""
+    base = {**base_inputs("sim.winratio"), "reps": "100"}
+    rows = [first_row(run("sim.winratio", "power", {**base, "eta": eta})) for eta in ("0", "1e-16", "1e-10")]
+    assert rows[0]["approx_power"] == rows[1]["approx_power"] == rows[2]["approx_power"], rows
+    assert rows[0]["power"] == rows[1]["power"] == rows[2]["power"], rows
+
+
+def test_a_one_sided_bound_on_the_wrong_side_of_the_estimate_says_why():
+    """Agresti–Caffo and Jeffreys bounds lie on the wrong side of the estimate at some confidence levels above 50%;
+    a negative distance was shown without a word, and searches at a confidence a rounding error above 50% said
+    'cannot be reached'."""
+    stmt = first_row(run("prop.two.ci", "width", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper",
+                                                  "conf": "0.75", "p1": "0.9", "p2": "0.1", "n1": "10"}))["_statement"]
+    assert "whose bound lies 0.0307 below the estimate, on the wrong side of it (the success and failure" in stmt, stmt
+    stmt = first_row(run("prop.one.ci", "width", {**base_inputs("prop.one.ci"), "method": "jeffreys", "sides": "upper",
+                                                  "conf": "0.51", "p": "0.9", "n": "10"}))["_statement"]
+    assert "whose bound lies 0.0119 below the estimate, on the wrong side of it (the Jeffreys bound" in stmt, stmt
+    row = first_row(run("prop.two.ci", "n", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper",
+                                             "conf": "0.51", "width": "0.01"}))
+    assert row["n1"] == 529 and row["_notes"][0].startswith("Smaller samples put the bound on the wrong side"), row
+    msg = run("prop.two.ci", "n", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper", "conf": "0.50001",
+                                   "width": "0.01"})["rows"][0]["_error"]
+    assert msg.startswith("the bound lies on the wrong side of the estimate for every sample size up to 100000000"), msg
+    for pid, inputs in (("prop.two.ci", {"method": "wald"}), ("prop.one.ci", {"method": "wilson", "p": "0.7"})):
+        msg = run(pid, "n", {**base_inputs(pid), **inputs, "sides": "upper", "conf": "0.500000000000001",
+                             "width": "0.01"})["rows"][0]["_error"]
+        assert msg.startswith("the confidence is so close to 50% that the bound lies within a rounding error"), msg
