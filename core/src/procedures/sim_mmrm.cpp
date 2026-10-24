@@ -227,6 +227,11 @@ Design design_of(const Scenario& s) {
   d.drop[0] = s("drop1");
   d.drop[1] = s("drop2");
   const int T = d.visits;
+  // exchangeable correlations must exceed −1/(T − 1): 1 + (T − 1)ρ > 0, whose sign fma's one rounding keeps (the
+  // Cholesky factorization below, rounded, refused −0.3333333333333333 at 4 visits and took −0.25 at 5)
+  if (!d.ar1 && !(std::fma(T - 1, d.rho, 1) > 0))
+    throw CalcError("the correlation " + text::format_roundtrip(d.rho) + " is not possible with " +
+                    std::to_string(T) + " visits (exchangeable correlations must exceed −1/(T − 1))");
   for (int a = 0; a < T; ++a)
     for (int b = 0; b < T; ++b) {
       d.sigma[a * TMAX + b] = a == b ? 1 : (d.ar1 ? std::pow(d.rho, std::abs(a - b)) : d.rho);
@@ -235,9 +240,10 @@ Design design_of(const Scenario& s) {
   for (int j = 0; j < T; ++j) {
     double v = d.sigma[j * TMAX + j];
     for (int k = 0; k < j; ++k) v -= d.chol[j * TMAX + k] * d.chol[j * TMAX + k];
+    // a pivot that rounds to 0 or below (the last, for exchangeable ρ within a few units in the last place of
+    // −1/(T − 1)) is taken in closed form: (1 − ρ)(1 + jρ)/(1 + (j − 1)ρ), or 1 − ρ² for AR(1)
     if (!(v > 0))
-      throw CalcError("the correlation " + fnum(d.rho) + " is not possible with " + std::to_string(T) +
-                      " visits (exchangeable correlations must exceed −1/(T − 1))");
+      v = d.ar1 ? (1 - d.rho) * (1 + d.rho) : (1 - d.rho) * std::fma(j, d.rho, 1) / std::fma(j - 1, d.rho, 1);
     d.chol[j * TMAX + j] = std::sqrt(v);
     for (int i = j + 1; i < T; ++i) {
       double w = d.sigma[i * TMAX + j];
@@ -373,8 +379,18 @@ std::string rho_text(double rho, double lowest) {
 /// and 1 from reading as 0% or 100%.  Below 1, 100 p is at most 100 − 2⁻⁴⁶, which 14 decimals tell from 100
 /// (99.99999999999999%); a share that 12 do not tell from 0 is given with an exponent (4e-13%).
 std::string lost_text(double p) {
+  // from 12 decimals on, they are p's own with the point moved: 100p, a rounded product whose doubles lie 1.4e-14
+  // apart near 100, can be off in the last of them (99.99999999999997% for 0.99999999999999978)
+  auto percent = [p](int decimals) {
+    if (decimals < 12) return fpct(p, decimals);
+    std::string t = text::format_fixed(p, decimals + 2);  // 0.9999999999999998, or 1.0000000000000000
+    t.erase(t.find('.'), 1);
+    t.insert(t.size() - static_cast<std::size_t>(decimals), ".");
+    t.erase(0, std::min(t.find_first_not_of('0'), t.find('.') - 1));  // 099.99… → 99.99…, 000.00… → 0.00…
+    return t + "%";
+  };
   for (int decimals = 0; decimals <= (p < 0.5 ? 12 : 14); ++decimals) {
-    const std::string t = fpct(p, decimals);
+    const std::string t = percent(decimals);
     if (p <= 0 || p >= 1 || (t != fpct(0, decimals) && t != fpct(1, decimals))) return t;
   }
   return text::format_g(100 * p, 3) + "%";
@@ -546,7 +562,7 @@ Procedure mmrm_proc() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm, causes_of(an));
+      simc::put_summary(s, r, sm, causes_of(an), "trials");
       r.set("approx_power", approx(n1));
       simc::put_other(r, sm, "power_mmrm", MMRM, causes_of(MMRM), an == MMRM);
       simc::put_other(r, sm, "power_completers", COMPLETERS, causes_of(COMPLETERS), an == COMPLETERS);

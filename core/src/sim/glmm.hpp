@@ -36,7 +36,7 @@ double cluster_loglik(double eta, double m, double s, double sigma, int nodes = 
 /// Why a fit failed.
 enum class Failure {
   None,
-  Separation,   // the estimates ran off, as when no subject of a group (or every one) has the outcome
+  RunOff,       // σ ran off past SIGMA_MAX, as when the subjects of (nearly) every cluster agree
   Arithmetic,   // the likelihood could not be computed, or Newton's method stopped short of the maximum
   Information,  // the observed information at the maximum is not positive definite: no standard error
 };
@@ -59,6 +59,12 @@ struct Poll {
   const void* arg = nullptr;
 };
 
+/// The largest σ a fit may reach.  The likelihood keeps growing past it only where the subjects of (nearly) every
+/// cluster agree, and there the quadrature, whose error for such a cluster grows with σ (up to 0.03 to 0.05 of its
+/// log-likelihood from 15 to 30, against 0.007 at 6, the simulated designs' largest σ), no longer tells where it
+/// peaks.
+constexpr double SIGMA_MAX = 30;
+
 /// Maximum likelihood fit from the starting values (b0, b1, sigma).  With one subject per cluster and two groups, σ
 /// is not identified and is held at 0 (ordinary logistic regression).
 Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, int nodes = 21, Poll poll = {});
@@ -70,9 +76,10 @@ double between_variance(double beta, double sigma);
 /// β with E[expit(β + σZ)] = p.
 double beta_for_marginal(double p, double sigma);
 /// σ giving an intracluster correlation (on the proportion scale) of `icc` when the cluster-specific
-/// intercept is `beta(σ)`: icc = Var[expit(β + σZ)] / (p̄(1 − p̄)).
+/// intercept is `beta(σ)`: icc = Var[expit(β + σZ)] / (p̄(1 − p̄)).  Throws std::domain_error when the largest power
+/// of 2 up to `limit` gives less.
 template <class BetaOf>
-double sigma_for_icc(double icc, BetaOf&& beta_of);
+double sigma_for_icc(double icc, BetaOf&& beta_of, double limit = 1e3);
 
 }  // namespace ssc::sim::glmm
 
@@ -80,7 +87,7 @@ double sigma_for_icc(double icc, BetaOf&& beta_of);
 #include <stdexcept>
 
 template <class BetaOf>
-double ssc::sim::glmm::sigma_for_icc(double icc, BetaOf&& beta_of) {
+double ssc::sim::glmm::sigma_for_icc(double icc, BetaOf&& beta_of, double limit) {
   if (icc <= 0) return 0;
   auto f = [&](double sigma) {
     const double b = beta_of(sigma), p = marginal_mean(b, sigma);
@@ -91,7 +98,7 @@ double ssc::sim::glmm::sigma_for_icc(double icc, BetaOf&& beta_of) {
   while (f(hi) < 0) {
     lo = hi;
     hi *= 2;
-    if (hi > 1e3) throw std::domain_error("intracluster correlation too large for the proportions");
+    if (hi > limit) throw std::domain_error("intracluster correlation too large for the proportions");
   }
   for (int i = 0; i < 200 && hi - lo > 1e-13 * hi; ++i) {
     const double mid = 0.5 * (lo + hi);

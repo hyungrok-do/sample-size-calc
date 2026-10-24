@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "procedures/apart.hpp"
 #include "procedures/sim_common.hpp"
 #include "sim/glmm.hpp"
 #include "sim/random.hpp"
@@ -50,10 +51,16 @@ GlmmDesign glmm_design(const Scenario& s) {
   if (s.is("iccscale", "latent")) {
     d.sigma = std::sqrt(PI2_3 * icc / (1 - icc));
   } else {
+    // σ is sought up to 8: past the largest SD allowed (6) only a refusal names it, and the 40-point quadrature of
+    // the proportions' moments loses its accuracy (the ICC at σ = 8 is 2% low for P2 = 0.2 and 9% for P2 = 1.2e-5,
+    // and from σ = 20 it levels off at 0.814 and 0.536, though every ICC below 1 has its σ); the SDs named past 8
+    // (18.5 for an ICC that σ = 12.06 gives) were artifacts of it
     try {
-      d.sigma = glmm::sigma_for_icc(icc, [&](double sigma) { return beta_of(p2, sigma); });
+      d.sigma = glmm::sigma_for_icc(icc, [&](double sigma) { return beta_of(p2, sigma); }, 8);
     } catch (const std::domain_error&) {
-      throw CalcError("no logistic random-intercept model has this ICC with these proportions");
+      throw CalcError("the ICC implies a between-cluster SD of more than 8 on the logit scale (latent ICC above 0.95); "
+                      "with an SD above 6 (latent ICC 0.92) clusters are almost all-or-none, and the mixed model's "
+                      "Wald test breaks down");
     }
   }
   // beyond this SD clusters are almost all-or-none, and the Wald test breaks down: at an SD of 8 it rejected
@@ -87,7 +94,9 @@ const std::vector<simc::Cause>& causes() {
       {CONCORDANT, Failures::Design,
        "the subjects of every cluster all had the outcome or all lacked it, so the between-cluster SD had no finite "
        "estimate"},
-      {RAN_OFF, Failures::Design, "the estimates grew without bound"},
+      {RAN_OFF, Failures::Design,
+       "the estimate of the between-cluster SD grew past 30 (a latent ICC of 0.996), where the quadrature no longer "
+       "tells where the likelihood peaks"},
       {ARITHMETIC, Failures::Numerical, "the fit did not converge"},
       {NO_SE, Failures::Numerical,
        "the fit gave no standard error (its information matrix was not positive definite)"}};
@@ -96,8 +105,8 @@ const std::vector<simc::Cause>& causes() {
 
 /// Whether no subject of a group had the outcome, or every one had it.  The likelihood then grows as the log odds
 /// ratio runs off to ±∞, whatever σ is, so the odds ratio has no finite estimate, and the Wald statistic, whose
-/// standard error grows faster, goes to 0.  Newton's method stops where the likelihood has grown flat, short of the
-/// run-off guard or not, and may count as converged there: a study's data, not its fit, tell.
+/// standard error grows faster, goes to 0.  Newton's method stops where the likelihood has grown flat, and may count
+/// as converged there: a study's data, not its fit, tell.
 bool separated(const std::vector<glmm::Cluster>& data) {
   bool none[2] = {true, true}, all[2] = {true, true};
   for (const glmm::Cluster& c : data) {
@@ -130,19 +139,26 @@ double expected_weight(const GlmmDesign& d, double p, double icc) {
 }
 
 /// One simulated study.  A study of a million clusters of different sizes takes seconds, so the token is checked
-/// within it: as the clusters are drawn, and every 4096 clusters of each pass of the fit over them.
+/// within it: as the clusters are drawn, every 4096 clusters and every 10⁸ subjects (a binomial count of a rare
+/// outcome in a cluster of 10⁷ takes some 0.3 ms, by inversion in steps of 500 subjects), and every 4096 clusters of
+/// each pass of the fit over them.
 sim::Outcome glmm_study(const GlmmDesign& d, long k1, long k2, long rep, std::uint64_t seed, bool z, double alpha,
                         Alt a, const RunContext& ctx) {
   // clusters with the same (group, size, successes) enter the likelihood once, with their count:
   // sort the triples packed into 64 bits (group, then size and successes below 2³¹ each)
   std::vector<std::uint64_t> keys;  // freed with the study
   keys.reserve(static_cast<std::size_t>(k1 + k2));
+  double drawn = 0;  // subjects drawn since the token was last checked
   for (int g = 0; g < 2; ++g)
     for (long c = 0; c < (g == 0 ? k1 : k2); ++c) {
-      if (c % 4096 == 0) ctx.check();
+      if (c % 4096 == 0 || drawn > 1e8) {
+        ctx.check();
+        drawn = 0;
+      }
       Rng rng(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(g + 1),
               static_cast<std::uint64_t>(c));
       const long m = d.sizes.draw(rng);
+      drawn += static_cast<double>(m);
       const double eta = d.b0 + (g == 0 ? d.b1 : 0) + d.sigma * rng.normal();
       const long s = rng.binomial(m, expit(eta));
       keys.push_back(static_cast<std::uint64_t>(g) << 62 | static_cast<std::uint64_t>(m) << 31 |
@@ -174,7 +190,7 @@ sim::Outcome glmm_study(const GlmmDesign& d, long k1, long k2, long rep, std::ui
     o.failed = true;
     const glmm::Failure why = f.ok ? glmm::Failure::Information : f.failure;
     o.also = 1u << (concordant(data)                    ? CONCORDANT
-                    : why == glmm::Failure::Separation  ? RAN_OFF
+                    : why == glmm::Failure::RunOff      ? RAN_OFF
                     : why == glmm::Failure::Information ? NO_SE
                                                         : ARITHMETIC) |
              one_subject;
@@ -377,14 +393,17 @@ Procedure glmm_cluster() {
     const bool all_logistic = (r.num("cv") == 0 && r.num("m") == 1) || (logistic > 0 && logistic == r.num("reps"));
     const double pm1 = r.num("pm1"), pm2 = r.num("pm2");
     const double averaged = std::exp(std::log(pm1 / (1 - pm1)) - std::log(pm2 / (1 - pm2)));
+    // the odds ratios with the digits that tell them from 1, and the proportions from each other (0.3001 and 0.3: an
+    // odds ratio of 1.00048, not 1)
+    const auto [p1_text, p2_text] = fnum_apart(pm1, pm2);
     const std::string logistic_or = "the odds ratio of the population-averaged proportions" +
-                                    (std::isfinite(averaged) ? " (" + fnum(averaged, 3) + ")" : std::string());
+                                    (std::isfinite(averaged) ? " (" + fnum_from(averaged, 1, 3) + ")" : std::string());
     const std::string analysis = all_logistic ? "by logistic regression (clusters of one subject leave the random "
                                                 "intercept's SD unestimable, so it is held at 0) and a "
                                               : "with a logistic mixed model with a random cluster intercept and a ";
     std::string t = fint(r.num("k1")) + " and " + fint(r.num("k2")) + " " + sizes + " " + simc::power_phrase(s, r) +
-                    " to detect population-averaged proportions of " + fnum(pm1) + " and " + fnum(pm2) +
-                    " (an odds ratio of " + fnum(r.num("or"), 3) + " for a typical cluster; ICC " +
+                    " to detect population-averaged proportions of " + p1_text + " and " + p2_text +
+                    " (an odds ratio of " + fnum_from(r.num("or"), 1, 3) + " for a typical cluster; ICC " +
                     fnum(r.num("icc2"), 3) + " on the proportion scale, " + fnum(r.num("icc_latent"), 3) +
                     " on the latent scale), analyzing each study " + analysis + alt_words(alt(s)) + " " + test +
                     " at α = " + fnum(r.num("alpha")) + ".";
@@ -393,8 +412,9 @@ Procedure glmm_cluster() {
     else if (logistic > 0)
       t += " In " + simc::grouped(logistic) + " of the " + simc::grouped(r.num("reps")) + " simulated studies every "
            "cluster had one subject, which leaves the random intercept's SD unestimable; " +
-           (logistic == 1 ? "it was" : "those were") + " analyzed by logistic regression, with the SD held at 0, which "
-           "estimates " + logistic_or + ".";
+           (logistic == 1 ? "it was analyzed by logistic regression if it could be"
+                          : "those were analyzed by logistic regression where they could be") +
+           ", with the SD held at 0, which estimates " + logistic_or + ".";
     return t + simc::method_note(r);
   };
   p.definitions = {{"k1, k2", "Number of clusters randomized to each group."},
@@ -420,7 +440,8 @@ Procedure glmm_cluster() {
              "that draws no larger cluster.",
              "Studies whose fit fails count as not rejecting and are reported as failed fits, with the reason: no "
              "subject of a group with the outcome, or every one with it (no finite odds ratio; such a study is not "
-             "fitted), the subjects of every cluster all alike (no finite between-cluster SD), or a fit that did not "
+             "fitted), the subjects of every cluster all alike (no finite between-cluster SD), an estimate of that SD "
+             "past 30 (where the quadrature no longer tells where the likelihood peaks), or a fit that did not "
              "converge. No simulated power is given when no study could be fitted, or when fits did not converge in "
              "more than half of them.",
              "The quick approximation compares the population-averaged proportions with each cluster weighted by "

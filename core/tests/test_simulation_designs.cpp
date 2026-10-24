@@ -550,6 +550,30 @@ TEST_CASE("mmrm: the statement shows a correlation or a dropout near an end of i
             .find("with 99.9999999999999% of group 1 and 20% of group 2 lost") != std::string::npos);
   CHECK(statement(R"("drop1":"0.9999999999999999","analysis":"completers")")
             .find("with 99.99999999999999% of group 1 and 20% of group 2 lost") != std::string::npos);
+  // with p's own digits: 100p, rounded, read 99.99999999999997% for 0.99999999999999977796
+  CHECK(statement(R"("drop1":"0.9999999999999998","analysis":"completers")")
+            .find("with 99.99999999999998% of group 1 and 20% of group 2 lost") != std::string::npos);
+}
+
+TEST_CASE("mmrm: exchangeable correlations are allowed exactly where they exceed -1/(T - 1)") {
+  // a rounded Cholesky factorization decided: it refused −0.3333333333333333 at 4 visits (above −1/3) and answered
+  // −0.25 at 5 (singular) and −0.09090909090909091 at 12 (below −1/11)
+  for (int T = 2; T <= 12; ++T) {
+    double above = -1.0 / (T - 1);
+    while (!(std::fma(T - 1, above, 1) > 0)) above = std::nextafter(above, 0.0);
+    const double at_or_below = std::nextafter(above, -1.0);
+    auto request = [&](double rho) {
+      return R"({"procedure":"sim.mmrm","solve_for":"power","options":{"approximate":true},"inputs":{"visits":")" +
+             std::to_string(T) + R"(","rho":")" + text::format_roundtrip(rho) + R"(","df":"z"}})";
+    };
+    // the answer at the double above the bound continues those a little further in (the last pivot, rounded to 0
+    // or below there, is taken in closed form)
+    CHECK_CLOSE(num(first_row(request(above)), "power"), num(first_row(request(above + 1e-9)), "power"), 0, 1e-7);
+    if (T == 2) continue;  // −1 is outside the inputs' range
+    const std::string err = run(request(at_or_below)).get("rows").elements().at(0).get("_error").to_text();
+    CHECK(err.find("the correlation " + text::format_roundtrip(at_or_below) + " is not possible with " +
+                   std::to_string(T) + " visits") != std::string::npos);
+  }
 }
 
 TEST_CASE("mmrm: visits correlated within 1e-12 of 1 or -1 keep their power") {

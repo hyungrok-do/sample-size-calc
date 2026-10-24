@@ -196,6 +196,42 @@ TEST_CASE("glmm: fits converge for very large clusters, single-subject clusters 
   }
 }
 
+TEST_CASE("glmm: a large log odds ratio is estimated; only the between-cluster SD is held to a bound") {
+  // 50 + 50 clusters of 10⁷ with 2 to 4 subjects without the outcome (group 1) or with it (group 2): neither
+  // separated nor all alike, with a log odds ratio of 30.04, the logistic regression's (σ̂ = 0).  A guard on the
+  // estimates (|β1| > 30 or |β0| > 50) failed such fits as run off.
+  std::vector<glmm::Cluster> data;
+  const double m = 1e7, few1[5] = {2, 3, 4, 3, 3}, few2[5] = {3, 2, 3, 4, 3};
+  double s1 = 0, s2 = 0;
+  for (int i = 0; i < 5; ++i) {
+    data.push_back({1, m, m - few1[i], 10});
+    data.push_back({0, m, few2[i], 10});
+    s1 += 10 * (m - few1[i]);
+    s2 += 10 * few2[i];
+  }
+  const double n = 50 * m, b0 = logit(3e-7);
+  const glmm::Fit f = glmm::fit(data, b0, -2 * b0, 0);
+  CHECK(f.ok);
+  CHECK_CLOSE(f.b1, std::log(s1 / (n - s1)) - std::log(s2 / (n - s2)), 1e-9, 0);
+  CHECK_CLOSE(f.se_b1, std::sqrt(1 / s1 + 1 / (n - s1) + 1 / s2 + 1 / (n - s2)), 1e-6, 0);
+  CHECK(f.b1 > 30);
+  // where the subjects of every cluster agree, σ has no finite estimate: a fit stops below SIGMA_MAX or fails
+  const std::vector<glmm::Cluster> agree = {{1, 1, 1, 60}, {1, 1, 0, 40}, {1, 2, 2, 3},
+                                            {0, 1, 1, 30}, {0, 1, 0, 70}, {0, 2, 0, 4}};
+  for (double start : {0.0, 0.5, 3.0}) {
+    const glmm::Fit g = glmm::fit(agree, -1, 1, start);
+    CHECK(g.ok ? g.sigma <= glmm::SIGMA_MAX : g.failure != glmm::Failure::None);
+  }
+  CHECK(glmm::fit(agree, -1, 1, 0.5).failure == glmm::Failure::RunOff);
+  // in the procedure: P1 0.9999997, P2 3e-7 with clusters of 10⁷ and ICC 0 gave 30% (70 of 100 studies "grew
+  // without bound"), P1 0.9999999, P2 1e-7 no power at all
+  const json::Value r = first_row(
+      R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"power_curve":false},)"
+      R"("inputs":{"p1":"0.9999997","p2":"3e-7","m":"1e7","k1":"10","icc":"0","reps":"100"}})");
+  CHECK_EQ(num(r, "failures"), 0.0);
+  CHECK_EQ(num(r, "power"), 1.0);
+}
+
 TEST_CASE("glmm: the standard error comes from the Hessian of the quadrature likelihood") {
   // at a latent ICC of 0.9 the integrands are far from Gaussian, and holding the nodes fixed for the
   // Hessian understated the standard error by about a fifth; compare with a central-difference Hessian
@@ -236,6 +272,10 @@ TEST_CASE("glmm: population-averaged proportions and ICC scales convert exactly"
   for (double p : {0.03, 0.3, 0.8})
     for (double sigma : {0.0, 0.5, 2.0})
       CHECK_CLOSE(glmm::marginal_mean(glmm::beta_for_marginal(p, sigma), sigma), p, 1e-11, 1e-13);
+  // below what an intercept of −60 gives (8.8e-27 at σ = 0, 5.7e-19 at σ = 6) β was held at −60
+  for (double p : {1e-30, 1e-27, 1e-20})
+    for (double sigma : {0.0, 1.0, 6.0})
+      CHECK_CLOSE(glmm::marginal_mean(glmm::beta_for_marginal(p, sigma), sigma), p, 1e-11, 0);
   const double sigma = glmm::sigma_for_icc(0.05, [](double s) { return glmm::beta_for_marginal(0.2, s); });
   const double b = glmm::beta_for_marginal(0.2, sigma);
   CHECK_CLOSE(glmm::between_variance(b, sigma) / (0.2 * 0.8), 0.05, 1e-9, 0);

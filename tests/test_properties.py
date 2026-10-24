@@ -1723,7 +1723,7 @@ def test_a_simulation_whose_studies_fail_by_design_still_has_a_power():
     res = run("sim.winratio", "power", {"test": "wr", "n1": "10", "med_d": "600", "med_h": "240", "follow": "1",
                                         "accrual": "1", "reps": "200"}, threads=2)
     assert res["rows"][0].get("_error") == ("the simulated power cannot be computed: none of the 200 simulated "
-                                            "studies could be analyzed (each had no wins or no losses, so no finite "
+                                            "trials could be analyzed (each had no wins or no losses, so no finite "
                                             "win ratio)")
 
 
@@ -1862,6 +1862,53 @@ def test_a_study_of_clusters_of_one_subject_says_it_used_logistic_regression():
     assert row["failures"] > 0
     assert row["failures_why"] == ("the subjects of every cluster all had the outcome or all lacked it, so the "
                                    "between-cluster SD had no finite estimate")
+
+
+def test_a_glmm_fit_with_a_large_log_odds_ratio_is_not_a_failure():
+    """A guard failed every fit whose log odds ratio passed 30 (or intercept 50) as "the estimates grew without
+    bound", though separated studies are caught before any fit and the others have finite estimates: at a latent ICC
+    of 0.9 (log OR 28.8 for a typical cluster) 27 of 100 studies so failed and the power read 71%; at ICC 0 with
+    proportions of 3e-7 and 1 − 3e-7, 70 of 100 (30%)."""
+    row = first_row(run("sim.glmm.cluster", "power", {"p1": "0.9", "p2": "1e-4", "m": "1e4", "k1": "200",
+                                                      "icc": "0.9", "iccscale": "latent", "reps": "100"}, threads=2))
+    assert row["power"] >= 0.95
+    assert row["failures_why"] == ("no subject of a group had the outcome, or every one had it, so the odds ratio "
+                                   "had no finite estimate")
+    assert row["mean_logor"] == pytest.approx(math.log(row["or"]), abs=1)
+
+
+def test_the_glmm_statement_tells_its_numbers_apart():
+    """Population-averaged proportions below what an intercept of −60 gives read 8.757e-27 whatever they were, with
+    an odds ratio of 1; an odds ratio of 1.0005 read 1; studies whose clusters all had one subject were all said to
+    be analyzed by logistic regression, the separated among them too."""
+    def approx(inputs):
+        return first_row(ssc.run("sim.glmm.cluster", "power", inputs, power_curve=False, approximate=True))
+    st = approx({"p1": "1e-30", "p2": "1e-29", "m": "20", "k1": "50", "icc": "0"})["_statement"]
+    assert "proportions of 1e-30 and 1e-29 (an odds ratio of 0.1 for a typical cluster;" in st
+    row = approx({"p1": "0.3001", "p2": "0.3", "m": "1", "k1": "50", "icc": "0"})
+    assert "(an odds ratio of 1.0005 for a typical cluster;" in row["_statement"]
+    assert "the odds ratio of the population-averaged proportions (1.0005)." in row["_statement"]
+    row = first_row(run("sim.glmm.cluster", "power", {"p1": "0.1", "p2": "0.05", "m": "1", "cv": "0.2", "k1": "20",
+                                                      "icc": "0", "reps": "400"}, threads=2))
+    assert "those were analyzed by logistic regression where they could be, with the SD held at 0" in row["_statement"]
+    # a proportion-scale ICC past σ = 8 was said to be had by no logistic random-intercept model, or named an SD that
+    # the quadrature made (18.5 where σ = 12.06 gives the ICC); up to 8 the SD is named
+    def refusal(p2, icc):
+        res = ssc.run("sim.glmm.cluster", "power", {"p1": "0.4", "p2": p2, "m": "3", "k1": "15", "icc": icc},
+                      power_curve=False, approximate=True)
+        return res["rows"][0]["_error"]
+    for p2, icc in (("0.2", "0.955"), ("1.174e-05", "0.636")):
+        assert refusal(p2, icc).startswith("the ICC implies a between-cluster SD of more than 8 on the logit scale "
+                                           "(latent ICC above 0.95)")
+    assert refusal("0.2", "0.75").startswith("the ICC implies a between-cluster SD of 6.99 on the logit scale")
+
+
+def test_mmrm_and_win_ratio_refusals_say_trials():
+    """Their statements say "simulated trials"; their refusals said "simulated studies"."""
+    res = run("sim.mmrm", "power", {"analysis": "completers", "drop1": "0.99", "drop2": "0.2", "n1": "5",
+                                    "reps": "200"}, threads=2)
+    assert res["rows"][0]["_error"] == ("the simulated power cannot be computed: none of the 200 simulated trials could be "
+                             "analyzed (fewer than 2 patients of a group completed the study)")
 
 
 def test_the_ordinal_approximation_gives_the_share_of_separated_studies():

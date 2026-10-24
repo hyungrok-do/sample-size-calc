@@ -598,7 +598,7 @@ Procedure winratio() {
       } else {
         sm = power_at(n1, reps, 0, 1);
       }
-      simc::put_summary(s, r, sm, causes_of(test));
+      simc::put_summary(s, r, sm, causes_of(test), "trials");
       r.set("approx_power", approx(n1));
       simc::put_other(r, sm, "power_fs", FS, causes_of(FS), test == FS);
       simc::put_other(r, sm, "power_wr", WR, causes_of(WR), test == WR);
