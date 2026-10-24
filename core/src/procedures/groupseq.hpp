@@ -67,8 +67,10 @@ struct Design {
 /// (Wang–Tsiatis, 20 analyses), and at 1e-20 the last nominal level exceeded alpha.  Two analyses closer than 20
 /// equally spaced ones make the step from one to the next narrower than that: below 1e-8 such designs take 128.
 /// An alpha-spending function that spends less than a thousandth of alpha at the last analysis takes the r of a
-/// thousand times that (with ρ = 1e-30 and 20 analyses, N was 2 short with 32).  The work grows with r².
-int grid_resolution(double alpha, const std::vector<double>& t, const Efficacy& eff);
+/// thousand times that (with ρ = 1e-30 and 20 analyses, N was 2 short with 32), and so does a β-spending function
+/// of futility boundaries that leaves less than a thousandth of beta for it (with a β-spending ρ of 1e-30 and 20
+/// analyses, N was 2 or 4 off).  The work grows with r².
+int grid_resolution(double alpha, const std::vector<double>& t, const Efficacy& eff, const Futility& fut = {});
 
 struct ExitProbs {
   std::vector<double> up;   // P(stop at analysis k by crossing +b_k)

@@ -212,14 +212,19 @@ double efficacy_bound(const Track& tr, double inc, bool two_sided) {
   return numerics::brent(g, lo, hi, glo, ghi, 1e-12);
 }
 
-// Futility boundary (at most b) at the track's current analysis that spends `inc`.
-double futility_bound(const Track& tr, double inc, double b) {
+// Futility boundary (at most b) at the track's current analysis that spends `inc`; `met` (optional) tells whether
+// it met the efficacy boundary, spending less than `inc`.
+double futility_bound(const Track& tr, double inc, double b, bool* met = nullptr) {
+  if (met) *met = false;
   if (!(inc > TINY)) return -INFINITY;
   const double mu = tr.mean();
   auto g = [&](double x) { return log_ratio(tr.lower(x), inc); };
   const double hi = std::isfinite(b) ? b : mu + 12;
   const double ghi = g(hi);
-  if (ghi <= 0) return hi;  // futility meets the efficacy boundary
+  if (ghi <= 0) {  // futility meets the efficacy boundary
+    if (met) *met = true;
+    return hi;
+  }
   double lo = std::min(hi - 1e-3, mu - qnorm(inc, false));
   double glo = g(lo);
   for (int i = 0; glo > 0 && i < 100; ++i) glo = g(lo -= 0.25);
@@ -300,13 +305,20 @@ void wang_tsiatis(Design& d, double alpha, double delta, const std::vector<doubl
 
 // One construction pass of beta-spending futility boundaries under drift eta:
 // fills d.a (and d.b for binding designs, whose efficacy boundaries spend alpha
-// among the paths that pass the futility boundaries).  Returns the power.
-double beta_pass(Design& d, double eta, const std::vector<double>& ainc, const std::vector<double>& binc, int r) {
+// among the paths that pass the futility boundaries).
+struct BetaPass {
+  double power = 0;  // P(reject)
+  double last = 0;   // P(reach the last analysis and not reject there)
+  double left = 0;   // the beta left for it: its own increment and what interim boundaries that met b did not spend
+};
+
+BetaPass beta_pass(Design& d, double eta, const std::vector<double>& ainc, const std::vector<double>& binc, int r) {
   const std::size_t K = d.t.size();
   Track t1(d.t, eta, r);
   std::optional<Track> t0;
   if (d.binding) t0.emplace(d.t, 0.0, r);
-  double power = 0, cum_a = 0, cum_b = 0;
+  BetaPass out;
+  double cum_a = 0, cum_b = 0;
   for (std::size_t k = 0; k < K; ++k) {
     if (t0) {
       d.b[k] = efficacy_bound(*t0, ainc[k], false);
@@ -314,16 +326,23 @@ double beta_pass(Design& d, double eta, const std::vector<double>& ainc, const s
       d.alpha_spent[k] = cum_a;
     }
     const double bk = d.b[k];
-    power += t1.upper(bk);
-    const double ak = k + 1 < K ? futility_bound(t1, binc[k], bk) : bk;
+    out.power += t1.upper(bk);
+    bool met = false;
+    const double ak = k + 1 < K ? futility_bound(t1, binc[k], bk, &met) : bk;
     d.a[k] = ak;
-    cum_b += t1.lower(ak);
+    const double fk = t1.lower(ak);
+    cum_b += fk;
     d.beta_spent[k] = cum_b;
-    if (k + 1 == K) break;
+    if (met) out.left += std::fmax(0.0, binc[k] - fk);
+    if (k + 1 == K) {
+      out.last = fk;
+      out.left += binc[k];
+      break;
+    }
     t1.advance(ak, bk);
     if (t0) t0->advance(ak, bk);
   }
-  return power;
+  return out;
 }
 
 // Beta-spending futility: the drift at which the boundaries spend exactly beta.
@@ -331,9 +350,18 @@ void spend_beta(Design& d, double alpha, const std::vector<double>& ainc, const 
                 const std::function<void()>& check, int r) {
   const auto binc = increments(fut.spend, d.t);
   const double target = 1 - fut.beta;
+  // A β-spending function that leaves less than a thousandth of beta for the last analysis (a tiny ρ, a large γ)
+  // makes the power reach 1 − β only where the paths that reach it all but certainly reject: the power is within
+  // about 1e-10 of its target over a range of drifts, and the root was where the quadrature's error put it (with
+  // ρ = 1e-30 and three analyses an inflation of 7.0105 for 7.1146).  The power is short of its target by what
+  // reaches the last analysis without rejecting less the beta left for it, so there the equation is solved on the
+  // log scale of these two, which has the same sign.
+  const bool flat = binc.back() < 1e-3 * fut.beta;
   auto f = [&](double eta) {
     if (check) check();
-    return beta_pass(d, eta, ainc, binc, r) - target;
+    const BetaPass p = beta_pass(d, eta, ainc, binc, r);
+    if (!flat) return p.power - target;
+    return std::log(std::fmax(p.left, 1e-320)) - std::log(std::fmax(p.last, 1e-320));
   };
   const double eta_f = qnorm(alpha, false) + qnorm(fut.beta, false);  // fixed-sample drift
   if (!(eta_f > 0)) throw CalcError("the power must exceed alpha");
@@ -365,13 +393,18 @@ void check_spent(const std::vector<double>& inc) {
 
 }  // namespace
 
-int grid_resolution(double alpha, const std::vector<double>& t, const Efficacy& eff) {
+int grid_resolution(double alpha, const std::vector<double>& t, const Efficacy& eff, const Futility& fut) {
   // a spending function that spends next to nothing at the last analysis (less than a thousandth of alpha: the
   // power family with a tiny ρ, Hwang–Shih–DeCani with a large γ) puts its later boundaries as far out as a level
-  // that small does
+  // that small does; a β-spending function that leaves that little of beta for it puts the drift where what reaches
+  // the last analysis without rejecting is that little, as far out in the tails
   double level = alpha;
   if (eff.kind == Efficacy::Kind::Spending && t.size() > 1)
     level = std::fmin(alpha, 1e3 * eff.spend(t[t.size() - 2], 1));
+  if (fut.kind == Futility::Kind::BetaSpending && t.size() > 1) {
+    const double last = fut.spend(t[t.size() - 2], 1);
+    if (last < 1e-3 * fut.beta) level = std::fmin(level, 1e3 * last);
+  }
   if (level >= 1e-4) return 32;
   if (level >= 1e-8) return 48;
   // two analyses closer than 20 equally spaced ones narrow the step from one to the next below what 64 and 96 were
@@ -398,7 +431,7 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
   d.t = t;
   d.two_sided = two_sided;
   d.binding = futility && fut.binding;
-  d.grid = r = r > 0 ? r : grid_resolution(alpha, t, eff);
+  d.grid = r = r > 0 ? r : grid_resolution(alpha, t, eff, futility ? fut : Futility{});
   d.b.assign(K, INFINITY);
   d.alpha_spent.assign(K, 0.0);
   const std::vector<double>* az = futility && fut.kind == Futility::Kind::Fixed && d.binding ? &fut.z : nullptr;

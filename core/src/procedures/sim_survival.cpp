@@ -190,7 +190,11 @@ double mvn_probability(int m, const double* a, const double* b, const double* r,
         ++dim;
         w -= std::floor(w);
         w = 1 - std::fabs(2 * w - 1);  // baker's transformation
-        const double x = stats::qnorm(std::fmin(std::fmax(plo + w * (phi - plo), 1e-300), 1 - 1e-16));
+        // the same quantile Φ⁻¹(Φ(lo) + w·(Φ(hi) − Φ(lo))) from either tail: from the upper one at 1 − w, so that
+        // the point does not jump to its mirror image where an interval's lower limit crosses 0 (the power then
+        // had steps, and the rule mixed with its reflection lost accuracy: 1 − P(box) was up to 5e-5 off)
+        const double u = upper ? phi - w * (phi - plo) : plo + w * (phi - plo);
+        const double x = stats::qnorm(std::fmin(std::fmax(u, 1e-300), 1 - 1e-16));
         y[i] = upper ? -x : x;
       }
     }

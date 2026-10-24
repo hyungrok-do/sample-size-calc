@@ -66,9 +66,17 @@ struct Sizes {
   double df(int k) const { return k * n + n0 - k - 1; }
 };
 
+/// ln P(Z ≥ y), also where P(Z ≥ y) is below the smallest double.
+double log_upper_normal(double y) {
+  if (y < 30) return std::log(stats::pnorm(y, false));
+  return -y * y / 2 - std::log(y) - stats::LN_SQRT_2PI + std::log1p(-1 / (y * y));
+}
+
 /// Nodes of the SD ratio S = √(χ²_ν/ν): Gauss–Legendre in t = log S, where the density is smooth and
-/// unimodal, ∝ exp(g(t)) with g(t) = ν t − ν (e^{2t} − 1)/2, over the range where g > −40; the weights are
-/// normalized to sum to 1.  One node S = 1 when ν is huge.
+/// unimodal, ∝ exp(g(t)) with g(t) = ν t − ν (e^{2t} − 1)/2, over the range where g > −40, in panels of at most 1.5
+/// where it is wider than 3 (with few degrees of freedom: 22 with 2, 3 with 26), since P(T ≥ c | S) falls from about
+/// 1 to 0 within a small part of it (with 48 nodes over the whole range the power was up to 3.5% off with 2 degrees
+/// of freedom and 4e-6 with 18); the weights are normalized to sum to 1.  One node S = 1 when ν is huge.
 struct SNodes {
   std::vector<double> s, w;
   explicit SNodes(double df) {
@@ -81,18 +89,58 @@ struct SNodes {
     double lo = -1, hi = 1;
     while (g(lo) > -40) lo *= 2;
     while (g(hi) > -40) hi *= 2;
-    const double a = numerics::brent([&](double t) { return g(t) + 40; }, lo, 0, 1e-12);
-    const double b = numerics::brent([&](double t) { return g(t) + 40; }, 0, hi, 1e-12);
+    a_ = numerics::brent([&](double t) { return g(t) + 40; }, lo, 0, 1e-12);
+    b_ = numerics::brent([&](double t) { return g(t) + 40; }, 0, hi, 1e-12);
     const stats::GLRule& rule = stats::gauss_legendre(S_NODES);
-    double total = 0;
-    for (std::size_t i = 0; i < rule.x.size(); ++i) {
-      const double t = a + (b - a) * (rule.x[i] + 1) / 2;
-      s.push_back(std::exp(t));
-      w.push_back(rule.w[i] * std::exp(g(t)));
-      total += w.back();
-    }
-    for (double& x : w) x /= total;
+    const int panels = b_ - a_ > 3 ? static_cast<int>(std::ceil((b_ - a_) / 1.5)) : 1;
+    h_ = (b_ - a_) / panels;
+    for (int q = 0; q < panels; ++q)
+      for (std::size_t i = 0; i < rule.x.size(); ++i) {
+        const double t = a_ + h_ * (q + (rule.x[i] + 1) / 2);
+        s.push_back(std::exp(t));
+        w.push_back(rule.w[i] * std::exp(g(t)));
+        total_ += w.back();
+      }
+    for (double& x : w) x /= total_;
   }
+
+  /// The same nodes and, where an arm with the standardized effect `low` (the arm least likely to reject) rejects at
+  /// the critical value c mostly at a smaller S than they reach (a tiny alpha, more so with few degrees of freedom),
+  /// panels there as well: over the range where the density times P(T ≥ c | S) is within e^−40 of its largest
+  /// value, when more than e^−30 of that lies below the density's nodes.
+  SNodes(double df, double c, double low) : SNodes(df) {
+    if (df > 1e7) return;
+    auto g = [&](double t) { return df * t - df * std::expm1(2 * t) / 2; };
+    auto h = [&](double t) { return g(t) + log_upper_normal(c * std::exp(t) - low); };  // concave
+    double a = -60, b = 5;  // its largest value, by golden section
+    while (b - a > 1e-9) {
+      const double m1 = b - 0.6180339887498949 * (b - a), m2 = a + 0.6180339887498949 * (b - a);
+      if (h(m1) < h(m2))
+        a = m1;
+      else
+        b = m2;
+    }
+    const double top = (a + b) / 2, level = h(top) - 40;
+    if (top >= a_ && !(h(a_) > level + 10)) return;
+    double lo = top - 1, hi = top + 1;
+    while (h(lo) > level) lo -= 2 * (top - lo);
+    while (h(hi) > level) hi += 2 * (hi - top);
+    const double ta = numerics::brent([&](double t) { return h(t) - level; }, lo, top, 1e-12);
+    const double tb = std::fmin(a_, numerics::brent([&](double t) { return h(t) - level; }, top, hi, 1e-12));
+    if (!(tb > ta)) return;
+    const stats::GLRule& rule = stats::gauss_legendre(S_NODES);
+    const int panels = static_cast<int>(std::ceil((tb - ta) / 1.5));  // as narrow as the density's own
+    const double width = (tb - ta) / panels;
+    for (int q = 0; q < panels; ++q)
+      for (std::size_t i = 0; i < rule.x.size(); ++i) {  // weighted as the density's panels
+        const double t = ta + width * (q + (rule.x[i] + 1) / 2);
+        s.push_back(std::exp(t));
+        w.push_back(rule.w[i] * width / h_ * std::exp(g(t)) / total_);
+      }
+  }
+
+ private:
+  double a_ = 0, b_ = 0, h_ = 0, total_ = 0;  // the density's range in t, its panels' width, their weights' sum
 };
 
 using Probs = std::array<double, KMAX>;
@@ -124,13 +172,25 @@ Events single_step(const Design& d, const Sizes& n, double c, const SNodes& sn, 
   // arm (root below 1/2), the nodes are split into two panels (with r0 = 0.1 and 8 arms, one panel gave the power
   // that all arms reject 0.7% low)
   const int panels = root >= 0.5 ? 1 : 2;
+  // Given s, z given that an arm rejects by T ≥ c is normal around λ·E(X | X ≥ a), X standard normal and a = cs − θ,
+  // with an SD of at most √(root² + λ²·Var(X | X ≥ a)) (by T ≤ −c the same with −z and a = cs + θ).  Where 8 of
+  // these SDs reach past the nodes for an arm (two-sided, unless it rejects that way less than e^−40 as often as the
+  // other), they go on in panels of the same width: with a tiny alpha the rejections lie beyond z = 8.5 (8 arms,
+  // r0 = 0.1, α = 1e-20: an arm's power came out 4% of its value).  These panels add to the events but not to the
+  // rule's own total, which they would change by less than its rounding.
+  auto reach = [&](double a) {
+    if (!(a < 38)) return 0.0;  // P(X ≥ a) is below the smallest normal double
+    const double mills = std::exp(-a * a / 2 - stats::LN_SQRT_2PI - log_upper_normal(a));  // E(X | X ≥ a)
+    const double var = std::clamp(1 + a * mills - mills * mills, 0.0, 1.0);
+    return lam * mills + 8 * std::sqrt(root * root + lam * lam * var);
+  };
   std::vector<Events> part(sn.s.size());
   parallel_for(sn.s.size(), ctx.threads, [&](std::size_t a) {
     const double cs = c * sn.s[a];
     Events inner{}, e{};
     e[m] = 1;  // the rule's own total, summed exactly as the events are
     Probs prob{};
-    for (int q = 0; q < panels; ++q)
+    auto panel = [&](int q, int count) {  // panel q of [−8.5, 8.5] split into `panels`, also beyond it
       for (std::size_t b = 0; b < g.x.size(); ++b) {
         const double z = Z_RANGE * (g.x[b] + (2 * q + 1 - panels)) / panels;  // as before with one panel
         for (int i = 0; i < d.k; ++i) {
@@ -144,8 +204,20 @@ Events single_step(const Design& d, const Sizes& n, double c, const SNodes& sn, 
         }
         const double weight = g.w[b] / panels * stats::dnorm(z);
         events(prob, e);
-        for (int j = 0; j <= m; ++j) inner[j] += weight * e[j];
+        for (int j = 0; j < count; ++j) inner[j] += weight * e[j];
       }
+    };
+    for (int q = 0; q < panels; ++q) panel(q, m + 1);
+    double zhi = 0, zlo = 0;
+    for (int i = 0; i < d.k; ++i) {
+      if (same[i] != i) continue;
+      const double above = cs - theta[i], below = cs + theta[i];
+      const bool two = d.alt == Alt::Two;
+      if (!two || log_upper_normal(above) > log_upper_normal(below) - 40) zhi = std::fmax(zhi, reach(above));
+      if (two && log_upper_normal(below) > log_upper_normal(above) - 40) zlo = std::fmin(zlo, -reach(below));
+    }
+    for (int q = panels; Z_RANGE * (2 * q - panels) / panels < zhi; ++q) panel(q, m);
+    for (int q = -1; Z_RANGE * (2 * q + 2 - panels) / panels > zlo; --q) panel(q, m);
     part[a] = inner;
   }, ctx.token);
   Events total{};
@@ -161,12 +233,6 @@ Events single_step(const Design& d, const Sizes& n, double c, const SNodes& sn, 
 /// Unadjusted critical value of one t-test at level `level`.
 double t_critical(double level, double df, Alt a) {
   return stats::qt(tail_alpha(level, a), df, false);
-}
-
-/// ln P(Z ≥ y), also where P(Z ≥ y) is below the smallest double.
-double log_upper_normal(double y) {
-  if (y < 30) return std::log(stats::pnorm(y, false));
-  return -y * y / 2 - std::log(y) - stats::LN_SQRT_2PI + std::log1p(-1 / (y * y));
 }
 
 /// The familywise error of a single-step test with critical value c, P(some arm rejects | every null true), from
@@ -260,6 +326,17 @@ double critical_value(const Design& d, const Sizes& n, const RunContext& ctx) {
   }
 }
 
+/// The standardized effect of the arm least likely to reject: the smallest, or the smallest in size if two-sided.
+double least_effect(const Design& d, const Sizes& n) {
+  const double se = d.sigma * std::sqrt(1 / n.n + 1 / n.n0), sign = d.alt == Alt::Lower ? -1 : 1;
+  double low = INFINITY;
+  for (int i = 0; i < d.k; ++i) {
+    const double theta = sign * (d.mu[i] - d.mu0) / se;
+    low = std::fmin(low, d.alt == Alt::Two ? std::fabs(theta) : theta);
+  }
+  return low;
+}
+
 struct Exact {
   double any = 0, all = 0, each = 0;
   std::array<double, KMAX> arm{};
@@ -273,8 +350,8 @@ Exact exact_power(const Design& d, const Sizes& n, double c, const SNodes& sn, c
   bool null = true;
   for (int i = 0; i < d.k; ++i) null = null && d.mu[i] == d.mu0;
   if (null) {
-    // every null true: the familywise error, as Dunnett's value is found from it (single_step's sum, which does
-    // not reach the far tail, gave 0.29·α at α = 1e-30), and each arm's exact t tail
+    // every null true: the familywise error, as Dunnett's value is found from it (exactly α), and each arm's exact
+    // t tail
     e.any = familywise_error(d, n, c);
     for (int i = 0; i < d.k; ++i) e.arm[i] = (d.alt == Alt::Two ? 2 : 1) * stats::pt(c, n.df(d.k), false);
     return e;
@@ -286,6 +363,14 @@ Exact exact_power(const Design& d, const Sizes& n, double c, const SNodes& sn, c
     for (int i = 0; i < d.k; ++i)
       if (d.effective(i)) all *= q[i];
     ev[0] = 1 - none;
+    // without cancellation where none is near 1: 1 − none was 0 once every q_i was below about 1e-16, and below one
+    // arm's own power before that (12.6% low at α = 1e-16 with three arms of tiny effects)
+    if (none > 0.5) {
+      double log_none = 0;
+      for (int i = 0; i < d.k; ++i)
+        if (eff == 0 || d.effective(i)) log_none += std::log1p(-q[i]);
+      ev[0] = -std::expm1(log_none);
+    }
     ev[1] = eff == 0 ? 0.0 : all;
     for (int i = 0; i < d.k; ++i) ev[2 + i] = q[i];
   }, ctx);
@@ -479,8 +564,8 @@ Procedure multiarm() {
     // exact power of the single-step test (Bonferroni's for the step-wise procedures, a lower bound)
     auto exact_at = [&](double n, double* crit = nullptr) {
       const Sizes z = sizes(n);
-      const SNodes sn(z.df(d.k));
       const double c = critical_value(d, z, ctx);
+      const SNodes sn(z.df(d.k), c, least_effect(d, z));
       if (crit) *crit = c;
       return exact_power(d, z, c, sn, ctx);
     };

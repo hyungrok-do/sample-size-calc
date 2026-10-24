@@ -198,6 +198,41 @@ TEST_CASE("multiarm: a small control arm and few degrees of freedom") {
   CHECK_CLOSE(num(b, "crit"), 26.4507712356, 1e-8, 0);
 }
 
+TEST_CASE("multiarm: powers of tiny effects at a tiny alpha, and with few degrees of freedom") {
+  // references: the arm's power and that all arms reject, by nested adaptive quadrature (scipy's quad, relative
+  // error about 1e-12).  Before, single_step's nodes stopped at z = 8.5 and at the SD's own range, short of where
+  // such rejections lie: the power that all eight reject was 1.1e-65 for 8.2e-41, an arm's 3.6% of its value with
+  // r0 = 0.1, and the power to find any of three arms 0.29·α at 1e-30 (a jump from α with no effect at all)
+  auto request = [](const std::string& inputs) {
+    return R"({"procedure":"sim.multiarm","solve_for":"power","options":{"approximate":true},"inputs":{)" + inputs +
+           "}}";
+  };
+  auto arm = [](const json::Value& row) {
+    return row.get("_tables").elements().at(0).get("rows").elements().at(0).elements().at(4).as_number(NAN);
+  };
+  const std::string tiny8 = R"("mu":"1e-12 1e-12 1e-12 1e-12 1e-12 1e-12 1e-12 1e-12")";
+  const json::Value a = first_row(request(tiny8 + R"(,"n":"817","alternative":"upper","alpha":"1e-20")"));
+  CHECK_CLOSE(num(a, "power_all"), 8.219122489484e-41, 1e-8, 0);
+  CHECK_CLOSE(arm(a), 1.250000163088e-21, 1e-9, 0);
+  const json::Value b = first_row(request(tiny8 + R"(,"n":"300","r0":"0.1","alpha":"1e-20")"));
+  CHECK_CLOSE(num(b, "power_all"), 7.649290908681e-25, 1e-9, 0);
+  CHECK_CLOSE(arm(b), 1.375460309792e-21, 1e-9, 0);
+  // with effects of 1e-12 the power to find any arm is that with none, the familywise error
+  for (const char* alpha : {"1e-16", "1e-30"}) {
+    const json::Value near = first_row(request(R"("mu":"1e-12 1e-12 1e-12","n":"817","alpha":")" + std::string(alpha) +
+                                               "\""));
+    CHECK_CLOSE(num(near, "power_any"), std::stod(alpha), 1e-9, 0);
+  }
+  // one arm and 2 or 4 degrees of freedom: the noncentral t probability integrated with mpmath over S (48 nodes over
+  // the SD's whole range in log s gave 0.0621924 for 0.0622364, 1.1% too much at 0.001 and 0.6% at 1e-8)
+  const json::Value c = first_row(request(R"("mu":"1.5","n":"2","alternative":"upper","alpha":"0.01")"));
+  CHECK_CLOSE(num(c, "power"), 6.223643770602e-02, 1e-10, 0);
+  const json::Value e = first_row(request(R"("mu":"3","n":"2","alpha":"0.001")"));
+  CHECK_CLOSE(num(e, "power"), 9.946206373842e-03, 1e-10, 0);
+  const json::Value f = first_row(request(R"("mu":"3","n":"3","alpha":"1e-8")"));
+  CHECK_CLOSE(num(f, "power"), 8.866865848107e-07, 1e-10, 0);
+}
+
 TEST_CASE("multiarm: exact powers of Dunnett's test agree with mvtnorm") {
   // R: 1 − pmvt(−c, c, delta, df = 156, corr 0.5) and the sum over the sign patterns of the tails
   const json::Value a = first_row(
