@@ -1046,8 +1046,13 @@ TEST_CASE("sim: progress is reported and a simulation can be cancelled") {
               &stop);
     finished = true;
   });
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
-  const double partial = stop.progress();
+  // the first report comes after the first studies: some 0.25 s in on an optimized build, 0.5 s with the
+  // sanitizers, where a single look at 0.3 s found none
+  double partial = 0;
+  for (int i = 0; i < 400 && !(partial > 0); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    partial = stop.progress();
+  }
   stop.cancel();
   worker.join();
   CHECK(finished.load());

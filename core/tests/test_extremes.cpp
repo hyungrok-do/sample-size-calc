@@ -10,6 +10,7 @@
 #include "engine/runner.hpp"
 #include "engine/solve.hpp"
 #include "procedures/common.hpp"
+#include "procedures/groupseq.hpp"
 #include "procedures/sim_common.hpp"
 #include "sim/simulate.hpp"
 #include "stats/dispatch.hpp"
@@ -184,6 +185,13 @@ TEST_CASE("extremes: typed inputs that used to run forever end at once with a me
       {"sim.surv.nph", "power", R"({"med2":"1e-30"})", ""},
       {"sim.surv.nph", "n", R"({"med2":"1e-30"})", "cannot be reached"},  // every event before T*, where HR1 = 1
       {"rates.one.poisson", "power", R"({"alpha":"1e-30","test":"exact"})", ""},
+      // next to a tail of a half (z next to 0) a step of one moved a tail of 5e51 events by less than one double,
+      // and the exact test stepped its critical counts 1e7 times or more, past Stop
+      {"rates.one.poisson", "power", R"({"test":"exact","alpha":"0.999999999999","time":"1e30","lam0":"1e20"})", ""},
+      {"rates.one.poisson", "power",
+       R"({"alternative":"upper","test":"exact","alpha":"0.4999999999999","time":"1e30","lam0":"1e20"})", ""},
+      {"rates.one.poisson", "power",
+       R"({"test":"exact","alpha":"0.9999999999999999","time":"1e30","lam0":"1e25"})", ""},
       {"sim.means.robust", "power", R"({"dist":"lognormal","skew":"1e-9"})", ""},
       {"sim.means.robust", "n", R"({"dist":"gamma","skew":"-1e-8"})", ""},
       // 1e6 / prevalence is 1e36 subjects, past any int
@@ -819,4 +827,99 @@ TEST_CASE("extremes: binomial, F and beta probabilities at a billion trials agre
   // rounding of (a + b)·x ≈ 1e10 moves the probability by about 1e-11, so the check is to the problem's conditioning
   CHECK_CLOSE(stats::pbeta(1.0 / 3 + std::sqrt(2e10 / (9e20 * (3e10 + 1))), 1e10, 2e10, true), 0.50000453231113418,
               2e-11, 0);
+}
+
+TEST_CASE("extremes: a power next to 1 is 1 less the smaller tail, rounded down") {
+  // the far tail of the noncentral t, P(T > 1.97) with 392 degrees of freedom and δ = −9.9, which its series left
+  // at 4e-18 (cancellation from terms of about ½); 50-digit integral over the chi distribution
+  CHECK_CLOSE(stats::pnt(1.97, 392, -9.9, false), 1.21542115401e-32, 1e-10, 0);
+  CHECK_CLOSE(stats::pnt(-1.97, 392, 9.9, true), 1.21542115401e-32, 1e-10, 0);
+  CHECK_CLOSE(stats::pnt(2, 10, -10, false), 1.54167455575e-29, 1e-10, 0);  // the series gave 1.29e-16
+  // 1 − q rounded down reaches 0.9999999999999999 (1 − 2^-53) just when q ≤ 2^-53, and is 1 only below 2^-54
+  CHECK_EQ(stats::complement(1.07e-16), 1 - 0x1p-53);
+  CHECK(stats::complement(1.2e-16) < 1 - 0x1p-53);
+  CHECK_EQ(stats::complement(1e-300), 1.0);
+  CHECK_EQ(stats::complement(0.25), 0.75);
+  // the smallest sample sizes and effects for targets next to 1, from 40- to 60-digit sums and integrals (they were
+  // up to several times too large, or one or two too small)
+  struct Case {
+    const char* procedure;
+    const char* solve;
+    const char* inputs;
+    const char* key;
+    double expected;
+  };
+  const Case cases[] = {
+      {"means.two.t", "n", R"({"power":"0.9999999999999999"})", "n1", 208},
+      {"means.two.t", "n", R"({"power":"0.9999999999999998"})", "n1", 205},
+      {"means.two.t", "n", R"({"power":"0.9999999999999995"})", "n1", 200},
+      {"means.two.t", "n", R"({"power":"0.999999999999999"})", "n1", 198},
+      {"prop.chisq", "n", R"({"power":"0.9999999999999999","w":"0.3","df":"2"})", "n", 1241},
+      {"prop.chisq", "n", R"({"power":"0.9999999999999998","w":"0.3","df":"2"})", "n", 1221},
+      {"prop.chisq", "n", R"({"power":"0.9999999999999995","w":"0.3","df":"2"})", "n", 1195},
+      {"means.anova", "f", R"({"power":"0.9999999999999998"})", "f", 1.391563776},
+      {"means.anova", "f", R"({"power":"0.9999999999999995"})", "f", 1.376601789},
+  };
+  for (const Case& c : cases) {
+    const json::Value res = run(c.procedure, c.solve, c.inputs);
+    const double got = res.get("rows").elements().at(0).get(c.key).as_number(NAN);
+    if (!(std::fabs(got - c.expected) <= 1e-9 * c.expected))
+      ::ssc::test::report_failure(std::string(c.procedure) + " " + c.inputs + ": " + std::to_string(got), __FILE__,
+                                  __LINE__);
+    ::ssc::test::count_check();
+  }
+  // and the answers grow with the target: the exact correlation's tail and the equivalence tests' power were
+  // integrated to 1e-14 and 1e-12 of themselves through the bulk (an N of 2072 for a target of 1 − 7·2^-53, where
+  // 1172 reached 1 − 6·2^-53; means.one.equiv's N went up and down by more than half)
+  for (const char* procedure :
+       {"corr.one", "means.one.equiv", "means.two.equiv", "means.two.t", "prop.chisq", "nonpar.kruskal"}) {
+    double last = 0;
+    for (double target : {1 - 1e-12, 1 - 1e-14, 1 - 1e-15, 1 - 4 * 0x1p-53, 1 - 2 * 0x1p-53, 1 - 0x1p-53}) {
+      const json::Value res = run(procedure, "n", R"({"power":")" + text::format_roundtrip(target) + R"("})");
+      const json::Value& row = res.get("rows").elements().at(0);
+      const double n = row.get(row.find("n") ? "n" : "n1").as_number(NAN);
+      if (!(n >= last))
+        ::ssc::test::report_failure(std::string(procedure) + " at " + text::format_roundtrip(target) + ": " +
+                                        std::to_string(n) + " after " + std::to_string(last),
+                                    __FILE__, __LINE__);
+      ::ssc::test::count_check();
+      last = n;
+    }
+  }
+}
+
+TEST_CASE("extremes: a group-sequential design on its finest grid checks Stop at every analysis") {
+  // 20 analyses at an alpha of 1e-15 (r = 96) and with a flat spending function (r = 128): each analysis takes some
+  // 10 ms, a drift for the power about a second, and Stop was checked only between such solves
+  std::vector<double> t;
+  for (int k = 1; k <= 20; ++k) t.push_back(k / 20.0);
+  gs::Efficacy obf, flat;
+  obf.spend = gs::alpha_spending("obf", 1e-15, false, 0);
+  flat.spend = gs::alpha_spending("power", 0.05, false, 1e-30);
+  int calls = 0;
+  const gs::Design d = gs::make_design(t, 1e-15, false, obf, gs::Futility{}, [&] { ++calls; });
+  CHECK(calls >= 20);
+  calls = 0;
+  gs::exit_probs(d, 8.0, 1, 0, [&] { ++calls; });
+  CHECK_EQ(calls, 20);
+  for (const gs::Design& g : {d, gs::make_design(t, 0.05, false, flat, gs::Futility{})}) {
+    CHECK(g.grid >= 96);
+    calls = 0;
+    // the drift, found from the grid of 32 by a secant on the design's own grid, gives the power to the tolerance
+    // the bracketing search had
+    const double eta = gs::drift_for_power(g, 0.8, 1, 0, [&] { ++calls; });
+    CHECK(calls >= 20);
+    CHECK_CLOSE(gs::exit_probs(g, eta).reject, 0.8, 0, 1e-12);
+    // and a check that throws ends the solve
+    bool stopped = false;
+    try {
+      int left = 30;
+      gs::drift_for_power(g, 0.9, 1, 0, [&] {
+        if (--left == 0) throw Cancelled();
+      });
+    } catch (const Cancelled&) {
+      stopped = true;
+    }
+    CHECK(stopped);
+  }
 }

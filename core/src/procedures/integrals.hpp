@@ -48,12 +48,22 @@ inline double tost_power(double el, double eu, double delta, double se, double d
   if (!(se > 0)) return 0;
   const double a = (eu - delta) / se;
   const double b = (el - delta) / se;
+  // Next to 1 the power is 1 less the chance of missing equivalence, whose parts are each small: integrated to its
+  // quadrature's tolerance (1e-12 of it), the power moved up and down by about that much from one n to the next.
   if (!std::isfinite(df) || df > 1e7) {
-    const double z = qnorm(alpha, false);
-    return std::max(0.0, pnorm(a - z) - pnorm(b + z));
+    const double z = qnorm(alpha, false), miss = pnorm(a - z, false) + pnorm(b + z);
+    return miss < 0.5 ? complement(miss) : std::max(0.0, pnorm(a - z) - pnorm(b + z));
   }
   const double t = qt(alpha, df, false);
   const double umax = (eu - el) / (2 * t * se);
+  // where SÊ at its expected size gives a power above a half: missed when SÊ is too large for the interval
+  // (U ≥ umax), or when the estimate falls outside it
+  if (pnorm(a - t) - pnorm(b + t) > 0.5) {
+    const double miss = pchisq(df * umax * umax, df, false) +
+                        expect_sd_ratio([&](double u) { return pnorm(a - t * u, false) + pnorm(b + t * u); }, df,
+                                        umax);
+    if (miss <= 0.5) return complement(miss);
+  }
   const double p = expect_sd_ratio([&](double u) { return std::max(0.0, pnorm(a - t * u) - pnorm(b + t * u)); }, df,
                                    umax);
   return clamp01(p);

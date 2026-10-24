@@ -94,6 +94,10 @@ double pcorr_z(double zx, double n, double zm, bool lower) {
   if (std::isnan(zx) || std::isnan(zm) || !(n > 2)) return NaN;
   if (std::isinf(zm)) return (zx >= zm) == lower ? 1.0 : 0.0;  // ρ = ±1: r = ρ almost surely
   if (std::isinf(zx)) return (zx > 0) == lower ? 1.0 : 0.0;
+  // the tail with the bulk is 1 less the other: integrated through the bulk, piece by piece to 1e-14 of each, a power
+  // next to 1 moved up and down by about that much from one n to the next (an N of 2072 for a target of 1 − 7·2^-53,
+  // where 1172 reached 1 − 6·2^-53)
+  if ((zx > zm) == lower) return complement(pcorr_z(zx, n, zm, !lower));
   const ZDensity g(n, zm);
   const double s = 1 / std::sqrt(std::max(n - 3, 1.0));
   // integrate from z(x) outwards, through the bulk if it lies on that side,

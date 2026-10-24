@@ -157,11 +157,17 @@ class Track {
       const double* B = B_.data();
       const double* hp = h_.data();
       const std::size_t m = B_.size();
+      // only the points within CUT of A: beyond it e^{−u²/2} is 0 in doubles (below 4.9e-324), and the terms left
+      // out added 0 (both grids rise with their index, so the window moves up with j)
+      constexpr double CUT = 38.62;
+      std::size_t lo = 0, hi = 0;
       for (std::size_t j = 0; j < z.size(); ++j) {
-        if (w[j] == 0) continue;
         const double A = (z[j] * stk_ - shift) / sdt_;
+        while (lo < m && B[lo] < A - CUT) ++lo;
+        while (hi < m && B[hi] <= A + CUT) ++hi;
+        if (w[j] == 0) continue;
         double s = 0;
-        for (std::size_t i = 0; i < m; ++i) {
+        for (std::size_t i = lo; i < hi; ++i) {
           const double u = A - B[i];
           s += hp[i] * std::exp(-0.5 * u * u);
         }
@@ -251,11 +257,13 @@ std::vector<double> increments(const SpendFn& f, const std::vector<double>& t) {
 
 // Alpha-spending efficacy boundaries under H0.  With binding futility
 // boundaries `az` (analyses 1..K−1), paths below them leave the H0 track.
-void spend_alpha(Design& d, const std::vector<double>& inc, const std::vector<double>* az, int r) {
+void spend_alpha(Design& d, const std::vector<double>& inc, const std::vector<double>* az, int r,
+                 const std::function<void()>& check) {
   const std::size_t K = d.t.size();
   Track tr(d.t, 0.0, r);
   double cum = 0;
   for (std::size_t k = 0; k < K; ++k) {
+    if (check) check();  // an analysis on the finest grid (r = 128, a tiny alpha) takes some 10 ms
     const double bk = efficacy_bound(tr, inc[k], d.two_sided);
     d.b[k] = bk;
     cum += d.two_sided ? tr.upper(bk) + tr.lower(-bk) : tr.upper(bk);
@@ -266,8 +274,8 @@ void spend_alpha(Design& d, const std::vector<double>& inc, const std::vector<do
   }
 }
 
-void cumulative_alpha(Design& d, int r) {
-  const ExitProbs e = exit_probs(d, 0.0, 1.0, r);
+void cumulative_alpha(Design& d, int r, const std::function<void()>& check) {
+  const ExitProbs e = exit_probs(d, 0.0, 1.0, r, check);
   double c = 0;
   for (std::size_t k = 0; k < d.t.size(); ++k) {
     c += e.up[k] + e.lo[k];
@@ -291,7 +299,7 @@ void wang_tsiatis(Design& d, double alpha, double delta, const std::vector<doubl
     if (check) check();
     for (std::size_t k = 0; k < K; ++k) d.b[k] = C * std::pow(d.t[k], delta - 0.5);
     if (az) set_fixed_futility(d, *az);
-    return exit_probs(d, 0.0, 1.0, r).reject - alpha;
+    return exit_probs(d, 0.0, 1.0, r, check).reject - alpha;
   };
   const double z = qnorm(d.two_sided ? alpha / 2 : alpha, false);
   double lo = 0.5 * z, hi = 1.5 * z + 1;
@@ -300,7 +308,7 @@ void wang_tsiatis(Design& d, double alpha, double delta, const std::vector<doubl
   for (int i = 0; fhi >= 0 && i < 60; ++i) fhi = excess(hi *= 1.5);
   const double C = numerics::brent(excess, lo, hi, flo, fhi, 1e-12);
   excess(C);
-  cumulative_alpha(d, r);
+  cumulative_alpha(d, r, check);
 }
 
 // One construction pass of beta-spending futility boundaries under drift eta:
@@ -312,7 +320,8 @@ struct BetaPass {
   double left = 0;   // the beta left for it: its own increment and what interim boundaries that met b did not spend
 };
 
-BetaPass beta_pass(Design& d, double eta, const std::vector<double>& ainc, const std::vector<double>& binc, int r) {
+BetaPass beta_pass(Design& d, double eta, const std::vector<double>& ainc, const std::vector<double>& binc, int r,
+                   const std::function<void()>& check) {
   const std::size_t K = d.t.size();
   Track t1(d.t, eta, r);
   std::optional<Track> t0;
@@ -320,6 +329,7 @@ BetaPass beta_pass(Design& d, double eta, const std::vector<double>& ainc, const
   BetaPass out;
   double cum_a = 0, cum_b = 0;
   for (std::size_t k = 0; k < K; ++k) {
+    if (check) check();
     if (t0) {
       d.b[k] = efficacy_bound(*t0, ainc[k], false);
       cum_a += t0->upper(d.b[k]);
@@ -358,8 +368,7 @@ void spend_beta(Design& d, double alpha, const std::vector<double>& ainc, const 
   // log scale of these two, which has the same sign.
   const bool flat = binc.back() < 1e-3 * fut.beta;
   auto f = [&](double eta) {
-    if (check) check();
-    const BetaPass p = beta_pass(d, eta, ainc, binc, r);
+    const BetaPass p = beta_pass(d, eta, ainc, binc, r, check);
     if (!flat) return p.power - target;
     return std::log(std::fmax(p.left, 1e-320)) - std::log(std::fmax(p.last, 1e-320));
   };
@@ -379,7 +388,7 @@ void spend_beta(Design& d, double alpha, const std::vector<double>& ainc, const 
   }
   if (!(flo <= 0 && fhi >= 0)) throw CalcError("the futility boundaries could not be determined");
   const double eta = numerics::brent(f, lo, hi, flo, fhi, 1e-11);
-  beta_pass(d, eta, ainc, binc, r);
+  beta_pass(d, eta, ainc, binc, r, check);
   d.eta_design = eta;
 }
 
@@ -442,11 +451,11 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
     if (futility && fut.kind == Futility::Kind::BetaSpending) {
       d.a.assign(K, -INFINITY);
       d.beta_spent.assign(K, 0.0);
-      if (!d.binding) spend_alpha(d, ainc, nullptr, r);
+      if (!d.binding) spend_alpha(d, ainc, nullptr, r, check);
       spend_beta(d, alpha, ainc, fut, check, r);
       return d;
     }
-    spend_alpha(d, ainc, az, r);
+    spend_alpha(d, ainc, az, r, check);
   } else {
     check_spent({alpha});
     wang_tsiatis(d, alpha, eff.delta, az, check, r);
@@ -455,7 +464,7 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
   return d;
 }
 
-ExitProbs exit_probs(const Design& d, double eta, double scale, int r) {
+ExitProbs exit_probs(const Design& d, double eta, double scale, int r, const std::function<void()>& check) {
   if (r <= 0) r = d.grid;
   const std::size_t K = d.t.size();
   ExitProbs e;
@@ -466,6 +475,7 @@ ExitProbs exit_probs(const Design& d, double eta, double scale, int r) {
   const bool fut = d.has_futility();
   double stopped = 0;  // P(stop before the current analysis)
   for (std::size_t k = 0; k < K; ++k) {
+    if (check) check();
     const double b = scale * d.b[k];
     e.up[k] = tr.upper(b);
     if (d.two_sided) e.lo[k] = tr.lower(-b);
@@ -486,9 +496,9 @@ ExitProbs exit_probs(const Design& d, double eta, double scale, int r) {
   return e;
 }
 
-double drift_for_power(const Design& d, double power, double scale, int r) {
+double drift_for_power(const Design& d, double power, double scale, int r, const std::function<void()>& check) {
   if (r <= 0) r = d.grid;
-  auto f = [&](double eta) { return exit_probs(d, eta, scale, r).reject - power; };
+  auto f = [&](double eta) { return exit_probs(d, eta, scale, r, check).reject - power; };
   const double side = d.two_sided ? d.alpha_spent.back() / 2 : d.alpha_spent.back();
   const double zp = qnorm(power);
   // the fixed-sample test is most powerful at a given drift, so its drift is a lower bound
@@ -501,6 +511,33 @@ double drift_for_power(const Design& d, double power, double scale, int r) {
       if (std::isfinite(d.b[k])) reach = std::fmin(reach, (scale * d.b[k] + zp + 0.25) / std::sqrt(d.t[k]));
   }
   double hi = std::max(lo + 0.5, reach);
+  // On a grid of 64 or more (a tiny alpha, a flat spending function: r up to 128) an analysis costs (r/32)² as much
+  // as on the grid of 32, and the search below took 8 or so passes over all analyses.  The root on the grid of 32 and
+  // the slope there start a secant search on r instead, which takes 3 or 4 (the two grids' roots lie some 1e-4
+  // apart).  It ends with a step below the tolerance of the search below, or a power within 1e-15 of the target
+  // (next to a power of 1 its rounding moves the root by more than that tolerance); one that has not ended within 8
+  // steps, or steps off the drifts that can be, gives way to the search below.
+  if (r >= 64) {
+    try {
+      const double e0 = drift_for_power(d, power, scale, 32, check), h = 1e-4 * std::fmax(e0, 1.0);
+      const double slope = (exit_probs(d, e0 + h, scale, 32, check).reject -
+                            exit_probs(d, std::fmax(e0 - h, 0.5 * e0), scale, 32, check).reject) /
+                           (e0 + h - std::fmax(e0 - h, 0.5 * e0));
+      double x0 = e0, f0 = f(x0), x1 = x0 - f0 / slope;
+      for (int i = 0; i < 8 && slope > 0 && x1 > 0 && x1 < 1e3; ++i) {
+        const double f1 = f(x1);
+        if (std::fabs(f1) <= 1e-15) return x1;
+        const double step = f1 * (x1 - x0) / (f1 - f0);
+        if (!std::isfinite(step)) break;
+        if (std::fabs(step) <= 1e-12) return x1 - step;
+        x0 = x1;
+        f0 = f1;
+        x1 -= step;
+      }
+    } catch (const CalcError&) {
+      // not on the grid of 32: the search below on r decides
+    }
+  }
   double flo = f(lo), fhi = f(hi);
   for (int i = 0; flo > 0 && lo > 1e-9 && i < 60; ++i) flo = f(lo *= 0.5);
   if (flo > 0) return lo;

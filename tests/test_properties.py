@@ -2298,11 +2298,14 @@ def test_an_icc_next_to_its_lower_limit_has_its_exact_power():
 
 def test_a_target_near_100_percent_is_met_to_the_finer_precision_shown():
     """Above 1 − 1e-9 the precision shown is finer than the 1e-9 by which a power counted as reaching the target: an
-    answer could miss it by more, and a refusal read 'moves from nan at nan to …'.  Where the power itself is not
-    computed to that precision (it moves up and down by 3e-12 from one double to the next) the message says so."""
+    answer could miss it by more, and a refusal read 'moves from nan at nan to …'.  The exact correlation's power
+    next to 1 moved up and down by 3e-12 from one double to the next, and the refusal said it could not be computed
+    to the precision shown; taken as 1 less the smaller tail, it no longer does, and the refusal is for the 50
+    doubles the difference spans."""
     msg = run("corr.one", "rho1", {**base_inputs("corr.one"), "rho0": "0.99999999999", "n": "1e9",
                                    "power": "0.999999999999", "alternative": "lower"})["rows"][0]["_error"]
-    assert "nan" not in msg and msg.startswith("the power cannot be computed to within 5e-13 of the target"), msg
+    assert "nan" not in msg and msg.startswith("ρ1 cannot be told apart from ρ0 = 0.99999999999: the difference of "
+                                               "5.491e-15 it needs keeps fewer than four significant digits"), msg
     for target in ("0.9999999999", "0.99999999999"):
         row = first_row(run("agree.icc", "rho1", {**base_inputs("agree.icc"), "rho0": "0.3", "n": "1000",
                                                   "power": target}))
@@ -2563,7 +2566,8 @@ def test_a_delta_r2_next_to_a_control_r2_of_about_one_is_solved_at_once(r2c, r2t
     start = time.perf_counter()
     row = first_row(run("reg.multiple", "r2t", {**base_inputs("reg.multiple"), "r2c": r2c}))
     assert time.perf_counter() - start < 5, r2c
-    assert row["r2t"] == r2t and row["power"] == pytest.approx(0.8, abs=5e-5), row
+    # to the search's tolerance: the last digits follow the rounding of the power, which differs between processors
+    assert row["r2t"] == pytest.approx(r2t, rel=1e-13) and row["power"] == pytest.approx(0.8, abs=5e-5), row
 
 
 @pytest.mark.parametrize("pid,solve,inputs,says", [

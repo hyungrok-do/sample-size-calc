@@ -527,8 +527,12 @@ std::pair<double, double> pois_region_far(bool exact, double mu0, double alpha, 
     return {up, lo};
   }
   // from the normal quantile with the skewness and continuity terms, then stepped by the tails themselves while a
-  // step of one still changes the distance (the exact test never exceeds alpha)
-  const bool step = z * sd0 < 1e15;
+  // step of one still changes the distance (the exact test never exceeds alpha), and changes the tail, by about
+  // φ(z)/σ0, by more than its rounding: next to a tail of nearly a half (two-sided alphas next to 1, one-sided ones
+  // next to 0.5) z is next to 0, a step moves the tail by about 0.4/σ0, and with 1e46 events (σ0 = 1e23) that is a
+  // ten-millionth of a double there: the steps went on until their sum got past the tail's rounding, 1e7 times or
+  // more, and Stop was not heard
+  const bool step = z * sd0 < 1e15 && stats::dnorm(z) / sd0 > 16 * std::numeric_limits<double>::epsilon() * side;
   if (a != Alt::Lower) {  // smallest with P(X ≥ μ0 + up) ≤ side
     up = std::ceil(f0 + z * sd0 + (z * z - 1) / 6 + 0.5) - f0;
     while (step && pois_power_far(up - 1, NAN, mu0, 0) <= side) up -= 1;

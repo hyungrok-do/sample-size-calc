@@ -162,17 +162,78 @@ double beta_upper_tail_integral(double c, double d, double z) {
   };
   double wmax = std::max(80.0, 4 * (c + 20));
   if (z + wmax / s > 1) wmax = (1 - z) * s;
+  // Each piece to 1e-15 of itself, or to 1e-17 of the pieces before it, which hold the most: the last piece, next to
+  // t = 1 and 1e-164 of the tail in one case, took 22,000 evaluations of the density for nothing.
   const double pts[] = {0.0, 0.5, 2.0, 6.0, 15.0, 35.0, 80.0, 160.0, 320.0};
   double total = 0, prev = 0;
   for (double q : pts) {
     if (q <= prev) continue;
     const double hi = std::min(q, wmax);
-    if (hi > prev) total += numerics::integrate(g, prev, hi, 0.0, 1e-15, 30);
+    if (hi > prev) total += numerics::integrate(g, prev, hi, 1e-17 * total, 1e-15, 30);
     prev = hi;
     if (prev >= wmax) break;
   }
-  if (prev < wmax) total += numerics::integrate(g, prev, wmax, 0.0, 1e-15, 30);
+  if (prev < wmax) total += numerics::integrate(g, prev, wmax, 1e-17 * total, 1e-15, 30);
   return total;
+}
+
+// I_x(a, b) for a ≥ 15, b ≤ 1 and x > 0.7: the asymptotic expansion of Didonato & Morris (1992, ACM TOMS 708,
+// BGRAT) in powers of 1/T², T = a + (b − 1)/2, about Q(b, u), u = −T ln x, the upper incomplete gamma ratio, which
+// I_x(a, b) nears as a grows.  NaN where it cannot be computed: Q's scale e^−u u^b/Γ(b) below the doubles, or the
+// expansion short of 1e-15 after 30 terms.
+double beta_grat(double a, double b, double x, double y) {
+  constexpr int N = 30;
+  double c[N], d[N];
+  const double bm1 = b - 1, nu = a + 0.5 * bm1;
+  const double lnx = std::log1p(-y), z = -nu * lnx;  // from y, which the callers give to full precision
+  const double log_r = b * std::log(z) - z - lgammafn(b), r = std::exp(log_r);  // e^−u u^b/Γ(b)
+  if (!(z > 0) || !(r >= DBL_MIN_)) return NaN;
+  const double scale = std::exp(log_r + lgamma_diff(a, b) - b * std::log(nu));  // r Γ(a + b)/(Γ(a) T^b)
+  const double v = 0.25 / (nu * nu), t2 = 0.25 * lnx * lnx;
+  double j = pgamma_raw(z, b, false) / r, sum = j, t = 1, cn = 1, n2 = 0;
+  for (int n = 1; n <= N; ++n) {
+    const double bp2n = b + n2;
+    j = (bp2n * (bp2n + 1) * j + (z + bp2n + 1) * t) * v;
+    n2 += 2;
+    t *= t2;
+    cn /= n2 * (n2 + 1);
+    c[n - 1] = cn;
+    double s = 0, coef = b - n;
+    for (int i = 1; i < n; ++i) {
+      s += coef * c[i - 1] * d[n - 1 - i];
+      coef += b;
+    }
+    d[n - 1] = bm1 * cn + s / n;
+    const double dj = d[n - 1] * j;
+    sum += dj;
+    if (!(sum > 0)) return NaN;
+    if (std::fabs(dj) <= 1e-15 * sum) return scale * sum;
+  }
+  return NaN;
+}
+
+// I_x(a, b) where it is the small tail and x is above ½, for b ≤ 40: from b0 = b − ⌈b − 1⌉ in (0, 1] up,
+//   I_x(a, b) = I_x(a, b0) + Σ_k x^a y^(b0+k) / ((b0 + k) B(a, b0 + k)),  k = 0 … b − b0 − 1,
+// terms all positive (TOMS 708, BUP), and I_x(a, b0) from its series where x ≤ 0.7, from beta_grat() above (a ≥ 15).
+// NaN where neither applies.  The integral of the density it spares takes some 300 to 900 evaluations of it, and the
+// noncentral distributions take this tail for every power next to 1 (see complement() in noncentral.cpp): such a
+// power of a t-test with ν = 10 or 30 and δ = 10 takes 3 µs, where it took 0.4 to 2.5 ms.
+double beta_small_lower(double a, double b, double x, double y) {
+  const double n = std::ceil(b) - 1, b0 = b - n;
+  double I;
+  if (x <= 0.7) {
+    I = beta_series(a, b0, x, y);
+  } else if (a >= 15) {
+    I = beta_grat(a, b0, x, y);
+  } else {
+    return NaN;
+  }
+  double term = beta_prefactor(a, b0, x, y) / b0;
+  for (double k = 0; k < n; ++k) {
+    I += term;
+    term *= y * (a + b0 + k) / (b0 + k + 1);
+  }
+  return I;
 }
 
 double beta_guess(double p, double a, double b, bool lower) {
@@ -283,12 +344,20 @@ double pbeta_raw(double x, double a, double b, bool lower, double y) {
     const double J = clamp01(beta_series(b, a, y, x));  // = 1 − I_x(a,b); a NaN stays NaN
     if (!lower) return J;
     if (J <= 0.99) return 1 - J;
+    if (b <= 40) {
+      const double I = beta_small_lower(a, b, x, y);
+      if (I >= 0) return clamp01(I);
+    }
     return beta_upper_tail_integral(b, a, y);  // I_x(a,b) = P(Y ≥ y), Y = 1 − X
   }
   if (x <= 0.5 && s * x <= a + 60) {
     const double I = clamp01(beta_series(a, b, x, y));
     if (lower) return I;
     if (I <= 0.99) return 1 - I;
+    if (a <= 40) {
+      const double J = beta_small_lower(b, a, y, x);  // 1 − I_x(a, b) = I_y(b, a)
+      if (J >= 0) return clamp01(J);
+    }
     return beta_upper_tail_integral(a, b, x);  // 1 − I_x(a,b) = P(X ≥ x)
   }
   if (x > (a + 1) / (a + b + 2)) {

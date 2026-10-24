@@ -74,6 +74,29 @@ TEST_CASE("distributions: incomplete gamma for large shapes (Temme) vs series") 
   }
 }
 
+TEST_CASE("distributions: a small beta tail beside one large shape, from TOMS 708's expansion") {
+  // Where the series' complement is too close to 1 (x above ½ and the lower tail below 0.01, or the mirror): BGRAT
+  // for b ≤ 1 and the series for x ≤ 0.7, raised to b by positive terms.  References: the series of the other tail in
+  // 60 to 400 digits, 1 less it (mpmath); R's pbeta agrees to 2e-15 and less.
+  struct Case {
+    double x, a, b;
+    bool lower;
+    double ref;
+  };
+  for (const Case& c : {Case{0.9983406602323119, 39900.33457501, 28.405605073134232, true, 5.3941505331920082e-8},
+                        Case{0.9925807368451423, 6500.026766827606, 0.3842282849380524, true, 3.7330702638813437e-23},
+                        Case{0.6, 50.5, 15, true, 1.4817443899652601e-3},
+                        Case{0.999998, 4500000.5, 1, true, 1.2340857002292161e-4},
+                        Case{0.999998, 4500000.5, 1.5, true, 4.3984526648444234e-4},
+                        Case{2e-6, 1.5, 4500000.5, false, 4.3984526638384715e-4},
+                        Case{0.25, 2.5, 120, false, 1.3249309816841355e-13}})
+    CHECK_CLOSE(stats::pbeta(c.x, c.a, c.b, c.lower), c.ref, 1e-14, 0);
+  // the t distribution's tail, ½ I_x(ν/2, ½) with x = ν/(ν + t²)
+  CHECK_CLOSE(stats::pt(5, 30, false), 1.1648342733503898e-5, 1e-14, 0);
+  CHECK_CLOSE(stats::pt(3, 1000, false), 1.3833545221190962e-3, 1e-14, 0);
+  CHECK_CLOSE(stats::pt(4.5, 1e6, false), 3.3980552524769493e-6, 1e-14, 0);
+}
+
 TEST_CASE("distributions: huge noncentrality stays accurate and fast") {
   // P(χ'² ≤ df + λ) → 1/2 + skewness term; the upper tail of the F test is ≈ 1.
   for (double lam : {1e6, 1e9, 1e12, 1e15}) {

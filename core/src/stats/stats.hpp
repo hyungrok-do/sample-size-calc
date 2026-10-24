@@ -44,6 +44,9 @@ double beta_prefactor(double a, double b, double x, double y);
 double lchoose(double n, double k);
 
 inline double clamp01(double p) { return p < 0 ? 0 : (p > 1 ? 1 : p); }
+/// 1 − q for a probability taken as 1 less the other tail q (q ≤ ½), rounded down: it reaches a target t below 1
+/// just when q ≤ 1 − t, and is 1 only when q is below half the spacing of the doubles under 1.
+double complement(double q);
 
 // ---------------------------------------------------------------- normal
 /// {Φ(x), 1 − Φ(x)}, each to near full relative precision (Cody 1969).

@@ -267,7 +267,7 @@ DesignPtr gs_design(const Scenario& s, const RunContext& ctx) {
         fut.binding = s.is("binding", "binding");
         DesignInfo info;
         info.d = gs::make_design(t, alpha, two, eff, fut, [&] { ctx.check(); });
-        info.h0 = gs::exit_probs(info.d, 0.0);
+        info.h0 = gs::exit_probs(info.d, 0.0, 1, 0, [&] { ctx.check(); });
         return info;
       },
       ctx);
@@ -319,10 +319,12 @@ double fixed_drift(const Scenario& s, double power, double scale) {
   return numerics::brent(excess, 0, one_tail, at_zero, at_one, 1e-13);
 }
 
-// Drift needed for the target power.
-double target_drift(const Scenario& s, const DesignInfo& info, double scale) {
+// Drift needed for the target power.  Stop is checked at every analysis of every design it tries: with a tiny alpha
+// or a flat spending function, the finest grid takes some 10 ms an analysis, a second a solve (main checked only
+// between solves, and took up to 10 s to stop a list of such designs).
+double target_drift(const Scenario& s, const DesignInfo& info, double scale, const RunContext& ctx) {
   if (scale == 1 && std::isfinite(info.d.eta_design)) return info.d.eta_design;
-  return gs::drift_for_power(info.d, s("power"), scale);
+  return gs::drift_for_power(info.d, s("power"), scale, 0, [&] { ctx.check(); });
 }
 
 void check_power_target(const Scenario& s) {
@@ -334,9 +336,9 @@ void check_power_target(const Scenario& s) {
 // `eta_target` is the drift solved for the target power (NaN when solving for power).
 void gs_report(const Scenario& s, Row& r, const DesignInfo& info, double eta, double eta_target, double scale,
                double nmax, const std::function<double(std::size_t, double)>& effect, const std::string& unit,
-               const std::string& effect_label) {
+               const std::string& effect_label, const RunContext& ctx) {
   const gs::Design& d = info.d;
-  const auto e1 = gs::exit_probs(d, eta, scale);
+  const auto e1 = gs::exit_probs(d, eta, scale, 0, [&] { ctx.check(); });
   const auto& e0 = info.h0;
   const std::size_t K = d.t.size();
   const bool fut = d.has_futility();
@@ -560,7 +562,7 @@ Procedure gs_means() {
     double eta = NAN;
     if (s.solve == "n") {
       check_power_target(s);
-      eta = target_drift(s, *info, 1.0);
+      eta = target_drift(s, *info, 1.0, ctx);
       n = solve_two_group_n(s, eta_of, eta, 2, 2 * sigma * sigma * eta * eta / (diff * diff), true, ctx);
     } else {
       n = two_group_n(s);
@@ -569,7 +571,7 @@ Procedure gs_means() {
     const double sg = direction(s, diff);
     gs_report(s, r, *info, eta_of(n.n1, n.n2), eta, 1.0, n.total(),
               [&](std::size_t k, double z) { return sg * z * sigma * std::sqrt((1 / n.n1 + 1 / n.n2) / info->d.t[k]); },
-              "N at Analysis", "(μ1 − μ2)");
+              "N at Analysis", "(μ1 − μ2)", ctx);
     r.set("mu1", s("mu1"));
     r.set("mu2", s("mu2"));
     r.set("sigma", sigma);
@@ -657,12 +659,15 @@ Procedure gs_props() {
       check_power_target(s);
       const double v = p1 * (1 - p1) + p2 * (1 - p2);
       if (pooled) {
-        eta = target_drift(s, *info, scale_of(100, 100));
+        eta = target_drift(s, *info, scale_of(100, 100), ctx);
         n = solve_two_group_n(
-            s, [&](double n1, double n2) { return gs::exit_probs(info->d, eta_of(n1, n2), scale_of(n1, n2)).reject; },
+            s,
+            [&](double n1, double n2) {
+              return gs::exit_probs(info->d, eta_of(n1, n2), scale_of(n1, n2), 0, [&] { ctx.check(); }).reject;
+            },
             s("power"), 2, v * eta * eta / (diff * diff), true, ctx);
       } else {
-        eta = target_drift(s, *info, 1.0);
+        eta = target_drift(s, *info, 1.0, ctx);
         n = solve_two_group_n(s, eta_of, eta, 2, v * eta * eta / (diff * diff), true, ctx);
       }
     } else {
@@ -670,13 +675,13 @@ Procedure gs_props() {
     }
     put_two_group(r, n);
     const double sg = direction(s, diff);
-    if (pooled && std::isfinite(eta)) eta = target_drift(s, *info, scale_of(n.n1, n.n2));
+    if (pooled && std::isfinite(eta)) eta = target_drift(s, *info, scale_of(n.n1, n.n2), ctx);
     gs_report(s, r, *info, eta_of(n.n1, n.n2), eta, scale_of(n.n1, n.n2), n.total(),
               [&](std::size_t k, double z) {
                 const double t = info->d.t[k];
                 return sg * z * (pooled ? se0(n.n1 * t, n.n2 * t) : se1(n.n1 * t, n.n2 * t));
               },
-              "N at Analysis", "(P1 − P2)");
+              "N at Analysis", "(P1 − P2)", ctx);
     r.set("p1", p1);
     r.set("p2", p2);
   };
@@ -779,7 +784,7 @@ Procedure gs_logrank() {
     double eta = NAN;
     if (s.solve == "n") {
       check_power_target(s);
-      eta = target_drift(s, *info, 1.0);
+      eta = target_drift(s, *info, 1.0, ctx);
       const double ev = eta * eta / (0.25 * std::log(hr) * std::log(hr));
       n = solve_two_group_n(s, eta_of, eta, 1, ev / (pe1 + pe2), true, ctx);
     } else {
@@ -791,7 +796,7 @@ Procedure gs_logrank() {
     const double sg = direction(s, std::log(hr));
     gs_report(s, r, *info, eta_of(n.n1, n.n2), eta, 1.0, dmax,
               [&](std::size_t k, double z) { return std::exp(sg * z / std::sqrt(dmax * info->d.t[k] * w1 * (1 - w1))); },
-              "Events at Analysis", "(HR)");
+              "Events at Analysis", "(HR)", ctx);
     r.set("events", dmax);
     r.set("hr", hr);
     r.set("med2", s("med2"));

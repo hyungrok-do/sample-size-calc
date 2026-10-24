@@ -338,8 +338,14 @@ double root_from(F&& f, double target, double a, double b, double b_max, double 
   // bracket (the SD) left the fourth digit wrong when the root lies far below it (the mean difference for an N of
   // 1e8), and one absolute below 1 left it wrong for an SD of 1e-8
   const double x0 = a;
-  // never beyond b_max: x0 + (b_max − x0) can round past it, onto a limit where the power is not defined
-  auto g = [&](double t) { return f(std::fmin(x0 + t, b_max)) - target; };
+  // never beyond b_max: x0 + (b_max − x0) can round past it, onto a limit where the power is not defined.  A power on
+  // the target reaches it (counts as above), so that the root is where the power first reaches the target: next to 1
+  // the power moves in steps of the doubles' spacing and stays on the target over a range of values (f = 1.3916 to
+  // 1.40 for 0.9999999999999998 in a one-way ANOVA of 3 groups of 20), and Brent's method stopped at the first it met
+  auto g = [&](double t) {
+    const double d = f(std::fmin(x0 + t, b_max)) - target;
+    return d == 0 ? std::numeric_limits<double>::denorm_min() : d;
+  };
   double ta = 0, tb = b - x0;
   const double t_max = b_max - x0;
   double fa = g(ta);

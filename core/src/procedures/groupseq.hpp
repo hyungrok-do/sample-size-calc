@@ -91,10 +91,13 @@ Design make_design(const std::vector<double>& t, double alpha, bool two_sided, c
 /// Exit probabilities under drift eta.  `scale` multiplies every boundary (a
 /// statistic whose standard deviation under H1 differs from 1 can be handled by
 /// scaling its boundaries by 1/SD and its drift by 1/SD).  r = 0 takes the design's grid.
-ExitProbs exit_probs(const Design& d, double eta, double scale = 1, int r = 0);
+/// `check` (optional) is called before each analysis and may throw to cancel.
+ExitProbs exit_probs(const Design& d, double eta, double scale = 1, int r = 0,
+                     const std::function<void()>& check = {});
 
 /// Drift giving the requested overall power (rejection in the direction of the
-/// drift); boundaries are multiplied by `scale` as in exit_probs.
-double drift_for_power(const Design& d, double power, double scale = 1, int r = 0);
+/// drift); boundaries are multiplied by `scale` as in exit_probs, and `check` is passed on to it.
+double drift_for_power(const Design& d, double power, double scale = 1, int r = 0,
+                       const std::function<void()>& check = {});
 
 }  // namespace ssc::gs
