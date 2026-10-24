@@ -507,6 +507,12 @@ TEST_CASE("extremes: n times a ratio rounded up is a whole product however large
   CHECK_EQ(solve::round_up(3e7 * 1.1), 33000000.0);
   CHECK_EQ(solve::round_up(1e12 * 0.7), 700000000000.0);
   CHECK_EQ(solve::round_up(110000000.5), 110000001.0);
+  // and a whole product stays whole past 2^50, where four units in the last place are a whole unit or more: 1e16
+  // became 9999999999999992
+  CHECK_EQ(solve::round_up(1e8 * 1e8), 1e16);
+  CHECK_EQ(solve::round_up(0x1p50), 0x1p50);
+  CHECK_EQ(solve::round_up(0x1p52 + 1), 0x1p52 + 1);
+  CHECK_EQ(solve::round_up(1e30), 1e30);
 }
 
 TEST_CASE("extremes: the correlation's distribution on Fisher's scale") {

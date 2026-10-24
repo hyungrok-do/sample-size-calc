@@ -58,8 +58,11 @@ double first_whole(F&& ok, double from, double cap, const char* none) {
 /// rounding of the ratio as typed and of the product (20 × 1.1 is 22.000000000000004) that is relative, a few units
 /// in the last place of x, so that a group of any ratio gets at least 1 (an absolute slack of 1e-9 left one with
 /// n × the ratio of 1e-9 or less with none) and one of 1e8 × 1.1 gets 110000000 (that slack is less than the
-/// rounding of a product above 2^24, which gave it 110000001).
-inline double round_up(double x) { return std::ceil(x * (1 - 4 * std::numeric_limits<double>::epsilon())); }
+/// rounding of a product above 2^24, which gave it 110000001).  The slack is at most 1/4, which keeps a whole x as
+/// it is: four units in the last place are a whole unit or more from 2^50 on (1e16 became 9999999999999992).
+inline double round_up(double x) {
+  return std::ceil(x - std::fmin(4 * std::numeric_limits<double>::epsilon() * x, 0.25));
+}
 
 /// The groups that n × their weights w (relative sizes, say: `weight` and `weights` name them), rounded up, leave
 /// with 1 subject, for a message: "group 2 still has 1 subject (n × its relative size, rounded up)", "groups 1 and 2

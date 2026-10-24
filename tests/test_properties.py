@@ -2518,6 +2518,14 @@ def test_two_way_effects_are_none_only_where_the_means_as_typed_have_none():
     for means in ("1000000.1 1000000.2 1000000.4 0.1 0.2 0.4", "0.1 0.2 0.3 1.1 1.2 1.3"):
         row = first_row(run("means.anova2", "power", {**base, "b": "3", "means": means, "sigma": "1e-30", "n": "10"}))
         assert row["fab"] == 0 and row["pab"] == pytest.approx(0.05) and row["pa"] > 0.99 and row["pb"] > 0.99, row
+    # an effect the means as typed have and the doubles cancel exactly takes its size from the means as typed: the
+    # rows sum to the same double, 0.30000000000000001665, but as typed to 0.3 and 0.30000000000000002, row means
+    # 5e-18 from their mean, 5e12 σ, where they gave f = 0 and the power alpha, or 'no effect of the chosen kind'
+    base = {**base, "means": "0.1 0.2 -0.19999999999999998 0.5", "sigma": "1e-30"}
+    row = first_row(run("means.anova2", "power", {**base, "n": "10"}))
+    assert row["fa"] == pytest.approx(5e12, rel=1e-12) and row["pa"] > 0.99, row
+    assert row["fb"] == pytest.approx(2e29, rel=1e-12) and row["fab"] == pytest.approx(1.5e29, rel=1e-12), row
+    assert first_row(run("means.anova2", "n", {**base, "goal": "A"}))["n"] == 2
 
 
 @pytest.mark.parametrize("pid,solve,inputs", [
@@ -2713,6 +2721,8 @@ def test_a_two_sided_logistic_power_counts_both_sides():
     ("prop.one.simon", {"p0": "0.99999", "p1": "0.999999"}, "For P0 = 0.99999 versus P1 = 0.999999,"),
     ("prop.trend", {"props": "0.1 0.99999 0.2"}, "response proportions 0.1, 0.99999, 0.2 "),
     ("prop.trend", {"props": "0.1 0.10001 0.2"}, "response proportions 0.1, 0.10001, 0.2 "),
+    ("prop.trend", {"scores": "custom", "dvals": "0.1 0.1 0.1 0.10000000000000003"},
+     "(scores 0.1, 0.1, 0.1, 0.10000000000000003) "),
     # only P1 from an odds ratio of 1 is P2 to a rounding error: a difference that is given is shown
     ("prop.two", {"es": "diff", "d1": "3e-16", "p2": "0.6", "method": "normal"},
      "P1 = 0.6000000000000003 and P2 = 0.6 (difference 3.331e-16, "),

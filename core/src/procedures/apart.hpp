@@ -120,15 +120,20 @@ inline std::string fnum_from(double x, double ref, int decimals = 4) {
   return fnum_apart(x, ref).first;
 }
 
-/// The texts of values a statement lists together (a trend's proportions), with the digits it takes to tell each
-/// from every other as fnum_apart tells two apart: 0.1, 0.10001, 0.2, not 0.1, 0.1, 0.2.
+/// The texts of values a statement lists together (a trend's proportions and scores), with the digits it takes to
+/// tell each from every other as fnum_apart tells two apart: 0.1, 0.10001, 0.2, not 0.1, 0.1, 0.2.
 inline std::vector<std::string> fnum_apart_all(const std::vector<double>& x) {
   std::vector<std::string> t(x.size());
   std::vector<double> shown(x.size());
-  for (int extra = 0; extra <= 13; ++extra) {
+  int extra = 0;
+  for (; extra <= 13; ++extra) {
     for (std::size_t i = 0; i < x.size(); ++i) {
       t[i] = fnum_digits(x[i], extra);
-      if (!text::parse_double(t[i], shown[i])) shown[i] = NAN;
+      // a whole number below 1e15 shows as itself (a trend's scores 0, 1, 2, ...), with no need to read it back
+      if (x[i] == std::floor(x[i]) && std::fabs(x[i]) < 1e15)
+        shown[i] = x[i];
+      else if (!text::parse_double(t[i], shown[i]))
+        shown[i] = NAN;
     }
     bool apart = true;
     for (std::size_t i = 0; i < x.size() && apart; ++i)
@@ -136,6 +141,13 @@ inline std::vector<std::string> fnum_apart_all(const std::vector<double>& x) {
         apart = std::fabs((shown[i] - shown[j]) - (x[i] - x[j])) <= 0.05 * std::fabs(x[i] - x[j]);
     if (apart) break;
   }
+  // where more digits were needed, a value whose digits read back as itself in as few digits as do (0.1 next to
+  // 0.10000000000000003, not the 0.10000000000000001 of the 17 decimals that tell the two apart)
+  for (std::size_t i = 0; extra > 0 && i < x.size(); ++i)
+    if (shown[i] == x[i]) {
+      const std::string r = text::format_roundtrip(x[i]);
+      if (r.size() < t[i].size()) t[i] = r;
+    }
   return t;
 }
 
