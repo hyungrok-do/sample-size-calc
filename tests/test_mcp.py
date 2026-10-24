@@ -105,6 +105,14 @@ def test_health_and_domain_verification_routes(monkeypatch):
         assert page.status_code == 200 and page.text == "token-123"
 
 
+def test_no_memory_for_the_engine_s_answer_is_an_error(monkeypatch):
+    from ssc import _native
+
+    monkeypatch.setattr(_native.lib(), "ssc_run_json", lambda request, token: None)
+    res = calculate("means.two.t", "n", {})
+    assert res["ok"] is False and res["error"].startswith("There is not enough memory for this calculation")
+
+
 def test_inputs_as_a_model_writes_them():
     assert mcp_server._as_input([0.8, 0.9]) == "0.8 0.9"
     assert mcp_server._as_input([[0, 0.5, 1], [0, 0, 1]]) == "0 0.5 1; 0 0 1"

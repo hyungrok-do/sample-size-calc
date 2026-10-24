@@ -756,7 +756,7 @@ Procedure nph() {
     const RmstExpected rm = d.test == Test::Rmst ? rmst_expected(d) : RmstExpected{};
     const ComboNull combo =
         d.test == Test::MaxCombo ? combo_null(d, 1 / (1 + ratio), alpha, a, ctx.threads) : ComboNull{};
-    auto n2_of = [&](double n1) { return std::ceil(ratio * n1 - 1e-9); };
+    auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
     auto approx = [&](double n1) { return approx_power(d, rm, combo, n1, n2_of(n1), alpha, a, ctx.threads); };
     if (s.solve == "n") {
       // the hazard ratios that apply during the study

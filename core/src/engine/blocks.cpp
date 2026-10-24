@@ -120,7 +120,7 @@ std::vector<ParamDef> two_group_params(double min_n, const std::string& n1_defau
 }
 
 namespace {
-double ratio_n2(double n1, double r) { return std::ceil(r * n1 - 1e-9); }
+double ratio_n2(double n1, double r) { return solve::round_up(r * n1); }
 TwoN split_pct(double N, double pct) {
   double n1 = std::floor(N * pct / 100 + 0.5);
   return {n1, N - n1};

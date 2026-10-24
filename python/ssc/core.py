@@ -91,9 +91,23 @@ def hardware_threads() -> int:
     return int(_native.lib().ssc_hardware_threads())
 
 
+# What the engine answers when a calculation runs out of memory (core/src/capi.cpp); run() gives the same answer when
+# there was not even memory for that, and the engine returned NULL.
+_NO_MEMORY = ("There is not enough memory for this calculation: use fewer combinations of input values or shorter "
+              "lists.")
+
+
+def _answer(ptr: Optional[int]) -> dict:
+    """The JSON a call returns, which is NULL only when there was not enough memory for it."""
+    text = _native.take_string(ptr)
+    if text is None:
+        raise MemoryError("there is not enough memory for the engine's answer")
+    return json.loads(text)
+
+
 def catalog() -> dict:
     """Categories and the list of procedures."""
-    return json.loads(_native.take_string(_native.lib().ssc_catalog_json()))
+    return _answer(_native.lib().ssc_catalog_json())
 
 
 def search(query: str, limit: int = 20) -> dict:
@@ -105,7 +119,7 @@ def search(query: str, limit: int = 20) -> dict:
     is the query with misspellings fixed ("" if none) and ``partial`` is true
     when no procedure matches every word.  ``limit=0`` returns every match.
     """
-    return json.loads(_native.take_string(_native.lib().ssc_search_json(query.encode("utf-8", "replace"), int(limit))))
+    return _answer(_native.lib().ssc_search_json(query.encode("utf-8", "replace"), int(limit)))
 
 
 def schema(procedure_id: str) -> dict:
@@ -163,6 +177,8 @@ def run(
     finally:
         if token is not None:
             token._done()
+    if text is None:  # not even the engine's short answer for running out of memory could be allocated
+        return {"ok": False, "error": _NO_MEMORY}
     return json.loads(text)
 
 

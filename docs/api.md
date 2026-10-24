@@ -189,6 +189,9 @@ solving for the sample size). Each is present only when it has entries.
 
 If the request cannot be run, `ok` is `false` and `error` describes the
 problem, for example that there is not enough memory for an answer this large.
+Only when there is not enough memory even for that short answer does
+`ssc_run_json` return `NULL` (the other functions returning `char*` likewise);
+`ssc.run` in Python then gives the same answer the engine would have.
 Invalid inputs also produce `input_errors`, a map from parameter id to
 message. A cancelled calculation returns `"cancelled": true`.
 

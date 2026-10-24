@@ -140,7 +140,7 @@ def test_a_long_simulation_keeps_memory_bounded_and_gives_it_back():
 
 
 CLUSTERS = """
-import json, threading, time
+import json, sys, threading, time
 import ssc.core as core
 
 def hwm():
@@ -153,7 +153,7 @@ before = hwm()
 token, box = core.Token(), {}
 inputs = {"k1": "500000", "cv": "1", "m": "1e7", "reps": "100"}
 worker = threading.Thread(target=lambda: box.setdefault(
-    "res", core.run("sim.lmm.cluster", "power", inputs, threads=2, power_curve=False, token=token)))
+    "res", core.run(sys.argv[1], "power", inputs, threads=2, power_curve=False, token=token)))
 worker.start()
 time.sleep(4)
 start = time.perf_counter()
@@ -165,13 +165,15 @@ print(json.dumps({"cancelled": bool(box["res"].get("cancelled")), "latency": tim
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/self/status")
-def test_a_million_clusters_of_different_sizes_keep_memory_small_and_stop_promptly():
-    # sizes with mean 10⁷ and CV 1 almost all differ: as one 1,544-byte pattern a size, a study took 1.9 GB a
-    # thread (the web page ran out of its 2 GB), and a cancel waited 22 s for the studies under way; kept in 40
-    # bytes a size, two threads take about 120 MB, and a study checks the token as it goes
+@pytest.mark.parametrize("pid", ["sim.lmm.cluster", "sim.glmm.cluster"])
+def test_a_million_clusters_of_different_sizes_keep_memory_small_and_stop_promptly(pid):
+    # sizes with mean 10⁷ and CV 1 almost all differ: as one 1,544-byte pattern a size, a mixed-model study took
+    # 1.9 GB a thread (the web page ran out of its 2 GB), and a cancel waited 22 s for the studies under way; kept in
+    # 40 bytes a size, two threads take about 120 MB.  A study checks the token as it goes: the logistic model's
+    # waited 4 to 9 s for the studies under way before it did
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([os.path.dirname(os.path.dirname(core.__file__)),
                                                        os.environ.get("PYTHONPATH", "")]))
-    out = subprocess.run([sys.executable, "-c", CLUSTERS], capture_output=True, text=True, env=env, timeout=600)
+    out = subprocess.run([sys.executable, "-c", CLUSTERS, pid], capture_output=True, text=True, env=env, timeout=600)
     assert out.returncode == 0, out.stderr
     d = json.loads(out.stdout.strip().splitlines()[-1])
     assert d["cancelled"], d

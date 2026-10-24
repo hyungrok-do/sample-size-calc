@@ -483,7 +483,7 @@ Procedure mmrm_proc() {
     const Design d = design_of(s);
     const Analysis an = s.is("analysis", "completers") ? COMPLETERS : MMRM;
     const bool z = s.is("df", "z");
-    auto n2_of = [&](double n1) { return std::ceil(ratio * n1 - 1e-9); };
+    auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
     auto approx = [&](double n1) {
       const double n2 = n2_of(n1);
       const double keep1 = d.retained(0, d.visits), keep2 = d.retained(1, d.visits);

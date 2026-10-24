@@ -196,6 +196,29 @@ def test_groups_from_a_ratio_or_a_percentage_meet_the_smallest_group():
     assert ssc.run("means.two.ni", "power", {"alloc": "ratio", "n1": "20", "r": "0.5"})["rows"][0]["n2"] == 10
 
 
+def test_a_group_from_a_tiny_ratio_has_one_subject():
+    # n × the ratio rounded up: a slack of 1e-9 for the rounding of the product left group 2 empty below 1e-9
+    row = ssc.run("means.two.t", "power", {"alloc": "ratio", "n1": "10", "r": "5e-11"})["rows"][0]
+    assert row["_error"] == "group 2 would have N2 = 1 (R × N1, rounded up); each group needs at least 2"
+    tiny = ssc.run("surv.logrank", "power", {"alloc": "ratio", "n1": "10", "r": "1e-12"})["rows"][0]
+    typed = ssc.run("surv.logrank", "power", {"alloc": "sep", "n1": "10", "n2": "1"})["rows"][0]
+    assert tiny["n2"] == 1 and tiny["power"] == typed["power"]
+
+
+def test_no_memory_even_for_the_answer_is_said_as_the_engine_says_it(monkeypatch):
+    # the engine returns NULL only when not even its short answer for running out of memory can be allocated
+    from ssc import _native
+
+    lib = _native.lib()
+    monkeypatch.setattr(lib, "ssc_run_json", lambda request, token: None)
+    res = ssc.run("means.two.t", "n", {})
+    assert res == {"ok": False, "error": "There is not enough memory for this calculation: use fewer combinations of "
+                                         "input values or shorter lists."}
+    monkeypatch.setattr(lib, "ssc_catalog_json", lambda: None)
+    with pytest.raises(MemoryError):
+        ssc.catalog()
+
+
 def test_text_that_is_not_valid_unicode_is_an_error_not_a_crash():
     res = ssc.run("means.two.t", "n", {"mu1": "\ud800"})
     assert not res["ok"] and "mu1" in res["input_errors"]

@@ -474,7 +474,7 @@ Procedure multiarm() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const Design d = design_of(s);
     const int eff = d.effective_count();
-    auto sizes = [&](double n) { return Sizes{n, std::ceil(d.r0 * n - 1e-9)}; };
+    auto sizes = [&](double n) { return Sizes{n, solve::round_up(d.r0 * n)}; };
     const bool single = d.adjust == Adjust::Dunnett || d.adjust == Adjust::Bonferroni || d.adjust == Adjust::None;
     // exact power of the single-step test (Bonferroni's for the step-wise procedures, a lower bound)
     auto exact_at = [&](double n, double* crit = nullptr) {

@@ -131,13 +131,14 @@ double cluster_terms(const Cluster& c, double b0, double b1, double sigma, doubl
 
 /// Total log-likelihood (and derivatives), re-centering every cluster's nodes; `modes` keeps the modes.
 double evaluate(const std::vector<Cluster>& data, double b0, double b1, double sigma, const Rule& r,
-                std::vector<double>& modes, double* grad, double* hess) {
+                std::vector<double>& modes, double* grad, double* hess, Poll poll = {}) {
   if (grad) {
     std::fill(grad, grad + 3, 0.0);
     std::fill(hess, hess + 9, 0.0);
   }
   double total = 0;
   for (std::size_t i = 0; i < data.size(); ++i) {
+    if (poll.call && i % 4096 == 0) poll.call(poll.arg);
     const Cluster& c = data[i];
     double curvature;
     modes[i] = mode(b0 + b1 * c.x, c.m, c.s, sigma, modes[i], curvature);
@@ -227,7 +228,7 @@ double loglik(const std::vector<Cluster>& data, double b0, double b1, double sig
   return evaluate(data, b0, b1, sigma, rule(nodes), modes, nullptr, nullptr);
 }
 
-Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, int nodes) {
+Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, int nodes, Poll poll) {
   // Newton's method on the adaptive-quadrature log-likelihood, whose nodes are re-centered at the modes
   // for every parameter value tried.  The derivatives are those of the quadrature sum with its nodes held
   // where they are, which equal the log-likelihood's up to the quadrature error.  (Holding the nodes
@@ -261,7 +262,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
   std::vector<double> modes(n, 0.0), trial_modes(n);
   double th[3] = {b0, b1, hold ? 0 : (sigma <= 0 ? 0.3 : sigma)};
   double grad[3], hess[9];
-  double ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess);
+  double ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess, poll);
   pin(grad, hess);
   if (!std::isfinite(ll)) return fail(Failure::Arithmetic);
   bool converged = false;
@@ -281,7 +282,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
       // a last Newton step: too small for the log-likelihood to show its gain, it still squares the
       // remaining error
       for (int i = 0; i < 3; ++i) th[i] += d[i];
-      ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess);
+      ll = evaluate(data, th[0], th[1], th[2], r, modes, grad, hess, poll);
       pin(grad, hess);
       converged = std::isfinite(ll);
       break;
@@ -291,7 +292,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     for (int half = 0; half < 50; ++half, step /= 2) {
       for (int i = 0; i < 3; ++i) trial[i] = th[i] + step * d[i];
       std::copy(modes.begin(), modes.end(), trial_modes.begin());
-      next = evaluate(data, trial[0], trial[1], trial[2], r, trial_modes, tgrad, thess);
+      next = evaluate(data, trial[0], trial[1], trial[2], r, trial_modes, tgrad, thess, poll);
       pin(tgrad, thess);
       if (std::isfinite(next) && next >= ll) break;
     }
@@ -326,7 +327,8 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     double t[3] = {th[0], th[1], th[2]}, gj[3], hj[9];
     t[j] += h;
     std::copy(modes.begin(), modes.end(), trial_modes.begin());
-    if (!std::isfinite(evaluate(data, t[0], t[1], t[2], r, trial_modes, gj, hj))) return fail(Failure::Information);
+    if (!std::isfinite(evaluate(data, t[0], t[1], t[2], r, trial_modes, gj, hj, poll)))
+      return fail(Failure::Information);
     for (int i = 0; i < 3; ++i) info[3 * i + j] = -(gj[i] - grad[i]) / h;
   }
   for (int i = 0; i < 3; ++i)  // symmetrize
