@@ -289,13 +289,35 @@ double long_se(const LongDesign& d, double n1, double n2) {
   return std::sqrt(cov[3 * 4 + 3]) * (d.unit / d.tau);
 }
 
-/// Whether a simulated study's subjects leave the model without an estimate, whatever the arithmetic: a group none of
-/// whose subjects was measured twice tells nothing of its slope, and with random slopes and no subject measured three
-/// times (two visits, or heavy dropout), the subjects seen twice, less one for each group's means, must be two or
-/// more, or the covariance of the two measurements is not determined (with one subject left over, the REML criterion
-/// falls without bound as it turns singular).  With heavy dropout and few subjects this is common, and it is the
-/// design's doing, not an extreme input's: such a study counts as not rejecting.
-bool long_unidentified(const lmm::Data& data, int K) {
+// Bits of sim::Outcome::also: why a study could not be analyzed.
+constexpr unsigned NO_SLOPE = 0, NO_SPLIT = 1, NO_SLOPE_VARIANCE = 2, ARITHMETIC = 3;
+
+const std::vector<simc::Cause>& long_causes() {
+  using simc::Failures;
+  static const std::vector<simc::Cause> c = {
+      {NO_SLOPE, Failures::Design, "a group had no subject measured twice"},
+      {NO_SPLIT, Failures::Design,
+       "only one subject of each group was measured twice, and none three times, which does not tell the residual "
+       "variance from the subjects'"},
+      {NO_SLOPE_VARIANCE, Failures::Design,
+       "too few subjects were measured more than once to estimate the variance of the slopes"},
+      {ARITHMETIC, Failures::Numerical, "the arithmetic of the mixed-model fit broke down"}};
+  return c;
+}
+
+/// Why a simulated study's subjects leave the model without an estimate, whatever the arithmetic (the bit of the
+/// reason), or −1 when they do not.  A group none of whose subjects was measured twice tells nothing of its slope.
+/// Each group's slope then takes up what one of its subjects measured twice tells; only the rest, the others
+/// measured more than once and anyone's third measurement, can set the variances apart.  With random intercepts
+/// alone, one subject of each group measured twice and none three times leave nothing within a subject: the REML
+/// criterion is the same wherever the residual variance and the subjects' add up to the same total, and the slopes'
+/// standard error, which follows the residual variance, went with wherever the fit stopped.  With random slopes,
+/// the subjects measured twice or more, less one for each group, must be one or more when someone was measured
+/// three times, or the criterion does not depend on the slopes' variance and covariance at all, and two or more
+/// when no one was (with one subject left over, the criterion falls without bound as the covariance of the two
+/// measurements turns singular).  With heavy dropout and few subjects this is common, and it is the design's doing,
+/// not an extreme input's: such a study counts as not rejecting.
+int long_unidentified(const lmm::Data& data, int K) {
   double twice[2] = {0, 0}, thrice = 0;
   for (int g = 0; g < 2; ++g)
     for (int k = 2; k <= K; ++k) {
@@ -303,8 +325,10 @@ bool long_unidentified(const lmm::Data& data, int K) {
       twice[g] += count;
       if (k > 2) thrice += count;
     }
-  if (twice[0] == 0 || twice[1] == 0) return true;
-  return data.q == 2 && thrice == 0 && (twice[0] - 1) + (twice[1] - 1) < 2;
+  if (twice[0] == 0 || twice[1] == 0) return NO_SLOPE;
+  const double extra = (twice[0] - 1) + (twice[1] - 1);
+  if (data.q == 1) return thrice == 0 && extra == 0 ? NO_SPLIT : -1;
+  return extra < (thrice == 0 ? 2 : 1) ? NO_SLOPE_VARIANCE : -1;
 }
 
 /// One simulated study.  The analysis estimates the group means and slopes freely, so adding them to the
@@ -355,8 +379,10 @@ sim::Outcome long_study(const LongDesign& d, const LongPatterns& designs, long n
     }
   }
   sim::Outcome o;
-  if (long_unidentified(data, K)) {
-    o.failed = o.design_failure = true;
+  const int why = long_unidentified(data, K);
+  if (why >= 0) {
+    o.failed = true;
+    o.also = 1u << why;
     return o;
   }
   double theta[3];
@@ -364,6 +390,7 @@ sim::Outcome long_study(const LongDesign& d, const LongPatterns& designs, long n
   const lmm::Fit f = lmm::fit(data, theta);
   if (!f.ok) {
     o.failed = true;
+    o.also = 1u << ARITHMETIC;
     return o;
   }
   const double c[4] = {0, 0, 0, 1};
@@ -521,7 +548,7 @@ Procedure longitudinal() {
       auto power_at = [&](double m1, long R, double p0, double p1) {
         simc::check_study_size((m1 + n2_of(m1)) * static_cast<double>(d.times.size()), "measurements");
         const long k1 = static_cast<long>(m1), k2 = static_cast<long>(n2_of(m1));
-        return sim::simulate(
+        return simc::simulate_tests(
             R, [&](long rep) { return long_study(d, designs, k1, k2, delta, rep, seed, dfm, alpha, a); }, ctx, p0,
             p1);
       };
@@ -542,10 +569,8 @@ Procedure longitudinal() {
       }
       // studies whose subjects leave the model without an estimate count as not rejecting, as a design that
       // often gives too few subjects measured twice deserves; only failures of the arithmetic in more than half of
-      // the studies withhold the power
-      const bool numerical = 2 * (sm.failures - sm.design_failures) > sm.reps;
-      simc::put_summary(s, r, sm, numerical ? simc::Failures::Numerical : simc::Failures::Design,
-                        sm.design_failures == sm.reps ? "each had a group with too few subjects measured twice" : "");
+      // the studies withhold the power, and the statement and the messages say why the studies failed
+      simc::put_summary(s, r, sm, long_causes());
       r.set("approx_power", approx(n1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_delta", sm.mean_estimate);
       if (sm.df_fallbacks > 0) r.set("df_fallbacks", static_cast<double>(sm.df_fallbacks));
@@ -693,8 +718,9 @@ class SizeIndex {
 /// estimated difference by exactly μ1 − μ2 and nothing else: the clusters are simulated around 0, in units of
 /// σ, and the difference is added to the estimate (sums of squares of outcomes far from 0, or of 10¹⁶⁰ σ, would
 /// lose the digits the variance estimates need, or overflow).  A study of a million clusters takes about a second,
-/// so the token is checked within it: as the clusters are drawn, and as each evaluation of the REML criterion begins,
-/// in the fit and in Satterthwaite's degrees of freedom (some 20 ms apart with a million sizes).
+/// so the token is checked within it: as the clusters are drawn, and in the fit and in Satterthwaite's degrees of
+/// freedom as each evaluation of the REML criterion or its derivatives begins and every 65,536 sizes within one (at
+/// most 9 ms of CPU apart with a million sizes, where a pass over them took 80 ms unchecked).
 sim::Outcome cluster_study(const ClusterDesign& d, long k1, long k2, double diff, long rep, std::uint64_t seed,
                            int dfm, double alpha, Alt a, const RunContext& ctx) {
   lmm::Data data;

@@ -145,13 +145,13 @@ Another thread can watch progress and cancel it through the token.
   counted as not rejecting; when none could be analyzed, the row has an
   `_error` instead of a power, and so it has when more than half could not
   be in the simulations whose analyses fail only when the arithmetic breaks
-  down: the longitudinal, cluster and stepped-wedge mixed models and the
-  two-sample tests on skewed or heavy-tailed data. A longitudinal study whose
-  subjects leave the model without an estimate, as heavy dropout with few
-  subjects can, counts as failed without withholding the power. The MMRM,
-  GLMM, ordinal and win-ratio simulations count failures that the design
-  brings, such as a group with no patients left at a visit, apart from those
-  of the arithmetic, which alone are held to that rule, and say why in
+  down: the cluster and stepped-wedge mixed models and the two-sample tests on
+  skewed or heavy-tailed data. The longitudinal mixed model, MMRM, GLMM,
+  ordinal and win-ratio simulations count failures that the design brings,
+  such as a group with no patients left at a visit, or a longitudinal study
+  whose subjects leave the model without an estimate, as heavy dropout with
+  few subjects can, apart from those of the arithmetic, which alone are held
+  to that rule, and say why in
   `failures_why`, as their statements do) and `mean_df`, with `df_fallbacks`
   when some of the mixed models' studies could not have Satterthwaite's
   degrees of freedom and used the fixed ones instead (the statement says
