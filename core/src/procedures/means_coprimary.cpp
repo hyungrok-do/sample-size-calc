@@ -78,7 +78,7 @@ double all_reject(const std::vector<double>& marginal, double rho) {
   }
   if (K == 2) return stats::clamp01(stats::bvn_upper(lo[0], lo[1], rho));
   if (rho >= 0) return stats::clamp01(equicorrelated_upper(lo, K, rho));
-  return stats::clamp01(nph::mvn_probability(K, lo, hi, r));  // a negative common correlation: to about 1e-5
+  return stats::clamp01(nph::mvn_probability(K, lo, hi, r));  // a negative common correlation: to about 1.5e-4
 }
 
 std::vector<double> marginal_powers(const std::vector<double>& d, double n1, double n2, double alpha, bool t) {
@@ -210,7 +210,7 @@ Procedure coprimary() {
              "copula); in simulations with 10 to 30 subjects per group it was within 0.005 of the true joint power, "
              "and closer with more. With known variances the power is exact.",
              "With three or four endpoints and a negative correlation the multivariate normal probability is "
-             "computed to about 1e-5; otherwise it is exact."};
+             "computed with a lattice rule, to within about 1.5e-4; otherwise it is exact."};
   p.references = {"Sozu, T., Sugimoto, T. & Hamasaki, T. (2011). Sample size determination in superiority clinical "
                   "trials with multiple co-primary correlated endpoints. Journal of Biopharmaceutical Statistics 21, "
                   "650–668.",

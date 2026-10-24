@@ -233,6 +233,37 @@ TEST_CASE("multiarm: powers of tiny effects at a tiny alpha, and with few degree
   CHECK_CLOSE(num(f, "power"), 8.866865848107e-07, 1e-10, 0);
 }
 
+TEST_CASE("multiarm: an arm's rejection where the critical value is large, and arms on either side of another") {
+  // references: the noncentral t probability at the engine's critical value and degrees of freedom, integrated with
+  // mpmath (40 digits) over log s with points dense where c·s crosses θ.  Before, 48 nodes over the SD's whole range
+  // did not resolve the arm's rejection, which falls from 1 to 0 within about 1/θ in log s (0.4908 for 0.5343 with 26
+  // degrees of freedom, and n = 11 for a power of 0.3 that needs 12), and the panels below the density's range
+  // followed only the arm least likely to reject (the second arm 9.78e-26 for 1.614e-23 next to an arm of 0.5, and
+  // 3.12e-21 for 1.423e-20 next to one of −50, which does not change it)
+  auto request = [](const std::string& inputs) {
+    return R"({"procedure":"sim.multiarm","solve_for":"power","options":{"approximate":true},"inputs":{)" + inputs +
+           "}}";
+  };
+  auto arm = [](const json::Value& row, std::size_t i) {
+    return row.get("_tables").elements().at(0).get("rows").elements().at(i).elements().at(4).as_number(NAN);
+  };
+  const json::Value a = first_row(request(R"("mu":"24.8","n":"14","alpha":"1e-30","alternative":"upper")"));
+  CHECK_CLOSE(num(a, "crit"), 65.66786693838, 1e-10, 0);
+  CHECK_CLOSE(num(a, "power"), 0.5342628525237474, 1e-10, 0);
+  const std::string pair = R"("mu":"20 20","alpha":"1e-30","alternative":"upper","goal":"each")";
+  CHECK_CLOSE(num(first_row(request(pair + R"(,"n":"11")")), "power"), 0.2922526253005791, 1e-10, 0);
+  CHECK_CLOSE(num(first_row(request(pair + R"(,"n":"12")")), "power"), 0.8567455490528979, 1e-10, 0);
+  CHECK(num(first_row(R"({"procedure":"sim.multiarm","solve_for":"n","options":{"approximate":true},"inputs":{)" +
+                      pair + R"(,"power":"0.3"}})"),
+            "n") == 12);
+  const json::Value b = first_row(request(R"("mu":"0.5 20","n":"3","alpha":"1e-30","alternative":"upper")"));
+  CHECK_CLOSE(arm(b, 1), 1.613726566105066e-23, 1e-10, 0);
+  const json::Value c = first_row(request(R"("mu":"-50 0.5","n":"2","alpha":"1e-20","alternative":"upper")"));
+  CHECK_CLOSE(arm(c, 1), 1.42285393184683e-20, 1e-10, 0);
+  const json::Value e = first_row(request(R"("mu":"0 20","n":"2","alpha":"1e-30")"));
+  CHECK_CLOSE(arm(e, 1), 3.039427754950125e-27, 1e-10, 0);
+}
+
 TEST_CASE("multiarm: exact powers of Dunnett's test agree with mvtnorm") {
   // R: 1 − pmvt(−c, c, delta, df = 156, corr 0.5) and the sum over the sign patterns of the tails
   const json::Value a = first_row(
