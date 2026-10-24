@@ -244,10 +244,10 @@ try {
     assert.ok(Date.now() - t0 < 5000 && text.length < 300, `${Date.now() - t0} ms; ${text.length} characters`);
     await q.context().close();
   });
-  await check('a field holds one character past the engine\'s limit of 200,000', async () => {
+  await check('a field holds one character past the engine\'s limit of 300,000', async () => {
     const q = await open(`${base}#means.two.t`); await ready(q);
-    await q.fill('#in-power', 'W'.repeat(300000));
-    assert.equal((await q.inputValue('#in-power')).length, 200001);
+    await q.fill('#in-power', 'W'.repeat(400000));
+    assert.equal((await q.inputValue('#in-power')).length, 300001);
     await q.context().close();
   });
   await check('a corrected search is shown briefly', async () => {
@@ -300,8 +300,8 @@ try {
         return `one thread after ${((Date.now() - started) / 1000).toFixed(1)} s`;
       });
     }
-    // the worker changed by `edit`, and a calculation with μ1 = 13.13
-    async function changedWorker(edit) {
+    // the worker changed by `edit`, and a calculation with μ1 = 13.13 (its answer awaited unless `wait` is false)
+    async function changedWorker(edit, wait = true) {
       const source = await readFile(resolve(web, 'worker.js'), 'utf8');
       const body = edit(source);
       assert.notEqual(body, source);
@@ -310,7 +310,8 @@ try {
       const q = await context.newPage();
       q.on('pageerror', (e) => errors.push(`crash: ${e.message}`));
       await q.goto(`${base}#means.two.t`); await ready(q);
-      await q.click('#solve label >> nth=1'); await q.fill('#in-mu1', '13.13'); await q.click('#calc'); await answer(q);
+      await q.click('#solve label >> nth=1'); await q.fill('#in-mu1', '13.13'); await q.click('#calc');
+      if (wait) await answer(q);
       return q;
     }
     // a worker whose engine traps on that input, as an engine out of memory does (only the multi-core one, or both)
@@ -347,6 +348,21 @@ try {
         `const result = JSON.parse(text);\n        if (request.inputs?.mu1 === '13.13' && variant === 'ssc_web_mt' && !request.options.threads) Object.assign(result, { threads: 4, rows: [${memoryRow}] });`));
       assert.ok(await q.$('#result .statement'), (await q.textContent('#result')).slice(0, 120));
       assert.doesNotMatch(await q.textContent('#timing'), /threads/, 'the answer of one thread');
+      await q.context().close();
+    });
+    await check('the multi-core answer stays on show while one thread calculates again, and after Stop', async () => {
+      // its rows were lost: the page showed nothing during the second run (which can take minutes), nor after Stop
+      const memoryRow = "{ _error: 'there is not enough memory to compute the answer for these inputs' }";
+      const q = await changedWorker((source) => source.replace('const result = JSON.parse(text);',
+        `const result = JSON.parse(text);\n        if (request.inputs?.mu1 === '13.13' && variant === 'ssc_web_mt' && !request.options.threads) Object.assign(result, { threads: 4, rows: [result.rows[0], ${memoryRow}] });\n        if (request.inputs?.mu1 === '13.13' && request.options.threads === 1) for (const t = Date.now(); Date.now() - t < 60000;);`), false);
+      await q.waitForFunction(() => /again with one thread/.test(document.getElementById('timing').textContent), null,
+        { timeout: 120000 });
+      assert.ok(await q.$('#result .statement'), 'the first answer is shown');
+      assert.equal(await q.locator('#result tbody tr').count(), 2);
+      await q.click('#stop'); await idle(q);
+      assert.ok(await q.$('#result .statement'), 'the first answer is kept');
+      assert.match(await q.textContent('#result tbody'), /not enough memory/);
+      assert.match(await q.textContent('#timing'), /^Stopped: the rows without enough memory were not calculated/);
       await q.context().close();
     });
     await fallBack('without the multi-core engine file, the one-thread engine calculates', (c) =>
