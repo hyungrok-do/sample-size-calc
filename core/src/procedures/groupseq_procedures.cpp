@@ -235,6 +235,16 @@ gs::Efficacy gs_efficacy(const Scenario& s) {
   return eff;
 }
 
+// β-spending futility boundaries of a scenario that has them (β = 1 − power).
+gs::Futility beta_futility(const Scenario& s) {
+  const std::string& bs = s.s("bspend");
+  gs::Futility fut;
+  fut.kind = gs::Futility::Kind::BetaSpending;
+  fut.beta = 1 - s("power");
+  fut.spend = gs::spending(bs, fut.beta, spending_param(bs, s, "brho", "bgamma"));
+  return fut;
+}
+
 DesignPtr gs_design(const Scenario& s, const RunContext& ctx) {
   const std::string key = design_key(s);  // which checks the inputs
   const auto t = gs_fractions(s);
@@ -242,17 +252,13 @@ DesignPtr gs_design(const Scenario& s, const RunContext& ctx) {
   const bool two = two_sided(s);
   const std::string fk = futility_kind(s);
   const std::vector<double> fz = fk == "z" ? gs_futility_z(s, t.size() - 1) : std::vector<double>{};
-  const double beta = fk == "beta" ? 1 - s("power") : 0.0;
   return cached_design(
       key,
       [&] {
         const gs::Efficacy eff = gs_efficacy(s);
         gs::Futility fut;
         if (fk == "beta") {
-          const std::string& bs = s.s("bspend");
-          fut.kind = gs::Futility::Kind::BetaSpending;
-          fut.beta = beta;
-          fut.spend = gs::spending(bs, beta, spending_param(bs, s, "brho", "bgamma"));
+          fut = beta_futility(s);
         } else if (fk == "z") {
           fut.kind = gs::Futility::Kind::Fixed;
           fut.z = fz;
@@ -483,8 +489,8 @@ const std::vector<std::pair<std::string, std::string>> GS_DEFS = {
 // The time of a request in units of a typical scenario (a few ms), for the limit of scenarios. Each design is
 // built once: about 3.5 units with 20 analyses, 11 with β-spending futility (whose design depends on the power
 // too); a power from it is quick, and a search for the sample size takes about 3.5 ms per analysis (80 ms with
-// 20 analyses).  The work grows with the square of the grid's r, which is finer for a tiny alpha (see
-// gs::grid_resolution).
+// 20 analyses).  The work grows with the square of the grid's r, which is finer for a tiny alpha and for nearly flat
+// spending functions (see gs::grid_resolution).
 double gs_cost(const std::vector<Scenario>& scenarios) {
   std::set<std::string> designs;
   double cost = 0;
@@ -492,7 +498,8 @@ double gs_cost(const std::vector<Scenario>& scenarios) {
     const double looks = s("looks");
     double w = 1;
     try {
-      const double grid = gs::grid_resolution(s("alpha"), gs_fractions(s), gs_efficacy(s)) / 32.0;
+      const gs::Futility fut = futility_kind(s) == "beta" ? beta_futility(s) : gs::Futility{};
+      const double grid = gs::grid_resolution(s("alpha"), gs_fractions(s), gs_efficacy(s), fut) / 32.0;
       w = grid * grid;
     } catch (const CalcError&) {
       // the scenario stops at once with its message

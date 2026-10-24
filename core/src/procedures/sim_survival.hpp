@@ -37,8 +37,9 @@ struct Rmst {
 Rmst restricted_mean(const std::vector<Obs>& sorted, long n1, long n2, double tau);
 
 /// P(a < X < b) for X ~ N(0, R), R an m × m correlation matrix (row-major), 1 ≤ m ≤ 4; the limits may be
-/// infinite.  Deterministic: Genz's separation of variables with a fixed lattice rule (error about 1e-5),
-/// whose points are shared between up to `threads` threads (the same result on any number).
+/// infinite.  Deterministic: Genz's separation of variables with a fixed lattice rule (error about 1e-5; up to
+/// 1.5e-4 seen with limits on both sides and correlations near 1, as in MaxCombo's two-sided test), whose points are
+/// shared between up to `threads` threads (the same result on any number).
 double mvn_probability(int m, const double* a, const double* b, const double* r, int threads = 1);
 
 /// P(X ∉ (a, b)) = 1 − P(a < X < b), also where it is far below the lattice's error: the sum over j of the

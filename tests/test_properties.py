@@ -784,6 +784,27 @@ def test_maxcombo_where_the_tail_computation_takes_over():
         assert power({"alpha": a, "hr1": "1", "hr2": "1"}) == pytest.approx(float(a), rel=1e-6), a
 
 
+def test_maxcombo_power_has_no_steps_and_is_alpha_one_sided_lower():
+    """The lattice took a point of an interval above 0 from its upper tail as the mirror image of the point below it,
+    so the points jumped where an interval's lower limit crossed 0: the power curve had steps (one of 1e-5 at n1 = 328
+    to 330 here), and with the alternative 'lower', whose box lies the other way round from the one its critical
+    value came from, the power with no effect was 1e-5 off alpha below 0.02."""
+    base = {**base_inputs("sim.surv.nph"), "test": "maxcombo"}
+
+    def power(inputs):
+        return first_row(ssc.run("sim.surv.nph", "power", {**base, **inputs}, power_curve=False,
+                                 approximate=True))["power"]
+
+    for a in ("0.003", "0.005", "0.0053", "0.01", "0.0149"):
+        row = power({"alternative": "lower", "alpha": a, "hr1": "1", "hr2": "1"})
+        assert row == pytest.approx(float(a), rel=1e-7), a
+    powers = [power({"alternative": "upper", "alpha": "0.05", "hr1": "1", "hr2": "0.9", "n1": str(n)})
+              for n in range(300, 352, 2)]
+    steps = [b - a for a, b in zip(powers, powers[1:])]
+    bends = [abs(b - a) for a, b in zip(steps, steps[1:])]
+    assert max(bends) < 0.05 * min(abs(s) for s in steps), steps
+
+
 def test_hazards_whose_sum_overflows_keep_their_share_of_events():
     """With event and dropout hazards of 1e308 each, their sum overflowed and the event probability came out 1
     (half the answer).  Such hazards are refused; up to the largest allowed, 1e30, the share of events is that of
@@ -1115,6 +1136,26 @@ def test_flat_spending_functions_with_many_analyses():
                              ({"boundary": "hsd", "gamma": "40"}, 7.494518)):
         row = first_row(run("gs.means", "n", {**base, **extra}))
         assert row and row["inflation"] == pytest.approx(inflation, rel=1e-5), (extra, row)
+
+
+def test_beta_spending_that_leaves_next_to_nothing_for_the_last_analysis():
+    """With β-spending that spends nearly all of beta at the first analysis (ρ = 1e-30), the power is within about
+    1e-10 of its target over a range of drifts, and the drift came out where the quadrature's error put it.  In the
+    first and third designs here the futility boundary meets the efficacy boundary at the first analysis, so that
+    P(Z_1 ≥ b_1) = 1 − β: an inflation of ((b_1 + z_β)/√t_1/(z_α + z_β))², 7.1145734 for O'Brien–Fleming spending with
+    three analyses (it was 7.0105) and 20.765924 for Hwang–Shih–DeCani with γ = 40 and twenty (18.97).  With binding
+    boundaries the later efficacy boundaries reject every path that passes the first futility boundary, which lies at
+    z_α: the fixed design at the first analysis, an inflation of 3 (it was 2.855).  With ρ = 1e-5 the reference
+    integrates on uniform grids of 1000 intervals per analysis (14.6463; it was 14.6462)."""
+    base = {**base_inputs("gs.means"), "alternative": "upper", "alpha": "0.025", "power": "0.9", "spacing": "equal",
+            "futility": "beta", "bspend": "power", "brho": "1e-30"}
+    for extra, inflation in (({"looks": "3", "boundary": "obf", "binding": "nonbinding"}, 7.11457336),
+                             ({"looks": "3", "boundary": "obf", "binding": "binding"}, 3.0),
+                             ({"looks": "20", "boundary": "hsd", "gamma": "40", "binding": "nonbinding"}, 20.7659237),
+                             ({"looks": "20", "boundary": "hsd", "gamma": "40", "binding": "nonbinding", "brho": "1e-5"},
+                              14.646293)):
+        row = first_row(run("gs.means", "n", {**base, **extra}))
+        assert row and row["inflation"] == pytest.approx(inflation, rel=1e-6), (extra, row)
 
 
 def test_group_sequential_analyses_close_together_at_a_small_alpha():
