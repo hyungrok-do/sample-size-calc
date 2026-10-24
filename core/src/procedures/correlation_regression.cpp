@@ -1,6 +1,9 @@
 // Correlation (one and two correlations, CI precision) and regression
 // (multiple regression R², simple linear regression slope, logistic and Cox
 // regression with one covariate of interest).
+#include <cstdint>
+#include <cstring>
+
 #include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 #include "procedures/integrals.hpp"
@@ -455,9 +458,21 @@ Procedure multiple_regression() {
       n = s("n");
       if (n < a + b + 2) throw CalcError("N must exceed A + B + 1");
       // solve on the unbounded f² scale, then ΔR² = f²(1 − R²c)/(1 + f²), up to the f² of the last ΔR² that may
-      // be given (R²c + ΔR² < 1)
+      // be given (R²c + ΔR² < 1).  It is found by halving over the doubles below 1 − R²c, as one double at a time
+      // would take some 1e13 steps next to R²c = 1 − 1e-14, where R²c + ΔR² rounds as 1 does
+      auto admissible = [&](double d) { return r2c + d < 1 && (rest - d) + rest_lo > 0; };
       double last = rest;
-      while (!(r2c + last < 1 && (rest - last) + rest_lo > 0)) last = std::nextafter(last, 0.0);
+      if (!admissible(last)) {
+        std::uint64_t lo = 0, hi;  // as bit patterns, which order positive doubles as their values
+        std::memcpy(&hi, &rest, sizeof hi);
+        while (hi - lo > 1) {
+          const std::uint64_t mid = lo + (hi - lo) / 2;
+          double v;
+          std::memcpy(&v, &mid, sizeof v);
+          (admissible(v) ? lo : hi) = mid;
+        }
+        std::memcpy(&last, &lo, sizeof last);
+      }
       const std::string unreachable = "the target power cannot be reached for any admissible value of ΔR²";
       const double f2 = solve::solve_increasing([&](double x) { return mreg_power(n, x, b, a, alpha); }, s("power"),
                                                 1e-12, 0.15, f2_of(last), 1e-12, "ΔR²");

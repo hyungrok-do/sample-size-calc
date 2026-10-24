@@ -2554,6 +2554,18 @@ def test_a_delta_r2_next_to_one_less_the_control_r2_has_the_f2_of_its_double():
     assert "control predictor(s) with R² = 0.1," in row["_statement"], row
 
 
+@pytest.mark.parametrize("r2c,r2t", [("0.9999999999", 7.412181304229196e-12),
+                                     ("0.99999999999999", 7.406256299189844e-16),
+                                     ("0.9999999999999999", 8.229173665766494e-18)])
+def test_a_delta_r2_next_to_a_control_r2_of_about_one_is_solved_at_once(r2c, r2t):
+    """The last ΔR² that may be given was sought one double at a time below 1 − R²c: next to R²c = 1 − 1e-10 some 4e9
+    steps (20 s, with Stop unheard) and next to 1 − 1e-14 some 1e13.  It is now found by halving."""
+    start = time.perf_counter()
+    row = first_row(run("reg.multiple", "r2t", {**base_inputs("reg.multiple"), "r2c": r2c}))
+    assert time.perf_counter() - start < 5, r2c
+    assert row["r2t"] == r2t and row["power"] == pytest.approx(0.8, abs=5e-5), row
+
+
 @pytest.mark.parametrize("pid,solve,inputs,says", [
     ("agree.icc", "rho1", {"k": "3", "rho0": "-0.49999999", "alternative": "lower"},
      "intraclass correlation of -0.4999999956 when the value under the null hypothesis is -0.49999999,"),
