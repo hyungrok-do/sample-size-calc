@@ -2365,9 +2365,15 @@ def test_a_delta_r2_next_to_its_limit_is_found_or_refused_as_between_two_doubles
 def test_a_confidence_level_is_shown_with_its_digits():
     for pid, conf, says in (("means.one.ci", "0.999", "99.9%"), ("means.two.ci", "0.975", "97.5%"),
                             ("corr.ci", "0.9999999999999", "99.99999999999%"), ("prop.one.ci", "0.95", "95%"),
-                            ("prop.two.ci", "0.5", "50%")):
+                            ("prop.two.ci", "0.5", "50%"), ("means.two.ci", "0.95000000001", "95.000000001%")):
         stmt = first_row(run(pid, "n", {**base_inputs(pid), "conf": conf}))["_statement"]
         assert " " + says + " " in stmt, stmt
+    # never as the level next to it: 0.5000000000000001 read as 50%, at which a one-sided interval is refused
+    for pid, side in (("means.one.ci", "one"), ("means.two.ci", "one"), ("prop.one.ci", "lower"),
+                      ("prop.two.ci", "upper"), ("means.one.ci", "two")):
+        stmt = first_row(run(pid, "width", {**base_inputs(pid), "sides": side, "conf": "0.5000000000000001"}))[
+            "_statement"]
+        assert " 50.00000000000001% " in stmt, stmt
 
 
 @pytest.mark.parametrize("pid,side", [("means.one.ci", "one"), ("means.two.ci", "one"), ("prop.one.ci", "lower"),

@@ -129,31 +129,12 @@ struct Cause {
   std::string what;
 };
 
-/// The bit of sim::Outcome::also that carries a failed study through simulate_tests.
-constexpr int FAILED_BIT = sim::ALSO_MAX - 1;
-
-/// sim::simulate for studies that run other tests on the same data, or tell why an analysis failed, in the bits of
-/// sim::Outcome::also: those bits count on every study, also where the analysis that decides the power failed
-/// (sim::simulate leaves out everything else a failed study holds, and would count its other tests as not
-/// rejecting).  A failed study still counts as a failure and as not rejecting; the averages take the values it
-/// holds, so a study leaves NaN where its analysis gave no estimate.
+/// sim::simulate, for studies that run other tests on the same data, or tell why an analysis failed, in the bits of
+/// sim::Outcome::also: the name says what such studies rely on, that those bits count on every study, also where the
+/// analysis that decides the power failed, as sim::Accumulator counts them.
 template <class F>
 sim::Summary simulate_tests(long reps, F&& study, const RunContext& ctx, double p0 = 0, double p1 = 1) {
-  sim::Summary sm = sim::simulate(
-      reps,
-      [&](long rep) {
-        sim::Outcome o = study(rep);
-        if (o.failed) {
-          o.failed = false;
-          o.reject = false;
-          o.also |= 1u << FAILED_BIT;
-        }
-        return o;
-      },
-      ctx, p0, p1);
-  sm.failures = sm.also[FAILED_BIT];
-  sm.also[FAILED_BIT] = 0;
-  return sm;
+  return sim::simulate(reps, study, ctx, p0, p1);
 }
 
 /// The reasons of the failed studies: "a group had no patients left at a visit", or "in 150, …; in 13, …" when

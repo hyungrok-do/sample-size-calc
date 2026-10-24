@@ -445,7 +445,7 @@ Procedure ordinal() {
     const Design d = design_of(s);
     const Test test = s.is("test", "lr") ? LR : (s.is("test", "mw") ? RANKS : WALD);
     const double win = win_probability(d);
-    auto n2_of = [&](double n1) { return std::ceil(ratio * n1 - 1e-9); };
+    auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
     // Whitehead's variance of log OR̂ for proportional odds; Noether's with ties for given probabilities
     auto approx = [&](double n1) {
       const double n2 = n2_of(n1), total = n1 + n2, pi = n1 / total;

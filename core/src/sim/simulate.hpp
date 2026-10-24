@@ -73,7 +73,9 @@ inline Summary with_rejections(Summary s, long rejections) {
 }
 
 /// Summary of outcomes added one by one, in replicate order (so that the sums, and the result, do not
-/// depend on how the replicates were spread over threads).
+/// depend on how the replicates were spread over threads).  A study whose analysis failed counts as a failure and
+/// as not rejecting; its other tests (Outcome::also) count as on any study, and the averages take the values it
+/// holds, so that it leaves out of them only what its analysis did not give (NaN).
 class Accumulator {
  public:
   void add(const Outcome& o) {
@@ -81,10 +83,10 @@ class Accumulator {
     if (o.failed) {
       ++s_.failures;
       if (o.design_failure) ++s_.design_failures;
-      return;
+    } else {
+      if (o.reject) ++s_.rejections;
+      if (o.df_fallback) ++s_.df_fallbacks;
     }
-    if (o.reject) ++s_.rejections;
-    if (o.df_fallback) ++s_.df_fallbacks;
     for (int i = 0; i < ALSO_MAX; ++i)
       if (o.also >> i & 1u) ++s_.also[i];
     if (std::isfinite(o.estimate)) {

@@ -516,7 +516,7 @@ Procedure longitudinal() {
     const double alpha = s("alpha"), ratio = s("r"), delta = s("delta");
     const LongDesign d = long_design(s);
     const int dfm = df_method(s);
-    auto n2_of = [&](double n1) { return std::ceil(ratio * n1 - 1e-9); };
+    auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
     auto approx = [&](double n1) {
       const double n2 = n2_of(n1), ncp = delta / long_se(d, n1, n2);
       return dfm == 2 ? z_power(ncp, alpha, a) : t_power(ncp, n1 + n2 - 2, alpha, a);
@@ -838,7 +838,7 @@ Procedure cluster() {
     const ClusterDesign d = cluster_design(s);
     const auto ew = expected_weight(d);
     const int dfm = df_method(s);
-    auto k2_of = [&](double k1) { return std::ceil(kr * k1 - 1e-9); };
+    auto k2_of = [&](double k1) { return solve::round_up(kr * k1); };
     auto approx = [&](double k1) {
       const double k2 = k2_of(k1), se = std::sqrt((1 / k1 + 1 / k2) / ew.first), ncp = diff / sigma / se;
       return dfm == 2 ? z_power(ncp, alpha, a) : t_power(ncp, k1 + k2 - 2, alpha, a);

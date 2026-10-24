@@ -91,9 +91,25 @@ def hardware_threads() -> int:
     return int(_native.lib().ssc_hardware_threads())
 
 
+# What the engine answers when a calculation runs out of memory (core/src/capi.cpp); run() gives the same answer when
+# there was not even memory for that, and the engine returned NULL.
+_NO_MEMORY = ("There is not enough memory for this calculation: use fewer combinations of input values or shorter "
+              "lists.")
+# What catalog(), search() and schema() raise MemoryError with when the engine returned NULL for want of memory
+_NO_MEMORY_FOR_ANSWER = "there is not enough memory for the engine's answer"
+
+
+def _answer(ptr: Optional[int]) -> dict:
+    """The JSON a call returns, which is NULL only when there was not enough memory for it."""
+    text = _native.take_string(ptr)
+    if text is None:
+        raise MemoryError(_NO_MEMORY_FOR_ANSWER)
+    return json.loads(text)
+
+
 def catalog() -> dict:
     """Categories and the list of procedures."""
-    return json.loads(_native.take_string(_native.lib().ssc_catalog_json()))
+    return _answer(_native.lib().ssc_catalog_json())
 
 
 def search(query: str, limit: int = 20) -> dict:
@@ -105,15 +121,18 @@ def search(query: str, limit: int = 20) -> dict:
     is the query with misspellings fixed ("" if none) and ``partial`` is true
     when no procedure matches every word.  ``limit=0`` returns every match.
     """
-    return json.loads(_native.take_string(_native.lib().ssc_search_json(query.encode("utf-8", "replace"), int(limit))))
+    return _answer(_native.lib().ssc_search_json(query.encode("utf-8", "replace"), int(limit)))
 
 
 def schema(procedure_id: str) -> dict:
     """Full parameter schema of one procedure."""
     raw = str(procedure_id).encode("utf-8", "replace")   # a lone surrogate (from undecodable bytes) becomes "?"
     text = _native.take_string(_native.lib().ssc_procedure_json(raw))
-    if text is None:
-        raise KeyError(f"unknown procedure: {raw.decode('utf-8')}")
+    if text is None:  # an unknown id, or a known one without memory for its schema
+        name = raw.decode("utf-8")
+        if any(p["id"] == name for p in catalog()["procedures"]):
+            raise MemoryError(_NO_MEMORY_FOR_ANSWER)
+        raise KeyError(f"unknown procedure: {name}")
     return json.loads(text)
 
 
@@ -163,6 +182,8 @@ def run(
     finally:
         if token is not None:
             token._done()
+    if text is None:  # not even the engine's short answer for running out of memory could be allocated
+        return {"ok": False, "error": _NO_MEMORY}
     return json.loads(text)
 
 

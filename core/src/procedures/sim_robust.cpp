@@ -367,7 +367,7 @@ Procedure robust() {
     }
     const Test test = s.is("test", "t") ? POOLED : (s.is("test", "mw") ? RANKS : WELCH);
     const double delta = d.mu1 - d.mu2, pgt = prob_greater(w);
-    auto n2_of = [&](double n1) { return std::ceil(ratio * n1 - 1e-9); };
+    auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
     auto approx = [&](double n1) {
       const double n2 = n2_of(n1);
       if (test == RANKS) return z_power((pgt - 0.5) / std::sqrt((n1 + n2 + 1) / (12 * n1 * n2)), alpha, a);

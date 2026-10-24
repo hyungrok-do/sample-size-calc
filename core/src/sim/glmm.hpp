@@ -51,9 +51,17 @@ struct Fit {
   bool boundary = false;  // σ estimated as 0, or held there
 };
 
+/// Called with `arg`, when set, as each pass over the clusters begins and every 4096 clusters within it: a caller whose
+/// passes are long (a million clusters of different sizes, up to about a second each) checks there whether to stop,
+/// and throws to stop the fit.
+struct Poll {
+  void (*call)(const void*) = nullptr;
+  const void* arg = nullptr;
+};
+
 /// Maximum likelihood fit from the starting values (b0, b1, sigma).  With one subject per cluster and two groups, σ
 /// is not identified and is held at 0 (ordinary logistic regression).
-Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, int nodes = 21);
+Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, int nodes = 21, Poll poll = {});
 
 /// E[expit(β + σZ)] for Z ~ N(0, 1): the population-averaged proportion of a cluster-specific β.
 double marginal_mean(double beta, double sigma);

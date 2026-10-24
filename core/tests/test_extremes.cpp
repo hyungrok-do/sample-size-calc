@@ -60,7 +60,7 @@ TEST_CASE("extremes: noncentral distributions at enormous and infinite noncentra
 
 TEST_CASE("extremes: the smallest group 1 that gives group 2 enough subjects") {
   for (double r : {1.0, 0.7, 0.5, 0.3, 0.013, 2.5}) {
-    auto n2 = [&](double n1) { return std::ceil(r * n1 - 1e-9); };
+    auto n2 = [&](double n1) { return solve::round_up(r * n1); };
     for (double need : {1.0, 2.0, 3.0}) {
       double counted = need;
       while (n2(counted) < need) counted += 1;
@@ -74,6 +74,41 @@ TEST_CASE("extremes: the smallest group 1 that gives group 2 enough subjects") {
     thrown = std::string(e.what()) == "too small";
   }
   CHECK(thrown);
+}
+
+TEST_CASE("extremes: a group from a tiny ratio has 1 subject, n × the ratio rounded up") {
+  // the slack for the rounding of the product, 1e-9 absolute, left a group of 0 where n × the ratio was 1e-9 or less
+  CHECK_EQ(solve::round_up(1e-300), 1.0);
+  CHECK_EQ(solve::round_up(1e-9), 1.0);
+  CHECK_EQ(solve::round_up(1.0000000000000002), 1.0);
+  CHECK_EQ(solve::round_up(20 * 1.1), 22.0);
+  CHECK_EQ(solve::round_up(0), 0.0);
+  CHECK(message(run("means.two.t", "power", R"({"alloc":"ratio","n1":"10","r":"5e-11"})")) ==
+        "group 2 would have N2 = 1 (R × N1, rounded up); each group needs at least 2");
+  // where a group may have 1 subject, the answer is that of N2 = 1 typed in (it was refused for an empty group 2)
+  for (const char* pid : {"surv.logrank", "rates.two.poisson", "gs.logrank"}) {
+    const json::Value a = run(pid, "power", R"({"alloc":"ratio","n1":"10","r":"1e-12"})");
+    const json::Value b = run(pid, "power", R"({"alloc":"sep","n1":"10","n2":"1"})");
+    const json::Value& row = a.get("rows").elements().at(0);
+    CHECK_EQ(row.get("n2").as_number(0), 1.0);
+    CHECK_EQ(row.get("power").as_number(0), b.get("rows").elements().at(0).get("power").as_number(1));
+  }
+}
+
+TEST_CASE("extremes: a level reads as itself, never as a level next to it") {
+  // a confidence of 0.5000000000000001 read as 50%, the level a one-sided interval is refused at
+  CHECK(procs::level_text(0.5000000000000001) == "50.00000000000001%");
+  CHECK(procs::level_text(0.4999999999999999) == "49.99999999999999%");
+  CHECK(procs::level_text(0.95000000001) == "95.000000001%");
+  CHECK(procs::level_text(0.9999999999999999) == "99.99999999999999%");
+  CHECK(procs::level_text(0.95) == "95%");
+  CHECK(procs::level_text(0.975) == "97.5%");
+  CHECK(procs::level_text(0.00012) == "0.012%");
+  CHECK(procs::level_text(1e-7) == "1e-05%");
+  CHECK(procs::level_text(3.25e-30) == "3.25e-28%");
+  const std::string stmt = run("means.one.ci", "n", R"({"sides":"one","conf":"0.5000000000000001","e":"0.1"})")
+                               .get("rows").elements().at(0).get("_statement").as_string();
+  CHECK(stmt.find(" 50.00000000000001% ") != std::string::npos);
 }
 
 TEST_CASE("extremes: a simulation in blocks summarizes as all its studies at once") {

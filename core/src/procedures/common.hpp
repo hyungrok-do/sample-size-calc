@@ -69,17 +69,38 @@ inline std::string fnum_fine(double x) {
   return t;
 }
 
-/// A level such as a confidence as a percentage with the digits it takes: 95%, 97.5%, 99.9% (not 100%), and up to
-/// ten significant digits, more only when ten would show a level below 1 as 100%.
+/// A level such as a confidence as a percentage with the digits it takes to read as that level and no other: 95%,
+/// 97.5%, 99.9999999999% (not 100%), 50.00000000000001% (not the 50% at which a one-sided interval is refused).
+/// The digits are p's own, the fewest that give p back, with the decimal point moved: those of 100 × p, a rounded
+/// product, need not read as p.
 inline std::string level_text(double p) {
-  const double x = 100 * p;
+  if (!(p > 0) || !std::isfinite(p)) return text::format_g(100 * p, 6) + "%";
   std::string t;
-  for (int d = x >= 1 ? static_cast<int>(std::log10(x)) + 1 : 1; d <= 17; ++d) {  // at least the whole digits
-    t = text::format_g(x, d);
+  for (int d = 1; d <= 17; ++d) {
+    t = text::format_g(p, d);
     double back;
-    if (d >= 10 ? !(p < 1 && t == "100") : text::parse_double(t, back) && back == x) break;
+    if (text::parse_double(t, back) && back == p) break;
   }
-  return t + "%";
+  // t's significant digits, and the number of them before the point once it has moved two places to the right
+  const std::size_t e = t.find('e');
+  std::string digits = t.substr(0, e);
+  const std::size_t dot = digits.find('.');
+  int point = static_cast<int>(dot == std::string::npos ? digits.size() : dot) + 2 +
+              (e == std::string::npos ? 0 : std::stoi(t.substr(e + 1)));
+  if (dot != std::string::npos) digits.erase(dot, 1);
+  const std::size_t lead = digits.find_first_not_of('0');
+  digits.erase(0, lead);
+  point -= static_cast<int>(lead);
+  digits.erase(digits.find_last_not_of('0') + 1);
+  const int n = static_cast<int>(digits.size());
+  if (point < -3) {  // below 0.0001%, an exponent, as format_g writes one
+    const int x = point - 1;
+    return digits.substr(0, 1) + (n > 1 ? "." + digits.substr(1) : "") + "e-" + (x > -10 ? "0" : "") +
+           std::to_string(-x) + "%";
+  }
+  if (point <= 0) return "0." + std::string(static_cast<std::size_t>(-point), '0') + digits + "%";
+  if (point >= n) return digits + std::string(static_cast<std::size_t>(point - n), '0') + "%";
+  return digits.substr(0, static_cast<std::size_t>(point)) + "." + digits.substr(static_cast<std::size_t>(point)) + "%";
 }
 
 /// A one-sided interval's bound lies beyond the estimate only at a confidence above 50%: at 50% it is the estimate

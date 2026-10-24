@@ -903,30 +903,33 @@ TEST_CASE("sim: the statement says where the other tests of a study failed, and 
 }
 
 TEST_CASE("sim: the other tests of a study count also where its own analysis failed") {
-  // sim::simulate leaves out what a failed study holds: the win ratio's companion test, run on the same trials,
-  // had a power of 2.75% for 28.75% when most win ratios were infinite
-  namespace simc = procs::simc;
+  // the summary used to leave out everything a failed study holds: the win ratio's companion test, run on the same
+  // trials, had a power of 2.75% for 28.75% when most win ratios were infinite
   Token token;
   const RunContext ctx{&token, 2, false, nullptr};
-  const sim::Summary sm = simc::simulate_tests(
-      1000,
-      [](long rep) {
-        sim::Outcome o;
-        o.failed = rep % 4 != 0;  // three studies in four fail, the others reject
-        o.reject = !o.failed;
-        o.estimate = o.failed ? NAN : 1.0;
-        o.also = (rep % 2 == 0 ? 1u : 0u) | (o.failed ? 4u : 0u);  // the other test rejects in every second study
-        return o;
-      },
-      ctx);
-  CHECK_EQ(sm.reps, 1000L);
-  CHECK_EQ(sm.failures, 750L);
-  CHECK_EQ(sm.rejections, 250L);
-  CHECK_EQ(sm.power, 0.25);
-  CHECK_EQ(sm.also_power(0), 0.5);
-  CHECK_EQ(sm.also[2], 750L);
-  CHECK_EQ(sm.also[simc::FAILED_BIT], 0L);
-  CHECK_EQ(sm.mean_estimate, 1.0);
+  auto study = [](long rep) {
+    sim::Outcome o;
+    o.failed = rep % 4 != 0;  // three studies in four fail, the others reject
+    o.reject = true;          // which a failed study's analysis does not decide
+    o.design_failure = rep % 8 == 1;
+    o.df_fallback = o.failed;
+    o.estimate = o.failed ? NAN : 1.0;
+    o.extra = static_cast<double>(rep % 3);  // a design quantity, which every study has
+    o.also = (rep % 2 == 0 ? 1u : 0u) | (o.failed ? 4u : 0u);  // the other test rejects in every second study
+    return o;
+  };
+  for (const sim::Summary& sm : {sim::simulate(1000, study, ctx), procs::simc::simulate_tests(1000, study, ctx)}) {
+    CHECK_EQ(sm.reps, 1000L);
+    CHECK_EQ(sm.failures, 750L);
+    CHECK_EQ(sm.design_failures, 125L);
+    CHECK_EQ(sm.rejections, 250L);
+    CHECK_EQ(sm.df_fallbacks, 0L);
+    CHECK_EQ(sm.power, 0.25);
+    CHECK_EQ(sm.also_power(0), 0.5);
+    CHECK_EQ(sm.also[2], 750L);
+    CHECK_EQ(sm.mean_estimate, 1.0);
+    CHECK_CLOSE(sm.mean_extra, 0.999, 0, 1e-15);
+  }
 }
 
 TEST_CASE("sim: quick approximations equal the closed-form procedures") {

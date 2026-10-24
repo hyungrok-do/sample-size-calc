@@ -535,7 +535,7 @@ Procedure winratio() {
     const Test test = s.is("test", "wr") ? WR : FS;
     const Probabilities pr = cached_pair_probabilities(d);
     const double nb = pr.win - pr.loss;
-    auto n2_of = [&](double n1) { return std::ceil(ratio * n1 - 1e-9); };
+    auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
     // Yu & Ganju (2022): Var(net benefit) ≈ (1 − p_tie²)/(3 κ(1 − κ) N), Var(log WR) ≈ 4(1 + p_tie)/(3 κ(1 − κ) N (1 − p_tie))
     auto approx = [&](double n1) {
       const double n2 = n2_of(n1), total = n1 + n2, kappa = n1 / total;

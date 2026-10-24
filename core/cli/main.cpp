@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "engine/procedure.hpp"
 #include "ssc/ssc.h"
 #include "util/numtext.hpp"
 
@@ -24,13 +25,15 @@ int usage() {
   return 2;
 }
 
-void print_and_free(char* s) {
+// NULL: not even memory for the answer (see ssc.h)
+int print_and_free(char* s) {
   if (!s) {
-    std::cout << "null\n";
-    return;
+    std::cerr << "there is not enough memory for the answer\n";
+    return 1;
   }
   std::cout << s << "\n";
   ssc_free(s);
+  return 0;
 }
 }  // namespace
 
@@ -40,21 +43,16 @@ int main(int argc, char** argv) {
   if (cmd == "search") {
     std::string query;
     for (int i = 2; i < argc; ++i) query += (i > 2 ? " " : "") + std::string(argv[i]);
-    print_and_free(ssc_search_json(query.c_str(), 20));
-    return 0;
+    return print_and_free(ssc_search_json(query.c_str(), 20));
   }
-  if (cmd == "list") {
-    print_and_free(ssc_catalog_json());
-    return 0;
-  }
+  if (cmd == "list") return print_and_free(ssc_catalog_json());
   if (cmd == "schema" && argc >= 3) {
     char* s = ssc_procedure_json(argv[2]);
-    if (!s) {
+    if (!s && !ssc::find_procedure(argv[2])) {
       std::cerr << "unknown procedure: " << argv[2] << "\n";
       return 1;
     }
-    print_and_free(s);
-    return 0;
+    return print_and_free(s);
   }
   if (cmd == "run" && argc >= 3) {
     std::string text;
@@ -72,8 +70,7 @@ int main(int argc, char** argv) {
       ss << in.rdbuf();
       text = ss.str();
     }
-    print_and_free(ssc_run_json(text.c_str(), nullptr));
-    return 0;
+    return print_and_free(ssc_run_json(text.c_str(), nullptr));
   }
   if (cmd == "eval" && argc >= 3) {
     std::vector<double> args;

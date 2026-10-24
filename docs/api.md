@@ -14,7 +14,7 @@ engine compiled to WebAssembly (see [`web/README.md`](../web/README.md)).
 | `const char* ssc_version(void)` | Version string (static, do not free). |
 | `int ssc_hardware_threads(void)` | Number of hardware threads. |
 | `char* ssc_catalog_json(void)` | Categories and the list of procedures. |
-| `char* ssc_procedure_json(const char* id)` | Schema of one procedure, or `NULL` for an unknown id. |
+| `char* ssc_procedure_json(const char* id)` | Schema of one procedure, or `NULL` for an unknown id (or without memory for the schema; see below). |
 | `char* ssc_search_json(const char* query, int limit)` | Procedures ranked for a free-text query (see [Search](#search)); `limit` ≤ 0 returns every match. |
 | `char* ssc_run_json(const char* request, ssc_token* token)` | Run a calculation; `token` may be `NULL`. |
 | `void ssc_free(char* p)` | Release any `char*` returned by the library. |
@@ -196,6 +196,13 @@ solving for the sample size). Each is present only when it has entries.
 
 If the request cannot be run, `ok` is `false` and `error` describes the
 problem, for example that there is not enough memory for an answer this large.
+Only when there is not enough memory even for that short answer does
+`ssc_run_json` return `NULL`; `ssc.run` in Python then gives the same answer
+the engine would have. `ssc_catalog_json`, `ssc_procedure_json` and
+`ssc_search_json` return `NULL` when there is not enough memory for their
+answer (`ssc_procedure_json` also for an unknown id). In Python, `ssc.catalog`,
+`ssc.search` and `ssc.schema` then raise `MemoryError`, and `ssc.schema` raises
+`KeyError` for an unknown id.
 Invalid inputs also produce `input_errors`, a map from parameter id to
 message. A cancelled calculation returns `"cancelled": true`.
 

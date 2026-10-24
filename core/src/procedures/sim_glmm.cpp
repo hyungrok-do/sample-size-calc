@@ -129,14 +129,17 @@ double expected_weight(const GlmmDesign& d, double p, double icc) {
   return w / static_cast<double>(grid.size());
 }
 
+/// One simulated study.  A study of a million clusters of different sizes takes seconds, so the token is checked
+/// within it: as the clusters are drawn, and every 4096 clusters of each pass of the fit over them.
 sim::Outcome glmm_study(const GlmmDesign& d, long k1, long k2, long rep, std::uint64_t seed, bool z, double alpha,
-                        Alt a) {
+                        Alt a, const RunContext& ctx) {
   // clusters with the same (group, size, successes) enter the likelihood once, with their count:
   // sort the triples packed into 64 bits (group, then size and successes below 2³¹ each)
   std::vector<std::uint64_t> keys;  // freed with the study
   keys.reserve(static_cast<std::size_t>(k1 + k2));
   for (int g = 0; g < 2; ++g)
     for (long c = 0; c < (g == 0 ? k1 : k2); ++c) {
+      if (c % 4096 == 0) ctx.check();
       Rng rng(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(g + 1),
               static_cast<std::uint64_t>(c));
       const long m = d.sizes.draw(rng);
@@ -165,7 +168,8 @@ sim::Outcome glmm_study(const GlmmDesign& d, long k1, long k2, long rep, std::ui
     return o;
   }
   sim::Outcome o;
-  const glmm::Fit f = glmm::fit(data, d.b0, d.b1, d.sigma);
+  const glmm::Poll poll{[](const void* c) { static_cast<const RunContext*>(c)->check(); }, &ctx};
+  const glmm::Fit f = glmm::fit(data, d.b0, d.b1, d.sigma, 21, poll);
   if (!f.ok || !(f.se_b1 > 0)) {
     o.failed = true;
     const glmm::Failure why = f.ok ? glmm::Failure::Information : f.failure;
@@ -270,7 +274,7 @@ Procedure glmm_cluster() {
     const GlmmDesign d = glmm_design(s);
     const bool z = s.is("test", "z");
     const double w1 = expected_weight(d, d.pm1, d.icc1), w2 = expected_weight(d, d.pm2, d.icc2);
-    auto k2_of = [&](double k1) { return std::ceil(kr * k1 - 1e-9); };
+    auto k2_of = [&](double k1) { return solve::round_up(kr * k1); };
     auto approx = [&](double k1) {
       const double se = std::sqrt(1 / (k1 * w1) + 1 / (k2_of(k1) * w2)), ncp = (d.pm1 - d.pm2) / se;
       return z ? z_power(ncp, alpha, a) : t_power(ncp, k1 + k2_of(k1) - 2, alpha, a);
@@ -302,7 +306,7 @@ Procedure glmm_cluster() {
         simc::check_study_size(c1 + k2_of(c1), "clusters");
         const long n1 = static_cast<long>(c1), n2 = static_cast<long>(k2_of(c1));
         return simc::simulate_tests(
-            R, [&](long rep) { return glmm_study(d, n1, n2, rep, seed, z, alpha, a); }, ctx, p0, p1_);
+            R, [&](long rep) { return glmm_study(d, n1, n2, rep, seed, z, alpha, a, ctx); }, ctx, p0, p1_);
       };
       sim::Summary sm;
       if (s.solve == "k") {

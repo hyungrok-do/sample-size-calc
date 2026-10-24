@@ -25,7 +25,7 @@ import re
 import sys
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from . import core
 from .inputs import unused_inputs, when_used
@@ -298,13 +298,21 @@ def build_server(limits: Optional[Limits] = None):
         return ToolAnnotations(title=title, readOnlyHint=True, destructiveHint=False, idempotentHint=True,
                                openWorldHint=False)
 
+    async def answer(tool: Callable[[], dict]) -> str:
+        # no memory even for the engine's answer (core.catalog, search, schema) is an error the model can read,
+        # not a crash it would see only as "Error executing tool"
+        try:
+            return _json(await anyio.to_thread.run_sync(tool))
+        except MemoryError as exc:
+            return _json({"ok": False, "error": str(exc) or "there is not enough memory"})
+
     @server.tool(name="search_methods", title="Find a sample-size method", annotations=hints("Find a sample-size method"),
                  structured_output=False)
     async def search_tool(description: str = "", limit: int = 5) -> str:
         """Find power and sample-size methods that fit a study, best match first. Describe the design and outcome
         in a few words, e.g. "two independent means", "paired proportions", "logrank survival non-inferiority",
         "cluster randomized binary outcome", "stepped wedge". An empty description lists every method."""
-        return _json(await anyio.to_thread.run_sync(lambda: search_methods(description, limit)))
+        return await answer(lambda: search_methods(description, limit))
 
     @server.tool(name="describe_method", title="Show a method's inputs", annotations=hints("Show a method's inputs"),
                  structured_output=False)
@@ -312,7 +320,7 @@ def build_server(limits: Optional[Limits] = None):
         """Show a method's inputs before calculating: what it can solve for, and for each input its id, label,
         choices, default, allowed values and when it applies (some inputs only apply with certain choices, such
         as separate group sizes only with alloc=sep). Also an example and the method's caveats."""
-        return _json(await anyio.to_thread.run_sync(lambda: describe_method(method_id)))
+        return await answer(lambda: describe_method(method_id))
 
     @server.tool(name="calculate", title="Calculate sample size or power",
                  annotations=hints("Calculate sample size or power"), structured_output=False)
@@ -325,7 +333,7 @@ def build_server(limits: Optional[Limits] = None):
         scenario each. Report the statement of each scenario. If warnings say an input was ignored or a choice
         replaced, fix the choice and calculate again. For simulation methods, simulate=true runs the Monte Carlo
         simulation instead of the quick approximation."""
-        return _json(await anyio.to_thread.run_sync(lambda: calculate(method_id, solve_for, inputs, simulate, lim)))
+        return await answer(lambda: calculate(method_id, solve_for, inputs, simulate, lim))
 
     from starlette.requests import Request
     from starlette.responses import PlainTextResponse
