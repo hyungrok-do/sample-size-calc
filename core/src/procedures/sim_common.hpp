@@ -328,8 +328,9 @@ inline std::string others_sentence(const Row& r, const std::string& studies,
   return s + failed_text;
 }
 
-/// Closing sentences: what the approximation is, or how the simulation compares with it.
-inline std::string method_note(const Row& r) {
+/// Closing sentences: what the approximation is, or how the simulation compares with it.  `studies` names the
+/// simulated studies as others_sentence does ("trials"; the singular drops the s).
+inline std::string method_note(const Row& r, const std::string& studies = "studies") {
   using blocks::fpct;
   if (text_of(r, "method") == "approximation")
     return " This is a quick analytic approximation; run the simulation to confirm it.";
@@ -338,10 +339,10 @@ inline std::string method_note(const Row& r) {
     t += " The analytic approximation gives " + fpct(r.num("approx_power")) + ".";
   const double failed = r.num("failures");
   const std::string why = text_of(r, "failures_why");
+  const std::string one = studies == "studies" ? "study" : studies.substr(0, studies.size() - 1);
   if (failed > 0)
-    t += " " + blocks::fint(failed) + " simulated " + (failed == 1 ? "study" : "studies") +
-         " could not be analyzed and " + (failed == 1 ? "counts" : "count") + " as not rejecting" +
-         (why.empty() ? "" : " (" + why + ")") + ".";
+    t += " " + grouped(failed) + " simulated " + (failed == 1 ? one : studies) + " could not be analyzed and " +
+         (failed == 1 ? "counts" : "count") + " as not rejecting" + (why.empty() ? "" : " (" + why + ")") + ".";
   return t;
 }
 

@@ -510,6 +510,11 @@ TEST_CASE("mmrm: the statement shows a correlation or a dropout near an end of i
   CHECK(statement(R"("drop1":"0.004","drop2":"0.9999")").find("with 0.4% of group 1 and 99.99% of group 2 lost") !=
         std::string::npos);
   CHECK(statement(R"("drop1":"0.2","drop2":"0.2")").find("with 20% of each group lost") != std::string::npos);
+  // past 12 decimals, up to the largest share below 1
+  CHECK(statement(R"("drop1":"0.999999999999999","analysis":"completers")")
+            .find("with 99.9999999999999% of group 1 and 20% of group 2 lost") != std::string::npos);
+  CHECK(statement(R"("drop1":"0.9999999999999999","analysis":"completers")")
+            .find("with 99.99999999999999% of group 1 and 20% of group 2 lost") != std::string::npos);
 }
 
 TEST_CASE("mmrm: visits correlated within 1e-12 of 1 or -1 keep their power") {

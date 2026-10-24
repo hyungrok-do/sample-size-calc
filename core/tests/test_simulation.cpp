@@ -823,6 +823,11 @@ TEST_CASE("sim: failures by design are counted apart from numerical ones, and th
   one.set("failures_why", "a group had no patients left at a visit");
   CHECK(simc::method_note(one) == " 1 simulated study could not be analyzed and counts as not rejecting (a group had "
                                   "no patients left at a visit).");
+  // in the noun of the other sentences, and the number grouped as theirs
+  CHECK(simc::method_note(one, "trials") == " 1 simulated trial could not be analyzed and counts as not rejecting (a "
+                                            "group had no patients left at a visit).");
+  one.set("failures", 1524.0);
+  CHECK(simc::method_note(one, "trials").find(" 1,524 simulated trials could not be analyzed and count") == 0);
 }
 
 TEST_CASE("sim: the statement says where the other tests of a study failed, and why") {

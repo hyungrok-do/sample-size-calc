@@ -157,7 +157,9 @@ Another thread can watch progress and cancel it through the token.
   the one chosen whose analysis failed in some studies, their number and
   reasons in `<key>_failures` and `<key>_why` (`power_wald_failures`). For
   the ordinal Wald test an approximation gives `separated`, the expected
-  share of separated studies, when it is 1% or more. Columns
+  share of separated studies, when it is 1% or more. The GLMM gives
+  `logistic_studies`, the number of studies whose clusters all had one
+  subject, which are analyzed by logistic regression. Columns
   without a value in any row are left out, so an approximation has no Monte
   Carlo columns. The result reports
   `"approximate": true` for an approximation. Results depend only on the seed:
