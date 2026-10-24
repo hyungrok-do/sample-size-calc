@@ -467,18 +467,12 @@ struct DiffCi {
   double width;
 };
 
-// R × N1 rounded up, where a product within 1e-9 above a whole number counts as that number: one of 1e-9 or less
-// leaves group 2 no subjects, which is refused (its interval was 0/0, no number, pressed by the limits' clamps into
-// −1 to 1, a width of 2, presented as an answer)
-double ci_n2(const Scenario& s, double n1) { return std::ceil(s("r") * n1 - 1e-9); }
-const char* const CI_NO_GROUP_2 =
-    "the allocation ratio is too small: group 2 would have no subjects (R × N1 is 1e-9 or less)";
-
 DiffCi diff_ci_at(const Scenario& s, double n1) {
   const double p1 = s("p1"), p2 = s("p2");
   DiffCi c;
-  c.n2 = ci_n2(s, n1);
-  if (!(c.n2 >= 1)) throw CalcError(CI_NO_GROUP_2);
+  // R × N1 rounded up, which gives group 2 a subject however small R is (rounded up after taking off 1e-9, a product
+  // of 1e-9 or less left it none, and its interval was 0/0, which the limits' clamps pressed into −1 to 1)
+  c.n2 = solve::round_up(s("r") * n1);
   c.ci = diff_ci(s.s("method"), n1, n1 * p1, c.n2, c.n2 * p2, s("conf"), s.is("sides", "two"));
   if (s.is("sides", "two"))
     c.width = c.ci.hi - c.ci.lo;
@@ -570,7 +564,7 @@ Procedure two_props_ci() {
       const double e = two ? target / 2 : target;
       solve::NSearch o;
       o.hi = 1e8;
-      o.lo = solve::first_whole([&](double x) { return ci_n2(s, x) >= 1; }, 1, o.hi, CI_NO_GROUP_2);
+      o.lo = 1;
       o.guess = std::ceil(z * z * (p1 * (1 - p1) + p2 * (1 - p2) / s("r")) / (e * e));
       o.goal = "the target width";
       // a one-sided bound at or beyond the estimate is a degenerate size; a two-sided interval at a confidence near
@@ -731,9 +725,8 @@ Procedure case_control() {
     bool exact = s.is("method", "exact");
     bool fell_back = false;
     ExactSearch search;
-    // M × cases rounded up, where a product within 1e-9 above a whole number counts as that number (one of 1e-9 or
-    // less leaves no controls, where rounding up alone would make 1)
-    auto controls = [&](double cases) { return std::ceil(m * cases - 1e-9); };
+    // M × cases rounded up, at least 1 however small M is
+    auto controls = [&](double cases) { return solve::round_up(m * cases); };
     auto power = [&](double n1, double n2, double x) {
       // a point of the power curve is enumerated only while all the curves stay within the exact search's budget,
       // judged at its curve's largest point
@@ -772,7 +765,6 @@ Procedure case_control() {
       });
     } else {
       n = {s("ncase"), controls(s("ncase"))};
-      if (!(n.n2 >= 1)) throw CalcError("M is too small: there would be no controls (M × cases is 1e-9 or less)");
       if (s.solve == "power") {
         p1 = s.is("es", "p1") ? s("p1") : case_exposure(s("or"), p0);
       } else {
