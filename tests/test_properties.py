@@ -1605,13 +1605,14 @@ def test_a_simulation_whose_studies_fail_by_design_still_has_a_power():
     every patient of a group gone, a win ratio with no wins or no losses, a GLMM with a rare outcome in small
     clusters), more than half of them failing once turned the row into an error that said to check for an extreme
     value: the power is given with the count, and refused only when no study could be analyzed."""
-    for pid, inputs in (("sim.mmrm", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"}),
-                        ("sim.winratio", {"test": "wr", "n1": "2", "reps": "200"}),
-                        ("sim.glmm.cluster", {"p1": "0.3", "p2": "0.001", "m": "5", "reps": "200"})):
+    for pid, inputs, studies in (("sim.mmrm", {"drop1": "0.994", "visits": "2", "n1": "10", "reps": "200"}, "trials"),
+                                 ("sim.winratio", {"test": "wr", "n1": "2", "reps": "200"}, "trials"),
+                                 ("sim.glmm.cluster", {"p1": "0.3", "p2": "0.001", "m": "5", "reps": "200"},
+                                  "studies")):
         res = run(pid, "power", inputs, threads=2)
         row = first_row(res)
         assert row is not None and row["failures"] > 100, (pid, res["rows"][0])
-        assert f"{row['failures']:.0f} simulated studies could not be analyzed and count as not rejecting" in \
+        assert f"{row['failures']:.0f} simulated {studies} could not be analyzed and count as not rejecting" in \
             row["_statement"], row["_statement"]
     res = run("sim.winratio", "power", {"test": "wr", "n1": "10", "med_d": "600", "med_h": "240", "follow": "1",
                                         "accrual": "1", "reps": "200"}, threads=2)
@@ -1697,6 +1698,64 @@ def test_a_cluster_of_one_subject_is_analyzed_by_logistic_regression():
         row = first_row(run("sim.glmm.cluster", "power", {**inputs, "m": "1", "test": "z", "reps": "400"}, threads=2))
         assert row["approx_power"] == pytest.approx(approx, abs=5e-4)
         assert row["power"] == pytest.approx(approx, abs=4 * math.sqrt(approx * (1 - approx) / 400) + 0.005), inputs
+
+
+def test_a_separated_study_of_clusters_of_one_subject_is_a_failed_fit():
+    """With clusters of one subject (logistic regression), a study in which no subject of a group had the outcome, or
+    every one had it, has no finite estimate, but Newton's method stopped where the likelihood had grown flat, mostly
+    short of the run-off guard: such a study counted as analyzed, without a word, and put a log odds ratio of 20 to 30
+    into the average (6.5 for a true 0.75).  The share of failed fits, the power and the average estimate now agree
+    with a sum over every pair of binomial counts."""
+    def exact(p1, p2, n):
+        separated = power = mean = 0.0
+        for s1 in range(n + 1):
+            for s2 in range(n + 1):
+                pr = math.comb(n, s1) * p1 ** s1 * (1 - p1) ** (n - s1) * math.comb(n, s2) * p2 ** s2 * \
+                    (1 - p2) ** (n - s2)
+                if s1 in (0, n) or s2 in (0, n):
+                    separated += pr
+                    continue
+                b = math.log(s1 / (n - s1)) - math.log(s2 / (n - s2))
+                se = math.sqrt(1 / s1 + 1 / (n - s1) + 1 / s2 + 1 / (n - s2))
+                power += pr * (abs(b / se) > 1.959963984540054)
+                mean += pr * b
+        return separated, power, mean / (1 - separated)
+    reps = 2000
+    for p1, p2, k in ((0.1, 0.05, 20), (0.3, 0.2, 5), (0.5, 0.8, 10)):
+        row = first_row(run("sim.glmm.cluster", "power", {"p1": str(p1), "p2": str(p2), "m": "1", "k1": str(k),
+                                                          "icc": "0", "test": "z", "reps": str(reps)}, threads=2))
+        separated, power, mean = exact(p1, p2, k)
+        assert row["failures"] / reps == pytest.approx(separated, abs=4 * math.sqrt(separated * (1 - separated) / reps))
+        assert row["power"] == pytest.approx(power, abs=4 * math.sqrt(power * (1 - power) / reps) + 1e-3)
+        assert row["mean_logor"] == pytest.approx(mean, abs=0.15), (p1, p2, k)
+        assert row["failures_why"] == ("no subject of a group had the outcome, or every one had it, so the odds ratio "
+                                       "had no finite estimate")
+
+
+def test_a_study_of_clusters_of_one_subject_says_it_used_logistic_regression():
+    """With σ held at 0 the analysis is logistic regression, which estimates the odds ratio of the population-averaged
+    proportions, not the typical cluster's that the statement named as the mixed model's; with unequal sizes, only the
+    studies that drew no larger cluster are so analyzed, and the statement says how many."""
+    row = first_row(run("sim.glmm.cluster", "power", {"p1": "0.3", "p2": "0.2", "m": "1", "k1": "200", "icc": "0.1",
+                                                      "test": "z", "reps": "400"}, threads=2))
+    assert ("analyzing each study by logistic regression (clusters of one subject leave the random intercept's SD "
+            "unestimable, so it is held at 0) and a two-sided Wald z-test") in row["_statement"]
+    assert "Logistic regression estimates the odds ratio of the population-averaged proportions (1.714)." in \
+        row["_statement"]
+    assert row["mean_logor"] == pytest.approx(math.log(0.3 / 0.7 / (0.2 / 0.8)), abs=0.05)
+    row = first_row(run("sim.glmm.cluster", "power", {"p1": "0.5", "p2": "0.2", "m": "1", "cv": "0.2", "k1": "20",
+                                                      "icc": "0.05", "reps": "200"}, threads=2))
+    assert 0 < row["logistic_studies"] < 200
+    assert (f"In {row['logistic_studies']:.0f} of the 200 simulated studies every cluster had one subject") in \
+        row["_statement"]
+    assert "with a logistic mixed model with a random cluster intercept" in row["_statement"]
+    # the others draw a cluster of two now and then, whose subjects mostly agree: the between-cluster SD then has no
+    # finite estimate, which is why their fits failed, not the arithmetic
+    row = first_row(run("sim.glmm.cluster", "power", {"p1": "0.3", "p2": "0.3", "m": "1", "cv": "0.2", "k1": "50",
+                                                      "reps": "400"}, threads=2))
+    assert row["failures"] > 0
+    assert row["failures_why"] == ("the subjects of every cluster all had the outcome or all lacked it, so the "
+                                   "between-cluster SD had no finite estimate")
 
 
 def test_the_ordinal_approximation_gives_the_share_of_separated_studies():

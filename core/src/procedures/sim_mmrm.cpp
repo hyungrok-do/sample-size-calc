@@ -370,9 +370,10 @@ std::string rho_text(double rho, double lowest) {
 }
 
 /// A share lost by the last visit as a percentage: whole percents, or as many decimals as keep a share between 0
-/// and 1 from reading as 0% or 100%.
+/// and 1 from reading as 0% or 100%.  Below 1, 100 p is at most 100 − 2⁻⁴⁶, which 14 decimals tell from 100
+/// (99.99999999999999%); a share that 12 do not tell from 0 is given with an exponent (4e-13%).
 std::string lost_text(double p) {
-  for (int decimals = 0; decimals <= 12; ++decimals) {
+  for (int decimals = 0; decimals <= (p < 0.5 ? 12 : 14); ++decimals) {
     const std::string t = fpct(p, decimals);
     if (p <= 0 || p >= 1 || (t != fpct(0, decimals) && t != fpct(1, decimals))) return t;
   }
@@ -596,7 +597,7 @@ Procedure mmrm_proc() {
                     " lost by the last visit, analyzing with " + analysis + " and a " + alt_words(alt(s)) +
                     " test at α = " + fnum(r.num("alpha")) + ".";
     t += simc::others_sentence(r, "trials", {{"MMRM", "power_mmrm"}, {"completers' t-test", "power_completers"}});
-    return t + simc::method_note(r);
+    return t + simc::method_note(r, "trials");
   };
   p.definitions = {{"N1, N2", "Number of patients randomized to each group; N = N1 + N2."},
                    {"δ", "Difference between the groups' means at the last visit."},

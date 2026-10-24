@@ -655,7 +655,7 @@ Procedure winratio() {
                     " at α = " + fnum(r.num("alpha")) + ".";
     t += simc::others_sentence(r, "trials",
                                {{"Finkelstein–Schoenfeld test", "power_fs"}, {"win ratio test", "power_wr"}});
-    return t + simc::method_note(r);
+    return t + simc::method_note(r, "trials");
   };
   p.definitions = {{"N1, N2", "Number of patients in the treatment and control groups; N = N1 + N2."},
                    {"Win, loss, tie", "Comparing a treatment patient with a control patient over the time both were "

@@ -75,19 +75,50 @@ GlmmDesign glmm_design(const Scenario& s) {
   return d;
 }
 
-// Bits of sim::Outcome::also: why a study's fit failed.
-constexpr unsigned SEPARATED = 0, RAN_OFF = 1, ARITHMETIC = 2, NO_SE = 3;
+// Bits of sim::Outcome::also: why a study's fit failed, and whether its clusters all had one subject, so that it
+// was analyzed by logistic regression (glmm::fit holds σ at 0).
+constexpr unsigned SEPARATED = 0, RAN_OFF = 1, ARITHMETIC = 2, NO_SE = 3, CONCORDANT = 4, ONE_SUBJECT = 5;
 
 const std::vector<simc::Cause>& causes() {
   using simc::Failures;
   static const std::vector<simc::Cause> c = {
       {SEPARATED, Failures::Design,
        "no subject of a group had the outcome, or every one had it, so the odds ratio had no finite estimate"},
+      {CONCORDANT, Failures::Design,
+       "the subjects of every cluster all had the outcome or all lacked it, so the between-cluster SD had no finite "
+       "estimate"},
       {RAN_OFF, Failures::Design, "the estimates grew without bound"},
       {ARITHMETIC, Failures::Numerical, "the fit did not converge"},
       {NO_SE, Failures::Numerical,
        "the fit gave no standard error (its information matrix was not positive definite)"}};
   return c;
+}
+
+/// Whether no subject of a group had the outcome, or every one had it.  The likelihood then grows as the log odds
+/// ratio runs off to ±∞, whatever σ is, so the odds ratio has no finite estimate, and the Wald statistic, whose
+/// standard error grows faster, goes to 0.  Newton's method stops where the likelihood has grown flat, short of the
+/// run-off guard or not, and may count as converged there: a study's data, not its fit, tell.
+bool separated(const std::vector<glmm::Cluster>& data) {
+  bool none[2] = {true, true}, all[2] = {true, true};
+  for (const glmm::Cluster& c : data) {
+    const int g = c.x == 1 ? 0 : 1;
+    none[g] = none[g] && c.s == 0;
+    all[g] = all[g] && c.s == c.m;
+  }
+  return none[0] || all[0] || none[1] || all[1];
+}
+
+/// Whether the subjects of every cluster agree (all with the outcome or all without it) and a cluster has more than
+/// one.  For given population-averaged proportions such a cluster is likelier the larger σ is, so the likelihood
+/// grows as σ runs off to ∞.  β1 grows with σ, and so does its standard error, so a fit that stops at a large σ
+/// still tests (and may reject), but one that fails has met the design, not the arithmetic.
+bool concordant(const std::vector<glmm::Cluster>& data) {
+  bool agree = true, larger = false;
+  for (const glmm::Cluster& c : data) {
+    agree = agree && (c.s == 0 || c.s == c.m);
+    larger = larger || c.m > 1;
+  }
+  return agree && larger;
 }
 
 /// Expected weight of a cluster, size / (p(1 − p)(1 + (size − 1)ρ)), over the size distribution.
@@ -125,26 +156,27 @@ sim::Outcome glmm_study(const GlmmDesign& d, long k1, long k2, long rep, std::ui
     c.count = static_cast<double>(j - i);
     data.push_back(c);
   }
+  const unsigned one_subject =
+      std::all_of(data.begin(), data.end(), [](const glmm::Cluster& c) { return c.m == 1; }) ? 1u << ONE_SUBJECT : 0u;
+  if (separated(data)) {  // not fitted
+    sim::Outcome o;
+    o.failed = true;
+    o.also = 1u << SEPARATED | one_subject;
+    return o;
+  }
   sim::Outcome o;
   const glmm::Fit f = glmm::fit(data, d.b0, d.b1, d.sigma);
   if (!f.ok || !(f.se_b1 > 0)) {
-    // a group in which no subject has the outcome, or every one has it, leaves the odds ratio no finite estimate,
-    // whichever way the fit then ends
-    bool none[2] = {true, true}, all[2] = {true, true};
-    for (const glmm::Cluster& c : data) {
-      const int g = c.x == 1 ? 0 : 1;
-      none[g] = none[g] && c.s == 0;
-      all[g] = all[g] && c.s == c.m;
-    }
-    const bool separated = none[0] || all[0] || none[1] || all[1];
     o.failed = true;
     const glmm::Failure why = f.ok ? glmm::Failure::Information : f.failure;
-    o.also = 1u << (separated                              ? SEPARATED
+    o.also = 1u << (concordant(data)                    ? CONCORDANT
                     : why == glmm::Failure::Separation  ? RAN_OFF
                     : why == glmm::Failure::Information ? NO_SE
-                                                        : ARITHMETIC);
+                                                        : ARITHMETIC) |
+             one_subject;
     return o;
   }
+  o.also = one_subject;
   o.estimate = f.b1;
   o.se = f.se_b1;
   o.df = z ? INFINITY : static_cast<double>(k1 + k2 - 2);
@@ -289,6 +321,7 @@ Procedure glmm_cluster() {
       simc::put_summary(s, r, sm, causes());
       r.set("approx_power", approx(k1));
       if (std::isfinite(sm.mean_estimate)) r.set("mean_logor", sm.mean_estimate);
+      if (sm.also[ONE_SUBJECT] > 0) r.set("logistic_studies", static_cast<double>(sm.also[ONE_SUBJECT]));
     }
     // the average size as entered (rounding the drawn sizes moves their mean only in the third decimal)
     const double msize = d.sizes.cv > 0 ? s("m") : d.sizes.grid().front();
@@ -334,17 +367,38 @@ Procedure glmm_cluster() {
                                                      fnum(r.num("cv")) + ")"
                                                : "clusters of " + fnum(r.num("m")) + subjects;
     const std::string test = s.is("test", "z") ? "Wald z-test" : "Wald t-test with k1 + k2 − 2 degrees of freedom";
-    return fint(r.num("k1")) + " and " + fint(r.num("k2")) + " " + sizes + " " + simc::power_phrase(s, r) +
-           " to detect population-averaged proportions of " + fnum(r.num("pm1")) + " and " + fnum(r.num("pm2")) +
-           " (an odds ratio of " + fnum(r.num("or"), 3) + " for a typical cluster; ICC " + fnum(r.num("icc2"), 3) +
-           " on the proportion scale, " + fnum(r.num("icc_latent"), 3) + " on the latent scale), analyzing each " +
-           "study with a logistic mixed model with a random cluster intercept and a " + alt_words(alt(s)) + " " +
-           test + " at α = " + fnum(r.num("alpha")) + "." + simc::method_note(r);
+    // studies whose clusters all had one subject are analyzed by logistic regression, whose odds ratio is the
+    // population-averaged one: every study with equal sizes of 1, otherwise those that drew no larger cluster
+    const double logistic = r.has("logistic_studies") ? r.num("logistic_studies") : 0;
+    const bool all_logistic = (r.num("cv") == 0 && r.num("m") == 1) || (logistic > 0 && logistic == r.num("reps"));
+    const double pm1 = r.num("pm1"), pm2 = r.num("pm2");
+    const double averaged = std::exp(std::log(pm1 / (1 - pm1)) - std::log(pm2 / (1 - pm2)));
+    const std::string logistic_or = "the odds ratio of the population-averaged proportions" +
+                                    (std::isfinite(averaged) ? " (" + fnum(averaged, 3) + ")" : std::string());
+    const std::string analysis = all_logistic ? "by logistic regression (clusters of one subject leave the random "
+                                                "intercept's SD unestimable, so it is held at 0) and a "
+                                              : "with a logistic mixed model with a random cluster intercept and a ";
+    std::string t = fint(r.num("k1")) + " and " + fint(r.num("k2")) + " " + sizes + " " + simc::power_phrase(s, r) +
+                    " to detect population-averaged proportions of " + fnum(pm1) + " and " + fnum(pm2) +
+                    " (an odds ratio of " + fnum(r.num("or"), 3) + " for a typical cluster; ICC " +
+                    fnum(r.num("icc2"), 3) + " on the proportion scale, " + fnum(r.num("icc_latent"), 3) +
+                    " on the latent scale), analyzing each study " + analysis + alt_words(alt(s)) + " " + test +
+                    " at α = " + fnum(r.num("alpha")) + ".";
+    if (all_logistic)
+      t += " Logistic regression estimates " + logistic_or + ".";
+    else if (logistic > 0)
+      t += " In " + simc::grouped(logistic) + " of the " + simc::grouped(r.num("reps")) + " simulated studies every "
+           "cluster had one subject, which leaves the random intercept's SD unestimable; " +
+           (logistic == 1 ? "it was" : "those were") + " analyzed by logistic regression, with the SD held at 0, which "
+           "estimates " + logistic_or + ".";
+    return t + simc::method_note(r);
   };
   p.definitions = {{"k1, k2", "Number of clusters randomized to each group."},
                    {"P1, P2", "Population-averaged proportions: the overall share with the outcome in each group."},
                    {"OR (cluster)", "Odds ratio between the groups for a typical cluster (random intercept 0), the "
-                                    "effect the mixed model estimates."},
+                                    "effect the mixed model estimates. A study whose clusters all have one subject "
+                                    "is analyzed by logistic regression, which estimates the odds ratio of the "
+                                    "population-averaged proportions, nearer 1 when the ICC is above 0."},
                    {"ICC", "Correlation between the outcomes of two subjects in the same cluster (proportion "
                            "scale), or σb²/(σb² + π²/3) on the latent logistic scale."},
                    {"Power", "Share of the simulated studies whose test of OR = 1 was significant, with its 95% "
@@ -357,11 +411,14 @@ Procedure glmm_cluster() {
              "The SD of the random intercept may be at most 6 on the logit scale (a latent ICC of 0.92): beyond "
              "it, clusters are almost all-or-none and the Wald test breaks down.",
              "With clusters of one subject the SD of the random intercept cannot be told apart from the groups' "
-             "proportions, so it is held at 0 and each study is analyzed by ordinary logistic regression.",
+             "proportions, so it is held at 0 and each study is analyzed by ordinary logistic regression, which "
+             "estimates the odds ratio of the population-averaged proportions; with unequal sizes, so is each study "
+             "that draws no larger cluster.",
              "Studies whose fit fails count as not rejecting and are reported as failed fits, with the reason: no "
-             "subject of a group with the outcome, or every one with it (no finite odds ratio), or a fit that did "
-             "not converge. No simulated power is given when no study could be fitted, or when fits did not "
-             "converge in more than half of them.",
+             "subject of a group with the outcome, or every one with it (no finite odds ratio; such a study is not "
+             "fitted), the subjects of every cluster all alike (no finite between-cluster SD), or a fit that did not "
+             "converge. No simulated power is given when no study could be fitted, or when fits did not converge in "
+             "more than half of them.",
              "The quick approximation compares the population-averaged proportions with each cluster weighted by "
              "size / (p(1 − p)(1 + (size − 1)ρ)), averaged over the size distribution."};
   p.references = {"Li, P. & Redden, D. T. (2015). Comparing denominator degrees of freedom approximations for the "
