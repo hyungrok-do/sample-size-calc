@@ -315,8 +315,10 @@ Procedure one_equiv() {
     const auto lim = limits(s);
     const double sigma = s("sigma"), alpha = s("alpha"), delta = s("delta");
     const bool z = s.is("test", "z");
-    if (!(delta > lim.first && delta < lim.second))
-      throw CalcError("the true difference must lie strictly between the equivalence limits");
+    // on a limit itself the power is the size of the tests, which no sample size raises above alpha
+    if (s.solve == "n" ? !(delta > lim.first && delta < lim.second) : !(delta >= lim.first && delta <= lim.second))
+      throw CalcError(s.solve == "n" ? "the true difference must lie strictly between the equivalence limits"
+                                     : "the true difference cannot lie outside the equivalence limits");
     auto P = [&](double n) { return tost_power(lim.first, lim.second, delta, sigma / std::sqrt(n), z ? INFINITY : n - 1, alpha); };
     double n;
     if (s.solve == "n") {
@@ -399,8 +401,10 @@ Procedure two_equiv() {
     const auto lim = limits(s);
     const double sigma = s("sigma"), alpha = s("alpha"), delta = s("delta");
     const bool z = s.is("test", "z");
-    if (!(delta > lim.first && delta < lim.second))
-      throw CalcError("the true difference must lie strictly between the equivalence limits");
+    // on a limit itself the power is the size of the tests, which no sample size raises above alpha
+    if (s.solve == "n" ? !(delta > lim.first && delta < lim.second) : !(delta >= lim.first && delta <= lim.second))
+      throw CalcError(s.solve == "n" ? "the true difference must lie strictly between the equivalence limits"
+                                     : "the true difference cannot lie outside the equivalence limits");
     auto P = [&](double n1, double n2) {
       return tost_power(lim.first, lim.second, delta, sigma * std::sqrt(1 / n1 + 1 / n2), z ? INFINITY : n1 + n2 - 2,
                         alpha);

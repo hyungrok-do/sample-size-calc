@@ -1,5 +1,6 @@
 // One proportion: tests (exact binomial and z-tests, exact or approximate
 // power) and confidence-interval precision.
+#include "procedures/apart.hpp"
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
 #include "procedures/proportion_ci.hpp"
@@ -240,12 +241,14 @@ Procedure one_prop() {
     static const std::map<std::string, std::string> names = {
         {"exact", "exact binomial test"}, {"zp0", "z-test using P0"}, {"zphat", "z-test using P̂"},
         {"zp0cc", "continuity-corrected z-test using P0"}, {"zphatcc", "continuity-corrected z-test using P̂"}};
+    // the proportions apart from each other, and the difference from 0 (0.00016, not 0.0002)
+    const auto [p0, p1] = fnum_apart(r.num("p0"), r.num("p1"));
     std::string t = "A sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) +
-                    " to detect a difference of " + fnum(r.num("diff")) + " between the null proportion P0 = " +
-                    fnum_fine(r.num("p0")) + " and the actual proportion P1 = " + fnum_fine(r.num("p1")) + " using a " +
-                    alt_words(alt(s)) + " " + names.at(s.s("test")) + " with a target significance level of " +
-                    fnum(r.num("alpha"));
-    if (r.has("actual_alpha")) t += " (actual significance level " + text::format_fixed(r.num("actual_alpha"), 4) + ")";
+                    " to detect a difference of " + fnum_apart(r.num("diff"), 0).first +
+                    " between the null proportion P0 = " + p0 +
+                    " and the actual proportion P1 = " + p1 + " using a " + alt_words(alt(s)) + " " +
+                    names.at(s.s("test")) + " with a target significance level of " + fnum(r.num("alpha"));
+    if (r.has("actual_alpha")) t += " (actual significance level " + fprob(r.num("actual_alpha")) + ")";
     return t + ".";
   };
   p.definitions = {{"N", "Number of subjects (Bernoulli trials)."},
@@ -280,6 +283,16 @@ double ci_width(const Scenario& s, double n) {
   if (two) return ci.hi < ci.lo ? 0.0 : ci.hi - ci.lo;
   return s.is("sides", "upper") ? ci.hi - p : p - ci.lo;
 }
+
+// A one-sided bound's distance from the estimate p within the rounding of the bound, as at a confidence a rounding
+// error above 50%: its sign then means nothing.
+bool near_estimate(double w, double p) { return std::fabs(w) <= 1e-13 * p; }
+
+// Why a Jeffreys bound can lie on the wrong side of the estimate (a distance below 0), as at a confidence not far
+// above 50% for a proportion away from 1/2; the other intervals contain the estimate.
+const char* const JEFFREYS_WRONG_SIDE =
+    "the Jeffreys bound is a quantile of the posterior distribution, whose middle lies between the estimate and 1/2, "
+    "further from the estimate than the bound's margin reaches at this confidence";
 
 Procedure one_prop_ci() {
   Procedure p;
@@ -351,10 +364,31 @@ Procedure one_prop_ci() {
       o.guess = std::ceil((two ? 4 : 1) * z * z * pp * (1 - pp) / (target * target));
       o.hi = 1e8;
       o.goal = "the target width";
-      // a one-sided bound at or beyond the estimate is a degenerate size; a two-sided interval at a confidence near
-      // 0 closes on the estimate itself (a width of 0, or a rounding error either side of it) at every size
-      n = solve::min_n_staying(
-          [&](double x) { const double w = ci_width(s, x); return (two || w > 0) && w <= target; }, o, &ctx);
+      // a one-sided bound at the estimate, on its wrong side or within a rounding error of it is a degenerate size;
+      // a two-sided interval at a confidence near 0 closes on the estimate itself (a width of 0, or a rounding error
+      // either side of it) at every size
+      auto ok = [&](double x) {
+        const double w = ci_width(s, x);
+        return (two || (w > 0 && !near_estimate(w, pp))) && w <= target;
+      };
+      try {
+        n = solve::min_n_staying(ok, o, &ctx);
+      } catch (const CalcError&) {
+        // a one-sided bound that is still on the wrong side of the estimate, or within a rounding error of it, at
+        // the largest size: the reason, not only that the width was not reached
+        const double w = ci_width(s, o.hi);
+        if (two || (w > 0 && !near_estimate(w, pp))) throw;
+        if (near_estimate(w, pp))
+          throw CalcError("the confidence is so close to 50% that the bound lies within a rounding error of the "
+                          "estimate, where its distance cannot be computed");
+        throw CalcError(std::string("the bound lies on the wrong side of the estimate for every sample size up to ") +
+                        text::format_g(o.hi, 10) + ": " +
+                        (s.is("method", "jeffreys") ? JEFFREYS_WRONG_SIDE : "at this confidence"));
+      }
+      if (!two && n > o.lo && s.is("method", "jeffreys") &&
+          (ci_width(s, n - 1) <= 0 || near_estimate(ci_width(s, n - 1), pp)))
+        r.notes.push_back("Smaller samples put the bound on the wrong side of the estimate (" +
+                          std::string(JEFFREYS_WRONG_SIDE) + "); this is the smallest that puts it beyond.");
       r.set("target_width", target);
     } else {
       n = s("n");
@@ -384,10 +418,18 @@ Procedure one_prop_ci() {
         {"exact", "exact (Clopper–Pearson)"}, {"wilson", "Wilson score"}, {"wilsoncc", "continuity-corrected Wilson"},
         {"ac", "Agresti–Coull"}, {"jeffreys", "Jeffreys"}, {"wald", "Wald"}};
     const bool two = s.is("sides", "two");
+    const double w = r.num("width");
+    // the width with the digits that keep it to within 5% (0.00016, not 0.0002)
+    std::string where = (two ? "with a width of " : "whose bound lies at a distance of ") + fnum_apart(w, 0).first;
+    if (!two && near_estimate(w, r.num("p")))
+      where = "whose bound lies within a rounding error of the estimate";
+    else if (!two && w < 0)
+      where = "whose bound lies " + fnum_apart(-w, 0).first + (s.is("sides", "upper") ? " below" : " above") +
+              " the estimate, on the wrong side of it (" +
+              (s.is("method", "jeffreys") ? JEFFREYS_WRONG_SIDE : "at this confidence") + ")";
     return "A sample of " + fint(r.num("n")) + " gives a " + (two ? "two-sided " : "one-sided ") +
-           level_text(r.num("conf")) + " " + names.at(s.s("method")) + " confidence interval " +
-           (two ? "with a width of " : "whose bound lies at a distance of ") + fnum(r.num("width")) +
-           " when the observed proportion equals " + fnum(r.num("p")) + ".";
+           level_text(r.num("conf")) + " " + names.at(s.s("method")) + " confidence interval " + where +
+           " when the observed proportion equals " + fnum_fine(r.num("p")) + ".";
   };
   p.definitions = {{"N", "Sample size."},
                    {"Width", "Upper minus lower limit (two-sided) or distance from P to the bound (one-sided)."},

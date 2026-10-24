@@ -229,11 +229,14 @@ struct Design {
 
 using winratio::Patient;
 
-Patient draw(const Design& d, bool treated, Rng& rng) {
+// The times to loss to follow-up come from a stream of their own, `loss`: drawn from the patients' stream, they moved
+// every later draw once the hazard was above 0, so that a hazard of 1e-16 gave other patients than 0 (an
+// approximate power of 0.5598 against 0.5607).
+Patient draw(const Design& d, bool treated, Rng& rng, Rng& loss) {
   const double entry = rng.uniform() * d.accrual;
   const double death = rng.exponential() / (d.lam_d * (treated ? d.hr_d : 1));
   const double event = d.event ? rng.exponential() / (d.lam_h * (treated ? d.hr_h : 1)) : INFINITY;
-  const double lost = d.eta > 0 ? rng.exponential() / d.eta : INFINITY;
+  const double lost = d.eta > 0 ? loss.exponential() / d.eta : INFINITY;
   const double value = d.score ? rng.normal() + (treated ? d.delta : 0) : 0;
   const double end = std::fmin(d.accrual + d.follow - entry, lost);
   Patient p;
@@ -258,8 +261,9 @@ Probabilities pair_probabilities(const Design& d) {
   long w = 0, l = 0, deaths = 0;
   for (int half = 0; half < 2; ++half) {
     Rng rt(0x5eed, half == 0 ? 1 : 2), rc(0x5eed, half == 0 ? 2 : 1);
+    Rng lt(0x5eed, half == 0 ? 3 : 4), lc(0x5eed, half == 0 ? 4 : 3);
     for (long i = 0; i < PAIRS / 2; ++i) {
-      const Patient a = draw(d, true, rt), b = draw(d, false, rc);
+      const Patient a = draw(d, true, rt, lt), b = draw(d, false, rc, lc);
       const int c = winratio::compare(a, b, d.margin);
       w += c > 0;
       l += c < 0;
@@ -310,8 +314,9 @@ sim::Outcome winratio_study(const Design& d, long n1, long n2, long rep, std::ui
   pts.resize(static_cast<std::size_t>(n));
   for (int g = 0; g < 2; ++g) {
     Rng rng(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(g + 1));
+    Rng loss(seed, static_cast<std::uint64_t>(rep), static_cast<std::uint64_t>(g + 3));
     const long start = g == 0 ? 0 : n1, count = g == 0 ? n1 : n2;
-    for (long i = 0; i < count; ++i) pts[static_cast<std::size_t>(start + i)] = draw(d, g == 0, rng);
+    for (long i = 0; i < count; ++i) pts[static_cast<std::size_t>(start + i)] = draw(d, g == 0, rng, loss);
   }
   winratio::pair_counts(pts, n1, d.margin, counts);
   // U_k over all patients (for the Finkelstein–Schoenfeld variance); each patient's wins and losses against

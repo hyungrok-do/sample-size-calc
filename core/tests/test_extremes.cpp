@@ -317,7 +317,13 @@ TEST_CASE("extremes: the smallest inputs allowed give an answer, or a message th
       {"prop.cc", "n", R"({"p0":"1e-30"})", "cannot be reached"},
       {"prop.two", "n", R"({"es":"or","p2":"1e-30"})", "cannot be reached"},
       {"rates.two.poisson", "n", R"({"time":"1e-30"})", "cannot be reached"},
-      {"rates.two.negbin", "power", R"({"r0":"1e-30"})", ""},
+      // (a normal approximation that gives a side of the test more power than the chance of the events it needs,
+      // 7e-29 in group 1, is refused)
+      {"rates.two.negbin", "power", R"({"r0":"1e-30"})", "it fails with so few events"},
+      // (and so is one where a dispersion of 1e6 gathers 100 expected events in so few subjects that the chance of
+      // any is 0.00016)
+      {"rates.two.negbin", "power", R"({"kappa":"1e6","r0":"10","rr":"1","n1":"10","n2":"10"})",
+       "it fails with so little chance of an event"},
       {"gs.means", "n", R"({"alpha":"1e-30"})", ""},
       {"gs.logrank", "power", R"({"alpha":"1e-30","boundary":"wt_obf"})", ""},
       {"sim.winratio", "power", R"({"med_d":"1e-30"})", ""},

@@ -19,17 +19,17 @@ std::vector<double> standardized_effects(const Scenario& s) {
     const auto& sd = s.v("sds");
     if (diff.size() != sd.size())
       throw CalcError("give one standard deviation per mean difference (" + std::to_string(diff.size()) + ")");
-    for (std::size_t k = 0; k < diff.size(); ++k) {
-      if (!(sd[k] > 0)) throw CalcError("the standard deviations must be positive");
-      d.push_back(diff[k] / sd[k]);
-    }
+    for (std::size_t k = 0; k < diff.size(); ++k) d.push_back(diff[k] / sd[k]);
   } else {
     d = s.v("deltas");
   }
   if (d.size() < 2 || d.size() > KMAX) throw CalcError("give two to four endpoints (one effect per endpoint)");
+  // the tests are one-sided, in favor of group 1, and no effect is negative (by the inputs' limits); with no effect
+  // on an endpoint its test, and so the study, succeeds with probability alpha at most, which no sample size raises
   for (double x : d)
-    if (!(x > 0))
-      throw CalcError("every endpoint's effect must be positive: the tests are one-sided, in favor of group 1");
+    if (!(x > 0) && s.solve == "n")
+      throw CalcError("every endpoint's effect must be positive: with no effect on one, the power cannot exceed "
+                      "alpha");
   return d;
 }
 
@@ -123,17 +123,20 @@ Procedure coprimary() {
         vec("deltas", "δ (Standardized Effects, One per Endpoint)", "0.3 0.35")
             .grp(G_EFFECT)
             .sym("δ")
+            .at_least(0)
             .hint("Each endpoint's mean difference between the groups divided by its standard deviation, positive "
                   "in favor of group 1; two to four values.")
             .show(when(is("es", {"std"}))),
         vec("diffs", "Mean Differences μ1 − μ2 (One per Endpoint)", "3 4")
             .grp(G_EFFECT)
             .sym("μ1 − μ2")
+            .at_least(0)
             .hint("Each endpoint's expected mean difference, positive in favor of group 1; two to four values.")
             .show(when(is("es", {"raw"}))),
         vec("sds", "Standard Deviations (One per Endpoint)", "10 10")
             .grp(G_EFFECT)
             .sym("σ")
+            .above(0)
             .hint("Each endpoint's standard deviation within a group, in the order of the mean differences.")
             .show(when(is("es", {"raw"}))),
         num("rho", "ρ (Correlation between Endpoints)", "0.5")

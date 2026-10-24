@@ -111,4 +111,39 @@ inline std::pair<std::string, std::string> fnum_apart(double a, double b, std::i
   return t;
 }
 
+/// x with fnum's `decimals`, or with the digits fnum_apart takes to tell it from ref when those do not keep its
+/// distance from ref to within 5% (a ratio of P1/P2 = 0.99991, not 1, the ratio of no effect).
+inline std::string fnum_from(double x, double ref, int decimals = 4) {
+  const std::string t = blocks::fnum(x, decimals);
+  double v;
+  if (x == ref || (text::parse_double(t, v) && std::fabs(v - x) <= 0.05 * std::fabs(x - ref))) return t;
+  return fnum_apart(x, ref).first;
+}
+
+/// The texts of values a statement lists together (a trend's proportions), with the digits it takes to tell each
+/// from every other as fnum_apart tells two apart: 0.1, 0.10001, 0.2, not 0.1, 0.1, 0.2.
+inline std::vector<std::string> fnum_apart_all(const std::vector<double>& x) {
+  std::vector<std::string> t(x.size());
+  std::vector<double> shown(x.size());
+  for (int extra = 0; extra <= 13; ++extra) {
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      t[i] = fnum_digits(x[i], extra);
+      if (!text::parse_double(t[i], shown[i])) shown[i] = NAN;
+    }
+    bool apart = true;
+    for (std::size_t i = 0; i < x.size() && apart; ++i)
+      for (std::size_t j = i + 1; j < x.size() && apart; ++j)
+        apart = std::fabs((shown[i] - shown[j]) - (x[i] - x[j])) <= 0.05 * std::fabs(x[i] - x[j]);
+    if (apart) break;
+  }
+  return t;
+}
+
+/// A probability with four decimals, or with the digits fnum_fine gives it when four show it as 0 or 1, which it is
+/// not (an exact test's size of 3.2e-07, not 0.0000).
+inline std::string fprob(double p) {
+  const std::string t = text::format_fixed(p, 4);
+  return p > 0 && p < 1 && (t == "0.0000" || t == "1.0000") ? fnum_fine(p) : t;
+}
+
 }  // namespace ssc::procs

@@ -4,6 +4,7 @@
 #include <limits>
 #include <unordered_map>
 
+#include "procedures/apart.hpp"
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
 #include "procedures/mcnemar.hpp"
@@ -426,6 +427,12 @@ double p1_from(const Scenario& s, double p2) {
   return p1;
 }
 
+// P1 as a statement shows it: P1 from an odds ratio of 1 is P2 to a rounding error (0.5999999999999999 for 0.6),
+// which is no difference.
+double p1_stated(const Scenario& s, const Row& r) {
+  return s.is("es", "or") && s("or1") == 1 ? r.num("p2") : r.num("p1");
+}
+
 Scale scale_of(const Scenario& s) {
   return s.is("scale", "ratio") ? Scale::Ratio : (s.is("scale", "or") ? Scale::Odds : Scale::Diff);
 }
@@ -703,13 +710,17 @@ Procedure two_prop_ni() {
   p.statement = [](const Scenario& s, const Row& r) {
     const Scale sc = scale_of(s);
     const std::string q = sc == Scale::Ratio ? "P1/P2" : (sc == Scale::Odds ? "OR" : "P1 − P2");
-    const std::string b = fnum(r.num(sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0")));
+    // the boundary apart from no effect, a ratio's from 1 (0.99999 is not 1) and a difference from 0 (0.00016, not
+    // 0.0002), and the proportions from each other
+    const double b0 = r.num(sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0"));
+    const std::string b = sc == Scale::Diff ? fnum_apart(b0, 0).first : fnum_from(b0, 1);
+    const auto [p1, p2] = fnum_apart(p1_stated(s, r), r.num("p2"));
     const bool up = s.is("h1", "upper");
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
            " for the one-sided " + (sc == Scale::Odds ? "Miettinen–Nurminen" : "Farrington–Manning") +
            " score test of H0: " + q + (up ? " ≤ " : " ≥ ") + b + " versus H1: " + q + (up ? " > " : " < ") + b +
            (sc == Scale::Odds ? " (OR: the odds ratio of group 1 to group 2)" : "") + " at α = " + fnum(r.num("alpha")) +
-           ", when the true proportions are P1 = " + fnum(r.num("p1")) + " and P2 = " + fnum(r.num("p2")) + ".";
+           ", when the true proportions are P1 = " + p1 + " and P2 = " + p2 + ".";
   };
   p.definitions = {{"D0 / R0 / OR0", "Boundary of the null hypothesis (non-inferiority or superiority margin)."},
                    {"P1, P2", "Actual proportions in the treatment and reference groups."},
@@ -807,10 +818,12 @@ Procedure two_prop_equiv() {
     const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
     const double p2 = s("p2"), p1 = p1_from(s, p2), alpha = s("alpha");
     const double lo = s(lkey), hi = s(ukey), act = actual_measure(s, sc, p1, p2);
-    if (!(act > lo && act < hi))
+    // on a limit itself the power is the size of the tests, which no sample size raises above alpha
+    if (s.solve == "n" ? !(act > lo && act < hi) : !(act >= lo && act <= hi))
       throw CalcError("the actual " + std::string(sc == Scale::Ratio ? "ratio P1/P2" : (sc == Scale::Odds ? "odds ratio"
                                                                                                         : "difference")) +
-                      " must lie inside the equivalence limits");
+                      (s.solve == "n" ? " must lie inside the equivalence limits"
+                                      : " cannot lie outside the equivalence limits"));
     if (sc == Scale::Ratio && !(hi * p2 < 1))
       throw CalcError("the upper equivalence limit, P1 = RU × P2 = " + fnum(hi * p2) + ", must lie below 1");
     const NiSpec L{sc, lo, true, alpha}, U{sc, hi, false, alpha};
@@ -879,10 +892,13 @@ Procedure two_prop_equiv() {
     const Scale sc = scale_of(s);
     const char* lkey = sc == Scale::Ratio ? "rl" : (sc == Scale::Odds ? "orl" : "dl");
     const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
+    // the limits apart from each other (0.99999 and 1.00001, not 1 and 1), and the proportions too
+    const auto [lo, hi] = fnum_apart(r.num(lkey), r.num(ukey));
+    const auto [p1, p2] = fnum_apart(p1_stated(s, r), r.num("p2"));
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
-           " to conclude that " + quantity(sc) + " lies between " + fnum(r.num(lkey)) + " and " + fnum(r.num(ukey)) +
-           " using two one-sided score tests at α = " + fnum(r.num("alpha")) + " each, when P1 = " + fnum(r.num("p1")) +
-           " and P2 = " + fnum(r.num("p2")) + ".";
+           " to conclude that " + quantity(sc) + " lies between " + lo + " and " + hi +
+           " using two one-sided score tests at α = " + fnum(r.num("alpha")) + " each, when P1 = " + p1 + " and P2 = " +
+           p2 + ".";
   };
   p.definitions = {{"DL, DU / RL, RU / ORL, ORU", "Equivalence limits for P1 − P2, P1/P2 or the odds ratio."},
                    {"D1 / R1 / OR1", "Actual difference, ratio or odds ratio."}};
@@ -1049,13 +1065,14 @@ Procedure mcnemar() {
       p01 = s("p01");
       if (!(p10 + p01 <= 1)) throw CalcError("P10 + P01 cannot exceed 1");
     }
-    if (p10 == p01) throw CalcError("P10 equals P01; there is no effect");
     const Alt a = alt(s);
     McNemarCache cache;
     // the exact power sums over ~√n discordant counts, each a few binomial tails (0.25 s at a million pairs)
     const double n_max = s.is("method", "normal") ? 1e7 : 1e6;
     int n;
     if (s.solve == "n") {
+      // with no effect the power is the test's size, which no number of pairs raises above alpha
+      if (p10 == p01) throw CalcError("P10 equals P01; there is no effect");
       if ((a == Alt::Upper && p10 < p01) || (a == Alt::Lower && p10 > p01))
         throw CalcError("the effect has the sign opposite to the one-sided alternative");
       const double psi = p10 + p01, d = p10 - p01;
@@ -1112,9 +1129,10 @@ Procedure mcnemar() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [p10, p01] = fnum_apart(r.num("p10"), r.num("p01"));
     return fint(r.num("n")) + " pairs " + achieves(s, r) + " to detect a difference between the discordant "
-           "proportions P10 = " + fnum(r.num("p10")) + " and P01 = " + fnum(r.num("p01")) + " (odds ratio " +
-           fnum(r.num("orr"), 3) + ") using a " + alt_words(alt(s)) + " McNemar test" +
+           "proportions P10 = " + p10 + " and P01 = " + p01 + " (odds ratio " + fnum_from(r.num("orr"), 1, 3) +
+           ") using a " + alt_words(alt(s)) + " McNemar test" +
            (s.is("method", "exact") ? " (exact conditional binomial)" : " (normal approximation)") + " at α = " +
            fnum(r.num("alpha")) + ".";
   };
@@ -1151,6 +1169,7 @@ double chisq_w(const Scenario& s, double& df) {
   double s0 = 0, s1 = 0;
   for (double v : p0) s0 += v;
   for (double v : p1) s1 += v;
+  if (!(s1 > 0)) throw CalcError("the proportions under H1 cannot all be 0");
   double w2 = 0;
   for (std::size_t i = 0; i < p0.size(); ++i) {
     const double a = p0[i] / s0, b = p1[i] / s1;
@@ -1192,7 +1211,7 @@ Procedure chisq() {
           .hint("Give Cohen's effect size w and the degrees of freedom, or the category proportions under H0 and "
                 "H1 (goodness of fit), from which w is computed.")
           .show(when(not_solving({"w"}))),
-      num("w", "w (Cohen's Effect Size)", "0.3").grp(G_EFFECT).sym("w").above(0).sugg({"0.1", "0.3", "0.5", "0.1 0.3 0.5"})
+      num("w", "w (Cohen's Effect Size)", "0.3").grp(G_EFFECT).sym("w").at_least(0).sugg({"0.1", "0.3", "0.5", "0.1 0.3 0.5"})
           .hint("Cohen's w: how far the category proportions under H1 depart from those under H0. By Cohen's "
                 "conventions 0.1 is small, 0.3 medium and 0.5 large.")
           .show(when({not_solving({"w"}), is("es", {"w"})})),
@@ -1227,7 +1246,8 @@ Procedure chisq() {
       w = solve::solve_increasing([&](double x) { return chisq_power(n, x, df, alpha); }, s("power"), 1e-9, 0.3, 1e6);
     } else {
       w = chisq_w(s, df);
-      if (!(w > 0)) throw CalcError("the effect size w is zero");
+      // with no effect the power is alpha, which no sample size raises
+      if (!(w > 0) && s.solve == "n") throw CalcError("the effect size w is zero");
       if (!std::isfinite(w * w)) throw CalcError("the effect size w is too large to compute with");
       if (s.solve == "n") {
         solve::NSearch o;
@@ -1254,9 +1274,10 @@ Procedure chisq() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    // w with the digits that keep it to within 5% (0.00016, not 0.0002)
     return "A total sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) +
-           " to detect an effect size of w = " + fnum(r.num("w")) + " with a chi-square test on " + fint(r.num("df")) +
-           " degrees of freedom at α = " + fnum(r.num("alpha")) + ".";
+           " to detect an effect size of w = " + fnum_apart(r.num("w"), 0).first + " with a chi-square test on " +
+           fint(r.num("df")) + " degrees of freedom at α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"w", "Cohen's effect size √Σ(P1ᵢ − P0ᵢ)²/P0ᵢ."},
                    {"DF", "Degrees of freedom: k − 1 for goodness of fit, (r − 1)(c − 1) for an r × c table."},
@@ -1402,13 +1423,13 @@ Procedure cluster_props() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));
     return fint(r.num("k1")) + " and " + fint(r.num("k2")) + " clusters of " + fnum(r.num("m")) +
            (r.num("m") == 1 ? " subject (" : " subjects (") +
            fint(r.num("n")) + " in total) achieve " + power_text(r.num("power")) + " power" +
            (std::isfinite(r.num("target_power")) ? " (target " + power_text(r.num("target_power")) + ")" : "") +
-           " to detect P1 = " +
-           fnum(r.num("p1")) + " versus P2 = " + fnum(r.num("p2")) + " with ICC " + fnum(r.num("icc")) +
-           " (design effect " + fnum(r.num("de")) + ") using a " + alt_words(alt(s)) + " z-test at α = " +
+           " to detect P1 = " + p1 + " versus P2 = " + p2 + " with ICC " + fnum_fine(r.num("icc")) +
+           " (design effect " + fnum_from(r.num("de"), 1) + ") using a " + alt_words(alt(s)) + " z-test at α = " +
            fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"k1, k2", "Clusters per group."}, {"m", "Subjects per cluster."},

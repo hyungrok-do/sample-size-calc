@@ -95,7 +95,8 @@ Procedure ancova() {
     } else {
       mu1 = s("mu1");
       const double diff = mu1 - mu2;
-      if (diff == 0) throw CalcError("μ1 equals μ2");
+      // with no difference the power is alpha, which no sample size raises
+      if (diff == 0 && s.solve == "n") throw CalcError("μ1 equals μ2");
       if ((a == Alt::Upper && diff < 0) || (a == Alt::Lower && diff > 0))
         throw CalcError("the difference has the sign opposite to the one-sided alternative");
       if (s.solve == "n") {
@@ -649,7 +650,7 @@ Procedure rm_anova() {
       num("f", "f (Effect Size)", "0.25")
           .grp(G_EFFECT)
           .sym("f")
-          .above(0)
+          .at_least(0)
           .sugg({"0.1", "0.25", "0.4"})
           .hint("Cohen's f: the SD of the m means divided by the SD of one measurement. By Cohen's conventions "
                 "0.10 is small, 0.25 medium and 0.40 large.")
@@ -684,8 +685,11 @@ Procedure rm_anova() {
       for (double v : mu) mean += (v - mu[0]) / m;
       for (double v : mu) ss += (v - mu[0] - mean) * (v - mu[0] - mean);
       f = std::sqrt(ss / m) / s("sigma");
-      if (!(f > 0)) throw CalcError("the means are all equal; there is no effect to detect");
     }
+    // with no effect the power is alpha, which no sample size raises
+    if (!(f > 0) && s.solve == "n")
+      throw CalcError(s.is("estype", "f") ? "f = 0: there is no effect to detect"
+                                          : "the means are all equal; there is no effect to detect");
     const double rho = s("rho"), eps = s("eps"), alpha = s("alpha");
     if (!(rho > -1 / (m - 1)))
       throw CalcError("with " + fint(m) + " measurements, equal correlations must exceed −1/(m − 1) = " +

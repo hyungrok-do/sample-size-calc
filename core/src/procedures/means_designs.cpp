@@ -146,7 +146,7 @@ Procedure anova() {
       num("f", "f (Cohen's Effect Size σm/σ)", "0.25")
           .grp(G_EFFECT)
           .sym("f")
-          .above(0)
+          .at_least(0)
           .sugg({"0.1", "0.25", "0.4", "0.1 0.25 0.4"})
           .hint("Cohen's f: the SD of the group means divided by the within-group SD. By Cohen's conventions 0.10 "
                 "is small, 0.25 medium and 0.40 large.")
@@ -170,7 +170,9 @@ Procedure anova() {
       o.lo = 2;
       if (!spare(o.hi)) throw CalcError(single + " for any n up to " + text::format_g(o.hi, 10) + no_df);
       d = anova_design(s, o.lo);
-      if (!(d.f > 0)) throw CalcError("the group means are all equal; there is no effect to detect");
+      if (!(d.f > 0))
+        throw CalcError(s.is("estype", "f") ? "f = 0: there is no effect to detect"
+                                            : "the group means are all equal; there is no effect to detect");
       o.guess = (z_factor(alpha, s("power"), Alt::Two) + 2.0 * (d.k - 1)) / (d.k * d.f * d.f) + 1;
       // groups that tiny ratios keep at 1 subject up to the largest n hold the power down however large n grows
       const std::string held = solve::single_groups(w, o.hi, "allocation ratio", "allocation ratios");
@@ -439,7 +441,10 @@ Procedure bioequivalence() {
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double alpha = s("alpha"), cv = s("cv"), th0 = s("theta0"), th1 = s("theta1"), th2 = s("theta2");
-    if (!(th0 > th1 && th0 < th2)) throw CalcError("the true ratio must lie strictly between the limits");
+    // on a limit itself the power is the size of the tests, which no sample size raises above alpha
+    if (s.solve == "n" ? !(th0 > th1 && th0 < th2) : !(th0 >= th1 && th0 <= th2))
+      throw CalcError(s.solve == "n" ? "the true ratio must lie strictly between the limits"
+                                     : "the true ratio cannot lie outside the limits");
     // √ln(1 + CV²) = CV(1 − CV²/4 + …) is CV itself to double precision below 1e-8 (computed, CV² underflows to 0
     // below about 1e-162, and so did the log-scale SD)
     const double sw = cv < 1e-8 ? cv : std::sqrt(std::log1p(cv * cv));
