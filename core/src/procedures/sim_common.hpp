@@ -22,7 +22,9 @@ inline const char* G_MODEL = "Model";
 
 /// The most units (subjects, measurements, or clusters where a cluster is simulated through its sums) that one
 /// simulated study may have.  Stop takes effect between studies, so one study must stay short: a few tenths of
-/// a second at this size.
+/// a second at this size.  (The cluster mixed models check for Stop within a study too, which there can take
+/// minutes: 10⁶ clusters of 10⁷ subjects, half of them with an outcome as rare as 1e-9, whose binomial counts by
+/// inversion take some 0.3 ms each.)
 constexpr double STUDY_MAX = 1e6;
 
 /// A whole number with its digits grouped by commas (1,000,000).
@@ -214,18 +216,20 @@ inline void put_summary(const Scenario& s, Row& r, const sim::Summary& sm, Failu
 
 /// put_summary for studies that tell why their analysis failed (simulate_tests and the bits of `causes`): design
 /// failures and numerical ones are counted apart, the rule above applies to the numerical ones, and the messages and
-/// the statement say what made the studies fail.
-inline void put_summary(const Scenario& s, Row& r, const sim::Summary& sm, const std::vector<Cause>& causes) {
+/// the statement say what made the studies fail.  `studies` names them in the messages, as the statement does
+/// ("trials").
+inline void put_summary(const Scenario& s, Row& r, const sim::Summary& sm, const std::vector<Cause>& causes,
+                        const std::string& studies = "studies") {
   const bool numerical = 2 * numerical_failures(sm, causes) > sm.reps;
   const std::string why = causes_text(sm, causes), extreme = numerical ? "; check for an extreme value" : "";
   if (sm.reps > 0 && sm.failures == sm.reps)
     throw CalcError("the simulated power cannot be computed: none of the " +
-                    grouped(static_cast<double>(sm.reps)) + " simulated studies could be analyzed (" + why + ")" +
-                    extreme);
+                    grouped(static_cast<double>(sm.reps)) + " simulated " + studies + " could be analyzed (" + why +
+                    ")" + extreme);
   if (numerical)
     throw CalcError("the simulated power cannot be computed: " + grouped(static_cast<double>(sm.failures)) +
-                    " of the " + grouped(static_cast<double>(sm.reps)) + " simulated studies could not be analyzed (" +
-                    why + ")" + extreme);
+                    " of the " + grouped(static_cast<double>(sm.reps)) + " simulated " + studies +
+                    " could not be analyzed (" + why + ")" + extreme);
   put_summary(s, r, sm);
   if (sm.failures > 0) r.set("failures_why", why);
 }

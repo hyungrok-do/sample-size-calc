@@ -306,7 +306,9 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     std::copy(thess, thess + 9, hess);
     modes.swap(trial_modes);
     ll = next;
-    if (std::fabs(th[1]) > 30 || std::fabs(th[0]) > 50) return fail(Failure::Separation);  // the estimates run off
+    // β is left free: separated data, whose β has no finite estimate, are the caller's to catch, and otherwise it
+    // has one, however large (a log odds ratio of 30 between groups with 3e-7 and 1 − 3e-7 of 10⁷ subjects a cluster)
+    if (std::fabs(th[2]) > SIGMA_MAX) return fail(Failure::RunOff);
   }
   if (!converged) return fail(Failure::Arithmetic);
   out.ok = true;
@@ -361,7 +363,9 @@ double between_variance(double beta, double sigma) {
 }
 
 double beta_for_marginal(double p, double sigma) {
+  // [−60, 60] holds β for every p below 1 down to 8.8e-27 at σ = 0 and 5.7e-19 at σ = 6; smaller ones widen it
   double lo = -60, hi = 60;
+  while (marginal_mean(lo, sigma) > p && lo > -1e3) lo *= 2;
   for (int i = 0; i < 200 && hi - lo > 1e-13; ++i) {
     const double mid = 0.5 * (lo + hi);
     (marginal_mean(mid, sigma) < p ? lo : hi) = mid;
