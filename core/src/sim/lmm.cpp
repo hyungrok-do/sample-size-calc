@@ -382,11 +382,15 @@ bool gls(const Data& d, const double* g, Gls& w, double det_g = std::numeric_lim
   if (!(q == 1 ? pattern_sums<1>(d, g, det_g, w, s) : pattern_sums<2>(d, g, det_g, w, s))) return false;
   // the same sums for clusters by arm and size: Z'Z = n, C = x and nothing of X within the cluster.  The products are
   // formed as pattern_sums forms them (in statements of their own, into sums that start at 0), so that a compiler
-  // that fuses a multiply and an add (clang on ARM, or GCC with FMA) fuses the same ones in both, and the fits stay
-  // the same to the bit
+  // that fuses a multiply and an add within a statement (clang's default, as on Apple silicon) fuses the same ones in
+  // both, and the fits stay the same to the bit; one that fuses across statements (GCC with FMA) can round the two
+  // apart (in 104 of 400 random studies, by up to 6 · 10⁻⁹ in the standard error and 9 · 10⁻⁵ in the degrees of freedom).
+  // A caller with a million sizes is polled every 65,536 of them as well
+  std::size_t polled = 0;
   for (const Arm& arm : d.arms) {
     const double* x = arm.x;
     for (const Arm::Size& sz : arm.sizes) {
+      if (d.poll && ++polled % 65536 == 0) d.poll(d.poll_arg);
       if (sz.count == 0) continue;
       const double tr_ag = sz.n * g[0];
       const double detk = 1 + tr_ag;
@@ -604,13 +608,45 @@ bool rank_one(const Data& d) { return d.q == 2 && (d.two_rows || !residual_ident
 
 /// The slope at G = 0 of the criterion with σ² profiled out, for a random intercept: Σ count n − Σ count n² C M⁻¹ C'
 /// − Σ n² (b − Cβ̂)²/σ̂² over the clusters, with each record's residuals taken about their own mean first, (bb −
-/// b²/count) + count (b/count − Cβ̂)².  Expanded as exact_derivatives expands them, the squares lose every digit of it
-/// where one cluster has 10⁸ subjects (−1.5 for a slope of +1.9).
+/// b²/count) + count (b/count − Cβ̂)², where a record of one cluster has no spread about its mean (bb is b² rounded:
+/// with a cluster of 5.3 · 10⁸ subjects, that rounding, which a compiler that fuses a multiply and an add sees,
+/// weighs 0.09 in the slope).  Expanded as exact_derivatives expands them, the squares lose every digit of it where
+/// one cluster has 10⁸ subjects (−1.5 for a slope of +1.9).
+///
+/// Clusters by arm whose arms each have a mean of their own (as many fixed effects as arms) take every term in closed
+/// form: at G = 0 the fit is each arm's mean weighted by size, C M⁻¹ C' = 1/N for an arm of N observations, so that
+/// count n − count n² C M⁻¹ C' = count n (N − n)/N, and σ̂² comes from the same residuals.  Through M⁻¹ and β̂, they
+/// lost digits where one cluster is nearly all of its arm: with clusters of 1, 5.3 · 10⁸ and 2 subjects in one arm and
+/// 3 of 1 in the other, the slope came out +9.09, or −6.79 where the compiler fuses a multiply and an add, for +4.15,
+/// and there θ stayed at 1.3 · 10⁻⁵, with 1.4 · 10⁸ degrees of freedom for 5.3 · 10⁸.
 bool slope_at_zero(const Data& d, double& slope) {
   const int p = d.p;
   const double zero[1] = {0};
   Gls w;
   if (d.q != 1 || !gls(d, zero, w) || !(w.rss > 0)) return false;
+  auto spread = [](double count, double b, double bb) {
+    const double mean_part = b * (b / count);
+    return count > 1 ? bb - mean_part : 0;
+  };
+  bool own = d.arms.size() == static_cast<std::size_t>(p);
+  for (const Pattern& pt : d.patterns) own = own && pt.count == 0;
+  if (own) {
+    double rss = 0, lev = 0, sq = 0;
+    for (const Arm& arm : d.arms) {
+      double nn = 0, sum = 0;
+      for (const Arm::Size& sz : arm.sizes) nn += sz.count * sz.n, sum += sz.n * sz.b;
+      const double mean = sum / nn;
+      for (const Arm::Size& sz : arm.sizes) {
+        if (sz.count == 0) continue;
+        const double dev = sz.b / sz.count - mean, ss = spread(sz.count, sz.b, sz.bb) + sz.count * dev * dev;
+        rss += sz.yy + sz.n * ss;
+        lev += sz.count * sz.n * ((nn - sz.n) / nn);
+        sq += sz.n * sz.n * ss;
+      }
+    }
+    slope = lev - sq / (rss / (d.observations() - p));
+    return std::isfinite(slope);
+  }
   const double s2 = w.rss / (d.observations() - p);
   double minv[PMAX * PMAX];
   chol_inverse(w.m, p, minv);
@@ -621,8 +657,8 @@ bool slope_at_zero(const Data& d, double& slope) {
       cb += c[a] * w.beta[a];
       for (int k = 0; k < p; ++k) cmc += c[a] * minv[a * p + k] * c[k];
     }
-    const double mean = b / count - cb, spread = bb - b * (b / count);
-    slope += count * n - count * n * n * cmc - n * n * (spread + count * mean * mean) / s2;
+    const double mean = b / count - cb;
+    slope += count * n - count * n * n * cmc - n * n * (spread(count, b, bb) + count * mean * mean) / s2;
   };
   for (const Pattern& pt : d.patterns)
     if (pt.count > 0) add(pt.count, pt.zz[0], pt.cx, pt.b[0], pt.bb[0]);
@@ -734,8 +770,10 @@ bool exact_derivatives(const Data& d, double s0, const double* g, double det_g, 
     if (!between(pt, g, det_g, q, wm, detk)) return false;
     cluster(pt.count, wm, pt.cx, pt.b, pt.bb);
   }
+  std::size_t polled = 0;
   for (const Arm& arm : d.arms)
     for (const Arm::Size& sz : arm.sizes) {
+      if (d.poll && ++polled % 65536 == 0) d.poll(d.poll_arg);
       if (sz.count == 0) continue;
       const double tr_ag = sz.n * g[0];  // as between() forms it, for compilers that fuse a multiply and an add
       const double detk = 1 + tr_ag;
@@ -838,9 +876,10 @@ bool exact_derivatives(const Data& d, double s0, const double* g, double det_g, 
 /// of it (ten times what Nelder–Mead stops at); it stays where it is, to the bit.  Each step is taken only if the
 /// criterion falls (halved up to 30 times; a Hessian that is not positive definite is damped towards its diagonal).
 /// `held`: θ2 stays 0 (D at rank 1).  `beat`: the criterion of a fit elsewhere, which this one gives up on once it is
-/// not going to reach it (the criterion, less twice what a step from a positive definite Hessian promises, above it).
+/// not going to reach it (the criterion, less twice what a step from a positive definite Hessian promises, above it);
+/// with none, it never gives up.
 bool polish(const Data& d, double* theta, bool held, int& evals, bool force,
-            double beat = -std::numeric_limits<double>::infinity()) {
+            double beat = std::numeric_limits<double>::infinity()) {
   const int nt = held ? 2 : 3;
   const double r = d.observations() - d.p;
   double nu[2];
@@ -1082,9 +1121,9 @@ Fit fit(const Data& d, const double* theta0) {
     // where the criterion is flat across its valley (221 degrees of freedom for 148 in a study whose fit ended
     // 3·10⁻¹⁰ of the criterion above it), or well above it (0.04 above, with intercepts and slopes correlated 0.9992,
     // 22.78 for 22.86): the best fit with D at rank 1, from the one that keeps G's diagonal, is taken where it is no
-    // worse
+    // worse; so is a fit that ended on the boundary (θ2 = 0), which was left as it was
     const double cross = x[0] * x[2] * (x[0] * x[2]), g22 = x[1] * x[1] + x[2] * x[2];
-    if (!held && x[0] != 0 && x[2] != 0 && cross < std::fmax(0.1 * x[0] * x[0], 1e-6) * g22) {
+    if (!held && x[0] != 0 && cross < std::fmax(0.1 * x[0] * x[0], 1e-6) * g22) {
       double y[3] = {x[0], std::copysign(std::sqrt(g22), x[1]), 0};
       int evals = 0;
       Gls wx, wy;
@@ -1099,7 +1138,10 @@ Fit fit(const Data& d, const double* theta0) {
   // tells that group's slope apart, and its estimate came out exactly 0 or 1 with a standard error of 10⁷; with two
   // visits and one subject of a group measured twice and two of the other, the criterion has no minimum (it falls
   // without bound as the covariance of the two measurements turns singular), and the fits ended with σ² 10⁻²² of
-  // the random effects' variances
+  // the random effects' variances (the longitudinal design fails such studies before the fit).  Nor has one whose
+  // estimate the arithmetic cannot reach: with slopes 5 · 10⁷ times the residual SD and a single subject beyond one a
+  // group to tell their variance, the sums of squares keep too few digits for the fit to see the REML optimum, and
+  // the standard errors of 11 of 12 such studies were 2% to 18% off it (the twelfth had 14 degrees of freedom for 8)
   out.criterion = profiled(d, out.theta, w);
   if (!std::isfinite(out.criterion) || !keeps_digits(w.m, p)) return out;
   lambda_to_g(q, out.theta, out.g);

@@ -310,8 +310,10 @@ bool fuses_across_statements() {
 TEST_CASE("lmm: clusters kept by arm and size fit as their patterns do, to the bit") {
   // a cluster-randomized study with sizes that vary (a few shared, most of their own), as one Pattern per arm and
   // size in the order the sizes first appear, and as the same sizes in two Arms.  The same to the bit, also where a
-  // multiply and an add in one expression are fused (clang on ARM); a build that fuses them across statements as well
-  // forms other roundings in the two loops, and the fits agree to 10⁻¹¹
+  // multiply and an add in one expression are fused (clang on ARM).  A build that fuses them across statements as well
+  // forms other roundings in the two loops: on this study they agree to 10⁻¹⁵, but in random studies by no more than
+  // their rounding allows (in 104 of 400, by up to 6 · 10⁻⁹ in the standard error and 9 · 10⁻⁵ in the degrees of
+  // freedom, and a θ within 10⁻⁷ of 0 on either side of it), so that such a build checks this study to 10⁻⁹ only
   const bool exact = !fuses_across_statements();
   auto same = [&](double a, double b) { return exact ? a == b : std::fabs(a - b) <= 1e-9 * std::fabs(a); };
   for (const double icc : {0.0, 0.05, 0.6}) {
@@ -369,6 +371,29 @@ TEST_CASE("lmm: clusters kept by arm and size fit as their patterns do, to the b
   d.arms[0].x[0] = 1;
   d.arms[0].sizes.push_back({10, 5, 0.1, 0.2, 40});
   CHECK(!lmm::fit(d).ok);
+}
+
+TEST_CASE("lmm: a cluster that is nearly all of its arm sets the cluster variance to 0 on every build") {
+  // a simulated study with clusters of 1, 533,277,991 and 2 subjects in one arm and three of 1 in the other: the slope
+  // of the criterion at a cluster variance of 0 is +4.15 (with these sums), so the fit ends on the boundary and the
+  // test has N − 2 degrees of freedom.  Formed through X'V⁻¹X's inverse it came out −6.79 where the compiler fuses a
+  // multiply and an add, and the fit kept θ = 1.3 · 10⁻⁵, with 1.4 · 10⁸ degrees of freedom
+  lmm::Data d;
+  d.p = 2;
+  d.q = 1;
+  d.arms.resize(2);
+  d.arms[0].x[0] = 1, d.arms[0].x[1] = 1;
+  d.arms[0].sizes = {{1, 1, -0.7281465708665148, 0.5301974286646645, 0},
+                     {533277991, 1, -0.10434807136475392, 0.010888519997543778, 527929142.0402542},
+                     {2, 1, 0.2891086463686601, 0.08358380940511898, 0.1426206371662131}};
+  d.arms[1].x[0] = 1;
+  d.arms[1].sizes = {{1, 3, 1.4167948270675785, 3.4421136969732715, 0}};
+  const double theta0 = std::sqrt(0.01 / 0.99), c[2] = {0, 1};
+  const lmm::Fit f = lmm::fit(d, &theta0);
+  CHECK(f.ok && f.boundary);
+  const lmm::Wald w = lmm::wald(d, f, c, 0, 4);
+  CHECK(!w.fallback);
+  CHECK(w.df == 533277995);
 }
 
 TEST_CASE("lmm: random slopes on complete balanced data reproduce the two-stage analysis") {

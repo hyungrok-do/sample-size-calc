@@ -1459,6 +1459,20 @@ def test_satterthwaites_degrees_of_freedom_with_few_clusters_of_millions_are_tho
     assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(7862226.554949597, rel=1e-6), row
 
 
+def test_a_cluster_that_is_nearly_all_of_its_arm_leaves_the_slope_at_zero_its_digits():
+    """The same design with the default seed: one study has clusters of 1, 533,277,991 and 2 subjects in one arm and
+    three of 1 in the other.  The criterion's slope at a cluster variance of 0, formed through X'V⁻¹X's inverse and
+    the estimates, came out +9.09, or −6.79 where the compiler fuses a multiply and an add, for +4.15; on such builds
+    the fit kept θ = 1.3 · 10⁻⁵ with 1.4 · 10⁸ degrees of freedom for 5.3 · 10⁸, and the mean was 5715558, 15% low
+    (and with seed 99 a study fell back to k1 + k2 − 2).  Each arm's mean, its leverage and its residuals are now
+    formed in closed form, and the builds agree with each other and with the mean of 60-digit fits to 10⁻⁷."""
+    for seed, mean in (("2026", 6705068.6), ("99", 11064511.0)):
+        row = first_row(run("sim.lmm.cluster", "power", {**base_inputs("sim.lmm.cluster"), "k1": "3", "m": "1e7",
+                                                         "cv": "5", "icc": "0.01", "reps": "400", "seed": seed},
+                            threads=2))
+        assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(mean, rel=1e-7), row
+
+
 def test_clusters_of_one_subject_take_the_degrees_of_freedom_of_the_clusters():
     """With one subject a cluster the cluster and residual variances are not told apart (the criterion is the same for
     every split of their sum), and 159 of 400 studies used k1 + k2 − 2 degrees of freedom with a sentence saying that
@@ -1776,8 +1790,11 @@ def test_satterthwaite_degrees_of_freedom_are_computed_where_the_random_effects_
               "seed": "10130", "reps": "200"}
     row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
     assert "df_fallbacks" not in row and "could not be computed" not in row["_statement"], row
-    # five subjects a group and 90% dropout: a study with a handful of subjects measured three times can have a
-    # Hessian that is not positive definite either way, and the row and the statement say how many used N − 2
+    # five subjects a group, 90% dropout and a residual SD 10⁻⁶ of the slopes': where a single subject beyond one a
+    # group was measured more than once, the boundary REML optimum has Λ's entries 10⁷ to 10⁸ times σ, where the
+    # criterion's rounding (0.01 near where the fits stop, up to 3 at the optimum) hides it, and the fit stops short
+    # of it, with a Hessian that is not positive definite (10 studies here; at the optimum it is, with 8 degrees of
+    # freedom); the row and the statement say how many used N − 2
     inputs = {"timing": "custom", "times": "0 0.590874 0.815691 1.25445 2.06801", "sd1": "6.372", "sde": "1.175e-06",
               "dropout": "0.899", "n1": "5", "reps": "200"}
     row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
@@ -1822,11 +1839,34 @@ def test_studies_that_leave_the_model_without_an_estimate_count_as_not_rejecting
     row = first_row(run("sim.lmm.longitudinal", "power", {"timing": "custom", "times": "0 1", "dropout": "0.8",
                                                           "n1": "5", "reps": "200"}, threads=2))
     assert row["failures"] == 177 and 0 <= row["power"] < 0.1, row
-    assert "177 simulated studies could not be analyzed and count as not rejecting." in row["_statement"]
+    assert ("177 simulated studies could not be analyzed and count as not rejecting (in 115, a group had no subject "
+            "measured twice; in 62, too few subjects were measured more than once to estimate the variance of the "
+            "slopes).") in row["_statement"]
     res = run("sim.lmm.longitudinal", "power", {"timing": "custom", "times": "0 1", "dropout": "0.99", "n1": "3",
                                                 "reps": "100"}, threads=2)
     assert res["rows"][0]["_error"] == ("the simulated power cannot be computed: none of the 100 simulated studies "
-                                        "could be analyzed (each had a group with too few subjects measured twice)")
+                                        "could be analyzed (a group had no subject measured twice)")
+
+
+def test_studies_whose_criterion_does_not_tell_the_variances_apart_count_as_not_rejecting():
+    """With random intercepts alone, one subject of each group measured twice and none three times leave nothing
+    within a subject: the REML criterion is the same wherever the residual and subject variances add up to the same
+    total, and the slopes' standard error went with wherever the fit stopped.  Under δ = 0, 252 of the 325 such
+    studies here rejected with the z-test, and the power came out 20.5% for an approximation of 5%.  With random
+    slopes, one subject of each group measured more than once leaves the criterion flat in the slopes' variance and
+    covariance: 130 such studies here held 81 of the 82 that fell back to N − 2 degrees of freedom.  Both now count as
+    not rejecting, and the statement says why."""
+    inputs = {"re": "intercepts", "timing": "custom", "times": "0 1", "n1": "5", "dropout": "0.8", "delta": "0",
+              "df": "z", "reps": "2000"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    assert row["failures"] == 1414 and row["power"] < 0.1, row
+    assert ("in 325, only one subject of each group was measured twice, and none three times, which does not tell the "
+            "residual variance from the subjects'") in row["_statement"]
+    inputs = {"timing": "custom", "times": "0 1 2", "n1": "5", "dropout": "0.9", "delta": "0", "reps": "2000"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    assert row["failures"] == 938 and row.get("df_fallbacks", 0) <= 1, row
+    assert "in 390, too few subjects were measured more than once to estimate the variance of the slopes" in \
+        row["_statement"]
 
 
 def test_random_slopes_whose_lines_cross_far_from_the_visits_are_analyzed():
