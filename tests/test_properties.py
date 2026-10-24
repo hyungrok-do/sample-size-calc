@@ -1237,6 +1237,14 @@ def test_an_implied_p1_that_rounds_to_one_is_named():
     row = run("prop.two.ni", "power", {**base_inputs("prop.two.ni"), "es": "ratio", "r1": "1.4285714285714288",
                                        "p2": "0.7"})["rows"][0]
     assert row["_error"] == "the implied P1 = 1 + 1.142e-16 is not strictly between 0 and 1", row
+    # the test of two proportions takes P1 from the same function, which said "P1 = 1" for all of these
+    for es, key, value, p2, says in (
+            ("or", "or1", "1e16", "0.5", "the implied P1 = 1 − 1e-16 rounds to 1; it must lie strictly between 0 and 1 "
+                                         "by more than that"),
+            ("diff", "d1", "0.49999999999999994", "0.5", "the implied P1 = 1 − 5.551e-17 rounds to 1"),
+            ("ratio", "r1", "1.4285714285714288", "0.7", "the implied P1 = 1 + 1.142e-16 is not strictly between")):
+        row = run("prop.two", "power", {**base_inputs("prop.two"), "es": es, key: value, "p2": p2})["rows"][0]
+        assert row["_error"].startswith(says), row
 
 
 def test_a_boundary_p1_a_rounding_error_below_one_has_its_size():
@@ -1464,7 +1472,7 @@ def test_a_tiny_allocation_ratio_leaves_group_2_of_an_interval_one_subject():
 def test_mcnemars_normal_approximation_where_p10_rounds_to_one():
     """ψ − (P10 − P01)², the variance of a pair's difference, cancelled to 0 once P10 rounded to 1 (ψ = 1 and an odds
     ratio of 1e30): with a critical value of √n the numerator was 0 as well, and min(1, no number) made the power
-    100%, which the n solve took (the one-sided test had no answer).  The variance is now 4e-30, and the power steps
+    100%, which the n solve took (the one-sided test had no answer).  The variance is now 4e-30, and the power climbs
     from 0 to 1 within the rounding of the critical value: at α = 0.0455002638963584 (z = 2 + 1.03e-16) and 4 pairs
     it is 0.4795 to 60 digits, where the engine gave 0.5 (z rounded to 2) or 0.544 (fused multiply-adds), so it is
     refused rather than shown, and so is an n that such a power decided.  Away from the step it is 0 or 1.  ψ = 1
@@ -1473,19 +1481,40 @@ def test_mcnemars_normal_approximation_where_p10_rounds_to_one():
     for alternative, alpha in (("two", "0.0455002638963584"), ("upper", "0.0227501319481792")):
         res = run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha, "n": "4"})
         assert first_row(res) is None, (alternative, res)
-        assert "variance of only 4e-30" in res["rows"][0]["_error"], (alternative, res)
+        msg = res["rows"][0]["_error"]
+        assert "variance of only 4e-30" in msg and "can move the power by up to 0.94" in msg, (alternative, res)
         assert first_row(run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha,
                                                               "n": "5"}))["power"] == 1
         assert first_row(run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha,
                                                               "n": "3"}))["power"] == 0
         res = run("prop.paired.mcnemar", "n", {**base, "alternative": alternative, "alpha": alpha, "power": "0.8"})
-        assert first_row(res) is None and "with 4 pairs cannot be computed" in res["rows"][0]["_error"], res
+        assert first_row(res) is None and "whether the power with 4 pairs reaches the target is decided by " \
+                                          "rounding" in res["rows"][0]["_error"], res
     row = first_row(run("prop.paired.mcnemar", "n", {**base, "alternative": "two", "alpha": "0.05", "power": "0.8"}))
     assert row["n"] == 4 and row["power"] == 1, row
     for method in ("exact", "normal"):
         row = first_row(run("prop.paired.mcnemar", "power", {**base, "method": method, "orr": "9.08406134939307e-05",
                                                               "alternative": "two", "alpha": "0.05", "n": "50"}))
         assert row and row["psi"] == 1, (method, row)
+
+
+@pytest.mark.parametrize("odds_ratio,formula,within", [
+    ("1e5", 0.49747688429875591, 1e-12), ("1e8", 0.49992021154424645, 2e-11), ("1e12", 0.49999920209492009, 2e-9),
+    ("1e16", 0.49999998996924396, 2e-7), ("1e18", None, None), ("1e22", None, None)])
+def test_mcnemars_normal_approximation_next_to_the_step(odds_ratio, formula, within):
+    """Next to the step, the rounding of the critical value can move the power by a range that grows with the odds
+    ratio: 4.8e-13 at 1e5, 1.5e-7 at 1e16.  All of these were refused, as stepping from 0 to 1 within the rounding,
+    once a range taken 2.1 times as wide passed 1e-12, though the powers lay within 2e-14 to 5.6e-9 of the formula at
+    60 digits; only those that the rounding can move by more than 1e-6 are refused now, with that range."""
+    row = run("prop.paired.mcnemar", "power", {**base_inputs("prop.paired.mcnemar"), "method": "normal", "es": "or",
+                                               "psi": "1", "orr": odds_ratio, "alternative": "two",
+                                               "alpha": "0.0455002638963584", "n": "4"})["rows"][0]
+    if formula is None:
+        assert row["_error"].startswith("the power with 4 pairs cannot be computed to within 1e-6: a pair's "
+                                        "difference has a variance of only"), row
+        assert "so that the rounding of the critical value can move the power by up to" in row["_error"], row
+    else:
+        assert row["power"] == pytest.approx(formula, abs=within), row
 
 
 @pytest.mark.parametrize("odds_ratio", ["1e16", "1e20", "1e30"])
@@ -2706,7 +2735,7 @@ def test_a_two_sided_logistic_power_counts_both_sides():
     ("prop.two", {"p1": "0.9999", "p2": "0.99999"}, "(difference -9e-05, ratio 0.99991, odds ratio 0.1)"),
     ("prop.two", {"p1": "0.30000001", "p2": "0.3", "method": "normal"}, "P1 = 0.30000001 and P2 = 0.3 "),
     ("prop.two", {"p1": "0.9999", "p2": "0.99999"}, "(actual 4.602e-15)"),
-    # P1 from P2 = 0.6 and an odds ratio of 1 is 0.5999999999999999: no difference to show
+    # P1 from P2 = 0.6 and an odds ratio of 1, which was 0.5999999999999999: no difference to show
     ("prop.two", {"es": "or", "or1": "1", "p2": "0.6", "method": "normal"},
      "P1 = 0.6 and P2 = 0.6 (difference 0, ratio 1, odds ratio 1)"),
     ("prop.two.equiv", {"es": "or", "or1": "1", "p2": "0.6"}, "when P1 = 0.6 and P2 = 0.6."),
@@ -2727,7 +2756,7 @@ def test_a_two_sided_logistic_power_counts_both_sides():
     ("prop.trend", {"props": "0.1 0.10001 0.2"}, "response proportions 0.1, 0.10001, 0.2 "),
     ("prop.trend", {"scores": "custom", "dvals": "0.1 0.1 0.1 0.10000000000000003"},
      "(scores 0.1, 0.1, 0.1, 0.10000000000000003) "),
-    # only P1 from an odds ratio of 1 is P2 to a rounding error: a difference that is given is shown
+    # a difference of a rounding error that is given is shown
     ("prop.two", {"es": "diff", "d1": "3e-16", "p2": "0.6", "method": "normal"},
      "P1 = 0.6000000000000003 and P2 = 0.6 (difference 3.331e-16, "),
     ("prop.two", {"p1": "0.30016", "p2": "0.3", "method": "normal"}, "(difference 0.00016, ratio 1.00053, "),
@@ -2743,6 +2772,23 @@ def test_proportion_statements_show_values_apart(pid, inputs, says):
     'difference 0.0002' for 0.00016; and 'difference -1.11e-16' for an odds ratio of 1."""
     stmt = first_row(run(pid, "power", {**base_inputs(pid), **inputs}))["_statement"]
     assert says in stmt, stmt
+
+
+def test_p1_from_an_odds_ratio_of_one_is_p2():
+    """P1 from an odds ratio of 1 was o/(1 + o): 0.5999999999999999 for P2 = 0.6, which the answer's columns showed
+    beside P2 (a difference of −1.11e-16 and a ratio of 0.9999999999999998) while its statement said P1 = 0.6.  It is
+    now P2 itself: the exact power is the exact size, and an n solve says there is no difference to detect, where it
+    searched up to 10,000,000 per group and said the target could not be reached."""
+    for pid, diff in (("prop.two", "diff"), ("prop.two.ni", "d1"), ("prop.two.equiv", "d1")):
+        for method in ("normal", "exact"):
+            row = first_row(run(pid, "power", {**base_inputs(pid), "es": "or", "or1": "1", "p2": "0.6",
+                                               "method": method}))
+            assert row["p1"] == row["p2"] == 0.6 and row[diff] == 0, (pid, method, row)
+            if pid == "prop.two":
+                assert row["ratio"] == 1 and (method == "normal" or row["power"] == row["actual_alpha"]), row
+    msg = run("prop.two", "n", {**base_inputs("prop.two"), "es": "or", "or1": "1", "p2": "0.6",
+                                "method": "normal"})["rows"][0]["_error"]
+    assert msg == "P1 equals P2", msg
 
 
 def test_list_inputs_state_their_limits():
@@ -2832,6 +2878,14 @@ def test_a_one_sided_bound_on_the_wrong_side_of_the_estimate_says_why():
     stmt = first_row(run("prop.two.ci", "width", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper",
                                                   "conf": "0.75", "p1": "0.9", "p2": "0.1", "n1": "10"}))["_statement"]
     assert "whose bound lies 0.0307 below the estimate, on the wrong side of it (the success and failure" in stmt, stmt
+    # with unequal groups the center can move away from no difference: P1 = P2 = 0.9 with 10 and 100 subjects puts
+    # it at −0.059 from an estimate of 0, which "pull its center toward no difference" misstated
+    stmt = first_row(run("prop.two.ci", "width", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper",
+                                                  "conf": "0.55", "p1": "0.9", "p2": "0.9", "n1": "10",
+                                                  "r": "10"}))["_statement"]
+    assert "whose bound lies 0.0448 below the estimate, on the wrong side of it (the success and failure that the " \
+           "Agresti–Caffo interval adds to each group pull each group's proportion toward 1/2, which moves its " \
+           "center from the estimate by more than its margin at this confidence)" in stmt, stmt
     stmt = first_row(run("prop.one.ci", "width", {**base_inputs("prop.one.ci"), "method": "jeffreys", "sides": "upper",
                                                   "conf": "0.51", "p": "0.9", "n": "10"}))["_statement"]
     assert "whose bound lies 0.0119 below the estimate, on the wrong side of it (the Jeffreys bound" in stmt, stmt

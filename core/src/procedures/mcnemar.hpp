@@ -17,7 +17,7 @@ using McNemarCache = std::unordered_map<int, double>;
 /// "alternative" (upper: p10 > p01), "alpha" and "method" ("exact" conditional test, or Connor's "normal"
 /// approximation).  q10 and q01, when given, are 1 − p10 and 1 − p01 (for a p10 that rounds to 1).  spread, when
 /// given, receives how far the power can be from the formula's for the rounding of the normal approximation's
-/// critical value (0 for the exact test).
+/// numerator, most of it its critical value's (0 for the exact test).
 double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCache& cache, const RunContext& ctx,
                      double q10 = NAN, double q01 = NAN, double* spread = nullptr);
 
