@@ -995,6 +995,32 @@ double exact_df(int k, const double* hess, const double* dvar, double var) {
   return 1 / quad;
 }
 
+/// The same data with the random effects' coordinates turned so that the unit vector (c0, c1) is the first of them:
+/// with R = [[c0, −c1], [c1, c0]], b → R'b, Z'Z → R'Z'Z R, (Z'Z)⁺ → R'(Z'Z)⁺R, Z'X → R'Z'X, C → R'C and S⁻¹ → R'S⁻¹.
+/// The criterion, β̂ and its covariance are the same at R'GR as before at G.
+Data turned(const Data& d, double c0, double c1) {
+  Data out = d;
+  const double r[4] = {c0, -c1, c1, c0};
+  // v[0] and v[stride], one vector's two coordinates
+  auto turn = [c0, c1](double* v, int stride) {
+    const double v0 = v[0], v1 = v[stride];
+    v[0] = c0 * v0 + c1 * v1, v[stride] = c0 * v1 - c1 * v0;
+  };
+  for (Pattern& pt : out.patterns) {
+    double a[4];
+    std::copy(pt.zz, pt.zz + 4, a);
+    congruent(r, a, pt.zz, true);
+    std::copy(pt.zi, pt.zi + 4, a);
+    congruent(r, a, pt.zi, true);
+    std::copy(pt.bb, pt.bb + 4, a);
+    congruent(r, a, pt.bb, true);
+    turn(pt.b, 1);
+    for (int b = 0; b < d.p; ++b) turn(pt.zx + b, d.p), turn(pt.cx + b, d.p);
+    for (int j = 0; j < 2; ++j) turn(pt.si + j, 2);
+  }
+  return out;
+}
+
 
 }  // namespace
 
@@ -1299,7 +1325,7 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     // as a random intercept estimated at zero is, and as lmerTest's derivatives in the factor Λ hold it.  Whether a
     // fit near the boundary is on it is told by the criterion's slope off the boundary, at w from Λ's first column:
     // the fits stop short of θ2 = 0 where the criterion is flat in it.  Only where neither way gives a positive
-    // definite Hessian are the given degrees of freedom used.
+    // definite Hessian at an optimum are the given degrees of freedom used.
     //
     // Near the boundary when the intercept's variance at the time where the subjects' lines cross with the least
     // spread (|D|/D22, with |G| from Λ: from G's entries it is the small difference of large numbers) is below a tenth
@@ -1319,38 +1345,46 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
       const bool none = flat_slope && !(f.g[0] > 1e-6);
       const double w0 = none || f.theta[0] == 0 ? 0 : f.theta[0];
       const double w1 = none ? 0 : f.theta[0] != 0 ? f.theta[1] : std::hypot(f.theta[1], f.theta[2]);
-      const double gw[4] = {w0 * w0, w0 * w1, w0 * w1, w1 * w1};
-      const double s00 = gw[0] + nu[0], s11 = gw[3] + nu[1], scale[3] = {s00, std::sqrt(s00 * s11), s11};
+      // the derivatives are taken with the random effects' coordinates turned so that w is the first of them, where
+      // G = diag(|w|², 0).  In their own coordinates, with w long next to σ, W = (A⁻¹ + G)⁻¹ has an eigenvalue near
+      // 1/|w|² beside ones near 1, which its entries there keep to a share of their digits only, and each of D's
+      // entries reaches into the direction off w, whose information swamps what tells w's length apart: with two
+      // visits at 809.796 and 819.952 (σe 0.197, Λ some 7,000 times σe), where theory gives exactly N − 2 = 18 with
+      // complete data, 15 of 200 studies were more than 0.1% off (up to 4.2%), and with dropout 0.5 one of 200 fell
+      // back to the given degrees of freedom and two had 13.55 and 19.27 where 60-digit fits give 18.0004 and 18.0001
+      const double len = std::hypot(w0, w1);
+      const Data dw = turned(d, len > 0 ? w0 / len : 1, len > 0 ? w1 / len : 0);
+      double nw[2];
+      noise_scale(dw, nw);
+      const double gw[4] = {len * len, 0, 0, 0};
+      const double s00 = gw[0] + nw[0], s11 = nw[1], scale[3] = {s00, std::sqrt(s00 * s11), s11};
       Exact e;
-      const bool held = exact_derivatives(d, s2, gw, 0, scale, c, e);
+      const bool held = exact_derivatives(dw, s2, gw, 0, scale, c, e);
       const bool rank1 = rank_one(d);
       bool boundary = flat || rank1 || none;
-      if (held && !rank1 && !none) {
-        // the criterion's derivative along v v' (v ⟂ w): rising off the boundary, the fit is on it
-        const double len = std::hypot(w0, w1), v0 = len > 0 ? -w1 / len : 0, v1 = len > 0 ? w0 / len : 1;
-        boundary = !(e.grad[1] / scale[0] * v0 * v0 + e.grad[2] / scale[1] * v0 * v1 +
-                         e.grad[3] / scale[2] * v1 * v1 <
-                     0);
-      }
+      // the criterion's derivative along v v' (v ⟂ w, the second coordinate): rising off the boundary, the fit is on it
+      if (held && !rank1 && !none) boundary = !(e.grad[3] < 0);
       auto on_boundary = [&]() {
         if (!held) return std::numeric_limits<double>::quiet_NaN();
         if (none) return exact_df(1, e.hess, e.dvar, e.var);
-        // in x = (σ²/s0, η), w = w0 + (√scale_00, √scale_11) η: J_aj = ∂δ_a/∂η_j and the Hessians of δ_a in η (the
-        // criterion's gradient in δ does not vanish on the boundary)
+        // in x = (σ²/s0, η), w = (|w|, 0) + (√scale_00, √scale_11) η: J_aj = ∂δ_a/∂η_j and the Hessians of δ_a in η
+        // (the criterion's gradient in δ does not vanish on the boundary)
         const double r0 = std::sqrt(s00), r1 = std::sqrt(s11);
-        const double J[3][2] = {{r0 * 2 * w0 / scale[0], 0}, {r0 * w1 / scale[1], r1 * w0 / scale[1]},
-                                {0, r1 * 2 * w1 / scale[2]}};
+        const double J[3][2] = {{r0 * 2 * len / scale[0], 0}, {0, r1 * len / scale[1]}, {0, 0}};
         const double D2[3][2][2] = {{{r0 * r0 * 2 / scale[0], 0}, {0, 0}},
                                     {{0, r0 * r1 / scale[1]}, {r0 * r1 / scale[1], 0}},
                                     {{0, 0}, {0, r1 * r1 * 2 / scale[2]}}};
-        double hx[9], gx[3];
+        double hx[9], gx[3], fx[3];
         hx[0] = e.hess[0];
         gx[0] = e.dvar[0];
+        fx[0] = e.grad[0];
         for (int j = 0; j < 2; ++j) {
-          double hj = 0, gj = 0;
-          for (int a = 0; a < 3; ++a) hj += e.hess[1 + a] * J[a][j], gj += e.dvar[1 + a] * J[a][j];
+          double hj = 0, gj = 0, fj = 0;
+          for (int a = 0; a < 3; ++a)
+            hj += e.hess[1 + a] * J[a][j], gj += e.dvar[1 + a] * J[a][j], fj += e.grad[1 + a] * J[a][j];
           hx[1 + j] = hx[(1 + j) * 3] = hj;
           gx[1 + j] = gj;
+          fx[1 + j] = fj;
           for (int i = 0; i < 2; ++i) {
             double t = 0;
             for (int a = 0; a < 3; ++a) {
@@ -1360,6 +1394,17 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
             hx[(1 + i) * 3 + 1 + j] = t;
           }
         }
+        // Satterthwaite's degrees of freedom belong to an optimum: where a Newton step along the boundary would take
+        // the criterion lower by more than 10⁻⁸ of it (½ ∇F'H⁻¹∇F, exact_df's quadratic form with the criterion's
+        // gradient), w w' is not the boundary optimum, and the boundary gives none.  At the boundary optima of the
+        // designs above and of others with heavy dropout such a step promises 1.3 · 10⁻⁹ or less.  It promised 0.005
+        // from a fit near the boundary whose optimum is inside (Λ's θ2 1.07 beside θ1 3.67), which took the boundary's
+        // 48.9 degrees of freedom for the interior's 28.02 (60-digit fits); and 5 · 10⁻⁵ to 0.5 in 11 of 200 studies
+        // with a residual SD 10⁻⁶ of the slopes' (times 0, 0.59, 0.82, 1.25 and 2.07, dropout 0.899, 5 subjects a
+        // group), whose fits stop where the criterion in doubles cannot see the boundary optimum, and which had 5.3 to
+        // 9.4 degrees of freedom there for its 8
+        if (0.5 / exact_df(3, hx, fx, 1) > 1e-8 * (1 + std::fabs(f.criterion)))
+          return std::numeric_limits<double>::quiet_NaN();
         return exact_df(3, hx, gx, e.var);
       };
       // the other way where the first fails, except that D held at rank 1 by the fit stays there

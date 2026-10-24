@@ -1957,8 +1957,9 @@ def test_satterthwaite_degrees_of_freedom_are_computed_where_the_random_effects_
     # five subjects a group, 90% dropout and a residual SD 10⁻⁶ of the slopes': where a single subject beyond one a
     # group was measured more than once, the boundary REML optimum has Λ's entries 10⁷ to 10⁸ times σ, where the
     # criterion's rounding (0.01 near where the fits stop, up to 3 at the optimum) hides it, and the fit stops short
-    # of it, with a Hessian that is not positive definite (10 studies here; at the optimum it is, with 8 degrees of
-    # freedom); the row and the statement say how many used N − 2
+    # of it, where a Newton step along the boundary would still lower the criterion or the Hessian is not positive
+    # definite (13 studies here; at the optimum it is, with 8 degrees of freedom); the row and the statement say how
+    # many used N − 2
     inputs = {"timing": "custom", "times": "0 0.590874 0.815691 1.25445 2.06801", "sd1": "6.372", "sde": "1.175e-06",
               "dropout": "0.899", "n1": "5", "reps": "200"}
     row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
@@ -1981,6 +1982,21 @@ def test_satterthwaites_degrees_of_freedom_are_exact_where_theory_gives_them():
                                                           "sde": "0.3", "rho": "0.8", "n1": "20", "reps": "200"},
                         threads=2))
     assert row["mean_df"] == pytest.approx(38, rel=1e-6), row
+
+
+def test_two_visits_far_from_time_0_keep_the_digits_of_satterthwaites_degrees_of_freedom():
+    """Two visits far from time 0, where the subjects' levels vary some 7,000 times as much as the measurements: with
+    complete data theory gives exactly N − 2 = 18 in every study, and the exact derivatives along D's entries had lost
+    digits (15 of these 200 studies more than 0.1% off, up to 4.2%; mean_df 17.9928, or 18.0015 where the compiler
+    fuses a multiply and an add).  Taken with the random effects' coordinates turned along the fit's D = w w', every
+    study is within 2 · 10⁻⁶ of 18.  With half of the subjects gone by the second visit, one study fell back to N − 2
+    and two had 13.55 and 19.27, where 60-digit fits give 18.0002, 18.0004 and 18.0001."""
+    inputs = {"timing": "custom", "times": "809.796 819.952", "sd0": "1.42", "sd1": "1.73", "rho": "0.27",
+              "sde": "0.197", "n1": "10", "reps": "200"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(18, abs=1e-5), row
+    row = first_row(run("sim.lmm.longitudinal", "power", {**inputs, "dropout": "0.5"}, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(17.98764, abs=2e-4), row
 
 
 def test_a_simulated_study_that_cannot_tell_a_groups_slope_apart_counts_as_failed():
