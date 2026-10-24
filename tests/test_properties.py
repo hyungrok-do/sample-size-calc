@@ -21,6 +21,7 @@ import os
 import random
 import re
 import time
+from fractions import Fraction
 from typing import Dict, List, Optional
 
 import pytest
@@ -479,7 +480,8 @@ def test_dropout_inflates_each_group_and_sums_them(pid):
         assert sizes, inflated
         even = 2 if pid in ("means.crossover", "means.be.ratio") else 1  # two sequences of equal size
         for key in sizes:
-            assert inflated[f"{key}_inflated"] == math.ceil(row[key] / (1 - d) / even - 1e-9) * even, (key, d)
+            want = math.ceil(Fraction(row[key]) / (1 - Fraction(str(d))) / even) * even  # from the rate typed
+            assert inflated[f"{key}_inflated"] == want, (key, d)
         if groups and inflated.get("n_inflated") is not None:   # the total is the sum of the enrolled groups
             assert inflated["n_inflated"] == sum(inflated[f"{k}_inflated"] for k in groups), (d, inflated)
 
@@ -815,6 +817,20 @@ def test_hazards_whose_sum_overflows_keep_their_share_of_events():
     assert len({r["n"] for r in rows}) == 1, [r["n"] for r in rows]
 
 
+@pytest.mark.parametrize("n1,dropout,inflated", [
+    ("84000000", "0.3", 120000000),            # 120000000.00000001 in doubles, which 1e-9 left 120,000,001
+    ("2", "0.99975", 8000),                    # 8000.00000000088: 1 - d magnifies the rounding of d
+    ("7", "0.9999993", 10000000),              # 10000000.0005
+    ("123456789", "0.9999993", 176366841428572),  # 176366841437486.06, 8,914 too many
+])
+def test_a_dropout_table_rounds_up_from_the_rate_typed(n1, dropout, inflated):
+    """n / (1 - d) rounded up, worked out from the decimals of d: no slack on the quotient in doubles gets all of
+    these."""
+    res = run("means.two.t", "power", {**base_inputs("means.two.t"), "n1": n1, "dropout": dropout})
+    row = res["dropout"]["rows"][0]
+    assert (row["n1_inflated"], row["n_inflated"]) == (inflated, 2 * inflated), row
+
+
 @pytest.mark.parametrize("dropout", ["0.9999999999", "0.999999", "0.9999985"])
 def test_a_dropout_table_never_shows_a_count_past_any_study(dropout):
     """Each group's inflated size, and the total's (which two groups just under 10^15 take past it)."""
@@ -1016,6 +1032,11 @@ def test_a_tiny_number_of_controls_per_case_leaves_one_control():
     ("prop.two.equiv", "n", {"dl": "-1e-31"}, "dl", "values must be at least 1e-30 in size"),
     ("prop.two.equiv", "n", {"scale": "or", "oru": "1e31"}, "oru", "values must be at most 1e30"),
     ("means.anova", "n", {"means": "0 0.5 1; 0 1e31 2"}, "means", "values must be 0 or between 1e-30 and 1e30 in size"),
+    # a number below the smallest double is not 0 either (it was read as 0, and computed with)
+    ("means.two.t", "power", {"mu1": "1e-400"}, "mu1", "values must be 0 or between 1e-30 and 1e30 in size"),
+    ("means.two.t", "power", {"mu1": "-2e-324"}, "mu1", "values must be 0 or between 1e-30 and 1e30 in size"),
+    ("means.two.t", "n", {"dropout": "1e-400"}, "dropout", "values must be 0 or at least 1e-30"),
+    ("means.two.t", "power", {"n1": "1e-400"}, "n1", "values must be whole numbers"),
 ])
 def test_a_value_below_1e_30_or_above_1e30_in_size_is_refused(pid, solve, inputs, key, says):
     """Every number that is not a count is 0 or between 1e-30 and 1e30 in size: no study's quantity lies beyond in
@@ -1083,6 +1104,21 @@ def test_the_ends_of_a_range_are_values_as_typed(pid, solve, inputs, says):
     else:
         key = next(iter(inputs))
         assert res["ok"] and [r.get("target_" + key, r.get(key)) for r in res["rows"]] == says, res
+
+
+@pytest.mark.parametrize("text,count,last", [
+    ("1.96 to 1.9600003 by 0.00000001", 31, 1.9600003),
+    ("1000.1 to 1000.1003 by 0.00001", 31, 1000.1003),
+    ("0.9999999 to 1 by 0.00000001", 11, 1),
+    ("650.00002 to 650 by 0.00002", 2, 650),
+    ("171.503517 to 171.50357199999998 by 0.000001", 55, 171.503571),
+])
+def test_a_range_has_as_many_values_as_its_decimals(text, count, last):
+    """The count from (b - a) / step in doubles, whose ends' rounding shifted it by more than a billionth once the
+    start was a million steps or more, dropped an end the steps reach (30 values, ending at 1.96000029) or added one
+    they miss by more than a billionth of a step (56, ending at 171.50357199999998)."""
+    res = run("means.two.t", "power", {**base_inputs("means.two.t"), "mu1": text, "mu2": "0"})
+    assert res["ok"] and len(res["rows"]) == count and res["rows"][-1]["mu1"] == last, res.get("input_errors")
 
 
 def test_a_list_of_10000_doubles_from_python_is_read():
