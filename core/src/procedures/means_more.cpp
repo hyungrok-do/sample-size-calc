@@ -376,7 +376,8 @@ Factorial factorial(const Scenario& s) {
   // interaction of 7e-18, 7e12 times σ = 1e-30.  One larger than its bound (twice it, for the rounding of the sums)
   // is there whatever the means were typed as; for the others the typed means decide, in whole numbers: a bound
   // taken as the decision removed real effects (a row of 1e6 added to the bounds of B and A × B, a cell of exactly
-  // 1 was taken as typed to within half a spacing).  The effects kept are those of the doubles.
+  // 1 was taken as typed to within half a spacing).  The effects kept are those of the doubles, unless the doubles
+  // cancel exactly.
   const double cells = static_cast<double>(A) * B;
   std::vector<double> ea(A), eb(B), eab(static_cast<std::size_t>(A * B));
   bool real_a = false, real_b = false, real_ab = false;
@@ -424,6 +425,18 @@ Factorial factorial(const Scenario& s) {
       for (int j = 0; exact_b && j < B; ++j) eb[j] = stored.value(stored.column(j));
       for (int i = 0; exact_ab && i < A; ++i)
         for (int j = 0; j < B; ++j) eab[static_cast<std::size_t>(i * B + j)] = stored.value(stored.cell(i, j));
+      // an effect that the means as typed have and the doubles cancel exactly takes its size from the means as
+      // typed: the rows 0.1 0.2 and -0.19999999999999998 0.5 have the same sum as doubles, 0.30000000000000001665,
+      // but row means of 0.15 and 0.15000000000000001 as typed, which left A with f = 0 and the power alpha
+      auto zero = [](const std::vector<double>& e) {
+        return std::all_of(e.begin(), e.end(), [](double x) { return x == 0; });
+      };
+      const bool typed_a = exact_a && real_a && zero(ea), typed_b = exact_b && real_b && zero(eb),
+                 typed_ab = exact_ab && real_ab && zero(eab);
+      for (int i = 0; typed_a && i < A; ++i) ea[i] = typed.value(typed.row(i));
+      for (int j = 0; typed_b && j < B; ++j) eb[j] = typed.value(typed.column(j));
+      for (int i = 0; typed_ab && i < A; ++i)
+        for (int j = 0; j < B; ++j) eab[static_cast<std::size_t>(i * B + j)] = typed.value(typed.cell(i, j));
     }
   }
   for (double e : ea)
