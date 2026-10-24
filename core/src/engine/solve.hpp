@@ -13,6 +13,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include "engine/procedure.hpp"
 #include "stats/numerics.hpp"
@@ -54,9 +55,28 @@ double first_whole(F&& ok, double from, double cap, const char* none) {
 }
 
 /// x, the size of a group as n times its ratio to another (or its share), rounded up: with a slack for the
-/// rounding of the product (20 × 1.1 is 22.000000000000004) that is relative below 1, so that a group of any ratio
-/// gets at least 1 (an absolute slack of 1e-9 left one with n × the ratio of 1e-9 or less with none).
-inline double round_up(double x) { return std::ceil(x - 1e-9 * std::fmin(1.0, x)); }
+/// rounding of the ratio as typed and of the product (20 × 1.1 is 22.000000000000004) that is relative, a few units
+/// in the last place of x, so that a group of any ratio gets at least 1 (an absolute slack of 1e-9 left one with
+/// n × the ratio of 1e-9 or less with none) and one of 1e8 × 1.1 gets 110000000 (that slack is less than the
+/// rounding of a product above 2^24, which gave it 110000001).
+inline double round_up(double x) { return std::ceil(x * (1 - 4 * std::numeric_limits<double>::epsilon())); }
+
+/// The groups that n × their weights w (relative sizes, say: `weight` and `weights` name them), rounded up, leave
+/// with 1 subject, for a message: "group 2 still has 1 subject (n × its relative size, rounded up)", "groups 1 and 2
+/// still have 1 subject each (n × their relative sizes, rounded up)", or "" when every group has more.
+inline std::string single_groups(const std::vector<double>& w, double n, const std::string& weight,
+                                 const std::string& weights) {
+  std::vector<std::size_t> one;
+  for (std::size_t i = 0; i < w.size(); ++i)
+    if (round_up(n * w[i]) <= 1) one.push_back(i + 1);
+  if (one.empty()) return "";
+  if (one.size() == 1)
+    return "group " + std::to_string(one[0]) + " still has 1 subject (n × its " + weight + ", rounded up)";
+  std::string list;
+  for (std::size_t i = 0; i < one.size(); ++i)
+    list += (i == 0 ? "" : i + 1 == one.size() ? " and " : ", ") + std::to_string(one[i]);
+  return "groups " + list + " still have 1 subject each (n × their " + weights + ", rounded up)";
+}
 
 inline double snap(double n, const NSearch& o) {
   const double k = std::ceil((n - o.lo) / o.step - 1e-9);
@@ -224,8 +244,10 @@ double offset(double x0, double d, P&& power, double target, const std::string& 
 /// (power_slack()).  For a power that changes evenly from one double to the next, the nearer of the two is the best
 /// of all doubles on both counts, so that when neither will do, none will: the answer is then refused, as not kept
 /// when the nearer does not keep d, as between two doubles when it does, and with `unreachable` when even `last`
-/// falls short.  `rough`: d was found by a search on the doubles themselves, and is known only to within half their
-/// spacing.
+/// falls short.  Where the power moves by less than counts as reaching from one double to the next (a target of
+/// 1 − 1e-10), the crossing is not found among the doubles tried, and the answer is the double nearest x0 + d, or
+/// refused as not kept when that one does not keep d.  `rough`: d was found by a search on the doubles themselves,
+/// and is known only to within half their spacing.
 template <class P>
 double reach(P&& power, double x, double last, bool up, double target, double x0, double d, const std::string& what,
              const std::string& from, const std::string& unreachable, bool rough = false) {
@@ -255,9 +277,12 @@ double reach(P&& power, double x, double last, bool up, double target, double x0
     pw = power(x);
     seen(pw, pw - pw_before);
   }
+  // the double nearest the root, x0 + d: when it does not keep d, none does, whatever their powers
+  const double nearest = up ? std::fmin(x0 + d, last) : std::fmax(x0 + d, last);
   if (short_of(pw) || std::isnan(pw)) {
     if (x == last && !std::isnan(pw)) throw CalcError(unreachable);
     if (uneven) throw unevenly(x);
+    if (!kept(x0, d, nearest)) throw not_kept(x0, d, nearest, what, from);
     // the root, converted to the value, lay further off than the 16 doubles tried (it should be a few)
     throw CalcError(lost);
   }
@@ -278,7 +303,13 @@ double reach(P&& power, double x, double last, bool up, double target, double x0
   if (rough && !std::isnan(before) && pw > pw_before)
     d = (before - x0) + (target - pw_before) / (pw - pw_before) * (x - before);
   if (pw - target <= slack && kept(x0, d, x)) return x;
-  if (std::isnan(before)) throw uneven ? unevenly(x) : CalcError(lost);
+  if (std::isnan(before)) {
+    // the power stays within the band of the target over all the doubles tried (next to 1 − 1e-10, where it moves
+    // by less than the band from one double to the next): the answer is the double nearest the root, if any
+    if (!kept(x0, d, nearest)) throw not_kept(x0, d, nearest, what, from);
+    if (std::fabs(power(nearest) - target) <= slack) return nearest;
+    throw uneven ? unevenly(x) : CalcError(lost);
+  }
   if (target - pw_before <= slack && kept(x0, d, before)) return before;
   const double nearer = std::fabs(x - x0 - d) <= std::fabs(before - x0 - d) ? x : before;
   if (!kept(x0, d, nearer)) throw not_kept(x0, d, nearer, what, from);

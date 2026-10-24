@@ -437,6 +437,36 @@ TEST_CASE("extremes: an answer near a target of 100% meets it to the finer preci
   }
 }
 
+TEST_CASE("extremes: a power within the precision shown over many doubles is refused for the difference it needs") {
+  // next to 1 − 1e-10 the power moves by 1e-13 from one double to the next, so that all the doubles tried count as
+  // reaching the target: when the double nearest the root does not keep the difference, none does (the refusal was
+  // "the answer cannot be computed for these inputs")
+  const double target = 1 - 1e-10, x0 = 0.75, step = std::nextafter(x0, 1.0) - x0, last = std::nextafter(1.0, 0.0);
+  auto power = [&](double x) { return target + 1e-13 * ((x - x0) / step); };
+  std::string message;
+  try {
+    solve::reach(power, x0, last, true, target, x0 - 3000.5 * step, 3000.5 * step, "ρ1", "ρ0", "unreachable");
+  } catch (const CalcError& e) {
+    message = e.what();
+  }
+  CHECK(message.find("ρ1 cannot be told apart from ρ0 = ") == 0);
+  CHECK(message.find("keeps fewer than four significant digits") != std::string::npos);
+  // and when it does keep it, it is the answer, though the root converted to a value lay 20 doubles off
+  const double from = x0 - 30000.25 * step;
+  double x = x0;
+  for (int i = 0; i < 20; ++i) x = std::nextafter(x, 1.0);
+  CHECK_EQ(solve::reach(power, x, last, true, target, from, 30000.25 * step, "ρ1", "ρ0", "unreachable"), x0);
+}
+
+TEST_CASE("extremes: n times a ratio rounded up is a whole product however large") {
+  // the absolute slack of 1e-9 was less than the rounding of a product above 2^24: 1e8 × 1.1 is
+  // 110000000.00000001, and a group of n × 1.1 got one subject more than the rule gives
+  CHECK_EQ(solve::round_up(1e8 * 1.1), 110000000.0);
+  CHECK_EQ(solve::round_up(3e7 * 1.1), 33000000.0);
+  CHECK_EQ(solve::round_up(1e12 * 0.7), 700000000000.0);
+  CHECK_EQ(solve::round_up(110000000.5), 110000001.0);
+}
+
 TEST_CASE("extremes: the correlation's distribution on Fisher's scale") {
   for (double r : {-0.9, 0.0, 0.3, 0.95})
     for (double rho : {-0.5, 0.0, 0.6})

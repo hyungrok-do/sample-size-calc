@@ -155,6 +155,12 @@ Procedure trend() {
         throw CalcError("the trend in the proportions runs opposite to the one-sided alternative");
       solve::NSearch o;
       o.lo = 2;
+      // groups that tiny relative sizes keep at 1 subject up to the largest n hold the power down however large n
+      // grows
+      const std::string held = solve::single_groups(t.w, o.hi, "relative size", "relative sizes");
+      if (!held.empty() && trend_power(t, o.hi, alpha, a) < s("power"))
+        throw CalcError("the target power cannot be reached with a sample size up to " + text::format_g(o.hi, 10) +
+                        ", where " + held);
       n = solve::min_n([&](double x) { return trend_power(t, x, alpha, a); }, s("power"), o, &ctx);
     } else {
       n = s("n");

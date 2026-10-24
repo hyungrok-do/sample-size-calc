@@ -2201,6 +2201,27 @@ def test_degenerate_effect_sizes_and_sizes_are_refused():
         row = run("means.anova", solve, {**base, **extra})["rows"][0]
         assert row["_error"].startswith("every group has 1 subject (n × its allocation ratio, rounded up)"), row
         assert "no degrees of freedom for the error" in row["_error"] and "n" not in row and "sizes" not in row, row
+    # groups that tiny sizes keep at 1 subject hold the power down however large n grows: named, as they were before
+    # such sizes rounded up to 1 (the message had become only "cannot be reached with a sample size up to 100000000")
+    for pid, key, weights, says in (
+            ("means.anova", "ratios", "1e-30 1e-30 1",
+             "groups 1 and 2 still have 1 subject each (n × their allocation ratios, rounded up)"),
+            ("prop.trend", "weights", "1e-30 1e-30 1e-30 1",
+             "groups 1, 2 and 3 still have 1 subject each (n × their relative sizes, rounded up)"),
+            ("prop.trend", "weights", "1e-30 1 1e-30 1e-30",
+             "groups 1, 3 and 4 still have 1 subject each (n × their relative sizes, rounded up)")):
+        msg = run(pid, "n", {**base_inputs(pid), "alloc": "ratio", key: weights})["rows"][0]["_error"]
+        assert msg == "the target power cannot be reached with a sample size up to 100000000, where " + says, msg
+    # n × a ratio rounded up is a whole product however large: the absolute slack, less than the rounding of a
+    # product above 2^24, gave 1e8 × 1.1 one more
+    for pid, solve, inputs, key, size in (
+            ("means.two.cluster", "power", {"k1": "100000000", "kr": "1.1"}, "k2", 110000000),
+            ("means.two.cluster", "power", {"k1": "30000000", "kr": "1.1"}, "k2", 33000000),
+            ("diag.auc", "power", {"n1": "100000000", "ratio": "1.1"}, "n0", 110000000)):
+        assert first_row(run(pid, solve, {**base_inputs(pid), **inputs}))[key] == size, (pid, inputs)
+    for pid, key, weights in (("means.anova", "ratios", "1 1 1.1"), ("prop.trend", "weights", "1 1 1 1.1")):
+        row = first_row(run(pid, "power", {**base_inputs(pid), "alloc": "ratio", key: weights, "n": "100000000"}))
+        assert row["sizes"].endswith(", 100000000, 110000000"), row
 
 
 def test_a_tiny_ratio_gives_its_group_one():
@@ -2254,20 +2275,80 @@ def test_two_way_effects_beyond_the_rounding_of_the_means_are_kept():
     assert first_row(run("means.anova2", "n", {**base, "means": "9e29 9e29 9e29 9.00000000000001e29",
                                                 "sigma": "1"}))["n"] == 2
     for shift in ("1", "1000000"):
-        row = first_row(run("means.anova2", "power", {**base, "b": "3", "means": f"{shift} {shift} {shift} 0 0 1e-9",
-                                                      "sigma": "1e-12", "n": "10"}))
-        assert row["fb"] == row["fab"] == pytest.approx(1000 / math.sqrt(18), rel=1e-12), (shift, row)
-    # cells one spacing apart differ by no more than the rounding of numbers of their size
-    msg = run("means.anova2", "n", {**base, "means": "1 1 1 1.0000000000000002", "sigma": "1e-17"})["rows"][0]
-    assert msg["_error"] == ("the cell means differ by no more than the rounding of numbers of their size; there is "
-                             "no effect to detect"), msg
+        for cell, f in (("1e-9", 1000 / math.sqrt(18)), ("1e-10", 100 / math.sqrt(18))):
+            inputs = {**base, "b": "3", "means": f"{shift} {shift} {shift} 0 0 {cell}", "sigma": "1e-12", "n": "10"}
+            row = first_row(run("means.anova2", "power", inputs))
+            assert all(row[k] == pytest.approx(f, rel=1e-12) for k in ("fb", "fab")), (shift, cell, row)
+
+
+def test_two_way_effects_are_none_only_where_the_means_as_typed_have_none():
+    """The repaired rule still took for none any effect within the most the rounding of the means could make of it:
+    a row of 1e6 removed an effect of B of 1e-10 (23.6 σ) that a row of 1000 left, cells typed as exactly 1 counted as
+    rounded, and in power mode such an effect gave f = 0 and the power alpha without a word.  An effect is now none
+    when the means as typed (the shortest decimals of the doubles) have none, as the additive 0.1 0.2 0.3 0.4."""
+    base = {**base_inputs("means.anova2"), "a": "2", "b": "2", "goal": "all"}
+    # one spacing apart: the effects of the doubles, 2⁻⁵²/4 = 5.55 σ each, as one-way ANOVA takes them
+    for solve, extra in (("n", {}), ("power", {"n": "10"})):
+        row = first_row(run("means.anova2", solve, {**base, **extra, "means": "1 1 1 1.0000000000000002",
+                                                     "sigma": "1e-17"}))
+        assert all(row[k] == pytest.approx(2.0**-54 / 1e-17, rel=1e-12) for k in ("fa", "fb", "fab")), row
+        assert row["pab"] > 0.99, row
+    # with σ = 1 the effects are there but out of reach, not none
+    msg = run("means.anova2", "n", {**base, "goal": "AB", "means": "1 1 1 1.0000000000000002"})["rows"][0]["_error"]
+    assert msg == "the target power cannot be reached with a sample size up to 100000000", msg
+    # a typed effect next to its bound is kept (the doubles' 0.125/4, not the decimals' 0.1/4), whichever side of
+    # the bound it falls on
+    row = first_row(run("means.anova2", "n", {**base, "means": "1000000000000000.1 1000000000000000.0 1e-09 "
+                                                                 "1.0000000000000036e-09", "sigma": "1"}))
+    assert row["fb"] == row["fab"] == 0.03125, row
+    row = first_row(run("means.anova2", "n", {**base, "b": "4", "sigma": "1.16e-11", "means": "1000000 1000000 "
+                                                 "1000000 1000000 1000000 1000000.0000000001 1000000 1000000"}))
+    assert row["fa"] > 1 and row["fb"] > 2 and row["fab"] > 2, row
+    # additive means stay without an interaction at any σ, though their doubles are not additive
+    for means in ("1000000.1 1000000.2 1000000.4 0.1 0.2 0.4", "0.1 0.2 0.3 1.1 1.2 1.3"):
+        row = first_row(run("means.anova2", "power", {**base, "b": "3", "means": means, "sigma": "1e-30", "n": "10"}))
+        assert row["fab"] == 0 and row["pab"] == pytest.approx(0.05) and row["pa"] > 0.99 and row["pb"] > 0.99, row
+
+
+@pytest.mark.parametrize("pid,solve,inputs", [
+    ("corr.one", "rho1", {"method": "fisher", "rho0": "-0.9999999999997747", "n": "100", "alternative": "upper",
+                          "power": "0.9999999999"}),
+    ("corr.one", "rho1", {"method": "exact", "rho0": "0.9999999999997246", "n": "100", "alternative": "lower",
+                          "power": "0.99999999"}),
+    ("agree.icc", "rho1", {"k": "3", "rho0": "0.9999999999956054", "n": "10000", "alternative": "lower",
+                           "power": "0.999999999999"}),
+    ("rates.one.poisson", "lam1", {"lam0": "5.8785800033970826e+23", "n": "1000", "test": "z",
+                                   "alternative": "upper", "power": "0.9999999999"})])
+def test_a_difference_no_double_keeps_is_refused_as_such_near_a_target_of_one(pid, solve, inputs):
+    """Next to a target of 1 − 1e-10 the power moves by less than the precision shown over many doubles, and the
+    search stepped through them without finding the crossing: 'the answer cannot be computed for these inputs; check
+    for an extreme value', where no double near the root keeps the difference it needs (mpmath)."""
+    msg = run(pid, solve, {**base_inputs(pid), **inputs})["rows"][0]["_error"]
+    assert " cannot be told apart from " in msg and "keeps fewer than four significant digits" in msg, msg
+
+
+def test_a_delta_r2_next_to_one_less_the_control_r2_has_the_f2_of_its_double():
+    """f² = ΔR²/(1 − R²c − ΔR²) took 1 − R²c rounded (5.5e-17 off for R²c = 0.3), a large part of the denominator next
+    to its last ΔR²: f² 17% off at the last double, and an answer at power 0.499976 where its double has 0.499871
+    (mpmath).  The powers named are those of mpmath at the doubles' exact f²."""
+    base = {**base_inputs("reg.multiple"), "n": "3", "b": "1", "a": "0", "r2c": "0.3"}
+    for alpha, power, before, after in (("1e-7", "0.5", "0.499871 at 0.699999999999886", "0.50008"),
+                                        ("1e-8", "0.8", "0.75181 at 0.6999999999999996", "0.828163")):
+        msg = run("reg.multiple", "r2t", {**base, "alpha": alpha, "power": power})["rows"][0]["_error"]
+        assert msg.startswith("the power cannot be brought to the target at any ΔR²") and before in msg, msg
+        assert " to " + after + " at the next one" in msg, msg
+    # an answer there states ΔR² apart from 1 − R²c, not as 0.9 next to R²c = 0.1
+    row = first_row(run("reg.multiple", "r2t", {**base, "r2c": "0.1", "alpha": "5e-8", "power": "0.5"}))
+    assert row["r2t"] == 0.8999999999999634 and row["power"] == pytest.approx(0.5, abs=5e-5), row
+    assert "R² increase of 0.899999999999963 (f² = 2.458e+13)" in row["_statement"], row
+    assert "control predictor(s) with R² = 0.1," in row["_statement"], row
 
 
 @pytest.mark.parametrize("pid,solve,inputs,says", [
     ("agree.icc", "rho1", {"k": "3", "rho0": "-0.49999999", "alternative": "lower"},
      "intraclass correlation of -0.4999999956 when the value under the null hypothesis is -0.49999999,"),
     ("corr.ci", "width", {"rho": "0.9999999", "n": "100"},
-     "(0.99999985 to 0.99999993) when the sample correlation is 0.9999999."),
+     "(0.999999851 to 0.999999933) when the sample correlation is 0.9999999."),
     ("means.one.ci", "n", {"tolprob": "0.9999999", "e": "0.5"}, "(target 99.99999%)"),
     ("means.paired.t", "mud", {"mud0": "1e9"}, "μD = 1000000000.9 (null value 1000000000)"),
     ("means.one.t", "mu1", {"mu0": "1e9"}, "μ0 = 1000000000 and the actual mean μ1 = 1000000000.66,"),
@@ -2282,7 +2363,19 @@ def test_two_way_effects_beyond_the_rounding_of_the_means_are_kept():
     ("corr.one", "power", {"rho0": "0.99990884", "rho1": "0.9999999", "alternative": "upper"},
      "ρ1 = 0.9999999 when the null correlation is ρ0 = 0.99991,"),
     ("rates.one.poisson", "lam1", {"lam0": "0.9999999", "n": "1e9"}, "when the rate under H0 is 0.9999999,"),
-    ("means.one.t", "mu1", {"mu0": "0.9999999", "sigma": "0.000133"}, "null mean μ0 = 0.9999999 and")])
+    ("means.one.t", "mu1", {"mu0": "0.9999999", "sigma": "0.000133"}, "null mean μ0 = 0.9999999 and"),
+    # nor as the whole number next to it in an exponent form, and both to the same decimal place
+    ("rates.one.poisson", "lam1", {"lam0": "999999999.9", "n": "1000"},
+     "event rate of 1000002801.5 when the rate under H0 is 999999999.9,"),
+    ("means.two.t", "mu1", {"mu2": "-999999999.7", "sigma": "100"}, "(μ1 = -999999908.8, μ2 = -999999999.7)"),
+    ("means.one.t", "mu1", {"mu0": "9999999.9", "sigma": "1000000"},
+     "null mean μ0 = 9999999.9 and the actual mean μ1 = 10660441.6,"),
+    ("means.paired.t", "mud", {"mud0": "999999.9999", "sdtype": "sdd", "sdd": "0.001", "n": "100", "power": "0.8"},
+     "μD = 1000000.00018 (null value 999999.9999)"),
+    # an interval's bounds apart from its estimate, an R² next to 1 with its digits
+    ("corr.ci", "n", {"rho": "0.99999999", "width": "1e-8"},
+     "(0.9999999839 to 0.9999999938) when the sample correlation is 0.99999999."),
+    ("means.two.ancova", "power", {"r2": "0.999999"}, "explaining R² = 0.999999 of the variance")])
 def test_values_side_by_side_are_shown_apart(pid, solve, inputs, says):
     """Statements showed two values that differ as one ('-0.5 when the value under the null hypothesis is -0.5',
     'μD = 1e+09 (null value 1000000000)'), or a value as the limit next to it ('(1 to 1)', 'target 100%')."""

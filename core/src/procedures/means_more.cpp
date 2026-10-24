@@ -1,5 +1,8 @@
 // More designs for means: two groups adjusted for covariates (ANCOVA), the
 // two-way factorial ANOVA and the one-way repeated-measures ANOVA.
+#include <algorithm>
+#include <cstdint>
+
 #include "procedures/common.hpp"
 
 namespace ssc::procs {
@@ -135,8 +138,9 @@ Procedure ancova() {
            " to detect a difference of " + fnum(r.num("mu1") - r.num("mu2")) +
            " between the covariate-adjusted means with an ANCOVA t-test (" + fint(r.num("ncov")) + " covariate" +
            (r.num("ncov") == 1 ? "" : "s") +
-           (r.num("r2") > 0 ? " explaining R² = " + fnum(r.num("r2")) + " of the variance, so that the residual "
-                              "standard deviation is " + fnum(r.num("sadj")) + " instead of " + fnum(r.num("sigma"))
+           (r.num("r2") > 0 ? " explaining R² = " + fnum_fine(r.num("r2")) +
+                                  " of the variance, so that the residual standard deviation is " +
+                                  fnum(r.num("sadj")) + " instead of " + fnum(r.num("sigma"))
                             : " explaining none of the variance, so that the standard deviation stays " +
                                   fnum(r.num("sigma"))) +
            "), " + alt_words(alt(s)) + " at α = " + fnum(r.num("alpha")) + ".";
@@ -190,6 +194,153 @@ struct Sum2 {
   double value() const { return hi + lo; }
 };
 
+// A whole number of any size without a sign, in base 1e9 with the lowest digit first: for the exact sums of the cell
+// means.
+struct Whole {
+  static constexpr std::uint64_t BASE = 1000000000;
+  std::vector<std::uint32_t> d;
+  Whole() = default;
+  explicit Whole(std::uint64_t x) {
+    for (; x > 0; x /= BASE) d.push_back(static_cast<std::uint32_t>(x % BASE));
+  }
+  explicit Whole(const std::string& digits) {  // decimal digits
+    for (std::size_t end = digits.size(); end > 0;) {
+      const std::size_t begin = end > 9 ? end - 9 : 0;
+      d.push_back(static_cast<std::uint32_t>(std::stoul(digits.substr(begin, end - begin))));
+      end = begin;
+    }
+  }
+  Whole& add(const Whole& x, std::uint64_t times = 1) {  // x × times (times below 1e9)
+    if (d.size() < x.d.size()) d.resize(x.d.size(), 0);
+    std::uint64_t carry = 0;
+    for (std::size_t i = 0; i < d.size(); ++i) {
+      carry += d[i] + (i < x.d.size() ? x.d[i] * times : 0);
+      d[i] = static_cast<std::uint32_t>(carry % BASE);
+      carry /= BASE;
+    }
+    for (; carry > 0; carry /= BASE) d.push_back(static_cast<std::uint32_t>(carry % BASE));
+    return *this;
+  }
+  Whole& times(std::uint64_t m) { return *this = Whole().add(*this, m); }
+  Whole& shift(int k) {  // × 10^k
+    d.insert(d.begin(), static_cast<std::size_t>(k / 9), 0);
+    std::uint64_t m = 1;
+    for (int i = 0; i < k % 9; ++i) m *= 10;
+    return times(m);
+  }
+  int compare(const Whole& x) const {
+    for (std::size_t i = std::max(d.size(), x.d.size()); i-- > 0;) {
+      const std::uint32_t a = i < d.size() ? d[i] : 0, b = i < x.d.size() ? x.d[i] : 0;
+      if (a != b) return a < b ? -1 : 1;
+    }
+    return 0;
+  }
+  Whole& minus(const Whole& x) {  // *this − x, for x no larger
+    std::int64_t borrow = 0;
+    for (std::size_t i = 0; i < d.size(); ++i) {
+      std::int64_t v = static_cast<std::int64_t>(d[i]) - (i < x.d.size() ? x.d[i] : 0) - borrow;
+      borrow = v < 0;
+      d[i] = static_cast<std::uint32_t>(v + (borrow ? static_cast<std::int64_t>(BASE) : 0));
+    }
+    return *this;
+  }
+  double value() const {  // to about a unit in the last place: from the three highest digits
+    std::size_t top = d.size();
+    while (top > 0 && d[top - 1] == 0) --top;
+    double v = 0;
+    for (std::size_t i = top; i-- > (top > 3 ? top - 3 : 0);) v = v * BASE + d[i];
+    return v * std::pow(1e9, static_cast<double>(top > 3 ? top - 3 : 0));
+  }
+};
+
+// Numbers as whole numbers on one decimal scale, 10^least, each from its digits and exponent (x = ±D × 10^e): the cell
+// means of a two-way design, with the sums of the rows R, the columns C and all cells G split into positive and
+// negative parts, so that each effect times A·B (A R_i − G, B C_j − G, A·B m_ij − A R_i − B C_j + G) is the
+// difference P − N of two sums of whole numbers, exact.
+struct ExactCells {
+  struct Number {
+    bool negative = false;
+    Whole digits;
+    int exponent = 0;
+  };
+  std::uint64_t a, b;  // the weights A and B
+  int least = 0;
+  std::vector<Whole> pos, neg, rp, rn, cp, cn;
+  Whole gp, gn;
+  ExactCells(int A, int B, std::vector<Number> m)
+      : a(static_cast<std::uint64_t>(A)), b(static_cast<std::uint64_t>(B)), pos(m.size()), neg(m.size()), rp(A),
+        rn(A), cp(B), cn(B) {
+    bool any = false;
+    for (const auto& x : m) {
+      if (x.digits.d.empty()) continue;  // 0
+      least = any ? std::min(least, x.exponent) : x.exponent;
+      any = true;
+    }
+    for (std::size_t c = 0; c < m.size(); ++c) {
+      if (!m[c].digits.d.empty()) (m[c].negative ? neg : pos)[c] = m[c].digits.shift(m[c].exponent - least);
+      const int i = static_cast<int>(c) / B, j = static_cast<int>(c) % B;
+      rp[i].add(pos[c]);
+      rn[i].add(neg[c]);
+      cp[j].add(pos[c]);
+      cn[j].add(neg[c]);
+      gp.add(pos[c]);
+      gn.add(neg[c]);
+    }
+  }
+  std::pair<Whole, Whole> row(int i) const { return {Whole().add(rp[i], a).add(gn), Whole().add(gp).add(rn[i], a)}; }
+  std::pair<Whole, Whole> column(int j) const {
+    return {Whole().add(cp[j], b).add(gn), Whole().add(gp).add(cn[j], b)};
+  }
+  std::pair<Whole, Whole> cell(int i, int j) const {
+    const std::size_t c = static_cast<std::size_t>(i) * b + static_cast<std::size_t>(j);
+    return {Whole().add(pos[c], a * b).add(gp).add(rn[i], a).add(cn[j], b),
+            Whole().add(neg[c], a * b).add(gn).add(rp[i], a).add(cp[j], b)};
+  }
+  // P − N as a double
+  double value(std::pair<Whole, Whole> e) const {
+    const int sign = e.first.compare(e.second);
+    const double v = (sign >= 0 ? e.first.minus(e.second) : e.second.minus(e.first)).value();
+    return sign * v * std::pow(10.0, least);
+  }
+};
+
+// The cell means as typed: the shortest decimals that read back as the doubles (0.1, where the double is
+// 0.1000000000000000055511151231257827).
+std::vector<ExactCells::Number> typed_means(const std::vector<double>& m) {
+  std::vector<ExactCells::Number> t(m.size());
+  for (std::size_t c = 0; c < m.size(); ++c) {
+    if (m[c] == 0) continue;
+    const std::string x = text::format_roundtrip(std::fabs(m[c]));  // as 1.25e-05, 0.1 or 1e+30
+    const std::size_t e = x.find_first_of("eE"), point = x.substr(0, e).find('.');
+    const std::string mantissa = x.substr(0, e);
+    t[c].negative = m[c] < 0;
+    t[c].digits = Whole(point == std::string::npos ? mantissa : mantissa.substr(0, point) + mantissa.substr(point + 1));
+    t[c].exponent = (e == std::string::npos ? 0 : std::stoi(x.substr(e + 1))) -
+                    (point == std::string::npos ? 0 : static_cast<int>(mantissa.size() - point - 1));
+  }
+  return t;
+}
+
+// The cell means as the doubles are exactly: M × 2^E with a whole M below 2^53, which is M × 5^−E × 10^E for E < 0.
+std::vector<ExactCells::Number> stored_means(const std::vector<double>& m) {
+  std::vector<ExactCells::Number> t(m.size());
+  for (std::size_t c = 0; c < m.size(); ++c) {
+    if (m[c] == 0) continue;
+    int e;
+    const double f = std::frexp(std::fabs(m[c]), &e);
+    t[c].negative = m[c] < 0;
+    t[c].digits = Whole(static_cast<std::uint64_t>(std::ldexp(f, 53)));
+    for (int k = e - 53; k > 0; k -= 29) t[c].digits.times(std::uint64_t{1} << std::min(k, 29));
+    for (int k = 53 - e; k > 0; k -= 12) {
+      std::uint64_t five = 1;
+      for (int i = 0; i < std::min(k, 12); ++i) five *= 5;
+      t[c].digits.times(five);
+    }
+    t[c].exponent = std::min(e - 53, 0);
+  }
+  return t;
+}
+
 Factorial factorial(const Scenario& s) {
   Factorial f;
   f.a = static_cast<int>(s("a"));
@@ -220,9 +371,11 @@ Factorial factorial(const Scenario& s) {
       H += h;
       if (v != m[0]) f.equal = false;
     }
-  // an effect smaller than what the rounding of the means as typed can make is none: 0.1 0.2 0.3 0.4 are additive,
-  // but as doubles they leave an interaction of 7e-18, 7e12 times σ = 1e-30, where their rounding can make 1.9e-17;
-  // one at least as large as that is kept however small, since no means that round to these are without it
+  // An effect is none when the means as typed have none: 0.1 0.2 0.3 0.4 are additive, but as doubles they leave an
+  // interaction of 7e-18, 7e12 times σ = 1e-30.  One larger than its bound (twice it, for the rounding of the sums)
+  // is there whatever the means were typed as; for the others the typed means decide, in whole numbers: a bound
+  // taken as the decision removed real effects (a row of 1e6 added to the bounds of B and A × B, a cell of exactly
+  // 1 was taken as typed to within half a spacing).  The effects kept are those of the doubles.
   const double cells = static_cast<double>(A) * B;
   std::vector<double> ea(A), eb(B), eab(static_cast<std::size_t>(A * B));
   bool real_a = false, real_b = false, real_ab = false;
@@ -231,14 +384,14 @@ Factorial factorial(const Scenario& s) {
     e.add(R[i], A);
     e.add(G, -1);
     ea[i] = e.value();
-    if (!(std::fabs(ea[i]) < (A - 1) * hr[i] + (H - hr[i]))) real_a = true;
+    if (std::fabs(ea[i]) > 2 * ((A - 1) * hr[i] + (H - hr[i]))) real_a = true;
   }
   for (int j = 0; j < B; ++j) {
     Sum2 e;
     e.add(C[j], B);
     e.add(G, -1);
     eb[j] = e.value();
-    if (!(std::fabs(eb[j]) < (B - 1) * hc[j] + (H - hc[j]))) real_b = true;
+    if (std::fabs(eb[j]) > 2 * ((B - 1) * hc[j] + (H - hc[j]))) real_b = true;
   }
   for (int i = 0; i < A; ++i)
     for (int j = 0; j < B; ++j) {
@@ -252,8 +405,26 @@ Factorial factorial(const Scenario& s) {
       // weights (A − 1)(B − 1) on the cell, 1 − A on the rest of its row, 1 − B on the rest of its column, 1 elsewhere
       const double bound = (A - 1.0) * (B - 1) * h + (A - 1.0) * (hr[i] - h) + (B - 1.0) * (hc[j] - h) +
                            (H - hr[i] - hc[j] + h);
-      if (!(std::fabs(v) < bound)) real_ab = true;
+      if (std::fabs(v) > 2 * bound) real_ab = true;
     }
+  if (!(real_a && real_b && real_ab)) {
+    // the decisions left to the means as typed, and the effects of those that are there from the doubles exactly
+    // (the sums keep twice a double's digits, too few for an effect of 1e-35 next to cells of 1e6)
+    const ExactCells typed(A, B, typed_means(m));
+    auto none = [](const std::pair<Whole, Whole>& e) { return e.first.compare(e.second) == 0; };
+    const bool exact_a = !real_a, exact_b = !real_b, exact_ab = !real_ab;
+    for (int i = 0; !real_a && i < A; ++i) real_a = !none(typed.row(i));
+    for (int j = 0; !real_b && j < B; ++j) real_b = !none(typed.column(j));
+    for (int i = 0; !real_ab && i < A; ++i)
+      for (int j = 0; !real_ab && j < B; ++j) real_ab = !none(typed.cell(i, j));
+    if ((exact_a && real_a) || (exact_b && real_b) || (exact_ab && real_ab)) {
+      const ExactCells stored(A, B, stored_means(m));
+      for (int i = 0; exact_a && i < A; ++i) ea[i] = stored.value(stored.row(i));
+      for (int j = 0; exact_b && j < B; ++j) eb[j] = stored.value(stored.column(j));
+      for (int i = 0; exact_ab && i < A; ++i)
+        for (int j = 0; j < B; ++j) eab[static_cast<std::size_t>(i * B + j)] = stored.value(stored.cell(i, j));
+    }
+  }
   for (double e : ea)
     if (real_a) f.ssa += (e / cells) * (e / cells);
   for (double e : eb)
@@ -354,11 +525,9 @@ Procedure anova2() {
     double n;
     if (s.solve == "n") {
       if (f.equal) throw CalcError("the cell means are all equal; there is no effect to detect");
-      if (f.ssa == 0 && f.ssb == 0 && f.ssab == 0)
-        throw CalcError("the cell means differ by no more than the rounding of numbers of their size; there is no "
-                        "effect to detect");
-      if ((goal == "A" && !hasA) || (goal == "B" && !hasB) || (goal == "AB" && !hasAB) ||
-          (goal == "all" && !(hasA || hasB || hasAB)))
+      // an effect there is, however small, is out of reach rather than none (f = 5.6e-17 for cells 1 1 1
+      // 1.0000000000000002 with σ = 1)
+      if ((goal == "A" && f.ssa == 0) || (goal == "B" && f.ssb == 0) || (goal == "AB" && f.ssab == 0))
         throw CalcError("the cell means have no effect of the chosen kind");
       solve::NSearch o;
       o.lo = 2;

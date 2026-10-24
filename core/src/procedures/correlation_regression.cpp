@@ -371,10 +371,11 @@ Procedure corr_ci() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
-    const auto [lower, upper] = fnum_apart(r.num("lower"), r.num("upper"), {-1.0, 1.0});
+    // the bounds told apart from each other and from the estimate (0.9999999938 next to 0.99999999, not as it)
+    const auto t = fnum_apart_list({r.num("lower"), r.num("rho"), r.num("upper")}, {-1.0, 1.0});
     return "A sample of " + fint(r.num("n")) + " gives a " + level_text(r.num("conf")) +
-           " Fisher-z confidence interval of width " + fnum(r.num("width")) + " (" + lower + " to " + upper +
-           ") when the sample correlation is " + fnum_fine(r.num("rho")) + ".";
+           " Fisher-z confidence interval of width " + fnum(r.num("width")) + " (" + t[0] + " to " + t[2] +
+           ") when the sample correlation is " + t[1] + ".";
   };
   p.references = {REF_MACHIN};
   p.example_solve = "n";
@@ -446,14 +447,17 @@ Procedure multiple_regression() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double b = s("b"), a = s("a"), r2c = s("r2c"), alpha = s("alpha");
     double n, r2t;
-    auto f2_of = [&](double d) { return d / (1 - r2c - d); };
+    // f² = ΔR²/(1 − R²c − ΔR²), with the denominator to one rounding: 1 − R²c is not exact in doubles (R²c = 0.3),
+    // and next to the last ΔR² its rounding is a large part of the denominator (f² 17% off at the last double)
+    const double rest = 1 - r2c, rest_lo = -r2c - (rest - 1);  // 1 − R²c = rest + rest_lo exactly (Dekker)
+    auto f2_of = [&](double d) { return d / ((rest - d) + rest_lo); };
     if (s.solve == "r2t") {
       n = s("n");
       if (n < a + b + 2) throw CalcError("N must exceed A + B + 1");
       // solve on the unbounded f² scale, then ΔR² = f²(1 − R²c)/(1 + f²), up to the f² of the last ΔR² that may
       // be given (R²c + ΔR² < 1)
-      double last = std::nextafter(1 - r2c, 0.0);
-      while (!(r2c + last < 1 && 1 - r2c - last > 0)) last = std::nextafter(last, 0.0);
+      double last = rest;
+      while (!(r2c + last < 1 && (rest - last) + rest_lo > 0)) last = std::nextafter(last, 0.0);
       const std::string unreachable = "the target power cannot be reached for any admissible value of ΔR²";
       const double f2 = solve::solve_increasing([&](double x) { return mreg_power(n, x, b, a, alpha); }, s("power"),
                                                 1e-12, 0.15, f2_of(last), 1e-12, "ΔR²");
@@ -496,10 +500,13 @@ Procedure multiple_regression() {
     return c;
   };
   p.statement = [](const Scenario& s, const Row& r) {
+    // ΔR² and R²c with the digits it takes to tell each from 1 less the other, their limit (an increase of
+    // 0.699999999999886 with R²c = 0.3, not 0.7)
+    const double r2t = r.num("r2t"), r2c = r.num("r2c");
     return "A sample size of " + fint(r.num("n")) + " " + achieves_singular(s, r) + " to detect an R² increase of " +
-           fnum(r.num("r2t")) + " (f² = " + fnum(r.num("f2")) + ") attributable to " + fint(r.num("b")) +
+           fnum_apart(r2t, 1 - r2c).first + " (f² = " + fnum(r.num("f2")) + ") attributable to " + fint(r.num("b")) +
            " tested predictor(s), adjusting for " + fint(r.num("a")) + " control predictor(s) with R² = " +
-           fnum(r.num("r2c")) + ", using an F-test at α = " + fnum(r.num("alpha")) + ".";
+           fnum_apart(r2c, 1 - r2t).first + ", using an F-test at α = " + fnum(r.num("alpha")) + ".";
   };
   p.definitions = {{"B", "Number of predictors being tested."},
                    {"A", "Number of predictors already in the model."},

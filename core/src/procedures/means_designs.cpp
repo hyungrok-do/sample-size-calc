@@ -172,6 +172,11 @@ Procedure anova() {
       d = anova_design(s, o.lo);
       if (!(d.f > 0)) throw CalcError("the group means are all equal; there is no effect to detect");
       o.guess = (z_factor(alpha, s("power"), Alt::Two) + 2.0 * (d.k - 1)) / (d.k * d.f * d.f) + 1;
+      // groups that tiny ratios keep at 1 subject up to the largest n hold the power down however large n grows
+      const std::string held = solve::single_groups(w, o.hi, "allocation ratio", "allocation ratios");
+      if (!held.empty() && anova_power(anova_design(s, o.hi), alpha) < s("power"))
+        throw CalcError("the target power cannot be reached with a sample size up to " + text::format_g(o.hi, 10) +
+                        ", where " + held);
       const double n = solve::min_n([&](double x) { return anova_power(anova_design(s, x), alpha); }, s("power"), o, &ctx);
       d = anova_design(s, n);
       r.set("n", n);
