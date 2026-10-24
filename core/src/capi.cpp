@@ -30,6 +30,27 @@ std::string error_json(const std::string& msg) {
   o.set("error", msg);
   return o.dump();
 }
+
+// error_json(msg) copied for the caller, or NULL when there is not even memory for that: no exception may leave
+// the C interface (it would end the process)
+char* error_answer(const char* msg) noexcept {
+  try {
+    return dup_string(error_json(msg));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+// The answer to a calculation that runs out of memory, as error_json writes it, ready so that only its copy needs
+// memory
+constexpr char NO_MEMORY[] = R"({"ok":false,"error":"There is not enough memory for this calculation: use fewer )"
+                             R"(combinations of input values or shorter lists."})";
+
+char* no_memory_answer() noexcept {
+  char* p = static_cast<char*>(std::malloc(sizeof NO_MEMORY));
+  if (p) std::memcpy(p, NO_MEMORY, sizeof NO_MEMORY);
+  return p;
+}
 }  // namespace
 
 extern "C" {
@@ -38,37 +59,47 @@ SSC_API const char* ssc_version(void) { return "0.1.0"; }
 
 SSC_API int ssc_hardware_threads(void) { return ssc::hardware_threads(); }
 
+// The catalog, a schema and search results: NULL when there is not enough memory for them (see ssc.h)
 SSC_API char* ssc_catalog_json(void) {
   try {
     return dup_string(ssc::catalog_json().dump());
+  } catch (const std::bad_alloc&) {
+    return nullptr;
   } catch (const std::exception& e) {
-    return dup_string(error_json(e.what()));
+    return error_answer(e.what());
+  } catch (...) {
+    return error_answer("unknown error");
   }
 }
 
 SSC_API char* ssc_procedure_json(const char* procedure_id) {
   if (!procedure_id) return nullptr;
-  const ssc::Procedure* p = ssc::find_procedure(procedure_id);
-  if (!p) return nullptr;
   try {
-    return dup_string(ssc::procedure_json(*p).dump());
+    const ssc::Procedure* p = ssc::find_procedure(procedure_id);
+    return p ? dup_string(ssc::procedure_json(*p).dump()) : nullptr;
+  } catch (const std::bad_alloc&) {
+    return nullptr;
   } catch (const std::exception& e) {
-    return dup_string(error_json(e.what()));
+    return error_answer(e.what());
+  } catch (...) {
+    return error_answer("unknown error");
   }
 }
 
 SSC_API char* ssc_search_json(const char* query, int limit) {
   try {
     return dup_string(ssc::search_json(query ? query : "", limit > 0 ? static_cast<std::size_t>(limit) : 0).dump());
+  } catch (const std::bad_alloc&) {
+    return nullptr;
   } catch (const std::exception& e) {
-    return dup_string(error_json(e.what()));
+    return error_answer(e.what());
   } catch (...) {
-    return dup_string(error_json("unknown error"));
+    return error_answer("unknown error");
   }
 }
 
 SSC_API char* ssc_run_json(const char* request_json, ssc_token* token) {
-  if (!request_json) return dup_string(error_json("empty request"));
+  if (!request_json) return error_answer("empty request");
   try {
     const ssc::json::Value req = ssc::json::parse(request_json);
     ssc::json::Value res = ssc::run_request(req, token ? &token->token : nullptr);
@@ -85,12 +116,11 @@ SSC_API char* ssc_run_json(const char* request_json, ssc_token* token) {
     return result;
   } catch (const std::bad_alloc&) {
     ssc::memory::release_free_memory();
-    return dup_string(error_json("There is not enough memory for this calculation: use fewer combinations of input "
-                                 "values or shorter lists."));
+    return no_memory_answer();
   } catch (const std::exception& e) {
-    return dup_string(error_json(e.what()));
+    return error_answer(e.what());
   } catch (...) {
-    return dup_string(error_json("unknown error"));
+    return error_answer("unknown error");
   }
 }
 

@@ -63,15 +63,27 @@ def test_run_reports_bad_input(capsys):
 
 
 def test_no_memory_for_the_engine_s_answer_is_an_error(capsys, monkeypatch):
-    from ssc import _native
+    from ssc import _native, core
 
     lib = _native.lib()
     monkeypatch.setattr(lib, "ssc_run_json", lambda request, token: None)
     assert cli.main(["run", "means.two.t"]) == 1
     assert "Error: There is not enough memory for this calculation" in capsys.readouterr().err
+    monkeypatch.setattr(lib, "ssc_procedure_json", lambda procedure: None)
+    assert cli.main(["run", "means.two.t"]) == 1  # a known procedure without memory for its schema
+    assert capsys.readouterr().err == "ssc-calc: there is not enough memory for the engine's answer\n"
+    assert cli.main(["show", "no.such.procedure"]) == 2
+    assert capsys.readouterr().err == "ssc-calc: unknown procedure: no.such.procedure\n"
     monkeypatch.setattr(lib, "ssc_catalog_json", lambda: None)
     assert cli.main(["list"]) == 1
     assert capsys.readouterr().err == "ssc-calc: there is not enough memory for the engine's answer\n"
+
+    def no_memory():
+        raise MemoryError  # Python's own, without a message
+
+    monkeypatch.setattr(core, "catalog", no_memory)
+    assert cli.main(["list"]) == 1
+    assert capsys.readouterr().err == "ssc-calc: there is not enough memory\n"
 
 
 def test_eval(capsys):

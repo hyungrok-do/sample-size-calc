@@ -111,6 +111,14 @@ def test_no_memory_for_the_engine_s_answer_is_an_error(monkeypatch):
     monkeypatch.setattr(_native.lib(), "ssc_run_json", lambda request, token: None)
     res = calculate("means.two.t", "n", {})
     assert res["ok"] is False and res["error"].startswith("There is not enough memory for this calculation")
+    # no memory for a schema or the catalog: an error the model reads, not a crash it sees only as its tool's name
+    monkeypatch.setattr(_native.lib(), "ssc_procedure_json", lambda procedure: None)
+    no_memory = {"ok": False, "error": "there is not enough memory for the engine's answer"}
+    assert call("describe_method", {"method_id": "means.two.t"}) == no_memory
+    assert call("calculate", {"method_id": "means.two.t", "solve_for": "n"}) == no_memory
+    assert call("search_methods", {"description": "two independent means"}) == no_memory
+    monkeypatch.setattr(_native.lib(), "ssc_catalog_json", lambda: None)
+    assert call("search_methods", {}) == no_memory
 
 
 def test_inputs_as_a_model_writes_them():

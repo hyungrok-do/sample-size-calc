@@ -13,6 +13,9 @@
 #include "util/json.hpp"
 #include "util/parallel.hpp"
 
+#define SSC_STATIC  // the core is linked into the tests: no dllimport for the C API declarations
+#include "ssc/ssc.h"
+
 using namespace ssc;
 
 namespace {
@@ -141,6 +144,29 @@ TEST_CASE("procedures: a scenario without the memory it needs says so") {
   const json::Value& xs = curve.get("plots").at(0).get("series").at(0).get("x");
   CHECK(xs.size() > 0);
   for (const auto& x : xs.elements()) CHECK(x.as_number(NAN) <= 15);
+}
+
+TEST_CASE("procedures: an answer without the memory it needs says so") {
+  // a procedure of the test's own whose columns, made once for the whole answer, cannot have their memory
+  Procedure memory;
+  memory.id = "test.memory";
+  memory.name = "Memory";
+  memory.solve_for = {{"power", "Power", "", ""}};
+  memory.params = {num("n", "N", "10")};
+  memory.run = [](const Scenario&, Row& r, RunContext&) { r.set("power", 0.5); };
+  memory.columns = [](const Scenario&) -> std::vector<Column> { throw std::bad_alloc(); };
+  registry().push_back(&memory);
+  char* text = ssc_run_json(R"({"procedure":"test.memory","solve_for":"power","inputs":{}})", nullptr);
+  registry().pop_back();
+  // the C interface keeps this answer written out, so that giving it takes no memory but its copy: it is the one
+  // written for every other error
+  json::Value expected = json::Value::object();
+  expected.set("ok", false);
+  expected.set("error", "There is not enough memory for this calculation: use fewer combinations of input values or "
+                        "shorter lists.");
+  CHECK(text != nullptr);
+  if (text) CHECK_EQ(std::string(text), expected.dump());
+  ssc_free(text);
 }
 
 TEST_CASE("procedures: typed and pasted numbers") {

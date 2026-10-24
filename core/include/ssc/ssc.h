@@ -7,8 +7,10 @@
  *
  * Memory: every `char*` returned by this library must be released with
  * ssc_free().  Strings passed in are UTF-8 and only borrowed for the call.
- * A function returning `char*` returns NULL when there is not enough memory
- * even for its answer (and ssc_procedure_json also for an unknown id).
+ * ssc_catalog_json, ssc_procedure_json and ssc_search_json return NULL when
+ * there is not enough memory for their answer (ssc_procedure_json also for an
+ * unknown id); ssc_run_json answers that it ran out of memory, and returns
+ * NULL only when there is not enough memory even for that short answer.
  *
  * Threading: all functions are thread-safe.  Long computations can be
  * monitored and cancelled from another thread through an ssc_token.
@@ -45,7 +47,8 @@ SSC_API int ssc_hardware_threads(void);
 SSC_API char* ssc_catalog_json(void);
 
 /** Full JSON schema of one procedure (parameters, solve-for options, ...).
- *  Returns NULL if the id is unknown. */
+ *  Returns NULL if the id is unknown, or if there is not enough memory for
+ *  the schema. */
 SSC_API char* ssc_procedure_json(const char* procedure_id);
 
 /**

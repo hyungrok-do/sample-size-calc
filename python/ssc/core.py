@@ -95,13 +95,15 @@ def hardware_threads() -> int:
 # there was not even memory for that, and the engine returned NULL.
 _NO_MEMORY = ("There is not enough memory for this calculation: use fewer combinations of input values or shorter "
               "lists.")
+# What catalog(), search() and schema() raise MemoryError with when the engine returned NULL for want of memory
+_NO_MEMORY_FOR_ANSWER = "there is not enough memory for the engine's answer"
 
 
 def _answer(ptr: Optional[int]) -> dict:
     """The JSON a call returns, which is NULL only when there was not enough memory for it."""
     text = _native.take_string(ptr)
     if text is None:
-        raise MemoryError("there is not enough memory for the engine's answer")
+        raise MemoryError(_NO_MEMORY_FOR_ANSWER)
     return json.loads(text)
 
 
@@ -126,8 +128,11 @@ def schema(procedure_id: str) -> dict:
     """Full parameter schema of one procedure."""
     raw = str(procedure_id).encode("utf-8", "replace")   # a lone surrogate (from undecodable bytes) becomes "?"
     text = _native.take_string(_native.lib().ssc_procedure_json(raw))
-    if text is None:
-        raise KeyError(f"unknown procedure: {raw.decode('utf-8')}")
+    if text is None:  # an unknown id, or a known one without memory for its schema
+        name = raw.decode("utf-8")
+        if any(p["id"] == name for p in catalog()["procedures"]):
+            raise MemoryError(_NO_MEMORY_FOR_ANSWER)
+        raise KeyError(f"unknown procedure: {name}")
     return json.loads(text)
 
 

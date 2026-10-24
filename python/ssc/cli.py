@@ -377,8 +377,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyError as exc:
         print(f"ssc-calc: {exc.args[0] if exc.args else exc}", file=sys.stderr)
         return 2
-    except MemoryError as exc:  # no memory left even for the engine's answer (core.catalog, core.search)
-        print(f"ssc-calc: {exc or 'there is not enough memory'}", file=sys.stderr)
+    except MemoryError as exc:  # e.g. no memory even for the engine's answer (core.catalog, search, schema)
+        print(f"ssc-calc: {str(exc) or 'there is not enough memory'}", file=sys.stderr)
         return 1
     except BrokenPipeError:  # e.g. piped into `head`
         return 0

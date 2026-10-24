@@ -214,9 +214,17 @@ def test_no_memory_even_for_the_answer_is_said_as_the_engine_says_it(monkeypatch
     res = ssc.run("means.two.t", "n", {})
     assert res == {"ok": False, "error": "There is not enough memory for this calculation: use fewer combinations of "
                                          "input values or shorter lists."}
+    # NULL for a schema: an unknown id, or a known one without memory for it
+    monkeypatch.setattr(lib, "ssc_procedure_json", lambda procedure: None)
+    with pytest.raises(MemoryError, match="not enough memory"):
+        ssc.schema("means.two.t")
+    with pytest.raises(KeyError, match="unknown procedure: no.such.procedure"):
+        ssc.schema("no.such.procedure")
     monkeypatch.setattr(lib, "ssc_catalog_json", lambda: None)
     with pytest.raises(MemoryError):
         ssc.catalog()
+    with pytest.raises(MemoryError):
+        ssc.schema("no.such.procedure")  # whether it is known cannot be found out either
 
 
 def test_text_that_is_not_valid_unicode_is_an_error_not_a_crash():
