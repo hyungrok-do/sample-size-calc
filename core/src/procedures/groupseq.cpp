@@ -348,6 +348,20 @@ BetaPass beta_pass(Design& d, double eta, const std::vector<double>& ainc, const
 // Beta-spending futility: the drift at which the boundaries spend exactly beta.
 void spend_beta(Design& d, double alpha, const std::vector<double>& ainc, const Futility& fut,
                 const std::function<void()>& check, int r) {
+  // On a grid of 64 or more a pass costs (r/32)² as much as on the grid of 32, and the search below takes 10 to 20
+  // passes, up to 60 where the root lies at an interim futility boundary that meets the efficacy boundary (a nearly
+  // flat β-spending function: 7 to 9 s of CPU with 20 analyses and r = 128).  The drift on the grid of 32 starts
+  // the search on this one instead (see below).
+  double guess = NAN;
+  if (r >= 64) {
+    try {
+      Design coarse = d;
+      spend_beta(coarse, alpha, ainc, fut, check, 32);
+      guess = coarse.eta_design;
+    } catch (const CalcError&) {
+      // not on the grid of 32: the search below on r decides
+    }
+  }
   const auto binc = increments(fut.spend, d.t);
   const double target = 1 - fut.beta;
   // A β-spending function that leaves less than a thousandth of beta for the last analysis (a tiny ρ, a large γ)
@@ -363,6 +377,38 @@ void spend_beta(Design& d, double alpha, const std::vector<double>& ainc, const 
     if (!flat) return p.power - target;
     return std::log(std::fmax(p.left, 1e-320)) - std::log(std::fmax(p.last, 1e-320));
   };
+  if (std::isfinite(guess)) {
+    // Secant steps from the drift on the grid of 32, the first of 1e-11 (the tolerance of the search below): where
+    // the root is a jump at the first analysis (the same on any grid), the two points bracket it at once, and
+    // elsewhere the two grids' roots lie up to about 1e-3 apart (relative; 1e-6 typically).  A bracket goes to
+    // Brent's method, and a step below the tolerance ends the search.  One that has not ended within 10 steps, or
+    // steps 5% away, gives way to the search below.
+    double x0 = guess, f0 = f(x0), eta = f0 == 0 ? x0 : NAN;
+    double x1 = x0 + (f0 < 0 ? 1e-11 : -1e-11), f1 = std::isfinite(eta) ? 0 : f(x1);
+    for (int i = 0; i < 10 && !std::isfinite(eta); ++i) {
+      if (f1 == 0) {
+        eta = x1;
+      } else if ((f0 < 0) != (f1 < 0)) {
+        eta = x0 < x1 ? numerics::brent(f, x0, x1, f0, f1, 1e-11) : numerics::brent(f, x1, x0, f1, f0, 1e-11);
+      } else {
+        const double step = f1 * (x1 - x0) / (f1 - f0);
+        if (std::fabs(step) <= 1e-11) {
+          eta = x1 - step;
+        } else {
+          if (!(std::fabs(step) < 0.05 * x1)) break;
+          x0 = x1;
+          f0 = f1;
+          x1 -= step;
+          f1 = f(x1);
+        }
+      }
+    }
+    if (std::isfinite(eta)) {
+      f(eta);  // the boundaries at that drift
+      d.eta_design = eta;
+      return;
+    }
+  }
   const double eta_f = qnorm(alpha, false) + qnorm(fut.beta, false);  // fixed-sample drift
   if (!(eta_f > 0)) throw CalcError("the power must exceed alpha");
   double lo = 0.95 * eta_f, hi = 1.3 * eta_f;

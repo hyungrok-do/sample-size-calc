@@ -1893,6 +1893,26 @@ def test_robust_and_multiarm_simulations_do_not_depend_on_where_the_means_lie():
         assert far["power"] == near["power"] and far["power_all"] == near["power_all"], mu
 
 
+def test_multiarm_arm_powers_at_a_large_critical_value_and_next_to_other_arms():
+    """Given the pooled SD's ratio s, an arm rejects when a normal variable around its standardized effect θ exceeds
+    c·s, which falls from 1 to 0 within about 1/θ in log s: with a large critical value (α = 1e-30, 22 to 46 degrees
+    of freedom) 48 nodes over the SD's whole range missed it by up to 8%.  The references integrate the noncentral t
+    probability in 40 digits (mpmath).  An arm's power does not depend on the other arms' means (no adjustment, so
+    the critical value does not either); the nodes below the density's range followed only the arm least likely to
+    reject, and the second arm's power came out 4.6 times too small next to an arm of −50."""
+    base = {**base_inputs("sim.multiarm"), "alpha": "1e-30", "alternative": "upper"}
+
+    def row(inputs):
+        return first_row(ssc.run("sim.multiarm", "power", {**base, **inputs}, power_curve=False, approximate=True))
+
+    for mu, n, power in (("30", "12", 0.05934137601000206), ("24.8", "14", 0.5342628525237474),
+                         ("20", "16", 0.8616794626980599), ("12", "24", 0.9999916637322294)):
+        assert row({"mu": mu, "n": n})["power"] == pytest.approx(power, rel=1e-10), (mu, n)
+    arms = [row({"mu": other + " 0.5", "n": "2", "alpha": "1e-20", "adjust": "none"})["_tables"][0]["rows"][1][4]
+            for other in ("-50", "-5", "0", "5", "20")]
+    assert arms == pytest.approx([2.401065992381323e-20] * len(arms), rel=1e-12), arms
+
+
 def test_satterthwaite_degrees_of_freedom_with_a_residual_sd_far_below_the_random_slopes():
     """With random slopes 10⁸⁰ residual SDs apart over the follow-up, the squares of the finite-difference steps
     passed below the smallest double, and every study fell back to N − 2 degrees of freedom without a word."""

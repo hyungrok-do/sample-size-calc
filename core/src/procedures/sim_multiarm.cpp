@@ -34,6 +34,9 @@ constexpr int KMAX = 8;   // treatment arms
 constexpr int ANY_BIT = 8, ALL_BIT = 9, FALSE_BIT = 10;
 constexpr int Z_NODES = 64, S_NODES = 48;
 constexpr double Z_RANGE = 8.5;
+// S nodes: within STEP_REACH of an arm's effect in u = c·s its rejection changes, and panels there are at most
+// STEP_PANEL wide in u (see SNodes)
+constexpr double STEP_REACH = 10, STEP_PANEL = 10;
 
 enum class Adjust { Dunnett, Holm, Hochberg, Bonferroni, None };
 enum class Goal { Any, All, Each };
@@ -72,14 +75,28 @@ double log_upper_normal(double y) {
   return -y * y / 2 - std::log(y) - stats::LN_SQRT_2PI + std::log1p(-1 / (y * y));
 }
 
-/// Nodes of the SD ratio S = √(χ²_ν/ν): Gauss–Legendre in t = log S, where the density is smooth and
+/// Nodes of the SD ratio S = √(χ²_ν/ν) for the critical value c and the arms' standardized effects θ_i (as
+/// single_step orients them; their sizes if two-sided): Gauss–Legendre in t = log S, where the density is smooth and
 /// unimodal, ∝ exp(g(t)) with g(t) = ν t − ν (e^{2t} − 1)/2, over the range where g > −40, in panels of at most 1.5
 /// where it is wider than 3 (with few degrees of freedom: 22 with 2, 3 with 26), since P(T ≥ c | S) falls from about
 /// 1 to 0 within a small part of it (with 48 nodes over the whole range the power was up to 3.5% off with 2 degrees
-/// of freedom and 4e-6 with 18); the weights are normalized to sum to 1.  One node S = 1 when ν is huge.
+/// of freedom and 4e-6 with 18); the weights are normalized to sum to 1 over that range.  One node S = 1 when ν is
+/// huge.  Two refinements follow the arms:
+/// - Given S = s, arm i rejects when a normal variable around θ_i with an SD of 1 (over z) exceeds u = c·s, so its
+///   rejection falls from about 1 to 0 within a few units of u around θ_i: a part of the density's range of width
+///   about 1/θ_i in t, small next to that range when c is large next to √ν, whatever ν (c = 65.7 with 26 degrees of
+///   freedom, an arm of θ = 65.6: 48 nodes over the whole range gave 0.4908 for 0.5343).  Where u is within
+///   STEP_REACH of some θ_i, and over the range of each arm's own rejections (below), the panels are split into
+///   pieces of at most STEP_PANEL in u.
+/// - Where an arm rejects mostly at a smaller S than the density's nodes reach (a tiny alpha, more so with few
+///   degrees of freedom), panels follow it there: over the range where the density times its P(T ≥ c | S) is within
+///   e^−40 of its largest value, when more than e^−30 of that lies below the density's nodes.  Every arm's, not only
+///   that of the arm least likely to reject: an arm with a larger effect next to one with a smaller effect, none or
+///   the opposite (one-sided) rejects between the two ranges, where nothing was integrated (μ = 0.5 and 20, n = 3,
+///   α = 1e-30: the second arm's power came out 9.78e-26 for 1.614e-23).
 struct SNodes {
   std::vector<double> s, w;
-  explicit SNodes(double df) {
+  SNodes(double df, double c, const std::vector<double>& effects) {
     if (df > 1e7) {
       s = {1};
       w = {1};
@@ -89,58 +106,94 @@ struct SNodes {
     double lo = -1, hi = 1;
     while (g(lo) > -40) lo *= 2;
     while (g(hi) > -40) hi *= 2;
-    a_ = numerics::brent([&](double t) { return g(t) + 40; }, lo, 0, 1e-12);
-    b_ = numerics::brent([&](double t) { return g(t) + 40; }, 0, hi, 1e-12);
-    const stats::GLRule& rule = stats::gauss_legendre(S_NODES);
-    const int panels = b_ - a_ > 3 ? static_cast<int>(std::ceil((b_ - a_) / 1.5)) : 1;
-    h_ = (b_ - a_) / panels;
-    for (int q = 0; q < panels; ++q)
-      for (std::size_t i = 0; i < rule.x.size(); ++i) {
-        const double t = a_ + h_ * (q + (rule.x[i] + 1) / 2);
-        s.push_back(std::exp(t));
-        w.push_back(rule.w[i] * std::exp(g(t)));
-        total_ += w.back();
+    const double a = numerics::brent([&](double t) { return g(t) + 40; }, lo, 0, 1e-12);
+    const double b = numerics::brent([&](double t) { return g(t) + 40; }, 0, hi, 1e-12);
+    const int panels = b - a > 3 ? static_cast<int>(std::ceil((b - a) / 1.5)) : 1;
+    const double h = (b - a) / panels;
+    // each arm's range below the density's, and the ranges in t over which the panels are split
+    std::vector<std::pair<double, double>> tails, zones;
+    for (double theta : effects) {
+      auto f = [&](double t) { return g(t) + log_upper_normal(c * std::exp(t) - theta); };  // concave
+      double x = -60, y = 5;  // its largest value, by golden section
+      while (y - x > 1e-9) {
+        const double m1 = y - 0.6180339887498949 * (y - x), m2 = x + 0.6180339887498949 * (y - x);
+        if (f(m1) < f(m2))
+          x = m1;
+        else
+          y = m2;
       }
-    for (double& x : w) x /= total_;
-  }
-
-  /// The same nodes and, where an arm with the standardized effect `low` (the arm least likely to reject) rejects at
-  /// the critical value c mostly at a smaller S than they reach (a tiny alpha, more so with few degrees of freedom),
-  /// panels there as well: over the range where the density times P(T ≥ c | S) is within e^−40 of its largest
-  /// value, when more than e^−30 of that lies below the density's nodes.
-  SNodes(double df, double c, double low) : SNodes(df) {
-    if (df > 1e7) return;
-    auto g = [&](double t) { return df * t - df * std::expm1(2 * t) / 2; };
-    auto h = [&](double t) { return g(t) + log_upper_normal(c * std::exp(t) - low); };  // concave
-    double a = -60, b = 5;  // its largest value, by golden section
-    while (b - a > 1e-9) {
-      const double m1 = b - 0.6180339887498949 * (b - a), m2 = a + 0.6180339887498949 * (b - a);
-      if (h(m1) < h(m2))
-        a = m1;
-      else
-        b = m2;
+      const double top = (x + y) / 2, level = f(top) - 40;
+      double l = top - 1, u = top + 1;
+      while (f(l) > level) l -= 2 * (top - l);
+      while (f(u) > level) u += 2 * (u - top);
+      const double ta = numerics::brent([&](double t) { return f(t) - level; }, l, top, 1e-12);
+      const double tb = numerics::brent([&](double t) { return f(t) - level; }, top, u, 1e-12);
+      if (!(top >= a && !(f(a) > level + 10)) && std::fmin(a, tb) > ta) tails.emplace_back(ta, std::fmin(a, tb));
+      const double from = theta > STEP_REACH ? std::log((theta - STEP_REACH) / c) : -INFINITY;
+      if (theta > -STEP_REACH) zones.emplace_back(from, std::log((theta + STEP_REACH) / c));
+      if (tb > std::fmax(ta, from)) zones.emplace_back(std::fmax(ta, from), tb);
     }
-    const double top = (a + b) / 2, level = h(top) - 40;
-    if (top >= a_ && !(h(a_) > level + 10)) return;
-    double lo = top - 1, hi = top + 1;
-    while (h(lo) > level) lo -= 2 * (top - lo);
-    while (h(hi) > level) hi += 2 * (hi - top);
-    const double ta = numerics::brent([&](double t) { return h(t) - level; }, lo, top, 1e-12);
-    const double tb = std::fmin(a_, numerics::brent([&](double t) { return h(t) - level; }, top, hi, 1e-12));
-    if (!(tb > ta)) return;
+    auto merge = [](std::vector<std::pair<double, double>>& v) {
+      std::sort(v.begin(), v.end());
+      std::size_t k = 0;
+      for (std::size_t i = 1; i < v.size(); ++i)
+        if (v[i].first <= v[k].second)
+          v[k].second = std::fmax(v[k].second, v[i].second);
+        else
+          v[++k] = v[i];
+      v.resize(v.empty() ? 0 : k + 1);
+    };
+    merge(tails);
+    merge(zones);
     const stats::GLRule& rule = stats::gauss_legendre(S_NODES);
-    const int panels = static_cast<int>(std::ceil((tb - ta) / 1.5));  // as narrow as the density's own
-    const double width = (tb - ta) / panels;
-    for (int q = 0; q < panels; ++q)
-      for (std::size_t i = 0; i < rule.x.size(); ++i) {  // weighted as the density's panels
-        const double t = ta + width * (q + (rule.x[i] + 1) / 2);
-        s.push_back(std::exp(t));
-        w.push_back(rule.w[i] * width / h_ * std::exp(g(t)) / total_);
+    // the panel from p to q, of width `width` (nodes at(i), as before where it is not split; `base` if it is one of
+    // the density's own), split where it crosses a zone wider than STEP_PANEL in u
+    auto panel = [&](double p, double q, double width, bool base, auto&& at) {
+      std::vector<double> cut;
+      for (const auto& z : zones) {
+        const double x = std::fmax(p, z.first), y = std::fmin(q, z.second);
+        if (!(y > x)) continue;
+        const double ex = std::exp(x), ey = std::exp(y);
+        const double pieces = std::ceil(c * (ey - ex) / STEP_PANEL);  // a zone spans some 50 in u at most
+        if (!(pieces >= 2)) continue;
+        const int m = static_cast<int>(std::fmin(pieces, 64));
+        if (x > p) cut.push_back(x);
+        for (int j = 1; j < m; ++j) cut.push_back(std::log(ex + j * (ey - ex) / m));
+        if (y < q) cut.push_back(y);
       }
+      if (cut.empty()) {
+        for (std::size_t i = 0; i < rule.x.size(); ++i) {
+          const double t = at(i);
+          s.push_back(std::exp(t));
+          w.push_back(base ? rule.w[i] * std::exp(g(t)) : rule.w[i] * width / h * std::exp(g(t)));
+        }
+        return;
+      }
+      std::sort(cut.begin(), cut.end());
+      cut.insert(cut.begin(), p);
+      cut.push_back(q);
+      for (std::size_t j = 0; j + 1 < cut.size(); ++j)
+        if (cut[j + 1] > cut[j])
+          for (std::size_t i = 0; i < rule.x.size(); ++i) {
+            const double t = cut[j] + (cut[j + 1] - cut[j]) * (rule.x[i] + 1) / 2;
+            s.push_back(std::exp(t));
+            w.push_back(rule.w[i] * (cut[j + 1] - cut[j]) / h * std::exp(g(t)));
+          }
+    };
+    for (int q = 0; q < panels; ++q)
+      panel(a + h * q, a + h * (q + 1), h, true, [&](std::size_t i) { return a + h * (q + (rule.x[i] + 1) / 2); });
+    double total = 0;  // the density's own panels: their weights are normalized to sum to 1
+    for (double v : w) total += v;
+    for (const auto& tail : tails) {
+      const double ta = tail.first, tb = tail.second;
+      const int count = static_cast<int>(std::ceil((tb - ta) / 1.5));  // as narrow as the density's own
+      const double width = (tb - ta) / count;
+      for (int q = 0; q < count; ++q)
+        panel(ta + width * q, ta + width * (q + 1), width, false,
+              [&](std::size_t i) { return ta + width * (q + (rule.x[i] + 1) / 2); });
+    }
+    for (double& v : w) v /= total;
   }
-
- private:
-  double a_ = 0, b_ = 0, h_ = 0, total_ = 0;  // the density's range in t, its panels' width, their weights' sum
 };
 
 using Probs = std::array<double, KMAX>;
@@ -326,15 +379,15 @@ double critical_value(const Design& d, const Sizes& n, const RunContext& ctx) {
   }
 }
 
-/// The standardized effect of the arm least likely to reject: the smallest, or the smallest in size if two-sided.
-double least_effect(const Design& d, const Sizes& n) {
+/// The arms' standardized effects as single_step orients them (their sizes if two-sided), each once.
+std::vector<double> arm_effects(const Design& d, const Sizes& n) {
   const double se = d.sigma * std::sqrt(1 / n.n + 1 / n.n0), sign = d.alt == Alt::Lower ? -1 : 1;
-  double low = INFINITY;
+  std::vector<double> e;
   for (int i = 0; i < d.k; ++i) {
-    const double theta = sign * (d.mu[i] - d.mu0) / se;
-    low = std::fmin(low, d.alt == Alt::Two ? std::fabs(theta) : theta);
+    const double theta = sign * (d.mu[i] - d.mu0) / se, v = d.alt == Alt::Two ? std::fabs(theta) : theta;
+    if (std::find(e.begin(), e.end(), v) == e.end()) e.push_back(v);
   }
-  return low;
+  return e;
 }
 
 struct Exact {
@@ -565,7 +618,7 @@ Procedure multiarm() {
     auto exact_at = [&](double n, double* crit = nullptr) {
       const Sizes z = sizes(n);
       const double c = critical_value(d, z, ctx);
-      const SNodes sn(z.df(d.k), c, least_effect(d, z));
+      const SNodes sn(z.df(d.k), c, arm_effects(d, z));
       if (crit) *crit = c;
       return exact_power(d, z, c, sn, ctx);
     };
