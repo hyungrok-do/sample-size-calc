@@ -12,6 +12,7 @@
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
 #include "procedures/proportion_ci.hpp"
+#include "procedures/proportion_effect.hpp"
 #include "util/parallel.hpp"
 
 namespace ssc::procs {
@@ -209,22 +210,6 @@ double two_prop_exact(const TwoPropTest& T, double n1d, double n2d, double p1, d
   return stats::clamp01(s);
 }
 
-double p1_from_effect(const Scenario& s, double p2) {
-  const std::string& es = s.s("es");
-  double p1;
-  if (es == "diff")
-    p1 = p2 + s("d1");
-  else if (es == "ratio")
-    p1 = p2 * s("r1");
-  else if (es == "or") {
-    const double o = s("or1") * p2 / (1 - p2);
-    p1 = std::isinf(o) ? 1 : o / (1 + o);  // odds past the largest double: P1 is 1
-  } else
-    p1 = s("p1");
-  if (!(p1 > 0 && p1 < 1)) throw CalcError("the implied P1 = " + fnum(p1) + " is not strictly between 0 and 1");
-  return p1;
-}
-
 Procedure two_props() {
   Procedure p;
   p.id = "prop.two";
@@ -336,7 +321,7 @@ Procedure two_props() {
     TwoN n;
     double p1;
     if (s.solve == "n") {
-      p1 = p1_from_effect(s, p2);
+      p1 = p1_from(s, p2);
       if (p1 == p2) throw CalcError("P1 equals P2");
       if ((a == Alt::Upper && p1 < p2) || (a == Alt::Lower && p1 > p2))
         throw CalcError("P1 − P2 has the sign opposite to the one-sided alternative");
@@ -355,7 +340,7 @@ Procedure two_props() {
     } else {
       n = two_group_n(s);
       if (s.solve == "power") {
-        p1 = p1_from_effect(s, p2);
+        p1 = p1_from(s, p2);
       } else {
         const bool up = a == Alt::Upper || (a == Alt::Two && !s.is("p1dir", "below"));
         const double lo = up ? p2 : 1e-9, hi = up ? 1 - 1e-9 : p2;
@@ -405,16 +390,14 @@ Procedure two_props() {
                                                              {"zunpool", "unpooled z-test"},
                                                              {"zpoolcc", "continuity-corrected z-test"},
                                                              {"fisher", "Fisher's exact test"}};
-    // the proportions apart from each other, the difference from 0 and the ratios from 1, their values of no effect;
-    // P1 from an odds ratio of 1 is P2 to a rounding error (0.5999999999999999 for 0.6), which is no difference
-    const bool same = r.num("p1") == r.num("p2") || (s.solve != "p1" && s.is("es", "or") && s("or1") == 1);
-    const auto [p1, p2] = fnum_apart(same ? r.num("p2") : r.num("p1"), r.num("p2"));
+    // the proportions apart from each other, the difference from 0 and the ratios from 1, their values of no effect
+    const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));
     std::string t = "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
                     " to detect a difference between the group proportions P1 = " + p1 + " and P2 = " + p2 +
-                    " (difference " + fnum_apart(same ? 0.0 : r.num("diff"), 0).first + ", ratio " +
-                    fnum_from(same ? 1.0 : r.num("ratio"), 1, 3) + ", odds ratio " +
-                    fnum_from(same ? 1.0 : r.num("or"), 1, 3) + ") using a " + alt_words(alt(s)) + " " +
-                    names.at(s.s("test")) + " at a target significance level of " + fnum(r.num("alpha"));
+                    " (difference " + fnum_apart(r.num("diff"), 0).first + ", ratio " +
+                    fnum_from(r.num("ratio"), 1, 3) + ", odds ratio " + fnum_from(r.num("or"), 1, 3) + ") using a " +
+                    alt_words(alt(s)) + " " + names.at(s.s("test")) + " at a target significance level of " +
+                    fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual " + fprob(r.num("actual_alpha")) + ")";
     // large samples use the normal approximation, and say so in a note
     const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
@@ -491,10 +474,12 @@ DiffCi diff_ci_at(const Scenario& s, double n1) {
 bool near_estimate(double w, double p1, double p2) { return std::fabs(w) <= 1e-13 * std::fmax(p1, p2); }
 
 // Why an Agresti–Caffo bound can lie on the wrong side of the estimate (a distance below 0), as at a confidence not
-// far above 50% for proportions far apart; the other intervals contain the estimate.
+// far above 50%: each group's proportion is taken as (x + 1)/(n + 2), (1 − 2p)/(n + 2) nearer 1/2, and the center
+// moves by the difference of the two, toward no difference with equal groups but either way with unequal ones
+// (P1 = P2 = 0.9 with 10 and 100 subjects moves it from 0 to −0.059); the other intervals contain the estimate.
 const char* const AC_WRONG_SIDE =
-    "the success and failure that the Agresti–Caffo interval adds to each group pull its center toward no difference "
-    "by more than its margin at this confidence";
+    "the success and failure that the Agresti–Caffo interval adds to each group pull each group's proportion toward "
+    "1/2, which moves its center from the estimate by more than its margin at this confidence";
 
 Procedure two_props_ci() {
   Procedure p;

@@ -8,6 +8,7 @@
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
 #include "procedures/mcnemar.hpp"
+#include "procedures/proportion_effect.hpp"
 #include "util/parallel.hpp"
 
 namespace ssc::procs {
@@ -399,40 +400,6 @@ double fm_power_exact(const std::vector<NiSpec>& tests, double n1d, double n2d, 
   return stats::clamp01(s);
 }
 
-// P1 from the actual effect.  One that rounds to 1 is refused (the power would need 1 − P1 in the statistic at the
-// expected proportions as well), named with what 1 − P1 is: P2 = 0.5 with D1 = 0.49999999999999994, or an odds
-// ratio of 1e16, puts it a rounding error below 1, where it was said to be 1.
-double p1_from(const Scenario& s, double p2) {
-  double p1, q1 = NAN;  // q1: 1 − P1, as the difference, the ratio or the odds give it
-  if (s.is("es", "diff")) {
-    const double d1 = s("d1");
-    p1 = p2 + d1;
-    const double z = p1 - p2;
-    q1 = (1 - p1) - ((p2 - (p1 - z)) + (d1 - z));
-  } else if (s.is("es", "ratio")) {
-    p1 = p2 * s("r1");
-    q1 = (1 - p1) - std::fma(s("r1"), p2, -p1);
-  } else if (s.is("es", "or")) {
-    const double o = s("or1") * p2 / (1 - p2);
-    p1 = std::isinf(o) ? 1 : o / (1 + o);  // odds past the largest double: P1 is 1
-    q1 = (1 - p2) / (1 - p2 + s("or1") * p2);
-  } else
-    p1 = s("p1");
-  if (p1 == 1 && q1 > 0)
-    throw CalcError("the implied P1 = 1 − " + fnum(q1) + " rounds to 1; it must lie strictly between 0 and 1 by "
-                    "more than that");
-  if (!(p1 > 0 && p1 < 1))
-    throw CalcError("the implied P1 = " + (p1 >= 1 && q1 < 0 && q1 > -1e-4 ? "1 + " + fnum(-q1) : fnum(p1)) +
-                    " is not strictly between 0 and 1");
-  return p1;
-}
-
-// P1 as a statement shows it: P1 from an odds ratio of 1 is P2 to a rounding error (0.5999999999999999 for 0.6),
-// which is no difference.
-double p1_stated(const Scenario& s, const Row& r) {
-  return s.is("es", "or") && s("or1") == 1 ? r.num("p2") : r.num("p1");
-}
-
 Scale scale_of(const Scenario& s) {
   return s.is("scale", "ratio") ? Scale::Ratio : (s.is("scale", "or") ? Scale::Odds : Scale::Diff);
 }
@@ -714,7 +681,7 @@ Procedure two_prop_ni() {
     // 0.0002), and the proportions from each other
     const double b0 = r.num(sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0"));
     const std::string b = sc == Scale::Diff ? fnum_apart(b0, 0).first : fnum_from(b0, 1);
-    const auto [p1, p2] = fnum_apart(p1_stated(s, r), r.num("p2"));
+    const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));
     const bool up = s.is("h1", "upper");
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
            " for the one-sided " + (sc == Scale::Odds ? "Miettinen–Nurminen" : "Farrington–Manning") +
@@ -894,7 +861,7 @@ Procedure two_prop_equiv() {
     const char* ukey = sc == Scale::Ratio ? "ru" : (sc == Scale::Odds ? "oru" : "du");
     // the limits apart from each other (0.99999 and 1.00001, not 1 and 1), and the proportions too
     const auto [lo, hi] = fnum_apart(r.num(lkey), r.num(ukey));
-    const auto [p1, p2] = fnum_apart(p1_stated(s, r), r.num("p2"));
+    const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
            " to conclude that " + quantity(sc) + " lies between " + lo + " and " + hi +
            " using two one-sided score tests at α = " + fnum(r.num("alpha")) + " each, when P1 = " + p1 + " and P2 = " +
@@ -935,12 +902,14 @@ double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCa
     const double sd1 = std::sqrt(p10 * q10 + p01 * q01 + 2 * p10 * p01);
     const double rn = std::sqrt(static_cast<double>(n)), sd0 = std::sqrt(psi);
     const double z = qnorm(a == Alt::Two ? half_alpha(alpha) : alpha, false);
-    // each tail's argument t, and how far the power can move with the rounding of t's numerator (z is within a few
-    // units in its last place, and √n·(P10 − P01) and z·√ψ are within one, of what they are): from its value at
-    // every t less `off` to that at every t plus `off`, a range that is not negligible only where sd1 lies orders of
-    // magnitude below √ψ (ψ near 1 and an odds ratio of 1e5 or more) and z within a few sd1 of √n·|P10 − P01|/√ψ,
-    // where the power steps from 0 to 1
-    const double off = 2e-15 * (rn * std::fabs(delta) + z * sd0) / sd1;
+    // each tail's argument t, and how far the power can move with the rounding of t's numerator: from its value at
+    // every t less `off` to that at every t plus `off`.  In units of 1.11e-16, z is within 7 of the quantile relative
+    // to it (AS 241 against 90-digit quantiles: 6.6e-16 at worst over 44,000 alphas from 1e-30 to 0.5), √ψ within 3
+    // more (ψ from P10 and P01) and their product within 1; √n·(P10 − P01) is within 3 of √n·(ψ + |P10 − P01|) (P10
+    // and P01 from ψ and the odds ratio, √n and the product).  The range is not negligible only where sd1 lies orders
+    // of magnitude below √ψ (ψ near 1 and an odds ratio of 1e5 or more) and z within a few sd1 of
+    // √n·|P10 − P01|/√ψ, where the power climbs from 0 to 1
+    const double off = 1.11e-16 * (3 * rn * (psi + std::fabs(delta)) + 11 * z * sd0) / sd1;
     const double t = ((a == Alt::Lower ? -1 : 1) * rn * delta - z * sd0) / sd1;
     if (a == Alt::Two) {
       const double t2 = (-rn * delta - z * sd0) / sd1;
@@ -1092,27 +1061,33 @@ Procedure mcnemar() {
       n = static_cast<int>(s("n"));
     }
     r.set("n", n);
-    // the normal approximation's power where the rounding of its critical value can move it by more than 1e-12, and
-    // an N that such a power decided, are refused: ψ near 1 with an odds ratio of 1e5 or more leaves a pair's
-    // difference next to no variance, and the power steps from 0 to 1 within a few of the critical value's last digits
+    // ψ near 1 with an odds ratio of 1e5 or more leaves a pair's difference next to no variance, and the normal
+    // approximation's power climbs from 0 to 1 within a few sd1 of its critical value, whose rounding then moves it
     // (at ψ = 1, an odds ratio of 1e30, a two-sided α of 0.0455002638963584 and 4 pairs it was 0.5, or 0.544 where
-    // the compiler fuses a·b + c, and the formula with the exact critical value gives 0.479)
-    auto sure = [&](int m, bool decided) {
+    // the compiler fuses a·b + c, and the formula with the exact critical value gives 0.479).  A power is refused
+    // where the rounding can move it by more than 1e-6, the finest digit an answer shows (a power of 99.9999%), and
+    // an N where the power at N or N − 1 lies within the rounding's reach of the target, which then decides N, if
+    // that reach is more than 1e-12 (below it with up to 1e7 pairs where a pair's difference has some variance)
+    auto sure = [&](int m, bool shown) {
       double u;
       const double pw = mcnemar_power(s, m, p10, p01, cache, ctx, q10, q01, &u);
-      if (u > 1e-12 && (!decided || std::fabs(pw - s("power")) <= u)) {
+      const bool decides = s.solve == "n" && u > 1e-12 && std::fabs(pw - s("power")) <= u;
+      if ((shown && u > 1e-6) || decides) {
         const double v1 = p10 * (std::isnan(q10) ? 1 - p10 : q10) + p01 * (std::isnan(q01) ? 1 - p01 : q01) +
                           2 * p10 * p01;
-        throw CalcError("the power with " + fint(m) + (m == 1 ? " pair" : " pairs") +
-                        " cannot be computed: a pair's difference has a variance of only " + fnum(v1) +
-                        ", so that the power steps from 0 to 1 within the rounding of the critical value (which leaves "
-                        "it " + (u >= 0.995 ? "anywhere from 0 to 1" : "uncertain by up to " + text::format_g(u, 2)) +
-                        ")");
+        const std::string pairs = fint(m) + (m == 1 ? " pair" : " pairs");
+        const std::string why = "a pair's difference has a variance of only " + fnum(v1) + ", so that the rounding of "
+                                "the critical value " + (u >= 0.995 ? "leaves the power anywhere from 0 to 1" :
+                                "can move the power by up to " + text::format_g(u, 2));
+        if (decides)
+          throw CalcError("the number of pairs cannot be computed: whether the power with " + pairs +
+                          " reaches the target is decided by rounding (" + why + ")");
+        throw CalcError("the power with " + pairs + " cannot be computed to within 1e-6: " + why);
       }
       return pw;
     };
-    if (s.solve == "n" && n > 1 && s.is("method", "normal")) sure(n - 1, true);
-    put_power(s, r, sure(n, false));
+    if (s.solve == "n" && n > 1 && s.is("method", "normal")) sure(n - 1, false);
+    put_power(s, r, sure(n, true));
     r.set("p10", p10);
     r.set("p01", p01);
     r.set("psi", std::min(1.0, p10 + p01));
