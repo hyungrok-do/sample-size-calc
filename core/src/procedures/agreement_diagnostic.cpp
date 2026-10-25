@@ -646,25 +646,40 @@ SSC_REGISTER(sens_spec);
 // without the condition the same holds for the specificities, with "correct" in place of "positive".
 struct PairedCells {
   double p10 = 0, p01 = 0;  // test 1 correct only, test 2 correct only
+  double q10 = 1, q01 = 1;  // 1 − P10 and 1 − P01
 };
 
 // The discordant cells from the two tests' accuracies a and b (sensitivities or specificities) and their dependence:
-// conditionally independent, a correlation between the results, or the share of discordant pairs.
+// conditionally independent, a correlation between the results, or the share of discordant pairs.  Each cell, and
+// 1 − P10 and 1 − P01, is taken from terms that keep their digits.  Next to an accuracy of 1 and one of 0 a pair's
+// difference has next to no variance, and P10 = Se1 − Se1·Se2, rounded next to 1, left 1 − P10 at 4.44e-16 for
+// 3.89e-16 (Se1 = 1 − 2.2e-16, Se2 = 1.67e-16) and Connor's power at 0.173 for 0.157; the cells from a discordant
+// share, Se1 − (Se1 + Se2 − ψ)/2 and Se2 − (Se1 + Se2 − ψ)/2, differences of numbers near 1, both came out 0 for
+// Se1 = 0.999999999999999, Se2 = 0.9999999999999991 and ψ = 1.11e-16, which left the power no number.
 PairedCells paired_cells(const Scenario& s, double a, double b, const char* rho_key, const char* disc_key,
                          const char* what) {
-  double both;  // the share correct on both tests
-  if (s.is("dep", "corr"))
-    both = a * b + s(rho_key) * std::sqrt(a * (1 - a) * b * (1 - b));
-  else if (s.is("dep", "disc"))
-    both = (a + b - s(disc_key)) / 2;
-  else
-    both = a * b;
-  const PairedCells c{a - both, b - both};
+  double both, p10, p01, q10, q01;  // both: the share correct on both tests
+  if (s.is("dep", "disc")) {
+    // half of ψ ± (a − b), with a − b kept to its last digit as sd + e (Knuth's two-sum)
+    const double d = s(disc_key), sd = a - b, v = sd - a, e = (a - (sd - v)) + (-b - v);
+    both = (a + b - d) / 2;
+    p10 = ((d + sd) + e) / 2;
+    p01 = ((d - sd) - e) / 2;
+    q10 = ((1 - a) + (1 - d) + b) / 2;
+    q01 = ((1 - b) + (1 - d) + a) / 2;
+  } else {
+    const double r = s.is("dep", "corr") ? s(rho_key) * std::sqrt(a * (1 - a) * b * (1 - b)) : 0;
+    both = a * b + r;
+    p10 = a * (1 - b) - r;
+    p01 = (1 - a) * b - r;
+    q10 = (1 - a) + both;
+    q01 = (1 - b) + both;
+  }
   // all four cells must be probabilities: both correct, test 1 only, test 2 only, neither
-  if (!(c.p10 >= -1e-12 && c.p01 >= -1e-12 && both >= -1e-12 && 1 - both - c.p10 - c.p01 >= -1e-12))
+  if (!(p10 >= -1e-12 && p01 >= -1e-12 && both >= -1e-12 && 1 - both - p10 - p01 >= -1e-12))
     throw CalcError(std::string("the ") + (s.is("dep", "disc") ? "share of discordant results" : "correlation") +
                     " is impossible for these " + what + ": the two tests' results would not form valid shares");
-  return {std::max(0.0, c.p10), std::max(0.0, c.p01)};
+  return {std::max(0.0, p10), std::max(0.0, p01), p10 > 0 ? q10 : 1, p01 > 0 ? q01 : 1};
 }
 
 Procedure paired_diagnostic() {
@@ -809,7 +824,8 @@ Procedure paired_diagnostic() {
       if (pairs < 1) return 0.0;
       const int k = static_cast<int>(pairs);
       const auto it = memo.find(k);
-      return it != memo.end() ? it->second : memo.emplace(k, mcnemar_power(s, k, c.p10, c.p01, cache, ctx)).first->second;
+      if (it != memo.end()) return it->second;
+      return memo.emplace(k, mcnemar_power(s, k, c.p10, c.p01, cache, ctx, c.q10, c.q01)).first->second;
     };
     auto power_parts = [&](double n, double& pse, double& psp) {
       pse = !use_se ? 1.0 : part(mse, nd(n), se, cse);
@@ -843,6 +859,39 @@ Procedure paired_diagnostic() {
       if (n > n_max)
         throw CalcError("the exact test is computed for up to 1,000,000 subjects with (or without) the condition; use "
                         "the normal approximation for more");
+    }
+    // Connor's power where a pair's difference has next to no variance (one accuracy next to 1 and the other next to
+    // 0) climbs from 0 to 1 within a few sd1 of its critical value, where the rounding of its statistic moves it: as
+    // in McNemar's test of paired proportions, a power is refused where that rounding can move it by more than 1e-6,
+    // and an N where the power at N or N − 1 lies within its reach of the target, if that reach is more than 1e-12
+    // (the two groups' reaches add up, each power being at most 1)
+    auto sure = [&](double m, bool shown) {
+      double u = 0, most = 0;
+      const PairedCells* worst = nullptr;
+      auto add = [&](bool used, double pairs, const PairedCells& c, McNemarCache& cache) {
+        if (!used || pairs < 1) return;
+        double v;
+        mcnemar_power(s, static_cast<int>(pairs), c.p10, c.p01, cache, ctx, c.q10, c.q01, &v);
+        u += v;
+        if (v > most) most = v, worst = &c;
+      };
+      add(use_se, nd(m), se, cse);
+      add(use_sp, nn(m), sp, csp);
+      double x, y;
+      const bool decides = s.solve == "n" && u > 1e-12 && std::fabs(power_parts(m, x, y) - s("power")) <= u;
+      if ((shown && u > 1e-6) || decides) {
+        const PairedCells& c = *worst;
+        const std::string why = std::string("among the subjects ") + (worst == &se ? "with" : "without") +
+                                " the condition, " + mcnemar_rounding(c.p10, c.p01, c.q10, c.q01, u);
+        if (decides)
+          throw CalcError("the total number of subjects cannot be computed: whether the power with " + fint(m) +
+                          " subjects reaches the target is decided by rounding (" + why + ")");
+        throw CalcError("the power with " + fint(m) + " subjects cannot be computed to within 1e-6: " + why);
+      }
+    };
+    if (normal) {
+      if (s.solve == "n" && n > 2) sure(n - 1, false);
+      sure(n, true);
     }
     double pse, psp;
     const double pw = power_parts(n, pse, psp);

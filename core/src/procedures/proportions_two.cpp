@@ -390,12 +390,15 @@ Procedure two_props() {
                                                              {"zunpool", "unpooled z-test"},
                                                              {"zpoolcc", "continuity-corrected z-test"},
                                                              {"fisher", "Fisher's exact test"}};
-    // the proportions apart from each other, the difference from 0 and the ratios from 1, their values of no effect
+    // the proportions apart from each other, the difference from 0 and the ratios from 1, their values of no effect;
+    // an odds ratio whose P1 rounds to P2 (1.4 at P2 = 0.9999999999999999) as the 1 that the power is computed for,
+    // beside a difference of 0 and a ratio of 1
     const auto [p1, p2] = fnum_apart(r.num("p1"), r.num("p2"));
+    const double odds = r.num("p1") == r.num("p2") ? 1.0 : r.num("or");
     std::string t = "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
                     " to detect a difference between the group proportions P1 = " + p1 + " and P2 = " + p2 +
                     " (difference " + fnum_apart(r.num("diff"), 0).first + ", ratio " +
-                    fnum_from(r.num("ratio"), 1, 3) + ", odds ratio " + fnum_from(r.num("or"), 1, 3) + ") using a " +
+                    fnum_from(r.num("ratio"), 1, 3) + ", odds ratio " + fnum_from(odds, 1, 3) + ") using a " +
                     alt_words(alt(s)) + " " + names.at(s.s("test")) + " at a target significance level of " +
                     fnum(r.num("alpha"));
     if (r.has("actual_alpha")) t += " (actual " + fprob(r.num("actual_alpha")) + ")";
@@ -578,19 +581,29 @@ Procedure two_props_ci() {
         n1 = solve::min_n_staying(ok, o, &ctx);
       } catch (const CalcError&) {
         // a one-sided bound that is still on the wrong side of the estimate, or within a rounding error of it, at
-        // the largest size: the reason, not only that the width was not reached
+        // the largest size: the reason, not only that the width was not reached (said of that size alone: a smaller
+        // one can put the bound on the right side, as N1 = 1 at R = 0.5 does by giving the groups equal sizes)
         const double w = diff_ci_at(s, o.hi).width;
         if (two || (w > 0 && !near_estimate(w, p1, p2))) throw;
         if (near_estimate(w, p1, p2))
           throw CalcError("the confidence is so close to 50% that the bound lies within a rounding error of the "
                           "estimate, where its distance cannot be computed");
-        throw CalcError(std::string("the bound lies on the wrong side of the estimate for every sample size up to ") +
-                        text::format_g(o.hi, 10) + ": " + (s.is("method", "ac") ? AC_WRONG_SIDE : "at this confidence"));
+        throw CalcError(std::string("the bound still lies on the wrong side of the estimate with ") +
+                        text::format_g(o.hi, 10) + " subjects in group 1, the largest sample size searched: " +
+                        (s.is("method", "ac") ? AC_WRONG_SIDE : "at this confidence"));
       }
-      if (!two && n1 > o.lo && s.is("method", "ac") &&
-          (diff_ci_at(s, n1 - 1).width <= 0 || near_estimate(diff_ci_at(s, n1 - 1).width, p1, p2)))
-        r.notes.push_back("Smaller samples put the bound on the wrong side of the estimate (" + std::string(AC_WRONG_SIDE) +
-                          "); this is the smallest that puts it beyond.");
+      // the size below the answer, where the bound lies on the wrong side or within a rounding error of the estimate
+      // (with P1 = 0.989, P2 = 0.176 and 50.1%, 5.7e-14 beyond it at 50 digits: its sign in doubles means nothing,
+      // and the reason need not hold)
+      if (!two && n1 > o.lo && s.is("method", "ac")) {
+        const DiffCi below = diff_ci_at(s, n1 - 1);
+        const std::string sizes = "With " + fint(n1 - 1) + " and " + fint(below.n2) + " subjects (one fewer in group 1)";
+        if (near_estimate(below.width, p1, p2))
+          r.notes.push_back(sizes + " the bound lies within a rounding error of the estimate.");
+        else if (below.width < 0)
+          r.notes.push_back(sizes + " the bound lies on the wrong side of the estimate (" + std::string(AC_WRONG_SIDE) +
+                            ").");
+      }
       r.set("target_width", target);
     } else {
       n1 = s("n1");
