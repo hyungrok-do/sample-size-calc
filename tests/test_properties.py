@@ -1518,7 +1518,9 @@ def test_mcnemars_normal_approximation_where_p10_rounds_to_one():
         res = run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha, "n": "4"})
         assert first_row(res) is None, (alternative, res)
         msg = res["rows"][0]["_error"]
-        assert "variance of only 4e-30" in msg and "can move the power by up to 0.94" in msg, (alternative, res)
+        # 0.95, or 0.94 where the compiler fuses a·b + c (the range rounded up to two digits)
+        assert "variance of only 4e-30" in msg and re.search(r"can move the power by up to 0\.9[45]$", msg), \
+            (alternative, res)
         assert first_row(run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha,
                                                               "n": "5"}))["power"] == 1
         assert first_row(run("prop.paired.mcnemar", "power", {**base, "alternative": alternative, "alpha": alpha,
@@ -1538,19 +1540,55 @@ def test_mcnemars_normal_approximation_where_p10_rounds_to_one():
     ("1e5", 0.49747688429875591, 1e-12), ("1e8", 0.49992021154424645, 2e-11), ("1e12", 0.49999920209492009, 2e-9),
     ("1e16", 0.49999998996924396, 2e-7), ("1e18", None, None), ("1e22", None, None)])
 def test_mcnemars_normal_approximation_next_to_the_step(odds_ratio, formula, within):
-    """Next to the step, the rounding of the critical value can move the power by a range that grows with the odds
+    """Next to the step, the rounding of the test statistic can move the power by a range that grows with the odds
     ratio: 4.8e-13 at 1e5, 1.5e-7 at 1e16.  All of these were refused, as stepping from 0 to 1 within the rounding,
     once a range taken 2.1 times as wide passed 1e-12, though the powers lay within 2e-14 to 5.6e-9 of the formula at
-    60 digits; only those that the rounding can move by more than 1e-6 are refused now, with that range."""
+    60 digits; only those that the rounding can move by more than 1e-6 are refused now, with that range, rounded up
+    (1.004e-6 at 4.45e17 is 1.1e-06: it said 1e-06, beside 'cannot be computed to within 1e-6')."""
     row = run("prop.paired.mcnemar", "power", {**base_inputs("prop.paired.mcnemar"), "method": "normal", "es": "or",
                                                "psi": "1", "orr": odds_ratio, "alternative": "two",
                                                "alpha": "0.0455002638963584", "n": "4"})["rows"][0]
     if formula is None:
         assert row["_error"].startswith("the power with 4 pairs cannot be computed to within 1e-6: a pair's "
                                         "difference has a variance of only"), row
-        assert "so that the rounding of the critical value can move the power by up to" in row["_error"], row
+        assert "so that the rounding of the test statistic can move the power by up to" in row["_error"], row
     else:
         assert row["power"] == pytest.approx(formula, abs=within), row
+    if odds_ratio == "1e18":
+        row = run("prop.paired.mcnemar", "power", {**base_inputs("prop.paired.mcnemar"), "method": "normal", "es": "or",
+                                                   "psi": "1", "orr": "4.45e17", "alternative": "two",
+                                                   "alpha": "0.0455002638963584", "n": "4"})["rows"][0]
+        assert row["_error"].endswith("can move the power by up to 1.1e-06"), row
+
+
+@pytest.mark.parametrize("inputs,formula", [
+    ({"alternative": "upper", "alpha": "9.519261393140189e-23", "n": "190", "se1": "0.9999999999999998",
+      "se2": "1.67e-16"}, 0.15726493410176878),
+    ({"alternative": "upper", "alpha": "2.35357e-18", "n": "150", "se1": "0.9999999999999999", "se2": "1.48e-16"},
+     0.18728309984387078),
+    ({"alternative": "lower", "alpha": "0.00020152916891104248", "n": "124", "se1": "0.999999999999999",
+      "se2": "0.9999999999999991", "dep": "disc", "dse": "1.1102230246251565e-16"}, 0.00020152923223531641)])
+def test_paired_diagnostic_tests_next_to_an_accuracy_of_one(inputs, formula):
+    """Se1 next to 1 and Se2 next to 0 leave a pair's difference next to no variance: P10 = Se1 − Se1·Se2, rounded
+    next to 1, left 1 − P10 14% off (4.44e-16 for 3.89e-16), and Connor's power 0.173 where the formula at 60 digits
+    gives 0.157 (and 0.169 for 0.187, 1 − P10 being 14% off there too); the cells from a discordant share of 1.11e-16 between two sensitivities next to 1 both came out
+    0, and the power no number.  Where the rounding of the statistic can move the power by more than 1e-6, it is
+    refused, as in McNemar's test, and so is a total that rounding decides."""
+    base = {**base_inputs("diag.paired"), "goal": "se", "method": "normal", "prev": "0.5", "dep": "indep"}
+    row = first_row(run("diag.paired", "power", {**base, **inputs}))
+    assert row["pse"] == pytest.approx(formula, rel=1e-6), row
+    base = {**base, "alternative": "upper", "se1": "0.9999999999999999", "se2": "1e-20"}
+    msg = run("diag.paired", "power", {**base, "alpha": "5.6121485864915037e-30", "n": "256"})["rows"][0]["_error"]
+    assert msg.startswith("the power with 256 subjects cannot be computed to within 1e-6: among the subjects with "
+                          "the condition, a pair's difference has a variance of only 1.11e-16, so that the rounding "
+                          "of the test statistic can move the power by up to"), msg
+    # a target of the power with 190 subjects itself, which rounding then decides
+    base = {**base, "se1": "0.9999999999999998", "se2": "1.67e-16", "alpha": "9.519261393140189e-23"}
+    target = first_row(run("diag.paired", "power", {**base, "n": "190"}))["pse"]
+    msg = run("diag.paired", "n", {**base, "power": repr(target)})["rows"][0]["_error"]
+    assert msg.startswith("the total number of subjects cannot be computed: whether the power with 190 subjects "
+                          "reaches the target is decided by rounding"), msg
+    assert first_row(run("diag.paired", "n", {**base, "power": "0.8"}))["n"] == 192
 
 
 @pytest.mark.parametrize("odds_ratio", ["1e16", "1e20", "1e30"])
@@ -2857,6 +2895,9 @@ def test_a_two_sided_logistic_power_counts_both_sides():
     # P1 from P2 = 0.6 and an odds ratio of 1, which was 0.5999999999999999: no difference to show
     ("prop.two", {"es": "or", "or1": "1", "p2": "0.6", "method": "normal"},
      "P1 = 0.6 and P2 = 0.6 (difference 0, ratio 1, odds ratio 1)"),
+    # an odds ratio whose P1 rounds to P2 is the odds ratio of 1 that the power is computed for
+    ("prop.two", {"es": "or", "or1": "1.4", "p2": "0.9999999999999999", "method": "normal"},
+     "(difference 0, ratio 1, odds ratio 1)"),
     ("prop.two.equiv", {"es": "or", "or1": "1", "p2": "0.6"}, "when P1 = 0.6 and P2 = 0.6."),
     ("prop.two.cluster", {"icc": "0.99999"}, "with ICC 0.99999 "),
     ("prop.two.cluster", {"p1": "0.99999", "p2": "0.9999"}, "to detect P1 = 0.99999 versus P2 = 0.9999 "),
@@ -3010,10 +3051,27 @@ def test_a_one_sided_bound_on_the_wrong_side_of_the_estimate_says_why():
     assert "whose bound lies 0.0119 below the estimate, on the wrong side of it (the Jeffreys bound" in stmt, stmt
     row = first_row(run("prop.two.ci", "n", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper",
                                              "conf": "0.51", "width": "0.01"}))
-    assert row["n1"] == 529 and row["_notes"][0].startswith("Smaller samples put the bound on the wrong side"), row
+    assert row["n1"] == 529 and row["_notes"][0].startswith("With 528 and 528 subjects (one fewer in group 1) the "
+                                                            "bound lies on the wrong side"), row
     msg = run("prop.two.ci", "n", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper", "conf": "0.50001",
                                    "width": "0.01"})["rows"][0]["_error"]
-    assert msg.startswith("the bound lies on the wrong side of the estimate for every sample size up to 100000000"), msg
+    assert msg.startswith("the bound still lies on the wrong side of the estimate with 100000000 subjects in group 1, "
+                          "the largest sample size searched"), msg
+    # said of every size up to 1e8, though N1 = 1 gives equal groups at R = 0.5 and a bound beyond the estimate
+    base = {**base_inputs("prop.two.ci"), "method": "ac", "sides": "lower", "conf": "0.5000001", "p1": "0.749",
+            "p2": "0.749", "r": "0.5"}
+    assert run("prop.two.ci", "n", {**base, "width": "0.0148"})["rows"][0]["_error"].startswith(
+        "the bound still lies on the wrong side of the estimate with 100000000 subjects in group 1")
+    assert 0 < first_row(run("prop.two.ci", "width", {**base, "n1": "1"}))["width"] < 0.0148
+    # a bound at N1 − 1 within a rounding error of the estimate (5.7e-14 beyond it at 50 digits) was said to lie on
+    # the wrong side
+    row = first_row(run("prop.two.ci", "n", {**base_inputs("prop.two.ci"), "method": "ac", "sides": "upper",
+                                             "conf": "0.501", "p1": "0.989", "p2": "0.176", "width": "0.0253"}))
+    assert row["_notes"] == ["With 2699008 and 2699008 subjects (one fewer in group 1) the bound lies within a "
+                             "rounding error of the estimate."], row
+    row = first_row(run("prop.one.ci", "n", {**base_inputs("prop.one.ci"), "method": "jeffreys", "sides": "upper",
+                                             "conf": "0.501", "p": "0.992", "width": "0.0103"}))
+    assert row["_notes"] == ["With 539423 subjects the bound lies within a rounding error of the estimate."], row
     for pid, inputs in (("prop.two.ci", {"method": "wald"}), ("prop.one.ci", {"method": "wilson", "p": "0.7"})):
         msg = run(pid, "n", {**base_inputs(pid), **inputs, "sides": "upper", "conf": "0.500000000000001",
                              "width": "0.01"})["rows"][0]["_error"]

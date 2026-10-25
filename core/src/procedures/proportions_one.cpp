@@ -385,10 +385,15 @@ Procedure one_prop_ci() {
                         text::format_g(o.hi, 10) + ": " +
                         (s.is("method", "jeffreys") ? JEFFREYS_WRONG_SIDE : "at this confidence"));
       }
-      if (!two && n > o.lo && s.is("method", "jeffreys") &&
-          (ci_width(s, n - 1) <= 0 || near_estimate(ci_width(s, n - 1), pp)))
-        r.notes.push_back("Smaller samples put the bound on the wrong side of the estimate (" +
-                          std::string(JEFFREYS_WRONG_SIDE) + "); this is the smallest that puts it beyond.");
+      // the size below the answer, where the bound lies on the wrong side or within a rounding error of the estimate
+      // (where its sign in doubles means nothing and the reason may not hold)
+      if (!two && n > o.lo && s.is("method", "jeffreys")) {
+        if (near_estimate(ci_width(s, n - 1), pp))
+          r.notes.push_back("With " + fint(n - 1) + " subjects the bound lies within a rounding error of the estimate.");
+        else if (ci_width(s, n - 1) < 0)
+          r.notes.push_back("Smaller samples put the bound on the wrong side of the estimate (" +
+                            std::string(JEFFREYS_WRONG_SIDE) + "); this is the smallest that puts it beyond.");
+      }
       r.set("target_width", target);
     } else {
       n = s("n");

@@ -952,6 +952,19 @@ double mcnemar_power(const Scenario& s, int n, double p10, double p01, McNemarCa
   return clamp01(total);
 }
 
+std::string mcnemar_rounding(double p10, double p01, double q10, double q01, double spread) {
+  // the spread rounded up to two digits, never down: 1.004e-6 is "1.1e-06", where "1e-06" read as within 1e-6
+  std::string u = text::format_g(spread, 2);
+  double shown;
+  if (text::parse_double(u, shown) && shown < spread)
+    u = text::format_g(spread + 0.5 * std::pow(10.0, std::floor(std::log10(spread)) - 1), 2);
+  // the statistic's rounding, not only its critical value's: next to the step (z·√ψ near √n·|P10 − P01|, ψ near 1)
+  // z accounts for 7/17 of the spread, √ψ and z·√ψ for 4/17 and √n·(P10 − P01) for 6/17
+  return "a pair's difference has a variance of only " + blocks::fnum(p10 * q10 + p01 * q01 + 2 * p10 * p01) +
+         ", so that the rounding of the test statistic " +
+         (spread >= 0.995 ? "leaves the power anywhere from 0 to 1" : "can move the power by up to " + u);
+}
+
 namespace {
 
 Procedure mcnemar() {
@@ -1062,23 +1075,21 @@ Procedure mcnemar() {
     }
     r.set("n", n);
     // ψ near 1 with an odds ratio of 1e5 or more leaves a pair's difference next to no variance, and the normal
-    // approximation's power climbs from 0 to 1 within a few sd1 of its critical value, whose rounding then moves it
-    // (at ψ = 1, an odds ratio of 1e30, a two-sided α of 0.0455002638963584 and 4 pairs it was 0.5, or 0.544 where
-    // the compiler fuses a·b + c, and the formula with the exact critical value gives 0.479).  A power is refused
-    // where the rounding can move it by more than 1e-6, the finest digit an answer shows (a power of 99.9999%), and
-    // an N where the power at N or N − 1 lies within the rounding's reach of the target, which then decides N, if
-    // that reach is more than 1e-12 (below it with up to 1e7 pairs where a pair's difference has some variance)
+    // approximation's power climbs from 0 to 1 within a few sd1 of its critical value, where the rounding of its
+    // statistic then moves it (at ψ = 1, an odds ratio of 1e30, a two-sided α of 0.0455002638963584 and 4 pairs it
+    // was 0.5, or 0.544 where the compiler fuses a·b + c, and the formula with the exact critical value gives 0.479).
+    // A power is refused where the rounding can move it by more than 1e-6, the finest digit an answer shows (a power
+    // of 99.9999%), and an N where the power at N or N − 1 lies within the rounding's reach of the target, which then
+    // decides N, if that reach is more than 1e-12 (below it with up to 1e7 pairs where a pair's difference has some
+    // variance)
     auto sure = [&](int m, bool shown) {
       double u;
       const double pw = mcnemar_power(s, m, p10, p01, cache, ctx, q10, q01, &u);
       const bool decides = s.solve == "n" && u > 1e-12 && std::fabs(pw - s("power")) <= u;
       if ((shown && u > 1e-6) || decides) {
-        const double v1 = p10 * (std::isnan(q10) ? 1 - p10 : q10) + p01 * (std::isnan(q01) ? 1 - p01 : q01) +
-                          2 * p10 * p01;
         const std::string pairs = fint(m) + (m == 1 ? " pair" : " pairs");
-        const std::string why = "a pair's difference has a variance of only " + fnum(v1) + ", so that the rounding of "
-                                "the critical value " + (u >= 0.995 ? "leaves the power anywhere from 0 to 1" :
-                                "can move the power by up to " + text::format_g(u, 2));
+        const std::string why = mcnemar_rounding(p10, p01, std::isnan(q10) ? 1 - p10 : q10,
+                                                 std::isnan(q01) ? 1 - p01 : q01, u);
         if (decides)
           throw CalcError("the number of pairs cannot be computed: whether the power with " + pairs +
                           " reaches the target is decided by rounding (" + why + ")");
