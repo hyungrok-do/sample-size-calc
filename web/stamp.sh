@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 # Puts a version into the addresses the published page loads its files from: web/stamp.sh <site dir> <version>.
 # The source uses ?v=dev (and the cache name ssc-dev); a browser keeps files for a while, and a new address for
-# each version keeps it from running a new page with an older script.
+# each version keeps it from running a new page with an older script.  The page's <style> holds no ?v=dev and is left
+# as it is: the page's Content-Security-Policy names it by its hash (tests/site.mjs checks it after stamping).
 set -eu
 site=$1
 version=$2

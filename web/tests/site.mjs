@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
+import { policy, watchViolations } from './csp.mjs';
 
 const site = resolve(process.argv[2] ?? '.');
 assert.ok(existsSync(join(site, 'index.html')), 'usage: node tests/site.mjs <site dir made by web/assemble.sh>');
@@ -48,6 +49,9 @@ assert.deepEqual(unversioned, [], 'files loaded without the version in their add
 for (const file of scripts) assert.ok(seen.has(file), `${file} is published but nothing loads it`);
 for (const engine of ['ssc_web', 'ssc_web_mt']) for (const ext of ['mjs', 'wasm']) assert.ok(seen.has(`engine/${engine}.${ext}`));
 console.log(`Site: version ${version}; all ${seen.size} files the page loads are published and versioned.`);
+// stamping must leave the <style> as its hash in the policy has it
+policy(index, await text('sw.js'));
+console.log('Site: the Content-Security-Policy lets in the page\'s <style>, and the service worker sends the same policy.');
 
 // ------------------------------------------------------------------------------- served as GitHub Pages serves it
 // Two versions to publish in turn: this one, and the same files as the next version (another version string, and
@@ -91,6 +95,8 @@ const kind = process.env.SSC_BROWSER ?? 'chromium';
 const browser = await { chromium, firefox, webkit }[kind].launch(kind === 'chromium'
   ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined, args: ['--disable-dev-shm-usage'] } : {});
 const context = await browser.newContext({ serviceWorkers: 'allow' });
+const violations = [];  // what the Content-Security-Policy blocked: nothing, in every visit below
+await watchViolations(context, violations);
 // the offline copies the service worker keeps, by cache
 const stored = (p) => p.evaluate(async () => {
   const kept = {};
@@ -141,7 +147,9 @@ try {
   console.log(`Site: first visit — ${await page.textContent('#engine-status')}; calculation and guide work.`);
 
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 30000 });
-  await page.goto(url);
+  const served = await page.goto(url);
+  // the service worker's headers (as Chromium reports them), the policy with frame-ancestors among them
+  if (kind === 'chromium') assert.match(served.headers()['content-security-policy'] ?? '', /; frame-ancestors 'none'$/);
   await ready(page);
   const isolated = await page.evaluate(() => self.crossOriginIsolated);
   const cores = await page.evaluate(() => navigator.hardwareConcurrency);
@@ -192,6 +200,7 @@ try {
   assert.deepEqual([...new Set(await loaded(page))], [next], 'and on the next visit');
   console.log('Site: after an update the page and every file it loads are the new version.');
   assert.deepEqual(errors, []);
+  assert.deepEqual(violations, [], 'the Content-Security-Policy blocked nothing');
   console.log(`Site: every check passed in ${kind}.`);
 } finally {
   await browser.close();

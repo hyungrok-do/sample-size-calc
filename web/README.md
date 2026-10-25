@@ -83,6 +83,50 @@ Pages workflow publishes the site. The multi-core engine starts its helper
 threads from the same versioned address (`web/build.sh`), and the service
 worker always checks the page itself with the server.
 
+## Content Security Policy
+
+The page declares what it may load in a `<meta http-equiv="Content-Security-Policy">`:
+
+| Directive | Why |
+|---|---|
+| `default-src 'none'` | nothing that is not listed below: no fonts, frames, objects or media |
+| `script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'` | the page's own scripts; the engine's worker compiles the WebAssembly engine (`'unsafe-eval'` for browsers before `'wasm-unsafe-eval'`) |
+| `style-src 'sha256-…'` | the page's one `<style>`, by its hash; no style attributes |
+| `connect-src 'self'` | the worker downloads the engine's `.wasm` file |
+| `worker-src 'self'` | the engine's worker, the multi-core engine's threads (started from its own address) and the service worker |
+| `img-src 'self'` | the browser's request for `/favicon.ico` |
+| `manifest-src 'self'` | a web app manifest, should the page get one |
+| `base-uri 'none'`, `form-action 'none'` | no `<base>`, and the calculator's form never leaves the page |
+
+Browsers before `'wasm-unsafe-eval'` (Safari before 16, Chrome before 97,
+Firefox before 102) compile WebAssembly only under `'unsafe-eval'`; without
+it they would refuse the engine from the second visit on, once the service
+worker's header covers its worker. `'unsafe-eval'` also lets a script call
+`eval` and the like, which the page never does: it costs that one safeguard
+against an injected script, while inline scripts, other origins, frames and
+form targets stay refused.
+
+The page itself neither compiles WebAssembly nor downloads anything: its
+worker does, and Chromium gives a worker the policy of the worker's own
+response rather than the page's. The `<meta>` allows both all the same, for a
+browser that applies the page's policy to its workers.
+
+A `<meta>` covers only the page, and it cannot say who may frame the page.
+The service worker therefore sends the same policy as a header, with
+`frame-ancestors 'none'` added, on every response it passes on. That header
+also covers the engine's worker and its threads, from the visit after the
+service worker is installed. GitHub Pages cannot send headers, so the first
+visit has only the `<meta>`. A site that frames the page also gets it once
+without `frame-ancestors`, before the service worker is installed in that
+site's partition of the browser's storage.
+
+Any edit to the `<style>` changes its hash. `npm test` checks the hash
+(`tests/csp.test.mjs`) and prints the new one to put in `index.html` and in
+`sw.js`, whose policy must stay the page's plus `frame-ancestors`.
+`web/stamp.sh` leaves the `<style>` unchanged, and `test:site` checks the
+hash again on the site as published. The browser tests fail on any violation
+the browser reports, from the page or (in Chromium) from the engine's worker.
+
 ## Responsiveness and memory
 
 - The engine runs in a Web Worker, so the page stays responsive during a long
@@ -160,7 +204,7 @@ After building the web engines, run the frontend checks with Node 24:
 npm ci --prefix web
 cd web
 npx playwright install chromium
-npm test                      # the guide's routes and the number formatting (needs python3)
+npm test                      # the guide's routes, the number formatting (needs python3), the page's policy
 npm run test:browser          # the guide and calculator in a browser
 npm run test:page             # the testers' fixes, responsiveness, the engine fallback
 ./assemble.sh /tmp/site dev-test && npm run test:site -- /tmp/site     # the site as published
@@ -171,7 +215,8 @@ schemas: all-procedure coverage, the analyses listed after partial answers,
 combined requirements, ancestor resets, unknown/conditional presets, and link
 round trips. It also formats about 10,000 values in each column format on the
 page and with the command line (`python/ssc/formatting.py`), and they must
-agree. `test:browser` loads the actual page and engine, applies every
+agree, and it checks the Content Security Policy's hash of the `<style>`.
+`test:browser` loads the actual page and engine, applies every
 recommendation path, and checks a calculation, same-procedure option changes,
 stale-result protection, keyboard use, direct links and history, mobile and dark
 layout, and offline reload. `test:page` serves the page cross-origin isolated
