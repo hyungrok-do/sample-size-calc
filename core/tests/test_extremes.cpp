@@ -9,6 +9,7 @@
 
 #include "engine/runner.hpp"
 #include "engine/solve.hpp"
+#include "procedures/apart.hpp"
 #include "procedures/common.hpp"
 #include "procedures/groupseq.hpp"
 #include "procedures/sim_common.hpp"
@@ -521,6 +522,33 @@ TEST_CASE("extremes: n times a ratio rounded up is a whole product however large
   CHECK_EQ(solve::round_up(0x1p50), 0x1p50);
   CHECK_EQ(solve::round_up(0x1p52 + 1), 0x1p52 + 1);
   CHECK_EQ(solve::round_up(1e30), 1e30);
+  // and a product a little above a whole number rounds up: a slack of four units in the last place took
+  // 1999999001999.001 (999999001 × 2000.001) for 1999999001999, 199998100199.0001 and 200000098199999.1 alike
+  CHECK_EQ(solve::round_up(999999001 * 2000.001), 1999999002000.0);
+  CHECK_EQ(solve::round_up(999990001 * 200.0001), 199998100200.0);
+  CHECK_EQ(solve::round_up(999999991 * 200000.1), 200000098200000.0);
+  CHECK_EQ(solve::round_up(999999991 * 900000.5), 900000491899996.0);
+  CHECK_EQ(solve::round_up(std::nextafter(1e12, 0.0)), 1e12);
+}
+
+TEST_CASE("extremes: a long list told apart at its last pair takes little time") {
+  // every pair was compared at each number of digits, 50 million pairs at each of up to 14 for 10,000 values
+  std::vector<double> x;
+  for (int i = 0; i < 9998; ++i) x.push_back((5 + 10.0 * i) / 1e5);  // 0.00005, 0.00015, ...
+  x.push_back(0.99991);
+  x.push_back(0.9999100000001);
+  // against the time of showing each value once, as a list of fnum's digits did
+  auto t0 = std::chrono::steady_clock::now();
+  std::size_t chars = 0;
+  for (double v : x) chars += procs::fnum_fine(v).size();
+  const double once = seconds_since(t0);
+  t0 = std::chrono::steady_clock::now();
+  const auto t = procs::fnum_apart_all(x);
+  CHECK(seconds_since(t0) < 40 * once + 0.02);
+  CHECK(chars > 0);
+  CHECK_EQ(t[9998], "0.99991");
+  CHECK_EQ(t[9999], "0.9999100000001");
+  CHECK_EQ(t[1], "0.00015");
 }
 
 TEST_CASE("extremes: the correlation's distribution on Fisher's scale") {

@@ -55,14 +55,14 @@ double first_whole(F&& ok, double from, double cap, const char* none) {
 }
 
 /// x, the size of a group as n times its ratio to another (or its share), rounded up: with a slack for the
-/// rounding of the ratio as typed and of the product (20 × 1.1 is 22.000000000000004) that is relative, a few units
-/// in the last place of x, so that a group of any ratio gets at least 1 (an absolute slack of 1e-9 left one with
-/// n × the ratio of 1e-9 or less with none) and one of 1e8 × 1.1 gets 110000000 (that slack is less than the
-/// rounding of a product above 2^24, which gave it 110000001).  The slack is at most 1/4, which keeps a whole x as
-/// it is: four units in the last place are a whole unit or more from 2^50 on (1e16 became 9999999999999992).
-inline double round_up(double x) {
-  return std::ceil(x - std::fmin(4 * std::numeric_limits<double>::epsilon() * x, 0.25));
-}
+/// rounding of the ratio as typed and of the product (20 × 1.1 is 22.000000000000004) of one unit in the last place
+/// of x, so that a group of any ratio gets at least 1 (an absolute slack of 1e-9 left one with n × the ratio of 1e-9
+/// or less with none) and one of 1e8 × 1.1 gets 110000000 (that slack is less than the rounding of a product above
+/// 2^24, which gave it 110000001).  The two roundings move the product by less than a unit and a half, so where
+/// n × the ratio is whole, x is at most one double above it, and one unit is the least slack that keeps it whole:
+/// four units also took real fractions (999999001 × 2000.001 = 1999999001999.001 got 1999999001999).  The slack is
+/// at most 1/4, which keeps a whole x as it is where a unit is half a subject or more (from 2^51 on).
+inline double round_up(double x) { return std::ceil(std::fmax(std::nextafter(x, 0.0), x - 0.25)); }
 
 /// The groups that n × their weights w (relative sizes, say: `weight` and `weights` name them), rounded up, leave
 /// with 1 subject, for a message: "group 2 still has 1 subject (n × its relative size, rounded up)", "groups 1 and 2
