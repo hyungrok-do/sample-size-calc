@@ -2648,23 +2648,25 @@ def test_two_way_effects_are_none_only_where_the_means_as_typed_have_none():
     rounded, and in power mode such an effect gave f = 0 and the power alpha without a word.  An effect is now none
     when the means as typed (the shortest decimals of the doubles) have none, as the additive 0.1 0.2 0.3 0.4."""
     base = {**base_inputs("means.anova2"), "a": "2", "b": "2", "goal": "all"}
-    # one spacing apart: the effects of the doubles, 2⁻⁵²/4 = 5.55 σ each, as one-way ANOVA takes them
+    # one spacing apart, within the rounding of the means: the effects as typed, 2e-16/4 = 5 σ each (those of the
+    # doubles, 2⁻⁵²/4 = 5.55 σ, are as much their rounding)
     for solve, extra in (("n", {}), ("power", {"n": "10"})):
         row = first_row(run("means.anova2", solve, {**base, **extra, "means": "1 1 1 1.0000000000000002",
                                                      "sigma": "1e-17"}))
-        assert all(row[k] == pytest.approx(2.0**-54 / 1e-17, rel=1e-12) for k in ("fa", "fb", "fab")), row
+        assert all(row[k] == pytest.approx(5.0, rel=1e-12) for k in ("fa", "fb", "fab")), row
         assert row["pab"] > 0.99, row
     # with σ = 1 the effects are there but out of reach, not none
     msg = run("means.anova2", "n", {**base, "goal": "AB", "means": "1 1 1 1.0000000000000002"})["rows"][0]["_error"]
     assert msg == "the target power cannot be reached with a sample size up to 100000000", msg
-    # a typed effect next to its bound is kept (the doubles' 0.125/4, not the decimals' 0.1/4), whichever side of
-    # the bound it falls on
+    # a typed effect next to its bound is kept, at its size as typed (0.1/4, not the doubles' 0.125/4)
     row = first_row(run("means.anova2", "n", {**base, "means": "1000000000000000.1 1000000000000000.0 1e-09 "
                                                                  "1.0000000000000036e-09", "sigma": "1"}))
-    assert row["fb"] == row["fab"] == 0.03125, row
+    assert row["fb"] == pytest.approx(0.025, rel=1e-12) and row["fab"] == pytest.approx(0.025, rel=1e-12), row
     row = first_row(run("means.anova2", "n", {**base, "b": "4", "sigma": "1.16e-11", "means": "1000000 1000000 "
                                                  "1000000 1000000 1000000 1000000.0000000001 1000000 1000000"}))
-    assert row["fa"] > 1 and row["fb"] > 2 and row["fab"] > 2, row
+    # a cell 1e-10 off as typed (1.16e-10 as doubles): row effects of 1e-10/8, column and cell effects of 1e-10 √3/8
+    assert row["fa"] == pytest.approx(1e-10 / 8 / 1.16e-11, rel=1e-12), row
+    assert row["fb"] == row["fab"] == pytest.approx(1e-10 * math.sqrt(3) / 8 / 1.16e-11, rel=1e-12), row
     # additive means stay without an interaction at any σ, though their doubles are not additive
     for means in ("1000000.1 1000000.2 1000000.4 0.1 0.2 0.4", "0.1 0.2 0.3 1.1 1.2 1.3"):
         row = first_row(run("means.anova2", "power", {**base, "b": "3", "means": means, "sigma": "1e-30", "n": "10"}))
@@ -2677,6 +2679,30 @@ def test_two_way_effects_are_none_only_where_the_means_as_typed_have_none():
     assert row["fa"] == pytest.approx(5e12, rel=1e-12) and row["pa"] > 0.99, row
     assert row["fb"] == pytest.approx(2e29, rel=1e-12) and row["fab"] == pytest.approx(1.5e29, rel=1e-12), row
     assert first_row(run("means.anova2", "n", {**base, "goal": "A"}))["n"] == 2
+
+
+def test_two_way_effects_the_doubles_nearly_cancel_take_their_size_as_typed():
+    """Only an effect the doubles cancel exactly took its size from the means as typed; one they nearly cancel kept
+    the doubles' size, their rounding: a cell of 1e-30 next to the rows 0.1 0.2 and -0.19999999999999998 0.5 turned
+    f(A) = 0.33 (σ = 1e-17) into 1.7e-14 and the power alpha, and one added to the additive 0 0.1 0.2 0.3 0.4 0.5
+    turned an interaction of none into f = 0.65, where the means as typed have 2.4e-14."""
+    base = {**base_inputs("means.anova2"), "a": "2", "b": "3", "sigma": "1e-17", "n": "10"}
+    for cell, fa in (("0", 1 / 3), ("1e-30", (2e-17 - 1e-30) / 6e-17), ("1e-20", (2e-17 - 1e-20) / 6e-17)):
+        row = first_row(run("means.anova2", "power", {**base, "means": f"0.1 0.2 {cell} -0.19999999999999998 0.5 0"}))
+        assert row["fa"] == pytest.approx(fa, rel=1e-12) and row["pa"] > 0.7, (cell, row)
+    for cell, fab in (("0", 0), ("1e-30", 1e-30 / 6 * math.sqrt(2) / 1e-17), ("1e-20", 1e-20 / 6 * math.sqrt(2) / 1e-17)):
+        row = first_row(run("means.anova2", "power", {**base, "means": f"{cell} 0.1 0.2 0.3 0.4 0.5"}))
+        assert row["fab"] == pytest.approx(fab, rel=1e-12, abs=0) and row["pab"] < 0.051, (cell, row)
+
+
+@pytest.mark.parametrize("n1,r,n2", [("999999001", "2000.001", 1999999002000), ("999990001", "200.0001", 199998100200),
+                                     ("999999991", "200000.1", 200000098200000), ("100000000", "1.1", 110000000)])
+def test_a_group_from_a_ratio_is_n1_times_the_ratio_rounded_up(n1, r, n2):
+    """A slack of four units in the last place for the rounding of R × N1 took real fractions with it once the product
+    passed about 1e12: 999999001 × 2000.001 = 1999999001999.001 gave group 2 1999999001999 subjects."""
+    for pid in ("means.two.t", "prop.two"):
+        row = first_row(run(pid, "power", {**base_inputs(pid), "alloc": "ratio", "n1": n1, "r": r}))
+        assert row["n2"] == n2, (pid, row)
 
 
 @pytest.mark.parametrize("pid,solve,inputs", [
@@ -2875,6 +2901,13 @@ def test_a_two_sided_logistic_power_counts_both_sides():
     ("prop.trend", {"props": "0.1 0.10001 0.2"}, "response proportions 0.1, 0.10001, 0.2 "),
     ("prop.trend", {"scores": "custom", "dvals": "0.1 0.1 0.1 0.10000000000000003"},
      "(scores 0.1, 0.1, 0.1, 0.10000000000000003) "),
+    # below 0.1, 17 decimals are fewer than 17 digits: values a double apart showed alike
+    ("prop.trend", {"scores": "custom", "dvals": "0.001 0.0010000000000000002 0.5 1"},
+     "(scores 0.001, 0.0010000000000000002, 0.5, 1) "),
+    ("prop.trend", {"scores": "custom", "dvals": "0.0001 0.00010000000000000002 0.5 1"},
+     "(scores 0.0001, 0.00010000000000000002, 0.5, 1) "),
+    ("prop.trend", {"props": "0.001 0.0010000000000000002 0.5 0.6"},
+     "response proportions 0.001, 0.0010000000000000002, 0.5, 0.6 "),
     # a difference of a rounding error that is given is shown
     ("prop.two", {"es": "diff", "d1": "3e-16", "p2": "0.6", "method": "normal"},
      "P1 = 0.6000000000000003 and P2 = 0.6 (difference 3.331e-16, "),

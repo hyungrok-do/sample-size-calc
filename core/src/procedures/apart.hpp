@@ -123,31 +123,44 @@ inline std::string fnum_from(double x, double ref, int decimals = 4) {
 /// The texts of values a statement lists together (a trend's proportions and scores), with the digits it takes to
 /// tell each from every other as fnum_apart tells two apart: 0.1, 0.10001, 0.2, not 0.1, 0.1, 0.2.
 inline std::vector<std::string> fnum_apart_all(const std::vector<double>& x) {
-  std::vector<std::string> t(x.size());
-  std::vector<double> shown(x.size());
+  const std::size_t k = x.size();
+  std::vector<std::string> t(k);
+  std::vector<double> shown(k);
+  // the values in order: texts that keep the difference of each value from the next to within 5% keep that of any
+  // two (what the texts are off by adds up no faster than the differences), so only neighbors are compared: k − 1
+  // pairs at each number of digits, not all k (k − 1) / 2, 50 million for 10,000 groups
+  std::vector<std::size_t> order(k);
+  for (std::size_t i = 0; i < k; ++i) order[i] = i;
+  std::sort(order.begin(), order.end(), [&](std::size_t i, std::size_t j) { return x[i] < x[j]; });
   int extra = 0;
   for (; extra <= 13; ++extra) {
-    for (std::size_t i = 0; i < x.size(); ++i) {
+    for (std::size_t i = 0; i < k; ++i) {
+      // a value whose text reads back as itself keeps it (more digits would read back as itself too), and a whole
+      // number below 1e15 shows as itself (a trend's scores 0, 1, 2, ...), with no need to read it back
+      if (extra > 0 && shown[i] == x[i]) continue;
       t[i] = fnum_digits(x[i], extra);
-      // a whole number below 1e15 shows as itself (a trend's scores 0, 1, 2, ...), with no need to read it back
       if (x[i] == std::floor(x[i]) && std::fabs(x[i]) < 1e15)
         shown[i] = x[i];
       else if (!text::parse_double(t[i], shown[i]))
         shown[i] = NAN;
     }
     bool apart = true;
-    for (std::size_t i = 0; i < x.size() && apart; ++i)
-      for (std::size_t j = i + 1; j < x.size() && apart; ++j)
-        apart = std::fabs((shown[i] - shown[j]) - (x[i] - x[j])) <= 0.05 * std::fabs(x[i] - x[j]);
+    for (std::size_t m = 1; m < k && apart; ++m) {
+      const std::size_t i = order[m - 1], j = order[m];
+      apart = std::fabs((shown[i] - shown[j]) - (x[i] - x[j])) <= 0.05 * std::fabs(x[i] - x[j]);
+    }
     if (apart) break;
   }
   // where more digits were needed, a value whose digits read back as itself in as few digits as do (0.1 next to
-  // 0.10000000000000003, not the 0.10000000000000001 of the 17 decimals that tell the two apart)
-  for (std::size_t i = 0; extra > 0 && i < x.size(); ++i)
-    if (shown[i] == x[i]) {
-      const std::string r = text::format_roundtrip(x[i]);
-      if (r.size() < t[i].size()) t[i] = r;
-    }
+  // 0.10000000000000003, not the 0.10000000000000001 of the 17 decimals that tell the two apart), and where even
+  // those did not tell the values apart (17 decimals are fewer than 17 digits below 0.1: 0.001 and
+  // 0.0010000000000000002 both showed as 0.001), every value in the fewest digits that read back as itself
+  for (std::size_t i = 0; extra > 0 && i < k; ++i) {
+    // (a text of at most 15 characters that reads back has no more digits than the fewest that do)
+    if (shown[i] == x[i] ? t[i].size() <= 15 : extra <= 13) continue;
+    const std::string r = text::format_roundtrip(x[i]);
+    if (shown[i] != x[i] || r.size() < t[i].size()) t[i] = r;
+  }
   return t;
 }
 

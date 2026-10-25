@@ -322,26 +322,6 @@ std::vector<ExactCells::Number> typed_means(const std::vector<double>& m) {
   return t;
 }
 
-// The cell means as the doubles are exactly: M × 2^E with a whole M below 2^53, which is M × 5^−E × 10^E for E < 0.
-std::vector<ExactCells::Number> stored_means(const std::vector<double>& m) {
-  std::vector<ExactCells::Number> t(m.size());
-  for (std::size_t c = 0; c < m.size(); ++c) {
-    if (m[c] == 0) continue;
-    int e;
-    const double f = std::frexp(std::fabs(m[c]), &e);
-    t[c].negative = m[c] < 0;
-    t[c].digits = Whole(static_cast<std::uint64_t>(std::ldexp(f, 53)));
-    for (int k = e - 53; k > 0; k -= 29) t[c].digits.times(std::uint64_t{1} << std::min(k, 29));
-    for (int k = 53 - e; k > 0; k -= 12) {
-      std::uint64_t five = 1;
-      for (int i = 0; i < std::min(k, 12); ++i) five *= 5;
-      t[c].digits.times(five);
-    }
-    t[c].exponent = std::min(e - 53, 0);
-  }
-  return t;
-}
-
 Factorial factorial(const Scenario& s) {
   Factorial f;
   f.a = static_cast<int>(s("a"));
@@ -376,8 +356,11 @@ Factorial factorial(const Scenario& s) {
   // interaction of 7e-18, 7e12 times σ = 1e-30.  One larger than its bound (twice it, for the rounding of the sums)
   // is there whatever the means were typed as; for the others the typed means decide, in whole numbers: a bound
   // taken as the decision removed real effects (a row of 1e6 added to the bounds of B and A × B, a cell of exactly
-  // 1 was taken as typed to within half a spacing).  The effects kept are those of the doubles, unless the doubles
-  // cancel exactly.
+  // 1 was taken as typed to within half a spacing).  Such an effect takes its size from the means as typed too: the
+  // doubles' there is their rounding as much as the effect (a cell of 1e-30 next to rows whose doubles cancel gave A
+  // f = 1.7e-14 where the means as typed give 0.33 with σ = 1e-17, and one added to additive means 0 0.1 0.2 0.3 0.4
+  // 0.5 an interaction of f = 0.65 for their 2.4e-14).  One beyond twice its bound keeps the doubles' size, which
+  // is that of the means as typed to within the bound, half of it.
   const double cells = static_cast<double>(A) * B;
   std::vector<double> ea(A), eb(B), eab(static_cast<std::size_t>(A * B));
   bool real_a = false, real_b = false, real_ab = false;
@@ -410,8 +393,8 @@ Factorial factorial(const Scenario& s) {
       if (std::fabs(v) > 2 * bound) real_ab = true;
     }
   if (!(real_a && real_b && real_ab)) {
-    // the decisions left to the means as typed, and the effects of those that are there from the doubles exactly
-    // (the sums keep twice a double's digits, too few for an effect of 1e-35 next to cells of 1e6)
+    // the decisions left to the means as typed, and the sizes of the effects that are there with them, exactly (the
+    // sums keep twice a double's digits, too few for an effect of 1e-35 next to cells of 1e6)
     const ExactCells typed(A, B, typed_means(m));
     auto none = [](const std::pair<Whole, Whole>& e) { return e.first.compare(e.second) == 0; };
     const bool exact_a = !real_a, exact_b = !real_b, exact_ab = !real_ab;
@@ -419,25 +402,10 @@ Factorial factorial(const Scenario& s) {
     for (int j = 0; !real_b && j < B; ++j) real_b = !none(typed.column(j));
     for (int i = 0; !real_ab && i < A; ++i)
       for (int j = 0; !real_ab && j < B; ++j) real_ab = !none(typed.cell(i, j));
-    if ((exact_a && real_a) || (exact_b && real_b) || (exact_ab && real_ab)) {
-      const ExactCells stored(A, B, stored_means(m));
-      for (int i = 0; exact_a && i < A; ++i) ea[i] = stored.value(stored.row(i));
-      for (int j = 0; exact_b && j < B; ++j) eb[j] = stored.value(stored.column(j));
-      for (int i = 0; exact_ab && i < A; ++i)
-        for (int j = 0; j < B; ++j) eab[static_cast<std::size_t>(i * B + j)] = stored.value(stored.cell(i, j));
-      // an effect that the means as typed have and the doubles cancel exactly takes its size from the means as
-      // typed: the rows 0.1 0.2 and -0.19999999999999998 0.5 have the same sum as doubles, 0.30000000000000001665,
-      // but row means of 0.15 and 0.15000000000000001 as typed, which left A with f = 0 and the power alpha
-      auto zero = [](const std::vector<double>& e) {
-        return std::all_of(e.begin(), e.end(), [](double x) { return x == 0; });
-      };
-      const bool typed_a = exact_a && real_a && zero(ea), typed_b = exact_b && real_b && zero(eb),
-                 typed_ab = exact_ab && real_ab && zero(eab);
-      for (int i = 0; typed_a && i < A; ++i) ea[i] = typed.value(typed.row(i));
-      for (int j = 0; typed_b && j < B; ++j) eb[j] = typed.value(typed.column(j));
-      for (int i = 0; typed_ab && i < A; ++i)
-        for (int j = 0; j < B; ++j) eab[static_cast<std::size_t>(i * B + j)] = typed.value(typed.cell(i, j));
-    }
+    for (int i = 0; exact_a && real_a && i < A; ++i) ea[i] = typed.value(typed.row(i));
+    for (int j = 0; exact_b && real_b && j < B; ++j) eb[j] = typed.value(typed.column(j));
+    for (int i = 0; exact_ab && real_ab && i < A; ++i)
+      for (int j = 0; j < B; ++j) eab[static_cast<std::size_t>(i * B + j)] = typed.value(typed.cell(i, j));
   }
   for (double e : ea)
     if (real_a) f.ssa += (e / cells) * (e / cells);
