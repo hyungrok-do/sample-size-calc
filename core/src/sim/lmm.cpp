@@ -1210,12 +1210,13 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
   auto good = [](double df) { return std::isfinite(df) && df > 0; };
   double nu[2];
   noise_scale(d, nu);
-  // from exact derivatives (exact_derivatives), in units of the fit's σ², at the fitted D in full
-  auto interior = [&](const double* det_g) {
-    const double s00 = std::fabs(f.g[0]) + nu[0], s11 = q == 2 ? std::fabs(f.g[3]) + nu[1] : 0;
+  // from exact derivatives (exact_derivatives), in units of the fit's σ², at the fitted D in full: G = g in the data
+  // dd, whose noise scales are nn (f.g in d, or both turned near the boundary, below)
+  auto interior = [&](const Data& dd, const double* g, const double* nn, const double* det_g) {
+    const double s00 = std::fabs(g[0]) + nn[0], s11 = q == 2 ? std::fabs(g[3]) + nn[1] : 0;
     const double scale[3] = {s00, std::sqrt(s00 * s11), s11};
     Exact e;
-    if (!exact_derivatives(d, s2, f.g, det_g ? *det_g : std::numeric_limits<double>::quiet_NaN(), scale, c, e))
+    if (!exact_derivatives(dd, s2, g, det_g ? *det_g : std::numeric_limits<double>::quiet_NaN(), scale, c, e))
       return std::numeric_limits<double>::quiet_NaN();
     return exact_df(e.k, e.hess, e.dvar, e.var);
   };
@@ -1308,11 +1309,11 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     if (large && !f.boundary) {
       // from exact derivatives first: the two parts' differences still left up to 6% in the degrees of freedom of
       // studies with 3 clusters a group of 10⁷ subjects on average (CV 5)
-      df = interior(nullptr);
+      df = interior(d, f.g, nu, nullptr);
       if (!good(df)) df = satterthwaite(2, phi);
     } else {
       df = satterthwaite(f.boundary ? 1 : 2, phi);
-      if (!good(df) && !f.boundary) df = interior(nullptr);
+      if (!good(df) && !f.boundary) df = interior(d, f.g, nu, nullptr);
     }
   } else {
     // with random slopes, from exact derivatives: finite differences in D left up to 1% in the degrees of freedom of
@@ -1337,7 +1338,7 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
     const double det_g = f.theta[0] * f.theta[2] * (f.theta[0] * f.theta[2]);
     const bool flat_slope = !(f.g[3] * tau * tau > 1e-6), flat = flat_slope || !(det_g > 1e-6 * f.g[3]);
     if (!flat && !(det_g < 0.1 * (f.g[0] * f.g[3]))) {
-      df = interior(&det_g);
+      df = interior(d, f.g, nu, &det_g);
     } else {
       // w from Λ's first column (G = w w' when θ2 = 0), or the slope's alone when the intercept does not vary
       // (σ² alone when neither does); held at rank 1 by the fit when no subject was measured three times, where it is
@@ -1352,11 +1353,20 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
       // visits at 809.796 and 819.952 (σe 0.197, Λ some 7,000 times σe), where theory gives exactly N − 2 = 18 with
       // complete data, 15 of 200 studies were more than 0.1% off (up to 4.2%), and with dropout 0.5 one of 200 fell
       // back to the given degrees of freedom and two had 13.55 and 19.27 where 60-digit fits give 18.0004 and 18.0001
-      const double len = std::hypot(w0, w1);
-      const Data dw = turned(d, len > 0 ? w0 / len : 1, len > 0 ? w1 / len : 0);
+      const double len = std::hypot(w0, w1), c0 = len > 0 ? w0 / len : 1, c1 = len > 0 ? w1 / len : 0;
+      const Data dw = turned(d, c0, c1);
       double nw[2];
       noise_scale(dw, nw);
       const double gw[4] = {len * len, 0, 0, 0};
+      // D in full at the fit is taken in the same turned coordinates, where its derivatives lost digits the same way at
+      // a fit near the boundary whose optimum is inside (with visits at 30 to 40, an intercept SD of 5 and σe 0.0005,
+      // three of 400 studies had 35.5, 21.6 and 19.2 degrees of freedom where 60-digit fits give 8.000; with three
+      // visits near 875 a study fell back to N − 2 for a 60-digit 13.9997): with w from Λ's first column, G = w w' +
+      // θ2² e e' (e = (0, 1)) turns to diag(|w|², 0) + θ2² u u' with u = (c1, c0), formed from Λ without cancelling;
+      // G = w w' when w is the slope's alone, and stays as it is when w = 0
+      const double t2 = w0 != 0 ? f.theta[2] * f.theta[2] : 0;
+      double gt[4] = {len * len + t2 * c1 * c1, t2 * c0 * c1, t2 * c0 * c1, t2 * c0 * c0};
+      if (!(len > 0)) std::copy(f.g, f.g + 4, gt);
       const double s00 = gw[0] + nw[0], s11 = nw[1], scale[3] = {s00, std::sqrt(s00 * s11), s11};
       Exact e;
       const bool held = exact_derivatives(dw, s2, gw, 0, scale, c, e);
@@ -1410,9 +1420,9 @@ Wald wald(const Data& d, const Fit& f, const double* c, int df_method, double fi
       // the other way where the first fails, except that D held at rank 1 by the fit stays there
       if (boundary) {
         df = on_boundary();
-        if (!good(df) && !rank1) df = interior(&det_g);
+        if (!good(df) && !rank1) df = interior(dw, gt, nw, &det_g);
       } else {
-        df = interior(&det_g);
+        df = interior(dw, gt, nw, &det_g);
         if (!good(df)) df = on_boundary();
       }
     }
