@@ -653,7 +653,7 @@ Procedure winratio() {
     if (r.has("delta_s") && std::isfinite(r.num("delta_s")))
       comp += ", then a measured outcome (difference " + fnum(r.num("delta_s")) + " SD)";
     std::string t = "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " (total " +
-                    fint(r.num("n")) + ") " + simc::power_phrase(s, r) + " to detect a win ratio of " +
+                    fint(r.num("n")) + ") " + simc::power_phrase(s, r, "trials") + " to detect a win ratio of " +
                     fnum(r.num("wr"), 3) + " (net benefit " + fnum(r.num("nb"), 3) + "; " + fpct(r.num("pwin")) +
                     " of the pairs won, " + fpct(r.num("ploss")) + " lost and " + fpct(r.num("ptie")) +
                     " tied) for the hierarchical composite of " + comp + ", using a " + alt_words(alt(s)) + " " + test +

@@ -607,7 +607,7 @@ Procedure mmrm_proc() {
     // exchangeable correlations must exceed −1/(T − 1), AR(1) ones −1
     const double lowest = s.is("corr", "ar1") || r.num("visits") < 2 ? -1 : -1 / (r.num("visits") - 1);
     std::string t = "Randomizing " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " patients (total " +
-                    fint(r.num("n")) + ") would " + simc::power_phrase(s, r) + " to detect a difference of " +
+                    fint(r.num("n")) + ") would " + simc::power_phrase(s, r, "trials") + " to detect a difference of " +
                     fnum(r.num("delta")) + " at the last of " + fint(r.num("visits")) + " visits (σ = " +
                     fnum(r.num("sd")) + ", " + corr + rho_text(r.num("rho"), lowest) + "), with " + drop +
                     " lost by the last visit, analyzing with " + analysis + " and a " + alt_words(alt(s)) +

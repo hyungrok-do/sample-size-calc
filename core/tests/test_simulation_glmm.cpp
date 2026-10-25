@@ -230,6 +230,52 @@ TEST_CASE("glmm: a large log odds ratio is estimated; only the between-cluster S
       R"("inputs":{"p1":"0.9999997","p2":"3e-7","m":"1e7","k1":"10","icc":"0","reps":"100"}})");
   CHECK_EQ(num(r, "failures"), 0.0);
   CHECK_EQ(num(r, "power"), 1.0);
+  // with 50 clusters a group one study's fit, from the exact log odds ratio, reached its maximum up to rounding
+  // (σ̂ 0.045) and then took steps that kept the log-likelihood until its 100th: "did not converge" (99%)
+  const json::Value r50 = first_row(
+      R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"power_curve":false},)"
+      R"("inputs":{"p1":"0.9999997","p2":"3e-7","m":"1e7","k1":"50","icc":"0","reps":"100"}})");
+  CHECK_EQ(num(r50, "failures"), 0.0);
+  CHECK_EQ(num(r50, "power"), 1.0);
+}
+
+TEST_CASE("glmm: a fit that 21 points carry past an SD of 30 is done again with 64, which find the peak") {
+  // study 9 of P1 0.97, P2 0.03, m 1.2, CV 2, k1 300, latent ICC 0.9: the subjects of all but 4 of 600 clusters
+  // agree, and summed over them the 21-point quadrature's error makes the likelihood grow out to σ = 32, while
+  // direct integration (30 digits) puts its peak at 5.7; the fit failed as "grew past 30", a failure of the design
+  const double cl[29][4] = {{1, 1, 0, 7},  {1, 1, 1, 234}, {1, 2, 0, 1},   {1, 2, 2, 22}, {1, 3, 3, 15}, {1, 4, 4, 6},
+                            {1, 5, 5, 5},  {1, 6, 6, 2},   {1, 7, 6, 2},   {1, 8, 8, 2},  {1, 9, 9, 1},  {1, 11, 11, 1},
+                            {1, 12, 12, 1}, {1, 28, 28, 1}, {0, 1, 0, 227}, {0, 1, 1, 12}, {0, 2, 0, 21}, {0, 2, 1, 1},
+                            {0, 2, 2, 1},  {0, 3, 0, 12},  {0, 4, 0, 7},   {0, 5, 0, 5},  {0, 6, 0, 5},  {0, 7, 0, 4},
+                            {0, 8, 0, 1},  {0, 10, 0, 1},  {0, 11, 0, 1},  {0, 12, 0, 1}, {0, 17, 10, 1}};
+  std::vector<glmm::Cluster> data;
+  for (const auto& c : cl) data.push_back({c[0], c[1], c[2], c[3]});
+  const double sigma = std::sqrt(3.2898681336964528729 * 9), b0 = glmm::beta_for_marginal(0.03, sigma);
+  const double b1 = glmm::beta_for_marginal(0.97, sigma) - b0;
+  CHECK(glmm::fit(data, b0, b1, sigma).failure == glmm::Failure::RunOff);
+  const glmm::Fit f = glmm::fit(data, b0, b1, sigma, 64);
+  CHECK(f.ok);
+  CHECK_CLOSE(f.sigma, 5.7, 0, 0.1);
+  CHECK(f.b1 / f.se_b1 > 2.3);
+  // in the procedure, 45 of the 200 studies failed so (76.5%); 64 points fit 23 of the 38 that 21 now carry past 30
+  // (7 more came back below 30), and the other 15 are failures of the arithmetic, not of the design
+  const json::Value r = first_row(
+      R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"power_curve":false},)"
+      R"("inputs":{"p1":"0.97","p2":"0.03","m":"1.2","cv":"2","k1":"300","icc":"0.9","iccscale":"latent",)"
+      R"("reps":"200"}})");
+  CHECK_EQ(num(r, "power"), 0.895);
+  CHECK_EQ(num(r, "failures"), 16.0);
+  CHECK(r.get("failures_why").as_string().find("in 15, the fit's between-cluster SD ran past 30, where the "
+                                               "quadrature, with 64 points as with 21, is too coarse") !=
+        std::string::npos);
+  // σ may pass 30 on its way to a maximum below it: here a first step to 368 in clusters of 10⁴, and back to 5.24, in
+  // one study of 200, which a guard on every step failed (92.0%)
+  const json::Value a = first_row(
+      R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"power_curve":false},)"
+      R"("inputs":{"p1":"0.3","p2":"0.2","m":"1e4","cv":"1","k1":"200","icc":"0.9","iccscale":"latent",)"
+      R"("reps":"200"}})");
+  CHECK_EQ(num(a, "failures"), 0.0);
+  CHECK_EQ(num(a, "power"), 0.925);
 }
 
 TEST_CASE("glmm: the standard error comes from the Hessian of the quadrature likelihood") {
@@ -279,6 +325,28 @@ TEST_CASE("glmm: population-averaged proportions and ICC scales convert exactly"
   const double sigma = glmm::sigma_for_icc(0.05, [](double s) { return glmm::beta_for_marginal(0.2, s); });
   const double b = glmm::beta_for_marginal(0.2, sigma);
   CHECK_CLOSE(glmm::between_variance(b, sigma) / (0.2 * 0.8), 0.05, 1e-9, 0);
+  // next to 1 the moments and β came from terms next to 1, which lose the digits of their distance from it: P2
+  // 1 − 1e-13 with an ICC of 0.001 took σ = 0.00197 (an ICC of 0 in the statement) where its mirror 1e-13 takes
+  // 5.23, 1 − 1e-15 with 0.05 took 1.009 (an ICC of 0.2) where 1e-15 is refused for an SD of 7.35, and P1 1 − 1e-15
+  // an odds ratio of 1.6e15 for 1.1e15
+  for (double q : {1e-15, 1e-6, 0.3})
+    for (double s : {0.0, 1.0, 6.0}) {
+      const double p = 1 - q;
+      CHECK_CLOSE(glmm::marginal_mean(-glmm::beta_for_marginal(p, s), s), 1 - p, 1e-11, 0);
+      CHECK_EQ(glmm::icc_of(glmm::beta_for_marginal(p, s), s), glmm::icc_of(glmm::beta_for_marginal(1 - p, s), s));
+    }
+  auto approx = [](const std::string& p1, const std::string& p2, const std::string& icc) {
+    return first_row(R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"approximate":true},)"
+                     R"("inputs":{"k1":"15","m":"3","p1":")" + p1 + R"(","p2":")" + p2 + R"(","icc":")" + icc +
+                     "\"}}");
+  };
+  const json::Value n = approx("0.4", "0.9999999999999", "0.001");
+  CHECK_CLOSE(num(n, "sigma_b"), 5.2262, 1e-4, 0);
+  CHECK_CLOSE(num(n, "icc2"), 0.001, 1e-9, 0);
+  CHECK_EQ(num(n, "pm2"), 0.9999999999999);
+  CHECK(approx("0.4", "0.999999999999999", "0.05").get("_error").to_text().find("SD of 7.35") != std::string::npos);
+  const double p1 = 0.999999999999999;
+  CHECK_CLOSE(num(approx("0.999999999999999", "0.5", "0"), "or"), p1 / (1 - p1), 1e-12, 0);
   // the procedure reproduces the inputs on the chosen scales
   const json::Value r = first_row(
       R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"approximate":true},)"

@@ -1885,6 +1885,10 @@ def test_the_glmm_statement_tells_its_numbers_apart():
         return first_row(ssc.run("sim.glmm.cluster", "power", inputs, power_curve=False, approximate=True))
     st = approx({"p1": "1e-30", "p2": "1e-29", "m": "20", "k1": "50", "icc": "0"})["_statement"]
     assert "proportions of 1e-30 and 1e-29 (an odds ratio of 0.1 for a typical cluster;" in st
+    # next to 1 the proportion came from a sum of terms next to 1: the largest double below 1 read 0.9999999999999997
+    for p1 in ("0.9999999999999999", "0.9999999999999998"):
+        st = approx({"p1": p1, "p2": "0.5", "m": "20", "k1": "50"})["_statement"]
+        assert f"proportions of {p1} and 0.5 (" in st
     row = approx({"p1": "0.3001", "p2": "0.3", "m": "1", "k1": "50", "icc": "0"})
     assert "(an odds ratio of 1.0005 for a typical cluster;" in row["_statement"]
     assert "the odds ratio of the population-averaged proportions (1.0005)." in row["_statement"]
@@ -1892,23 +1896,31 @@ def test_the_glmm_statement_tells_its_numbers_apart():
                                                       "icc": "0", "reps": "400"}, threads=2))
     assert "those were analyzed by logistic regression where they could be, with the SD held at 0" in row["_statement"]
     # a proportion-scale ICC past σ = 8 was said to be had by no logistic random-intercept model, or named an SD that
-    # the quadrature made (18.5 where σ = 12.06 gives the ICC); up to 8 the SD is named
+    # the quadrature made (18.5 where σ = 12.06 gives the ICC); up to 8 the SD is named.  One that the 40-point
+    # quadrature does not reach by 8 was said to need more than 8, which holds only above 6 (P2 0.2, ICC 0.78: 7.75)
     def refusal(p2, icc):
         res = ssc.run("sim.glmm.cluster", "power", {"p1": "0.4", "p2": p2, "m": "3", "k1": "15", "icc": icc},
                       power_curve=False, approximate=True)
         return res["rows"][0]["_error"]
-    for p2, icc in (("0.2", "0.955"), ("1.174e-05", "0.636")):
-        assert refusal(p2, icc).startswith("the ICC implies a between-cluster SD of more than 8 on the logit scale "
-                                           "(latent ICC above 0.95)")
+    for p2, icc in (("0.2", "0.955"), ("1.174e-05", "0.636"), ("0.2", "0.78"), ("0.9999999999999999", "0.5")):
+        assert refusal(p2, icc).startswith("the ICC implies a between-cluster SD above 6 on the logit scale (latent "
+                                           "ICC above 0.92), where clusters are almost all-or-none")
     assert refusal("0.2", "0.75").startswith("the ICC implies a between-cluster SD of 6.99 on the logit scale")
+    # next to 1 the moments lost their digits: P2 1 − 1e-15 with an ICC of 0.05 took σ = 1.009 (statement: "ICC 0.2"),
+    # where its mirror 1e-15 is refused for an SD of 7.35
+    assert refusal("0.999999999999999", "0.05").startswith("the ICC implies a between-cluster SD of 7.35")
 
 
 def test_mmrm_and_win_ratio_refusals_say_trials():
-    """Their statements say "simulated trials"; their refusals said "simulated studies"."""
+    """Their statements say "simulated trials"; their refusals said "simulated studies", and so did the power in
+    their statements."""
     res = run("sim.mmrm", "power", {"analysis": "completers", "drop1": "0.99", "drop2": "0.2", "n1": "5",
                                     "reps": "200"}, threads=2)
     assert res["rows"][0]["_error"] == ("the simulated power cannot be computed: none of the 200 simulated trials could be "
                              "analyzed (fewer than 2 patients of a group completed the study)")
+    for pid, inputs in (("sim.mmrm", {"n1": "20", "reps": "100"}), ("sim.winratio", {"n1": "40", "reps": "100"})):
+        st = first_row(run(pid, "power", inputs, threads=2))["_statement"]
+        assert ", 100 simulated trials) to detect" in st and "studies" not in st
 
 
 def test_the_ordinal_approximation_gives_the_share_of_separated_studies():

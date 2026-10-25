@@ -36,7 +36,7 @@ double cluster_loglik(double eta, double m, double s, double sigma, int nodes = 
 /// Why a fit failed.
 enum class Failure {
   None,
-  RunOff,       // σ ran off past SIGMA_MAX, as when the subjects of (nearly) every cluster agree
+  RunOff,       // σ stayed past SIGMA_MAX or ended there: the subjects of every cluster agree, or see SIGMA_MAX
   Arithmetic,   // the likelihood could not be computed, or Newton's method stopped short of the maximum
   Information,  // the observed information at the maximum is not positive definite: no standard error
 };
@@ -59,10 +59,11 @@ struct Poll {
   const void* arg = nullptr;
 };
 
-/// The largest σ a fit may reach.  The likelihood keeps growing past it only where the subjects of (nearly) every
-/// cluster agree, and there the quadrature, whose error for such a cluster grows with σ (up to 0.03 to 0.05 of its
-/// log-likelihood from 15 to 30, against 0.007 at 6, the simulated designs' largest σ), no longer tells where it
-/// peaks.
+/// The largest σ a fit may end at.  The likelihood peaks at a finite σ unless the subjects of every cluster agree,
+/// but where most of them do the quadrature can move the peak far past it: its error for a cluster whose subjects
+/// agree grows with σ (for 1 to 5 subjects up to 0.01 of the cluster's log-likelihood at 6, the simulated designs'
+/// largest σ, and 0.12 at 30 with 21 points; 0.0008 and 0.06 with 64), and summed over a few hundred such clusters
+/// it moved the peak of one study's likelihood from 5.7 to about 32 with 21 points.
 constexpr double SIGMA_MAX = 30;
 
 /// Maximum likelihood fit from the starting values (b0, b1, sigma).  With one subject per cluster and two groups, σ
@@ -73,11 +74,13 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
 double marginal_mean(double beta, double sigma);
 /// Var[expit(β + σZ)]: the between-cluster variance of the cluster proportions.
 double between_variance(double beta, double sigma);
+/// The intracluster correlation on the proportion scale, Var[expit(β + σZ)] / (p̄(1 − p̄)), which β and −β share:
+/// taken where p̄ ≤ 1/2, so that 1 − p̄ keeps its digits next to 1.
+double icc_of(double beta, double sigma);
 /// β with E[expit(β + σZ)] = p.
 double beta_for_marginal(double p, double sigma);
 /// σ giving an intracluster correlation (on the proportion scale) of `icc` when the cluster-specific
-/// intercept is `beta(σ)`: icc = Var[expit(β + σZ)] / (p̄(1 − p̄)).  Throws std::domain_error when the largest power
-/// of 2 up to `limit` gives less.
+/// intercept is `beta(σ)` (icc_of).  Throws std::domain_error when the largest power of 2 up to `limit` gives less.
 template <class BetaOf>
 double sigma_for_icc(double icc, BetaOf&& beta_of, double limit = 1e3);
 
@@ -89,10 +92,7 @@ double sigma_for_icc(double icc, BetaOf&& beta_of, double limit = 1e3);
 template <class BetaOf>
 double ssc::sim::glmm::sigma_for_icc(double icc, BetaOf&& beta_of, double limit) {
   if (icc <= 0) return 0;
-  auto f = [&](double sigma) {
-    const double b = beta_of(sigma), p = marginal_mean(b, sigma);
-    return between_variance(b, sigma) / (p * (1 - p)) - icc;
-  };
+  auto f = [&](double sigma) { return icc_of(beta_of(sigma), sigma) - icc; };
   // the proportion-scale ICC grows with σ from 0 towards 1
   double lo = 0, hi = 1;
   while (f(hi) < 0) {

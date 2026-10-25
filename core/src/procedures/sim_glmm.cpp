@@ -52,15 +52,17 @@ GlmmDesign glmm_design(const Scenario& s) {
     d.sigma = std::sqrt(PI2_3 * icc / (1 - icc));
   } else {
     // σ is sought up to 8: past the largest SD allowed (6) only a refusal names it, and the 40-point quadrature of
-    // the proportions' moments loses its accuracy (the ICC at σ = 8 is 2% low for P2 = 0.2 and 9% for P2 = 1.2e-5,
-    // and from σ = 20 it levels off at 0.814 and 0.536, though every ICC below 1 has its σ); the SDs named past 8
-    // (18.5 for an ICC that σ = 12.06 gives) were artifacts of it
+    // the proportions' moments loses its accuracy (the ICC at σ = 8 is 2% low for P2 = 0.2, 9% for P2 = 1.2e-5 and
+    // 3% high for P2 = 0.5, and from σ = 20 it levels off at 0.814 and 0.536, though every ICC below 1 has its σ);
+    // the SDs named past 8 (18.5 for an ICC that σ = 12.06 gives) were artifacts of it.  An ICC that σ = 8 does not
+    // reach there may still have its σ below 8 (7.75 for 0.78 with P2 0.2), but above 6: the 40-point ICC at 8
+    // exceeds the 30-digit one at 6 for P2 from 5e-31 to 1/2 (at 3,001 values; at the dips of the 40-point ICC by
+    // 0.03 or more from P2 1e-16 up, and 60 times or more below)
     try {
       d.sigma = glmm::sigma_for_icc(icc, [&](double sigma) { return beta_of(p2, sigma); }, 8);
     } catch (const std::domain_error&) {
-      throw CalcError("the ICC implies a between-cluster SD of more than 8 on the logit scale (latent ICC above 0.95); "
-                      "with an SD above 6 (latent ICC 0.92) clusters are almost all-or-none, and the mixed model's "
-                      "Wald test breaks down");
+      throw CalcError("the ICC implies a between-cluster SD above 6 on the logit scale (latent ICC above 0.92), where "
+                      "clusters are almost all-or-none, and the mixed model's Wald test breaks down");
     }
   }
   // beyond this SD clusters are almost all-or-none, and the Wald test breaks down: at an SD of 8 it rejected
@@ -76,8 +78,8 @@ GlmmDesign glmm_design(const Scenario& s) {
   d.b1 = beta_of(p1, d.sigma) - d.b0;
   d.pm1 = glmm::marginal_mean(d.b0 + d.b1, d.sigma);
   d.pm2 = glmm::marginal_mean(d.b0, d.sigma);
-  d.icc1 = glmm::between_variance(d.b0 + d.b1, d.sigma) / (d.pm1 * (1 - d.pm1));
-  d.icc2 = glmm::between_variance(d.b0, d.sigma) / (d.pm2 * (1 - d.pm2));
+  d.icc1 = glmm::icc_of(d.b0 + d.b1, d.sigma);
+  d.icc2 = glmm::icc_of(d.b0, d.sigma);
   d.icc_latent = d.sigma * d.sigma / (d.sigma * d.sigma + PI2_3);
   return d;
 }
@@ -94,9 +96,9 @@ const std::vector<simc::Cause>& causes() {
       {CONCORDANT, Failures::Design,
        "the subjects of every cluster all had the outcome or all lacked it, so the between-cluster SD had no finite "
        "estimate"},
-      {RAN_OFF, Failures::Design,
-       "the estimate of the between-cluster SD grew past 30 (a latent ICC of 0.996), where the quadrature no longer "
-       "tells where the likelihood peaks"},
+      {RAN_OFF, Failures::Numerical,
+       "the fit's between-cluster SD ran past 30, where the quadrature, with 64 points as with 21, is too coarse to "
+       "tell where the likelihood peaks"},
       {ARITHMETIC, Failures::Numerical, "the fit did not converge"},
       {NO_SE, Failures::Numerical,
        "the fit gave no standard error (its information matrix was not positive definite)"}};
@@ -185,11 +187,16 @@ sim::Outcome glmm_study(const GlmmDesign& d, long k1, long k2, long rep, std::ui
   }
   sim::Outcome o;
   const glmm::Poll poll{[](const void* c) { static_cast<const RunContext*>(c)->check(); }, &ctx};
-  const glmm::Fit f = glmm::fit(data, d.b0, d.b1, d.sigma, 21, poll);
+  // where the subjects of most clusters agree, 21 points can carry σ past 30 from a peak at 3 to 10 (glmm::SIGMA_MAX),
+  // and 64 find that peak in most such studies: 23 of the 38 that so ran off in 200 of P1 0.97, P2 0.03, m 1.2, CV
+  // 2, k1 300, latent ICC 0.9, and all 14 of 1,000 of P1 0.5, P2 0.2, m 1, CV 0.2, k1 200, ICC 0.05
+  const bool agree = concordant(data);
+  glmm::Fit f = glmm::fit(data, d.b0, d.b1, d.sigma, 21, poll);
+  if (!f.ok && f.failure == glmm::Failure::RunOff && !agree) f = glmm::fit(data, d.b0, d.b1, d.sigma, 64, poll);
   if (!f.ok || !(f.se_b1 > 0)) {
     o.failed = true;
     const glmm::Failure why = f.ok ? glmm::Failure::Information : f.failure;
-    o.also = 1u << (concordant(data)                    ? CONCORDANT
+    o.also = 1u << (agree                               ? CONCORDANT
                     : why == glmm::Failure::RunOff      ? RAN_OFF
                     : why == glmm::Failure::Information ? NO_SE
                                                         : ARITHMETIC) |
@@ -428,7 +435,10 @@ Procedure glmm_cluster() {
                    {"Power", "Share of the simulated studies whose test of OR = 1 was significant, with its 95% "
                              "interval (Wilson) and Monte Carlo standard error."}};
   p.notes = {"Each cluster's number of successes is binomial given its random intercept; the model is fitted by "
-             "maximum likelihood with 21-point adaptive Gauss–Hermite quadrature (as glmer with nAGQ = 21).",
+             "maximum likelihood with 21-point adaptive Gauss–Hermite quadrature (as glmer with nAGQ = 21). Where "
+             "the subjects of most clusters all have the outcome or all lack it, 21 points can carry the "
+             "between-cluster SD past 30 although the likelihood peaks far below it; such a fit is done again with "
+             "64 points.",
              "With few clusters, maximum likelihood underestimates the between-cluster variance, so Wald tests "
              "reject somewhat more often than α (about 5.5% at α = 5% with 15 clusters of 30 per arm, with the t "
              "reference distribution). Set P1 = P2 to see the type I error of your design.",
@@ -440,10 +450,9 @@ Procedure glmm_cluster() {
              "that draws no larger cluster.",
              "Studies whose fit fails count as not rejecting and are reported as failed fits, with the reason: no "
              "subject of a group with the outcome, or every one with it (no finite odds ratio; such a study is not "
-             "fitted), the subjects of every cluster all alike (no finite between-cluster SD), an estimate of that SD "
-             "past 30 (where the quadrature no longer tells where the likelihood peaks), or a fit that did not "
-             "converge. No simulated power is given when no study could be fitted, or when fits did not converge in "
-             "more than half of them.",
+             "fitted), the subjects of every cluster all alike (no finite between-cluster SD), a fit whose SD ran "
+             "past 30 with 64 quadrature points too, or a fit that did not converge. No simulated power is given when "
+             "no study could be fitted, or when fits ran past 30 or did not converge in more than half of them.",
              "The quick approximation compares the population-averaged proportions with each cluster weighted by "
              "size / (p(1 − p)(1 + (size − 1)ρ)), averaged over the size distribution."};
   p.references = {"Li, P. & Redden, D. T. (2015). Comparing denominator degrees of freedom approximations for the "
