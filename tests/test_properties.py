@@ -2184,14 +2184,33 @@ def test_two_visits_far_from_time_0_keep_the_digits_of_satterthwaites_degrees_of
     complete data theory gives exactly N − 2 = 18 in every study, and the exact derivatives along D's entries had lost
     digits (15 of these 200 studies more than 0.1% off, up to 4.2%; mean_df 17.9928, or 18.0015 where the compiler
     fuses a multiply and an add).  Taken with the random effects' coordinates turned along the fit's D = w w', every
-    study is within 2 · 10⁻⁶ of 18.  With half of the subjects gone by the second visit, one study fell back to N − 2
-    and two had 13.55 and 19.27, where 60-digit fits give 18.0002, 18.0004 and 18.0001."""
+    study is within 3.4 · 10⁻⁵ of 18 (1.9 · 10⁻⁶ of it).  With half of the subjects gone by the second visit, one study
+    fell back to N − 2 and two had 13.55 and 19.27, where 60-digit fits give 18.0002, 18.0004 and 18.0001."""
     inputs = {"timing": "custom", "times": "809.796 819.952", "sd0": "1.42", "sd1": "1.73", "rho": "0.27",
               "sde": "0.197", "n1": "10", "reps": "200"}
     row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
     assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(18, abs=1e-5), row
     row = first_row(run("sim.lmm.longitudinal", "power", {**inputs, "dropout": "0.5"}, threads=2))
     assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(17.98764, abs=2e-4), row
+
+
+def test_fits_near_the_boundary_with_an_optimum_inside_it_keep_the_digits_of_satterthwaites_degrees_of_freedom():
+    """Five visits at 30 to 40, an intercept SD of 5 and σe 0.0005: Λ's first column is some 10⁶ times σ and the
+    intercepts and slopes are correlated beyond 0.95 at the analysis origin, but in every study the criterion falls
+    off the boundary to an optimum inside it.  The degrees of freedom there, from exact derivatives in D in full, lost
+    digits as those on the boundary had: 60-digit fits give 8.000 where three of these 400 studies had 35.5, 21.6 and
+    19.2, and mean_df was 8.171 (8.036 with two studies on N − 2 where the compiler fuses a multiply and an add); taken
+    with the coordinates turned along Λ's first column, the 11 studies checked agree with 60-digit fits to 7.2 · 10⁻⁶
+    of their value.  With three visits near 875, a fit whose optimum is inside fell back to N − 2 where a 60-digit fit
+    gives 13.9997."""
+    inputs = {"timing": "custom", "times": "30 31 33 35 40", "sd0": "5", "sd1": "12", "rho": "-0.4", "sde": "0.0005",
+              "dropout": "0.2", "n1": "5", "reps": "400"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(7.99959, abs=2e-4), row
+    inputs = {"timing": "custom", "times": "871.547012647 878.406012647 879.628012647", "sd0": "1.23", "sd1": "0.875",
+              "rho": "-0.0952571", "sde": "0.0369", "dropout": "0.7", "n1": "8", "reps": "100", "seed": "5240"}
+    row = first_row(run("sim.lmm.longitudinal", "power", inputs, threads=2))
+    assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(13.99677, abs=1e-4), row
 
 
 def test_a_simulated_study_that_cannot_tell_a_groups_slope_apart_counts_as_failed():
