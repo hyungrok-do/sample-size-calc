@@ -265,15 +265,16 @@ inline std::vector<Column> run_columns() {
           col("seed", "Seed", "int", "Random seed")};
 }
 
-/// "achieve a simulated power of 81.2% (95% CI 78.7% to 83.5%, 1,000 simulated studies; target 80.0%)".
-inline std::string power_phrase(const Scenario& s, const Row& r) {
+/// "achieve a simulated power of 81.2% (95% CI 78.7% to 83.5%, 1,000 simulated studies; target 80.0%)", with the
+/// studies named as the rest of the statement names them ("trials").
+inline std::string power_phrase(const Scenario& s, const Row& r, const std::string& studies = "studies") {
   using blocks::fint;
   using blocks::fpct;
   const bool approx = text_of(r, "method") == "approximation";
   std::string t = approx ? "achieve an approximate power of " + fpct(r.num("power"))
                          : "achieve a simulated power of " + fpct(r.num("power")) + " (95% CI " +
                                fpct(r.num("power_lo")) + " to " + fpct(r.num("power_hi")) + ", " +
-                               fint(r.num("reps")) + " simulated studies";
+                               fint(r.num("reps")) + " simulated " + studies;
   if (s.solve != "power") t += std::string(approx ? " (" : "; ") + "target " + fpct(s("power")) + ")";
   else if (!approx) t += ")";
   return t;

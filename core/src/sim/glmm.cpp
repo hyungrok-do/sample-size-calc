@@ -266,6 +266,7 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
   pin(grad, hess);
   if (!std::isfinite(ll)) return fail(Failure::Arithmetic);
   bool converged = false;
+  int past = 0;  // steps in a row that ended with |σ| past SIGMA_MAX
   for (int it = 0; it < 100 && !converged; ++it) {
     ++out.iterations;
     // ascent direction d = (−H + λI)⁻¹ ∇ℓ, with λ raised until −H + λI is positive definite
@@ -287,16 +288,18 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
       converged = std::isfinite(ll);
       break;
     }
-    // the trial points are evaluated with their derivatives, which the accepted one then supplies
+    // the trial points are evaluated with their derivatives, which the accepted one then supplies.  A step must
+    // gain: one that only kept the log-likelihood (2.8e-14 of the Newton step at a maximum up to rounding, with a
+    // decrement of 1.8e-8 at −5086) was taken again and again, and the fit failed at the 100th
     double step = 1, trial[3], next = -INFINITY, tgrad[3], thess[9];
     for (int half = 0; half < 50; ++half, step /= 2) {
       for (int i = 0; i < 3; ++i) trial[i] = th[i] + step * d[i];
       std::copy(modes.begin(), modes.end(), trial_modes.begin());
       next = evaluate(data, trial[0], trial[1], trial[2], r, trial_modes, tgrad, thess, poll);
       pin(tgrad, thess);
-      if (std::isfinite(next) && next >= ll) break;
+      if (std::isfinite(next) && next > ll) break;
     }
-    if (!(std::isfinite(next) && next >= ll)) {
+    if (!(std::isfinite(next) && next > ll)) {
       // no progress possible: converged up to rounding (and the quadrature error)
       converged = decrement < 1e-6 * (1 + std::fabs(ll));
       break;
@@ -307,10 +310,15 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
     modes.swap(trial_modes);
     ll = next;
     // β is left free: separated data, whose β has no finite estimate, are the caller's to catch, and otherwise it
-    // has one, however large (a log odds ratio of 30 between groups with 3e-7 and 1 − 3e-7 of 10⁷ subjects a cluster)
-    if (std::fabs(th[2]) > SIGMA_MAX) return fail(Failure::RunOff);
+    // has one, however large (a log odds ratio of 30 between groups with 3e-7 and 1 − 3e-7 of 10⁷ subjects a cluster).
+    // σ may pass SIGMA_MAX on its way to a maximum below it (from 5.4 to 368 in a first step, back below 30 two steps
+    // later and on to 5.24, in clusters of 10⁴; such passes took 1 to 4 steps), so the fit runs off when it stays
+    // past it for 5 steps or ends past it
+    past = std::fabs(th[2]) > SIGMA_MAX ? past + 1 : 0;
+    if (past == 5) return fail(Failure::RunOff);
   }
   if (!converged) return fail(Failure::Arithmetic);
+  if (std::fabs(th[2]) > SIGMA_MAX) return fail(Failure::RunOff);
   out.ok = true;
   out.b0 = th[0];
   out.b1 = th[1];
@@ -343,6 +351,9 @@ Fit fit(const std::vector<Cluster>& data, double b0, double b1, double sigma, in
 }
 
 double marginal_mean(double beta, double sigma) {
+  // from below 1/2, as 1 − E[expit(−β + σZ)]: terms next to 1 lose the digits of their distance from it (a sum of
+  // 0.9999999999999997 for a proportion of 1 − 1.1e-16)
+  if (beta > 0) return 1 - marginal_mean(-beta, sigma);
   const Rule& r = rule(40);
   double s = 0;
   for (std::size_t k = 0; k < r.x.size(); ++k) s += r.w[k] * expit(beta + sigma * SQRT2 * r.x[k]);
@@ -362,8 +373,17 @@ double between_variance(double beta, double sigma) {
   return std::max(0.0, s2 / norm - (s / norm) * (s / norm));
 }
 
+double icc_of(double beta, double sigma) {
+  // next to 1, 1 − p̄ kept as few digits as p̄'s distance from 1 has, and E[p²] − p̄² lost them all: P2 1 − 1e-15
+  // with an ICC of 0.05 took σ = 1.009, which gives 0.2, where P2 1e-15 took 7.35
+  const double b = -std::fabs(beta), p = marginal_mean(b, sigma);
+  return between_variance(b, sigma) / (p * (1 - p));
+}
+
 double beta_for_marginal(double p, double sigma) {
-  // [−60, 60] holds β for every p below 1 down to 8.8e-27 at σ = 0 and 5.7e-19 at σ = 6; smaller ones widen it
+  // above 1/2 as −β of 1 − p, which keeps its digits there (and is exact), as marginal_mean does
+  if (p > 0.5) return -beta_for_marginal(1 - p, sigma);
+  // [−60, 60] holds β for every p from 1/2 down to 8.8e-27 at σ = 0 and 5.7e-19 at σ = 6; smaller ones widen it
   double lo = -60, hi = 60;
   while (marginal_mean(lo, sigma) > p && lo > -1e3) lo *= 2;
   for (int i = 0; i < 200 && hi - lo > 1e-13; ++i) {
