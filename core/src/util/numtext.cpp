@@ -1,5 +1,6 @@
 #include "numtext.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <iomanip>
@@ -62,20 +63,31 @@ bool parse_double(const std::string& s, std::size_t& pos, double& out) {
     // Out-of-range literals saturate like strtod.  Some C++ libraries (libc++)
     // also report subnormal results as out of range: those are parsed with the
     // exponent shifted into the normal range and scaled back (within one ulp).
+    // Which way it is out of range is told by the place of the leading digit,
+    // not by the sign of the exponent ("1000...0e-1" with 320 zeros is past
+    // the largest double, "0.000...01" with 400 zeros below the smallest).
     const std::string tok = s.substr(start, i - start);
     const auto e = tok.find_first_of("eE");
-    const bool negexp = e != std::string::npos && tok.size() > e + 1 && tok[e + 1] == '-';
-    v = negexp ? 0.0 : std::numeric_limits<double>::infinity();
-    if (negexp) {
-      long ex = 0;
-      for (std::size_t k = e + 2; k < tok.size() && ex < 100000; ++k) ex = 10 * ex + (tok[k] - '0');
-      if (ex < 700) {  // anything smaller is zero in double precision
-        std::istringstream js(tok.substr(0, e) + "e-" + std::to_string(ex - 300));
-        js.imbue(std::locale::classic());
-        double w = 0;
-        js >> w;
-        if (!js.fail()) v = w * 1e-300;
-      }
+    const std::string mantissa = tok.substr(0, e);
+    long ex = 0;  // the exponent, up to a size no double comes near
+    if (e != std::string::npos) {
+      const bool down = tok[e + 1] == '-';
+      for (std::size_t k = e + 1 + (tok[e + 1] == '+' || down); k < tok.size(); ++k)
+        ex = std::min(10 * ex + (tok[k] - '0'), 100000L);
+      if (down) ex = -ex;
+    }
+    // the power of ten of the leading digit other than 0
+    const auto point = mantissa.find('.'), first = mantissa.find_first_of("123456789");
+    const long whole = static_cast<long>(point == std::string::npos ? mantissa.size() : point);
+    const long at = static_cast<long>(first == std::string::npos ? 0 : first);
+    const long lead = ex + (at < whole ? whole - 1 - at : whole - at);
+    v = lead > 0 && first != std::string::npos ? std::numeric_limits<double>::infinity() : 0.0;
+    if (v == 0 && first != std::string::npos && lead > -400) {  // anything smaller is zero in double precision
+      std::istringstream js(mantissa + "e" + std::to_string(ex + 300));
+      js.imbue(std::locale::classic());
+      double w = 0;
+      js >> w;
+      if (!js.fail()) v = w * 1e-300;
     }
   }
   out = neg ? -v : v;

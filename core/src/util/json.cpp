@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 
 #include "numtext.hpp"
@@ -19,6 +20,7 @@ std::string Value::to_text() const {
     case Type::String:
       return s_;
     case Type::Number: {
+      if (!std::isfinite(n_)) return text::format_roundtrip(n_);  // "inf", which an input refuses as not finite
       std::string s;
       append_number(n_, s);
       return s;
@@ -356,9 +358,14 @@ struct Parser {
     if (lit("true")) return Value(true);
     if (lit("false")) return Value(false);
     if (lit("null")) return Value();
-    // number (locale independent)
+    // number (locale independent).  One too small for a double whose digits are not all 0 is the smallest double of
+    // its sign, as in typed text (parse::numbers), so that an input sent as 1e-400 is refused for its size, not
+    // taken for 0
+    const std::size_t start = i;
     double d = 0;
     if (!text::parse_double(s, i, d)) fail("unexpected character");
+    for (std::size_t k = start; d == 0 && k < i && s[k] != 'e' && s[k] != 'E'; ++k)
+      if (s[k] >= '1' && s[k] <= '9') d = std::copysign(std::numeric_limits<double>::denorm_min(), d);
     return Value(d);
   }
 };

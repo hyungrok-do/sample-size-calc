@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <map>
 #include <new>
 #include <set>
@@ -139,11 +140,15 @@ void check_groups(const Procedure& p, const Scenario& s) {
                     "needs at least " + blocks::fint(min1));
 }
 
-// A dropout rate as D / 10^k (whole / scale), from its shortest decimal: the decimal typed, where that has at most 15
-// significant digits.  places (k) is -1 where it has more than 15.
+// A dropout rate as D / 10^k, from its shortest decimal: the decimal typed, where that has at most 15 significant
+// digits.  D and 10^k (whole and scale) are doubles exactly where k is at most 15; where it is more ('2.5e-16' has 17
+// places), digits holds D written with k digits, and complement 1 - D / 10^k as nearly as a double holds it.  places
+// is -1 for a rate of 1 or more, which the input refuses.
 struct Rate {
   double whole = 0, scale = 1;
   int places = -1;
+  std::string digits;
+  double complement = 1;
 };
 
 Rate rate_of(double d) {
@@ -153,11 +158,21 @@ Rate rate_of(double d) {
   const long decimals = point == std::string::npos ? 0 : static_cast<long>(mantissa.size() - point - 1);
   const long places = decimals - (e == std::string::npos ? 0 : std::stol(t.substr(e + 1)));
   Rate r;
-  if (places < 0 || places > 15) return r;
+  std::string digits;
   for (char c : mantissa)
-    if (c != '.') r.whole = 10 * r.whole + (c - '0');
-  for (long k = 0; k < places; ++k) r.scale *= 10;
+    if (c != '.' && (c != '0' || !digits.empty())) digits += c;
+  if (places < 0 || static_cast<long>(digits.size()) > places) return r;
   r.places = static_cast<int>(places);
+  if (places > 15) {
+    r.digits = std::string(static_cast<std::size_t>(places) - digits.size(), '0') + digits;
+    std::string rest = r.digits;  // 10^k - D, which is (10^k - 1 - D) + 1
+    for (char& c : rest) c = static_cast<char>('9' - (c - '0'));
+    for (std::size_t k = rest.size(); k-- > 0 && ++rest[k] > '9';) rest[k] = '0';
+    text::parse_double(rest + "e-" + std::to_string(places), r.complement);
+    return r;
+  }
+  for (char c : digits) r.whole = 10 * r.whole + (c - '0');
+  for (long k = 0; k < places; ++k) r.scale *= 10;
   return r;
 }
 
@@ -166,14 +181,29 @@ Rate rate_of(double d) {
 // from a real fraction everywhere: an absolute one of 1e-9 is less than the rounding above 2^24 (84,000,000 / 0.7 got
 // one subject too many), and solve::round_up's relative one is more than a quarter of a subject above 2^48.  So it is
 // decided from the decimals of d, exactly: c is enough where c * (10^k - D) * mult >= n * 10^k, products of whole
-// numbers below 2^53 compared as the double nearest each and the rest, which fma gives exactly.  A rate of more than
-// 15 places is rounded with round_up.
+// numbers below 2^53 compared as the double nearest each and the rest, which fma gives exactly.  For a rate of more
+// than 15 places, where D or 10^k - D is not a double, that is c * mult - n >= c * mult * D / 10^k, whose right side
+// is worked out by long multiplication, D's last digit first: its whole part and whether it has a fraction.
 double inflated(double n, const Rate& r, double d, double mult) {
   if (r.places < 0) return solve::round_up(n / (1 - d) / mult) * mult;
+  const bool long_hand = r.places > 15;
   const double m = (r.scale - r.whole) * mult, hi = n * r.scale, lo = std::fma(n, r.scale, -hi);
-  double c = std::ceil(hi / m);  // within a unit or two of the answer
+  double c = std::ceil(long_hand ? n / r.complement / mult : hi / m);  // within a unit or two of the answer
   if (!(c < 4e15)) return c * mult;  // past any count: no row
   const auto enough = [&](double c) {
+    if (long_hand) {
+      const double x = c * mult;  // whole, as is n
+      if (x < n) return false;
+      std::uint64_t carry = 0;
+      bool fraction = false;
+      for (std::size_t k = r.digits.size(); k-- > 0;) {
+        const std::uint64_t t = static_cast<std::uint64_t>(x) * static_cast<std::uint64_t>(r.digits[k] - '0') + carry;
+        fraction = fraction || t % 10 != 0;
+        carry = t / 10;  // below x
+      }
+      const double whole = static_cast<double>(carry);
+      return x - n > whole || (x - n == whole && !fraction);
+    }
     const double h = c * m, l = std::fma(c, m, -h);
     return h > hi || (h == hi && l >= lo);
   };

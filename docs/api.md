@@ -70,6 +70,8 @@ Another thread can watch progress and cancel it through the token.
   and 1e30`, `values must be 0 or at least 1e-30` ...). A vector input
   (for example group means `0 0.5 1`) can hold several alternatives separated
   by `;`.
+- An input sent as a JSON number rather than text is read as its text would be:
+  `1e-400` is refused for its size, not taken for 0.
 - A request nested deeper than 64 levels of objects and arrays is refused.
 - Every combination of list values is one **scenario**. The last parameter
   varies fastest.
@@ -175,8 +177,8 @@ Another thread can watch progress and cancel it through the token.
   smaller one. The token's progress advances smoothly while a simulation runs.
 - **`dropout`** appears for procedures with a dropout-rate input. It lists sample
   sizes inflated by 1/(1 − rate), rounded up (worked out exactly from the rate
-  as typed, where it has at most 15 decimals), and the expected number of
-  dropouts.
+  as typed, or from its double's shortest decimal where it has more than 15
+  significant digits), and the expected number of dropouts.
 - **`plots`** has two kinds of entry:
 
   | `kind` | What it plots |

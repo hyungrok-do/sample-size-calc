@@ -822,6 +822,10 @@ def test_hazards_whose_sum_overflows_keep_their_share_of_events():
     ("2", "0.99975", 8000),                    # 8000.00000000088: 1 - d magnifies the rounding of d
     ("7", "0.9999993", 10000000),              # 10000000.0005
     ("123456789", "0.9999993", 176366841428572),  # 176366841437486.06, 8,914 too many
+    # more than 15 places, where the rate's decimals are not doubles (round_up gave the first one subject too few)
+    ("100000000", "2.5e-16", 100000001),       # 100000000.000000025, which is 100,000,000 in doubles
+    ("1000", "1e-20", 1001),                   # any rate above 0 adds a subject
+    ("2", "0.9999999999999954", 434782608695653),  # 1 - d is 4.6e-15, 4.5519e-15 in doubles: 439,375,573,402,000
 ])
 def test_a_dropout_table_rounds_up_from_the_rate_typed(n1, dropout, inflated):
     """n / (1 - d) rounded up, worked out from the decimals of d: no slack on the quotient in doubles gets all of
