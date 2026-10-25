@@ -258,16 +258,17 @@ TEST_CASE("glmm: a fit that 21 points carry past an SD of 30 is done again with 
   CHECK_CLOSE(f.sigma, 5.7, 0, 0.1);
   CHECK(f.b1 / f.se_b1 > 2.3);
   // in the procedure, 45 of the 200 studies failed so (76.5%); 64 points fit 23 of the 38 that 21 now carry past 30
-  // (7 more came back below 30), and the other 15 are failures of the arithmetic, not of the design
+  // (7 more came back below 30), and the other 15 are failures of the arithmetic, not of the design.  How many end
+  // past 30 again turns on the last bits of the C library's exp and log (16 failures and 89.5% with glibc's, 25 and
+  // 83% with Microsoft's), so the counts are bounded here rather than pinned
   const json::Value r = first_row(
       R"({"procedure":"sim.glmm.cluster","solve_for":"power","options":{"power_curve":false},)"
       R"("inputs":{"p1":"0.97","p2":"0.03","m":"1.2","cv":"2","k1":"300","icc":"0.9","iccscale":"latent",)"
       R"("reps":"200"}})");
-  CHECK_EQ(num(r, "power"), 0.895);
-  CHECK_EQ(num(r, "failures"), 16.0);
-  CHECK(r.get("failures_why").as_string().find("in 15, the fit's between-cluster SD ran past 30, where the "
-                                               "quadrature, with 64 points as with 21, is too coarse") !=
-        std::string::npos);
+  CHECK(num(r, "power") > 0.765);
+  CHECK(num(r, "failures") < 45);
+  CHECK(r.get("failures_why").as_string().find("the fit's between-cluster SD ran past 30, where the quadrature, with "
+                                               "64 points as with 21, is too coarse") != std::string::npos);
   // σ may pass 30 on its way to a maximum below it: here a first step to 368 in clusters of 10⁴, and back to 5.24, in
   // one study of 200, which a guard on every step failed (92.0%)
   const json::Value a = first_row(

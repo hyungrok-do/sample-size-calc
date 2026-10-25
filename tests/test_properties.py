@@ -20,6 +20,7 @@ import math
 import os
 import random
 import re
+import sys
 import time
 from fractions import Fraction
 from typing import Dict, List, Optional
@@ -1659,6 +1660,8 @@ def test_satterthwaites_degrees_of_freedom_keep_their_digits_with_large_clusters
     assert "df_fallbacks" not in row
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="which of these studies end on the boundary turns on the last "
+                    "bits of the C library's log and exp, and Microsoft's differ from glibc's and Apple's")
 def test_satterthwaites_degrees_of_freedom_with_few_clusters_of_millions_are_those_of_a_50_digit_fit():
     """Three clusters a group, of 10⁷ subjects on average with a CV of 5: in 5 of 400 studies the fit ended at a
     cluster variance of 10⁻¹⁰ to 10⁻⁹ σ² where the REML optimum is 0 (the criterion's values cannot tell them
@@ -1671,6 +1674,8 @@ def test_satterthwaites_degrees_of_freedom_with_few_clusters_of_millions_are_tho
     assert "df_fallbacks" not in row and row["mean_df"] == pytest.approx(7862226.554949597, rel=1e-6), row
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="which of these studies end on the boundary turns on the last "
+                    "bits of the C library's log and exp, and Microsoft's differ from glibc's and Apple's")
 def test_a_cluster_that_is_nearly_all_of_its_arm_leaves_the_slope_at_zero_its_digits():
     """The same design with the default seed: one study has clusters of 1, 533,277,991 and 2 subjects in one arm and
     three of 1 in the other.  The criterion's slope at a cluster variance of 0, formed through X'V⁻¹X's inverse and
