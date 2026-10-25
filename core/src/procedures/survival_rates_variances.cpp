@@ -515,6 +515,31 @@ double pois_power_far(double up, double lo, double mu, double dmu) {
   return clamp01(pw);
 }
 
+// The first distance at which ok holds (a tail at most its side), where it holds from some distance on, sought from
+// d by whole counts: one at a time for the first 64 steps, then by steps that double, and back by halves.  Next to a
+// tail of nearly a half (two-sided alphas next to 1, one-sided ones next to 0.5) z is next to 0, a step moves the
+// tail by about 0.4/σ0, and with 1e46 events (σ0 = 1e23) that is a ten-millionth of a double there: one at a time
+// the steps went on until their sum got past the tail's rounding, 1e7 times or more, and Stop was not heard.
+template <class F>
+double pois_first_ok(double d, F ok) {
+  const bool down = ok(d);  // the first ok one is d or below it
+  double bad = d, good = d;
+  for (double step = 1, k = 0;; step = ++k < 64 ? 1 : 2 * step) {
+    const double e = down ? good - step : bad + step;
+    if (ok(e) == down) {
+      (down ? good : bad) = e;
+      continue;
+    }
+    (down ? bad : good) = e;
+    break;
+  }
+  while (good - bad > 1) {
+    const double m = bad + std::floor((good - bad) / 2);
+    (ok(m) ? good : bad) = m;
+  }
+  return good;
+}
+
 // The distances from μ0 of the critical counts (NaN: no such tail), placed as pois_region places them; f0, the
 // fraction of μ0, makes them whole counts.
 std::pair<double, double> pois_region_far(bool exact, double mu0, double alpha, Alt a) {
@@ -527,21 +552,15 @@ std::pair<double, double> pois_region_far(bool exact, double mu0, double alpha, 
     return {up, lo};
   }
   // from the normal quantile with the skewness and continuity terms, then stepped by the tails themselves while a
-  // step of one still changes the distance (the exact test never exceeds alpha), and changes the tail, by about
-  // φ(z)/σ0, by more than its rounding: next to a tail of nearly a half (two-sided alphas next to 1, one-sided ones
-  // next to 0.5) z is next to 0, a step moves the tail by about 0.4/σ0, and with 1e46 events (σ0 = 1e23) that is a
-  // ten-millionth of a double there: the steps went on until their sum got past the tail's rounding, 1e7 times or
-  // more, and Stop was not heard
-  const bool step = z * sd0 < 1e15 && stats::dnorm(z) / sd0 > 16 * std::numeric_limits<double>::epsilon() * side;
+  // step of one still changes the distance (the exact test never exceeds alpha; see pois_first_ok() for the steps)
+  const bool step = z * sd0 < 1e15;
   if (a != Alt::Lower) {  // smallest with P(X ≥ μ0 + up) ≤ side
     up = std::ceil(f0 + z * sd0 + (z * z - 1) / 6 + 0.5) - f0;
-    while (step && pois_power_far(up - 1, NAN, mu0, 0) <= side) up -= 1;
-    while (step && pois_power_far(up, NAN, mu0, 0) > side) up += 1;
+    if (step) up = pois_first_ok(up, [&](double d) { return pois_power_far(d, NAN, mu0, 0) <= side; });
   }
   if (a != Alt::Upper) {  // largest with P(X ≤ μ0 + lo) ≤ side
     lo = std::floor(f0 - z * sd0 + (z * z - 1) / 6 - 0.5) - f0;
-    while (step && pois_power_far(NAN, lo, mu0, 0) > side) lo -= 1;
-    while (step && pois_power_far(NAN, lo + 1, mu0, 0) <= side) lo += 1;
+    if (step) lo = -pois_first_ok(-lo, [&](double d) { return pois_power_far(NAN, -d, mu0, 0) <= side; });
   }
   return {up, lo};
 }

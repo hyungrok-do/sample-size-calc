@@ -97,6 +97,22 @@ TEST_CASE("distributions: a small beta tail beside one large shape, from TOMS 70
   CHECK_CLOSE(stats::pt(4.5, 1e6, false), 3.3980552524769493e-6, 1e-14, 0);
 }
 
+TEST_CASE("distributions: the upper incomplete gamma at a small shape, and the beta tail beside one") {
+  // Q(a, x) for a < ½ and x < a + 1 was 1 − P, about a·E1(x) known only to 1e-16 (2.3e-5 relative at a = 1e-10);
+  // BGRAT takes it for a tiny second shape b, and pbeta(0.99, 30, 1e-15) was 3.3e-16 for 9.1e-16.  References:
+  // mpmath's gammainc, and the beta tail integrated in 60 digits.
+  struct Case {
+    double x, a, ref;
+  };
+  for (const Case& c : {Case{1.0, 1e-10, 2.1938393441796778575e-11}, Case{0.5, 1e-3, 5.6006665647074988868e-4},
+                        Case{1.2, 0.3, 0.063394719569259104781}, Case{1e-300, 1e-30, 6.9019831223331222984e-28},
+                        Case{0.5615, 1e-6, 4.9149342226249250718e-7}, Case{1.4, 0.49, 0.091717618248318038954}})
+    CHECK_CLOSE(stats::pgamma_raw(c.x, c.a, false), c.ref, 1e-14, 0);
+  CHECK_CLOSE(stats::pbeta(0.99, 30, 1e-15, true), 9.1437730900816014257e-16, 1e-14, 0);
+  CHECK_CLOSE(stats::pbeta(0.01, 1e-15, 30, false), 9.1437730900816014257e-16, 1e-14, 0);
+  CHECK_CLOSE(stats::pf(5, 2e-12, 100, false), 2.5454400870275017447e-11, 1e-14, 0);
+}
+
 TEST_CASE("distributions: huge noncentrality stays accurate and fast") {
   // P(χ'² ≤ df + λ) → 1/2 + skewness term; the upper tail of the F test is ≈ 1.
   for (double lam : {1e6, 1e9, 1e12, 1e15}) {

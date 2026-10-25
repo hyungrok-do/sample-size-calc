@@ -381,13 +381,18 @@ double expm1_less_x(double x) {
 // the logarithm h(u) of the product is concave, and Gauss–Legendre takes it in panels of at most 1.5 over the range
 // where it is within 40 of its largest value (as the SD ratio's nodes of sim.multiarm).
 double pnt_far(double t, double df, double a) {
+  // P(T > t) ≤ P(S < ½) + P(Z > a + t/2): where both are below the doubles, so is the tail (P(S < ½) is, from
+  // ν = 2400 on).  With ν and t both large (ν = 1e19, t = 1e10) h is of the order of −1e19, its rounding far above 1,
+  // and the peak and the range below lost their meaning: NaN or ±∞.
+  if (df > 1e3 && pgamma_raw(df / 8, df / 2, true) + pnorm(a + t / 2, false) == 0) return 0;
   auto g = [&](double u) { return -df / 2 * expm1_less_x(2 * u); };
   auto h = [&](double u) { return g(u) + log_upper_normal(a + t * std::exp(u)); };
   // the largest value: below u = 0, where h falls already (g'(0) = 0), bracketed in steps that double going down,
-  // then by golden section to a twentieth of the width of the peak of g, 1/√(2ν)
+  // then by golden section to a twentieth of the width of the peak of g, 1/√(2ν).  Beyond t = 1e150 from where
+  // t·e^u is 1e150: the square in h overflowed at u = 0 and next to it, h was −∞ at both, and the search threw.
   constexpr double G = 0.6180339887498949;
   const double step = std::fmin(1 / std::sqrt(2 * df), 1.0), tol = 0.05 * step;
-  double hi = 0, mid = -step, h_mid = h(mid), lo = mid;
+  double hi = std::fmin(0.0, std::log(1e150 / t)), mid = hi - step, h_mid = h(mid), lo = mid;
   if (h_mid > h(hi)) {  // further down: until h falls again, so that the largest value lies between lo and hi
     for (lo = mid - 2 * step;; lo = mid - 2 * (hi - mid)) {
       const double h_lo = h(lo);
@@ -423,7 +428,21 @@ double pnt_far(double t, double df, double a) {
     }
     return numerics::brent([&](double v) { return h(v) - level; }, near, far, tol);
   };
-  const double ua = end(-1), ub = end(1);
+  // Below uc, where t·e^u·(a + 1) < 2^-56, P(Z > a + t·e^u) is P(Z > a) to 1e-16 of itself (its relative slope is
+  // below a + 1), and that part of the integral is P(Z > a) times P(S < e^uc), a chi-square tail.  The range within
+  // 40 of the peak reaches some 40/ν below it, where g rises at the rate ν, and was taken in panels all the same: 7.5 s
+  // at ν = 1e-5, ten times that for each factor of 10 below it, and below ν = 1.2e-8 a count of panels past the
+  // largest int, which gave 0.  Above uc the range is at most 43 wide (ν from 5e-324 to 1e20, t from 1e-300 to 1e300).
+  const double ub = end(1), uc = std::fmin(std::log(0x1p-56 / (t * (a + 1))), ub);
+  const bool cut = uc >= top || h(uc) > level;
+  const double ua = cut ? uc : end(-1);
+  double below = 0;
+  if (cut) {  // P(S < e^uc) = P(χ²_ν < ν·e^{2uc}) = P(k, x), k = ν/2, from x^k/Γ(k + 1) where x is below the doubles
+    const double lx = std::log(df) - std::log(2.0) + 2 * uc;
+    below = pnorm(a, false) * (lx > -700 ? pgamma_raw(std::exp(lx), df / 2, true)
+                                         : std::exp(df / 2 * lx - lgammafn(df / 2 + 1)));
+  }
+  if (!(ub > ua)) return below;
   const GLRule& rule = gauss_legendre(48);
   const int panels = static_cast<int>(std::ceil((ub - ua) / 1.5));
   const double half = (ub - ua) / panels / 2;
@@ -436,7 +455,7 @@ double pnt_far(double t, double df, double a) {
     }
   // ln ∫exp(g) = lnΓ(k) + k − k·ln k − ln 2 with k = ν/2, by Stirling's series without cancellation
   const double k = df / 2, log_total = LN_SQRT_2PI - 0.5 * std::log(k) + stirlerr(k) - std::log(2.0);
-  return std::exp(peak + std::log(half * sum) - log_total);
+  return below + std::exp(peak + std::log(half * sum) - log_total);
 }
 
 double pnt_pos(double t, double df, double del, bool lower) {

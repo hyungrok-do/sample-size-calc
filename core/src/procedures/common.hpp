@@ -46,7 +46,14 @@ inline double t_power(double ncp, double df, double alpha, Alt alt) {
   if (!(df > 0)) return NAN;
   if (alt == Alt::Two) {
     const double t = qt(half_alpha(alpha), df, false);
-    return clamp01(pnt(t, df, ncp, false) + pnt(-t, df, ncp, true));  // as z_power
+    // The half on δ's side next to 1 is 1 less its miss, rounded down (see stats::complement()), and the far half
+    // lies within that miss: added afterwards, it was lost below an ulp (0.134 of a miss of 1.12 ulps at alpha 0.9,
+    // and n = 556 where 554 reach the target).  Such a power is 1 less the miss between the critical values.
+    const bool pos = ncp >= 0;
+    const double c = pos ? t : -t;
+    const double far = pnt(-c, df, ncp, pos), miss = pnt(c, df, ncp, pos);
+    if (miss < 0.5) return complement(std::fmax(miss - far, 0.0));
+    return clamp01(pnt(c, df, ncp, !pos) + far);  // as z_power
   }
   const double t = qt(alpha, df, false);
   return alt == Alt::Upper ? pnt(t, df, ncp, false) : pnt(-t, df, ncp, true);

@@ -894,6 +894,85 @@ TEST_CASE("extremes: a power next to 1 is 1 less the smaller tail, rounded down"
   }
 }
 
+TEST_CASE("extremes: the noncentral t's far tail at tiny and huge degrees of freedom and t") {
+  // P(T > 2) with δ = −6: the range within e^-40 of the peak reaches some 40/ν below it, and was taken in panels all
+  // the same (7.5 s at ν = 1e-5); below ν = 1.2e-8 the count of panels passed the largest int and the tail was 0.
+  // References: E[P(Z > a + tS)] by parts, t·∫F(s)φ(a + ts)ds with F from mpmath's gammainc, in 50 digits.
+  CHECK_CLOSE(stats::pnt(2, 1e-5, -6, false), 9.8649969435347334693e-10, 1e-13, 0);
+  CHECK_CLOSE(stats::pnt(2, 1e-12, -6, false), 9.8658764502095171728e-10, 1e-13, 0);
+  CHECK_CLOSE(stats::pnt(2, 1e-300, -6, false), 9.865876450376981407e-10, 1e-13, 0);
+  CHECK_CLOSE(stats::pnt(2, 4.9406564584124654e-324, -6, false), 9.865876450376981407e-10, 1e-13, 0);  // P(Z > 6)
+  CHECK_CLOSE(stats::pnt(2, 0.9, -6, false), 7.6110603906371326943e-11, 1e-13, 0);
+  // t = 1e300: the square in h overflowed, h was −∞ next to u = 0 and the search threw.  With ν = 1 the tail is
+  // 2φ(0)(φ(3) − 3·P(Z > 3))/t; with ν = ½, (k^k/Γ(k + 1))·t^(−2k)·∫v^(2k)φ(3 + v)dv, k = ¼
+  CHECK_CLOSE(stats::pnt(1e300, 1, -3, false), 3.0491502941654188586e-304, 1e-12, 0);
+  CHECK_CLOSE(stats::pnt(1e300, 0.5, -3, false), 5.0072325447004094063e-154, 1e-12, 0);
+  // ν and t both large: h of the order of −1e19 gave NaN or ±∞ for a tail below the doubles
+  CHECK_EQ(stats::pnt(1e10, 1e19, -1, false), 0.0);
+  CHECK_EQ(stats::pnt(1e21, 2e16, -1, false), 0.0);
+  CHECK_EQ(stats::pnt(3e9, 5e17, -1, false), 0.0);
+  CHECK_EQ(stats::pnt(-1e10, 1e19, 1, true), 0.0);
+}
+
+TEST_CASE("extremes: a two-sided t-test next to power 1 counts the far half in its miss") {
+  // The far half lies within the miss of the near one, 1 less it rounded down: added to that afterwards it was lost
+  // below an ulp, and at large alphas sample sizes were 1 or 2 above the smallest that reaches the target.  The
+  // smallest n from 40-digit sums of P(−c < T ≤ c) (mu1 0.5, 1 and 2 against 0, sd 1)
+  struct Case {
+    const char* alpha;
+    const char* mu1;
+    int k;  // target 1 − k·2^-53
+    double n1;
+  };
+  for (const Case& c : {Case{"0.9", "0.5", 1, 554}, Case{"0.9", "0.5", 2, 543}, Case{"0.9", "0.5", 4, 532},
+                        Case{"0.9", "1", 2, 136}, Case{"0.9", "2", 2, 34}, Case{"0.8", "2", 6, 34},
+                        Case{"0.8", "0.5", 3, 555}}) {
+    const std::string inputs = R"({"alternative":"two","mu2":"0","alpha":")" + std::string(c.alpha) +
+                               R"(","mu1":")" + c.mu1 + R"(","power":")" + text::format_roundtrip(1 - c.k * 0x1p-53) +
+                               R"("})";
+    const json::Value res = run("means.two.t", "n", inputs);
+    const double n1 = res.get("rows").elements().at(0).get("n1").as_number(NAN);
+    if (n1 != c.n1) ::ssc::test::report_failure(inputs + ": " + std::to_string(n1), __FILE__, __LINE__);
+    ::ssc::test::count_check();
+  }
+  // the effect, where P(T ≤ −c) = 2.1e-21 was dropped from a miss of 3.3e-16 (2.2640418606 for 2.2640416590)
+  const json::Value res =
+      run("means.two.t", "mu1",
+          R"({"alternative":"two","mu2":"0","alpha":"0.5","n1":"30","n2":"30","power":"0.9999999999999997"})");
+  CHECK_CLOSE(res.get("rows").elements().at(0).get("mu1").as_number(NAN), 2.26404165901332, 1e-11, 0);
+}
+
+TEST_CASE("extremes: the exact Poisson test beyond 1e15 events keeps its size within alpha") {
+  // The critical counts are stepped by their tails till the tail is within alpha (while z·σ0 < 1e15): 594abb3
+  // stopped the steps where one moved the tail by 16 units in the last place or less, and from 1e29 events on the
+  // size came out above alpha (0.20000000000000004 at 0.2); the steps now double where they move it by little
+  auto power = [](const std::string& inputs) {
+    Token token;
+    return run_request(json::parse(R"({"procedure":"rates.one.poisson","solve_for":"power",)"
+                                   R"("options":{"power_curve":false},"inputs":)" +
+                                   inputs + "}"),
+                       &token);
+  };
+  struct Side {
+    const char* alternative;
+    const char* alpha;
+  };
+  for (const Side& sd : {Side{"upper", "0.2"}, Side{"upper", "0.3"}, Side{"upper", "0.45"}, Side{"lower", "0.2"},
+                         Side{"two", "0.5"}, Side{"two", "0.9"}})
+    for (int e = 580; e <= 600; ++e) {  // 1e29 to 1e30 events
+      const double lam0 = std::pow(10.0, e / 20.0) / 50 / 1e20;
+      const double lam1 = lam0 * (std::string(sd.alternative) == "lower" ? 0.99999999999999 : 1.00000000000001);
+      const std::string inputs = R"({"test":"exact","n":"50","time":"1e20","alternative":")" +
+                                 std::string(sd.alternative) + R"(","alpha":")" + sd.alpha + R"(","lam0":")" +
+                                 text::format_roundtrip(lam0) + R"(","lam1":")" + text::format_roundtrip(lam1) +
+                                 R"("})";
+      const double actual = power(inputs).get("rows").elements().at(0).get("actual_alpha").as_number(NAN);
+      if (!(actual <= std::stod(sd.alpha)))
+        ::ssc::test::report_failure(inputs + ": size " + text::format_roundtrip(actual), __FILE__, __LINE__);
+      ::ssc::test::count_check();
+    }
+}
+
 TEST_CASE("extremes: a group-sequential design on its finest grid checks Stop at every analysis") {
   // 20 analyses at an alpha of 1e-15 (r = 96) and with a flat spending function (r = 128): each analysis takes some
   // 10 ms, a drift for the power about a second, and Stop was checked only between such solves

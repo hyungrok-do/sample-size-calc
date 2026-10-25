@@ -53,6 +53,40 @@ double temme(double a, double m, double eta, bool lower) {
   const double w = eta * std::sqrt(a);
   return clamp01(lower ? pnorm(w) - R : pnorm(w, false) + R);
 }
+
+// 1/Γ(1 + a) − 1 for 0 ≤ a ≤ ½, from the Taylor series of 1/Γ (Abramowitz & Stegun 6.1.34): to full relative
+// precision next to a = 0, where 1/Γ(1 + a) itself is 1 to the last place.
+double gam1(double a) {
+  static constexpr double C[] = {
+      0.57721566490153286,     -0.65587807152025388,    -0.042002635034095236,   0.16653861138229149,
+      -0.042197734555544337,   -0.0096219715278769736,  0.0072189432466630995,   -0.0011651675918590651,
+      -0.00021524167411495097, 0.00012805028238811619,  -2.0134854780788239e-05, -1.2504934821426707e-06,
+      1.1330272319816959e-06,  -2.0563384169776071e-07, 6.1160951044814158e-09,  5.0020076444692229e-09,
+      -1.1812745704870201e-09, 1.0434267116911005e-10,  7.7822634399050713e-12,  -3.6968056186422057e-12,
+      5.1003702874544760e-13};
+  double s = 0;
+  for (int k = sizeof(C) / sizeof(C[0]) - 1; k >= 0; --k) s = s * a + C[k];
+  return a * s;
+}
+
+// Q(a, x) for a < ½ and x < a + 1, where 1 − P(a, x) loses Q's digits: Q is about a·E1(x) there, and 1 − P was off
+// by about 1e-16/a of it (2.3e-5 at a = 1e-10, x = 1).  As TOMS 708 (GRAT1) takes it, with w = x^a, l = w − 1,
+// g = 1/Γ(1 + a), h = g − 1 and J = a·(x/(a + 1) − x²/(2!(a + 2)) + x³/(3!(a + 3)) − …), so that P = w·g·(1 − J):
+//   Q = (w·J − l)·g − h,
+// or 1 − P itself where w is below 0.875 (Q is then above 0.1).
+double small_shape_upper(double x, double a) {
+  double c = x, s = x / (a + 1);
+  for (int n = 2; n < 100; ++n) {
+    c *= -x / n;
+    const double term = c / (a + n);
+    s += term;
+    if (std::fabs(term) <= 1e-17 * std::fabs(s)) break;
+  }
+  const double J = a * s, z = a * std::log(x), h = gam1(a), g = 1 + h;
+  if (z <= -0.13394) return clamp01(1 - std::exp(z) * g * (1 - J));
+  const double l = std::expm1(z);
+  return clamp01(((l + 1) * J - l) * g - h);
+}
 }  // namespace
 
 double pgamma_offset(double a, double d, bool lower) {
@@ -77,6 +111,7 @@ double pgamma_raw(double x, double a, bool lower) {
     if (std::fabs(eta) <= TEMME_MAX_ETA) return temme(a, m, eta, lower);
   }
   if (x < a + 1) {
+    if (!lower && a < 0.5) return small_shape_upper(x, a);
     const double pre = dpois_raw(a, x);
     if (pre == 0) return lower ? 0.0 : 1.0;
     double sum = 1, term = 1, ap = a;
