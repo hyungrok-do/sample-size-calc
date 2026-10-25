@@ -38,9 +38,10 @@ Rmst restricted_mean(const std::vector<Obs>& sorted, long n1, long n2, double ta
 
 /// P(a < X < b) for X ~ N(0, R), R an m × m correlation matrix (row-major), 1 ≤ m ≤ 4; the limits may be
 /// infinite.  Deterministic: Genz's separation of variables with a fixed lattice rule (error about 1e-5; up to
-/// 1.5e-4 seen with limits on both sides and correlations near 1, as in MaxCombo's two-sided test, and with lower
-/// limits only and a negative common correlation, as for three or four co-primary endpoints), whose points are
-/// shared between up to `threads` threads (the same result on any number).
+/// 1.5e-4 seen with limits on both sides and correlations near 1, as in MaxCombo's two-sided test; with lower limits
+/// only and a negative common correlation, as for three or four co-primary endpoints, up to 5e-4, and 5e-3 where the
+/// correlation is within 0.01 of its smallest value −1/(m − 1) and R nearly singular), whose points are shared
+/// between up to `threads` threads (the same result on any number).
 double mvn_probability(int m, const double* a, const double* b, const double* r, int threads = 1);
 
 /// P(X ∉ (a, b)) = 1 − P(a < X < b), also where it is far below the lattice's error: the sum over j of the

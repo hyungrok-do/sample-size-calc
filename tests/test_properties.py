@@ -2029,6 +2029,27 @@ def test_multiarm_arm_powers_at_a_large_critical_value_and_next_to_other_arms():
     assert arms == pytest.approx([2.401065992381323e-20] * len(arms), rel=1e-12), arms
 
 
+def test_multiarm_arm_powers_with_two_degrees_of_freedom_against_their_closed_form():
+    """With 2 degrees of freedom S² is exponential, so P(T ≥ c) = Φ(θ) − e^(−aθ²/(1 + 2a)) Φ(θ/√(1 + 2a))/√(1 + 2a)
+    with a = 1/c².  Over effects from 0.3 to 2 critical values: where θ is near 1e14 (α = 1e-30) the search for the
+    largest value of the density times the arm's rejection ended past its step, and the nodes below the density's
+    range grew to tens of millions of panels (not enough memory); where the step's zone crossed from one panel into
+    the next, its part in the second was not split (0.8945992 for 0.8946000 at α = 1e-6)."""
+    def phi(x):
+        return math.erfc(-x / math.sqrt(2)) / 2
+
+    for alpha in ("1e-4", "1e-6", "1e-27", "1e-30"):
+        base = {**base_inputs("sim.multiarm"), "alternative": "upper", "n": "2", "r0": "1", "alpha": alpha}
+        c = first_row(ssc.run("sim.multiarm", "power", {**base, "mu": "1"}, power_curve=False, approximate=True))["crit"]
+        b = 1 + 2 / (c * c)
+        for i in range(30, 201):
+            theta = i / 100 * c  # σ√(1/n + 1/n0) = 1
+            exact = phi(theta) - math.exp(-theta * theta / (c * c * b)) * phi(theta / math.sqrt(b)) / math.sqrt(b)
+            got = first_row(ssc.run("sim.multiarm", "power", {**base, "mu": repr(theta)}, power_curve=False,
+                                    approximate=True))["power"]
+            assert got == pytest.approx(exact, rel=1e-12), (alpha, i)
+
+
 def test_satterthwaite_degrees_of_freedom_with_a_residual_sd_far_below_the_random_slopes():
     """With random slopes 10⁸⁰ residual SDs apart over the follow-up, the squares of the finite-difference steps
     passed below the smallest double, and every study fell back to N − 2 degrees of freedom without a word."""

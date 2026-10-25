@@ -93,7 +93,9 @@ double log_upper_normal(double y) {
 ///   e^−40 of its largest value, when more than e^−30 of that lies below the density's nodes.  Every arm's, not only
 ///   that of the arm least likely to reject: an arm with a larger effect next to one with a smaller effect, none or
 ///   the opposite (one-sided) rejects between the two ranges, where nothing was integrated (μ = 0.5 and 20, n = 3,
-///   α = 1e-30: the second arm's power came out 9.78e-26 for 1.614e-23).
+///   α = 1e-30: the second arm's power came out 9.78e-26 for 1.614e-23).  The range starts no further left than
+///   where the density is below e^−840, so that an arm whose step at u = θ is narrower than the search for its
+///   largest value cannot ask for millions of panels.
 struct SNodes {
   std::vector<double> s, w;
   SNodes(double df, double c, const std::vector<double>& effects) {
@@ -122,11 +124,20 @@ struct SNodes {
         else
           y = m2;
       }
-      const double top = (x + y) / 2, level = f(top) - 40;
+      // The bracket's left end lies before the largest value, and f rises by at most ν·1e-9 over the bracket.  The
+      // step at u = θ is only about 1/θ wide in t, so with a large θ the middle can lie past it, f there far below
+      // the largest value (μ = 2.1e14, n = 2, α = 1e-30: −1.8e8 for −1.5, which put the range's start 9e7 to the
+      // left, 6e7 panels): the left end then.
+      double top = (x + y) / 2;
+      if (f(x) > f(top) + 1) top = x;
+      const double level = f(top) - 40;
       double l = top - 1, u = top + 1;
       while (f(l) > level) l -= 2 * (top - l);
       while (f(u) > level) u += 2 * (u - top);
-      const double ta = numerics::brent([&](double t) { return f(t) - level; }, l, top, 1e-12);
+      // and no further left than where the density is below e^−840 (g(t) < ν t + ν/2), whose weights are 0 in
+      // doubles: at most some 270 panels, also where f is too large to resolve 40 below its top
+      const double ta = std::fmax(numerics::brent([&](double t) { return f(t) - level; }, l, top, 1e-12),
+                                  -840 / df - 0.5);
       const double tb = numerics::brent([&](double t) { return f(t) - level; }, top, u, 1e-12);
       if (!(top >= a && !(f(a) > level + 10)) && std::fmin(a, tb) > ta) tails.emplace_back(ta, std::fmin(a, tb));
       const double from = theta > STEP_REACH ? std::log((theta - STEP_REACH) / c) : -INFINITY;
@@ -147,15 +158,17 @@ struct SNodes {
     merge(zones);
     const stats::GLRule& rule = stats::gauss_legendre(S_NODES);
     // the panel from p to q, of width `width` (nodes at(i), as before where it is not split; `base` if it is one of
-    // the density's own), split where it crosses a zone wider than STEP_PANEL in u
+    // the density's own), split where it crosses a zone wider than STEP_PANEL in u: also where only a narrower part
+    // of the zone lies in it, the zone going on into the next panel (with the boundary at u = θ + 2.4, 48 nodes over
+    // the rest of the step and 1.5 in t beyond it gave 0.8945992 for 0.8946000 with 2 degrees of freedom, and an
+    // error of 2e-4 relative with 10)
     auto panel = [&](double p, double q, double width, bool base, auto&& at) {
       std::vector<double> cut;
       for (const auto& z : zones) {
         const double x = std::fmax(p, z.first), y = std::fmin(q, z.second);
-        if (!(y > x)) continue;
+        if (!(y > x) || !(c * (std::exp(z.second) - std::exp(z.first)) > STEP_PANEL)) continue;
         const double ex = std::exp(x), ey = std::exp(y);
         const double pieces = std::ceil(c * (ey - ex) / STEP_PANEL);  // a zone spans some 50 in u at most
-        if (!(pieces >= 2)) continue;
         const int m = static_cast<int>(std::fmin(pieces, 64));
         if (x > p) cut.push_back(x);
         for (int j = 1; j < m; ++j) cut.push_back(std::log(ex + j * (ey - ex) / m));
