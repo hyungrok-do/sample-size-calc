@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <limits>
 #include <locale>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -257,13 +258,15 @@ struct Whole {
 
 constexpr std::uint32_t BASE = 1000000000;
 
-// The whole number written with the decimal digits t
-std::vector<std::uint32_t> limbs_of(const std::string& t) {
-  std::vector<std::uint32_t> out;
-  for (std::size_t end = t.size(); end > 0;) {
+// The whole number written with the decimal digits t followed by `zeros` zeros: whole limbs of 0, then t's digits
+// and the zeros left over, from the last
+std::vector<std::uint32_t> limbs_of(const std::string& t, std::size_t zeros) {
+  std::vector<std::uint32_t> out(zeros / 9, 0);
+  for (std::size_t end = t.size() + zeros % 9; end > 0;) {
     const std::size_t begin = end > 9 ? end - 9 : 0;
     std::uint32_t limb = 0;
-    for (std::size_t k = begin; k < end; ++k) limb = 10 * limb + static_cast<std::uint32_t>(t[k] - '0');
+    for (std::size_t k = begin; k < end; ++k)
+      limb = 10 * limb + (k < t.size() ? static_cast<std::uint32_t>(t[k] - '0') : 0);
     out.push_back(limb);
     end = begin;
   }
@@ -343,6 +346,23 @@ std::vector<std::uint32_t> times(const std::vector<std::uint32_t>& x, std::uint6
   return out;
 }
 
+// x / y of magnitudes (y not 0), roughly: from the three leading limbs of each, within a millionth of a millionth of
+// it where it lies between 10^-18 and 10^18, and 0 or 10^300 beyond
+double ratio(const std::vector<std::uint32_t>& x, const std::vector<std::uint32_t>& y) {
+  const long apart = static_cast<long>(x.size()) - static_cast<long>(y.size());
+  // x / y lies between BASE^(apart - 1) and BASE^(apart + 1)
+  if (apart > 2 || apart < -2) return apart > 0 ? 1e300 : 0;
+  // w / BASE^(limbs below the three leading ones)
+  const auto lead = [](const std::vector<std::uint32_t>& w) {
+    double v = 0;
+    for (std::size_t k = w.size(); k-- > 0 && w.size() - k <= 3;) v = v * BASE + w[k];
+    return v;
+  };
+  const long below = apart - (static_cast<long>(std::min<std::size_t>(x.size(), 3)) -
+                              static_cast<long>(std::min<std::size_t>(y.size(), 3)));
+  return lead(x) / lead(y) * std::pow(1e9, static_cast<double>(below));
+}
+
 // The decimal digits of the limbs of w from its most significant down to limb `last`
 std::string digits_of(const std::vector<std::uint32_t>& w, std::size_t last) {
   std::string out = std::to_string(w.back());
@@ -354,21 +374,25 @@ std::string digits_of(const std::vector<std::uint32_t>& w, std::size_t last) {
   return out;
 }
 
-// Decimal text read as the double nearest it, as text::parse_double reads it, from one stream for all the values of a
-// range: making a stream takes longer than reading a number from it
+// Decimal text read as the double nearest it, as text::parse_double reads it, from one stream for all the values of
+// the text: making a stream takes longer than reading a number from it, so it is made at the first value read (most
+// ranges have none between their ends)
 class Reader {
  public:
-  Reader() { in_.imbue(std::locale::classic()); }
   double operator()(const std::string& t) {
-    in_.clear();
-    in_.str(t);
+    if (!in_) {
+      in_.emplace();
+      in_->imbue(std::locale::classic());
+    }
+    in_->clear();
+    in_->str(t);
     double v = 0;
-    if (!(in_ >> v)) text::parse_double(t, v);  // out of the doubles' range, which it handles
+    if (!(*in_ >> v)) text::parse_double(t, v);  // out of the doubles' range, which it handles
     return v;
   }
 
  private:
-  std::istringstream in_;
+  std::optional<std::istringstream> in_;
 };
 
 // The double nearest w * 10^e.  One too small for a double is the smallest double of its sign, not 0, as a number
@@ -420,6 +444,7 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
     res.error = err == "too many values" ? "too many values (limit " + std::to_string(max_values) + ")" : err;
     return res;
   }
+  Reader read;
   for (std::size_t i = 0; i < toks.size();) {
     if (toks[i].kind != Token::Num) {
       res.error = "unexpected '" + quoted(toks[i].text) + "'";
@@ -457,13 +482,17 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
       // by more than that billionth once the start is a million steps or more ('1.96 to 1.9600003 by 0.00000001'
       // lost its end).
       const Decimal da = decimal(toks[i].text, a), db = decimal(toks[i + 2].text, b);
-      const Decimal ds = used == 5 ? decimal(toks[i + 4].text, toks[i + 4].value) : Decimal{false, "1", 0};
+      // ends that are the same number give that one value whatever the step, which is then not written out in whole
+      // numbers ('1e-400 to 1e-400 by 1e300' would take 700 digits): a step of one unit of their last digit stands in
+      const bool same = da.neg == db.neg && da.digits == db.digits && da.exp == db.exp;
+      const Decimal ds = used == 5 && !same ? decimal(toks[i + 4].text, toks[i + 4].value)
+                                            : Decimal{false, "1", same ? da.exp : 0};
       long e = ds.exp;  // the exponent of the least significant digit typed (the step is not 0)
       for (const Decimal* d : {&da, &db})
         if (!d->digits.empty()) e = std::min(e, d->exp);
       const auto whole = [&](const Decimal& d) {
         if (d.digits.empty()) return Whole{};
-        return Whole{d.neg, limbs_of(d.digits + std::string(static_cast<std::size_t>(d.exp - e), '0'))};
+        return Whole{d.neg, limbs_of(d.digits, static_cast<std::size_t>(d.exp - e))};
       };
       const Whole start = whole(da), end = whole(db);
       Whole length = end, s = whole(ds);
@@ -473,24 +502,25 @@ Numbers numbers(const std::string& raw, std::size_t max_values) {
       // * 10^9 + step, are those with k * step <= (end - start) + step without its last limb (10^9 is a limb)
       std::vector<std::uint32_t> reach = length.limbs;
       if (!s.limbs.empty()) add_limbs(reach, std::vector<std::uint32_t>(s.limbs.begin() + 1, s.limbs.end()));
+      // The last is reach / step rounded down, which the leading limbs of each give within a unit (it is checked in
+      // whole numbers, a product or two), up to the values the limit leaves room for: a range with more is refused
+      // without being written out.
       const std::size_t room = max_values - res.values.size();
-      if (compare_limbs(times(s.limbs, room), reach) <= 0) {  // room + 1 values or more
+      const auto within = [&](std::size_t k) {  // k * step <= reach
+        if (k < 2) return k == 0 || compare_limbs(s.limbs, reach) <= 0;
+        return compare_limbs(times(s.limbs, k), reach) <= 0;
+      };
+      const double guess = std::floor(ratio(reach, s.limbs));
+      std::size_t steps = guess < static_cast<double>(room) ? static_cast<std::size_t>(guess) : room;
+      while (!within(steps)) --steps;
+      while (steps < room && within(steps + 1)) ++steps;
+      if (steps == room) {  // room + 1 values or more
         res.error = "too many values (limit " + std::to_string(max_values) + ")";
         return res;
-      }
-      std::size_t steps = 0, over = room;  // steps reach no further than the end allows, over does
-      while (over - steps > 1) {
-        const std::size_t mid = steps + (over - steps) / 2;
-        if (compare_limbs(times(s.limbs, mid), reach) <= 0) {
-          steps = mid;
-        } else {
-          over = mid;
-        }
       }
       res.ends.push_back(a);
       res.ends.push_back(b);
       Whole v = start;
-      Reader read;
       for (std::size_t k = 0; k <= steps; ++k) {
         if (k > 0) plus(v, s);
         res.values.push_back(k == 0 ? a : compare(v, end) * (length.neg ? -1 : 1) >= 0 ? b : nearest(v, e, read));

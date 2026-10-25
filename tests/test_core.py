@@ -239,6 +239,23 @@ def test_text_that_is_not_valid_unicode_is_an_error_not_a_crash():
     assert json.loads(raw)["error"] == "unknown procedure: �"     # valid UTF-8 out of invalid bytes in
 
 
+def test_an_input_sent_as_a_json_number_keeps_the_rules_of_its_text():
+    """A JSON number below the smallest double was read as 0, and computed with, as was one past the largest written
+    with a negative exponent; one past the largest was refused as 'null'."""
+    from ssc import _native
+
+    def says(number):
+        raw = '{"procedure":"means.two.t","solve_for":"power","options":{"power_curve":false},"inputs":{"mu1":%s}}'
+        res = json.loads(_native.take_string(_native.lib().ssc_run_json((raw % number).encode(), None)))
+        return res["input_errors"]["mu1"] if not res["ok"] else res["rows"][0]["mu1"]
+
+    for tiny in ("1e-400", "-2e-324", "0.%s1" % ("0" * 400)):
+        assert says(tiny) == "values must be 0 or between 1e-30 and 1e30 in size", tiny
+    for huge in ("1e400", "1%se-1" % ("0" * 320)):
+        assert says(huge) == "values must be finite numbers", huge
+    assert says("0e-500") == 0 and says("0.25") == 0.25
+
+
 def test_declared_limits_are_the_enforced_ones_and_power_stays_a_probability():
     seed = next(p for p in ssc.schema("sim.sw")["params"] if p["id"] == "seed")
     assert seed["max"] == 1e9

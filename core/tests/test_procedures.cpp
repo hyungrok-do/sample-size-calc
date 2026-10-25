@@ -4,6 +4,7 @@
 // engine behavior that does not depend on reference values: thread-count
 // invariance, cancellation and input validation.
 #include <fstream>
+#include <limits>
 #include <new>
 #include <sstream>
 
@@ -257,6 +258,25 @@ TEST_CASE("procedures: typed and pasted numbers") {
   // a number too small for a double is not 0, but the smallest double of its sign: so it is refused for its size
   CHECK(parse::numbers("1e-400 -2e-324 0e-500").values == std::vector<double>({5e-324, -5e-324, 0}));
   CHECK(parse::numbers("0 to 2e-340 by 1e-340").values == std::vector<double>({0, 5e-324, 5e-324}));
+  CHECK(parse::numbers("0." + std::string(400, '0') + "1").values == std::vector<double>({5e-324}));
+  // and one past the largest double is infinite, whatever the sign of its exponent ('1' and 320 zeros 'e-1' was read
+  // as 0, and then as the smallest double), so it is refused as not finite
+  const std::string past = "1" + std::string(320, '0') + "e-1";
+  CHECK(parse::numbers(past).values == std::vector<double>({std::numeric_limits<double>::infinity()}));
+  CHECK_EQ(parse::numbers(past + " to 1 by 1").error, std::string("range limits must be finite"));
+  // a number sent as a JSON number keeps the rules of its text
+  CHECK_EQ(json::parse("1e-400").as_number(), 5e-324);
+  CHECK_EQ(json::parse("-2e-324").as_number(), -5e-324);
+  CHECK_EQ(json::parse("0e-500").as_number(), 0.0);
+  CHECK_EQ(json::parse(past).to_text(), std::string("inf"));
+  // ranges of one value, which the count needs no product for, and counts at the limit
+  CHECK(parse::numbers("1e-400 to 1e-400 by 1e300 0.5 to 0.5").values == std::vector<double>({5e-324, 0.5}));
+  CHECK_EQ(parse::numbers("0 to 9998 0.5 to 0.5").values.size(), std::size_t{10000});
+  CHECK(parse::numbers("0 to 9999 0.5 to 0.5").error.find("too many") != std::string::npos);
+  CHECK_EQ(parse::numbers("0 to 9999").values.size(), std::size_t{10000});
+  CHECK(parse::numbers("0 to 10000").error.find("too many") != std::string::npos);
+  CHECK_EQ(parse::numbers("0.9999 to 0 by 0.0001").values.size(), std::size_t{10000});
+  CHECK(parse::numbers("1 to 0 by 0.0001").error.find("too many") != std::string::npos);
   CHECK(parse::numbers("0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
   CHECK(parse::vectors("1 2; 0 to 1.5 by 1").ends == std::vector<double>({0, 1.5}));
   // characters that would act on the message are written out: a right-to-left override, a joiner, NUL, a
