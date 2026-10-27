@@ -1,5 +1,6 @@
 #include "dag/model.hpp"
 #include "dag/statistics.hpp"
+#define SSC_STATIC  // Tests link the core directly; do not import a Windows DLL.
 #include "ssc/ssc.h"
 #include "testing.hpp"
 #include <fstream>
