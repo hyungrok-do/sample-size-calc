@@ -97,7 +97,9 @@ const ops = {
         const answer = JSON.parse(text);
         if (!answer.ok) throw new Error(answer.error);
         if (answer.result.engine) answer.result.engine.variant = variant;
-        return { result: answer.result, heapBytes: M._sbrk ? M._sbrk(0) >>> 0 : undefined };
+        // DAG callers dispose this worker after every result. Do not ask Engine to
+        // recycle it first: that would start a replacement just before disposal.
+        return { result: answer.result };
       });
     } finally { M.onDagProgress = null; M._ssc_token_free(token); }
   },

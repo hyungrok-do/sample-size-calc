@@ -405,7 +405,7 @@ export function mountDag(root) {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      if (file.size > 1e6) throw new Error('Use a model JSON file smaller than 1 MB.');
+      if (file.size > 5e6) throw new Error('Use a model or power report JSON file smaller than 5 MB.');
       const design = parseDesign(await file.text());
       apply(design.graph, 'Simulation design imported.', { estimand: design.estimand, power: design.power ?? null });
     } catch (error) { status(`Could not import model: ${error.message}`, true); }
