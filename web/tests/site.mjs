@@ -35,7 +35,8 @@ function reference(raw, from) {
     if (path !== 'sw.js' && !new URLSearchParams(query).getAll('v').includes(version)) unversioned.push(`${ref} (from ${from})`);
   }
 }
-for (const m of index.matchAll(/(?:src|href)="([^"#]+)"/g)) if (!/^https?:/.test(m[1])) reference(m[1], 'index.html');
+for (const file of ['index.html', 'dag.html'])
+  for (const m of (await text(file)).matchAll(/(?:src|href)="([^"#]+)"/g)) if (!/^https?:/.test(m[1])) reference(m[1], file);
 for (const file of scripts) {
   const code = await text(file);
   for (const m of code.matchAll(/(?:from\s+|import\(\s*|new URL\(\s*|register\(\s*)(['"`])([^'"`]+)\1/g)) reference(m[2], file);
@@ -52,6 +53,7 @@ console.log(`Site: version ${version}; all ${seen.size} files the page loads are
 // stamping must leave the <style> as its hash in the policy has it
 policy(index, await text('sw.js'));
 console.log('Site: the Content-Security-Policy lets in the page\'s <style>, and the service worker sends the same policy.');
+if (process.argv.includes('--files-only')) process.exit(0);
 
 // ------------------------------------------------------------------------------- served as GitHub Pages serves it
 // Two versions to publish in turn: this one, and the same files as the next version (another version string, and
@@ -70,7 +72,7 @@ let down = false;  // the server drops every connection, as when the network is 
 // what a failed check reports: the requests dropped while the network was gone (and what kind of request each was),
 // requests the browser saw fail, and the errors and warnings in the console
 const dropped = [], failed = [], logged = [];
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
+const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 const prefix = '/sample-size-calc/';
 const server = createServer((req, res) => {
   if (down) {
@@ -199,6 +201,94 @@ try {
   await ready(page);
   assert.deepEqual([...new Set(await loaded(page))], [next], 'and on the next visit');
   console.log('Site: after an update the page and every file it loads are the new version.');
+
+  // An independent tab: no calculator scripts or engine, with the same offline/versioning guarantees.
+  await page.getByRole('link', { name: 'DAG simulator', exact: true }).click();
+  await page.waitForSelector('#dag-add');
+  await page.selectOption('#dag-example', 'mediation');
+  await page.click('#dag-example-load');
+  await page.waitForSelector('#dag-equations li');
+  assert.equal(await page.locator('#dag-canvas .dag-node').count(), 4);
+  assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
+  assert.equal(await page.locator('#engine-status, #method, #guide').count(), 0);
+  assert.equal(page.workers().length, 0, 'the DAG page does not start the calculator engine');
+  assert.deepEqual([...new Set(await loaded(page))], [next], 'the simulator scripts use the current version');
+  await page.click('#dag-simulate');
+  await page.waitForSelector('#dag-results table');
+  assert.match(await page.textContent('#dag-results'), /N = 500/);
+  const firstData = await page.textContent('#dag-results');
+  await page.click('#dag-simulate');
+  await page.waitForSelector('#dag-results table');
+  assert.equal(await page.textContent('#dag-results'), firstData, 'same graph and seed reproduce the trial');
+  await page.selectOption('#dag-source', 'Y');
+  await page.selectOption('#dag-target', 'M');
+  await page.getByRole('button', { name: 'Add arrow', exact: true }).click();
+  assert.match(await page.textContent('#dag-status'), /cycle/);
+  assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
+  await page.getByRole('button', { name: 'Add interaction', exact: true }).click();
+  assert.match(await page.textContent('#dag-equations'), /0.2 × X × M/);
+  assert.equal(await page.locator('#dag-results table').count(), 0, 'a structural edit clears old results');
+  assert.equal(await page.isDisabled('#dag-download-csv'), true);
+  await page.click('#dag-undo');
+  assert.doesNotMatch(await page.textContent('#dag-equations'), /0.2 × X × M/);
+  await page.selectOption('#dag-example', 'binary');
+  await page.click('#dag-example-load');
+  await page.click('#dag-simulate');
+  await page.waitForSelector('#dag-results table');
+  assert.match(await page.textContent('#dag-equations'), /logit/);
+  await page.selectOption('#estimand-exposure', 'A');
+  await page.selectOption('#estimand-outcome', 'Y');
+  await page.selectOption('#estimand-measure', 'risk_difference');
+  await page.fill('#estimand-alternative', '0.1');
+  await page.getByRole('button', { name: 'Save estimand', exact: true }).click();
+  assert.match(await page.textContent('#estimand-preview'), /do\(A = 1\)/);
+  const csvEvent = page.waitForEvent('download');
+  await page.click('#dag-download-csv');
+  const csvDownload = await csvEvent;
+  const csv = await readFile(await csvDownload.path(), 'utf8');
+  assert.equal(csv.trim().split('\n').length, 501);
+  assert.equal(csv.split('\n')[0], 'X,A,Y');
+  const modelEvent = page.waitForEvent('download');
+  await page.click('#dag-export');
+  const modelDownload = await modelEvent;
+  const model = JSON.parse(await readFile(await modelDownload.path(), 'utf8'));
+  assert.equal(model.version, 1);
+  assert.equal(model.graph.nodes.length, 3);
+  assert.equal(model.estimand.measure, 'risk_difference');
+  await page.selectOption('#dag-example', 'mediation');
+  await page.click('#dag-example-load');
+  await page.setInputFiles('#dag-import', { name: 'trial-dag.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(model)) });
+  await page.waitForFunction(() => document.querySelectorAll('#dag-canvas .dag-node').length === 3);
+  assert.equal(await page.inputValue('#estimand-measure'), 'risk_difference');
+  await page.selectOption('#dag-example', 'survival');
+  await page.click('#dag-example-load');
+  await page.selectOption('#dag-node-select', 'T');
+  assert.equal(await page.inputValue('#dag-node-kind'), 'survival');
+  assert.equal(await page.inputValue('#dag-censor-variable'), 'C');
+  await page.selectOption('#estimand-exposure', 'A');
+  await page.selectOption('#estimand-outcome', 'T');
+  await page.selectOption('#estimand-measure', 'rmst_difference');
+  await page.fill('#estimand-horizon', '28');
+  await page.getByRole('button', { name: 'Save estimand', exact: true }).click();
+  assert.match(await page.textContent('#estimand-preview'), /min\(T, 28\)/);
+  await page.click('#dag-simulate');
+  await page.waitForSelector('#dag-results table');
+  assert.match(await page.textContent('#dag-results'), /Survival observations/);
+  assert.match(await page.textContent('#dag-results'), /T_time/);
+  // The graph is kept independently of calculator inputs, including when the page is reopened offline.
+  down = true;
+  await page.reload();
+  await page.waitForSelector('#dag-equations li');
+  assert.equal(await page.locator('#dag-canvas .dag-node').count(), 4);
+  assert.equal(await page.inputValue('#estimand-measure'), 'rmst_difference');
+  assert.equal(await page.inputValue('#estimand-horizon'), '28');
+  await page.click('#dag-simulate');
+  await page.waitForSelector('#dag-results table');
+  down = false;
+  await page.getByRole('link', { name: 'Calculator', exact: true }).click();
+  await ready(page);
+  await calculates(page);
+  console.log('Site: independent DAG tab, seeded datasets, survival and censoring, cycle checks, interactions, undo, CSV/JSON interchange, offline use, and return to calculator work.');
   assert.deepEqual(errors, []);
   assert.deepEqual(violations, [], 'the Content-Security-Policy blocked nothing');
   console.log(`Site: every check passed in ${kind}.`);

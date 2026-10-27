@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; worker-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulation Power Design · Sample Size Calculator</title>
+<meta name="description" content="Build a data generating process from variables, distributions and a graphical DAG. Simulate continuous, binary, count and survival data in your browser.">
+<link rel="stylesheet" href="dag.css?v=dev">
+</head>
+<body>
+<header class="top">
+  <h1>Sample Size Calculator</h1>
+  <nav class="workspace-tabs" aria-label="Workspace tabs">
+    <a href="./">Calculator</a>
+    <a href="dag.html?v=dev" aria-current="page">DAG simulator</a>
+  </nav>
+</header>
+<main id="dag" class="dag-page">
+  <div class="dag-intro">
+    <div><h2>Plan a simulation-based power analysis</h2>
+      <p>Build the data generating process, define the estimand, and inspect data from the proposed study.</p></div>
+    <span class="dag-badge">Experimental · design builder</span>
+  </div>
+  <ol class="dag-steps"><li><b>01</b>Build the data generating process</li><li><b>02</b>Define the estimand</li><li><b>03</b>Check the simulation</li></ol>
+  <div class="dag-toolbar">
+    <div class="dag-toolbar-group">
+      <button id="dag-add" type="button" class="primary">+ Add variable</button>
+      <button id="dag-undo" type="button" disabled>Undo</button>
+      <button id="dag-redo" type="button" disabled>Redo</button>
+    </div>
+    <div class="dag-toolbar-group">
+      <label for="dag-example">Example</label>
+      <select id="dag-example"><option value="empty">Empty canvas</option><option value="mediation">Continuous mediation</option><option value="binary">Binary outcome</option><option value="survival">Survival with censoring</option></select>
+      <button id="dag-example-load" type="button">Load</button>
+      <button id="dag-export" type="button">Export model</button>
+      <input id="dag-import" class="dag-file" type="file" accept=".json,application/json" aria-label="Import a DAG model JSON file">
+    </div>
+  </div>
+  <div class="dag-workbench">
+    <div class="dag-canvas-column">
+      <div class="dag-canvas-heading"><h3>Data generating process</h3><span id="dag-node-count"></span></div>
+      <div class="dag-scroll"><svg id="dag-canvas" viewBox="0 0 1100 540" role="group" aria-label="Editable distribution DAG"></svg></div>
+      <p class="dag-canvas-help">Drag nodes to arrange. Select a variable to edit. Use its + port, then choose a destination, to draw an arrow. Keyboard: Tab, Enter, arrow keys. The controls below also connect nodes.</p>
+      <form id="dag-connect" class="dag-connect" novalidate>
+        <div class="dag-field"><label for="dag-source">From</label><select id="dag-source"></select></div>
+        <div class="dag-field"><label for="dag-target">To</label><select id="dag-target"></select></div>
+        <div class="dag-field"><label for="dag-coefficient">Coefficient</label><input id="dag-coefficient" type="number" step="any" value="0.5"></div>
+        <button type="submit">Add arrow</button>
+      </form>
+    </div>
+    <aside class="dag-inspector-column" aria-label="Variable settings">
+      <div class="dag-field"><label for="dag-node-select">Select a variable</label><select id="dag-node-select"></select></div>
+      <div id="dag-inspector"></div>
+    </aside>
+  </div>
+  <p id="dag-status" class="dag-message" role="status" aria-live="polite"></p>
+  <section id="dag-estimand" class="dag-card dag-estimand-card" aria-label="Estimand for power analysis"></section>
+  <div class="dag-bottom">
+    <section class="dag-card" aria-labelledby="dag-model-title">
+      <h3 id="dag-model-title">The model behind your graph</h3>
+      <p>Each variable has its own conditional distribution. Incoming arrows add parent terms to its predictor on the distribution’s displayed scale. The equations below show exactly how data are generated.</p>
+      <ul id="dag-equations"></ul><p id="dag-order"></p>
+      <details><summary>Assumptions and scope</summary>
+        <ul>
+          <li>A variable has a type and a distribution. Names such as treatment, mediator, or outcome are optional labels; they impose no structural restrictions. Any directed acyclic graph is allowed.</li>
+          <li>Continuous distributions: Normal, Uniform, Log-normal, Gamma. Binary: Bernoulli. Count: Poisson. Survival time: Weibull or Exponential, with a proportional hazards predictor.</li>
+          <li>Arrows and parent interactions define the conditional model in the variables’ original units. A dependency arrow needs a numerical effect; the graph alone does not determine a joint distribution.</li>
+          <li>Survival variables generate latent event times. Optionally specify an administrative cutoff or another variable as the censoring time to also obtain observed follow-up and an event indicator. Shared parents can induce dependent event and censoring times.</li>
+          <li>Exogenous draws are independent across variables and rows. Dependence arises through the graph. Variable types do not determine an analysis or adjustment set.</li>
+          <li>All example values are editable assumptions. Later power analysis will add a study design, estimand, analysis model and repeated simulations.</li>
+          <li>Models stay in this browser and can be exported as JSON. Generated data can be downloaded as CSV.</li>
+        </ul>
+      </details>
+    </section>
+    <section class="dag-card" aria-labelledby="dag-sim-title">
+      <h3 id="dag-sim-title">Simulate data</h3>
+      <p>Generate observations in topological order, then inspect every variable and any derived survival observation columns.</p>
+      <form id="dag-simulation" novalidate>
+        <div class="dag-sim-fields">
+          <div class="dag-field"><label for="dag-n">Number of observations</label><input id="dag-n" type="number" min="1" max="50000" step="1" value="500"></div>
+          <div class="dag-field"><label for="dag-seed">Random seed</label><input id="dag-seed" type="number" min="0" max="4294967295" step="1" value="2026"></div>
+        </div>
+        <div class="dag-actions"><button id="dag-simulate" type="submit" class="primary">Generate data</button>
+          <button id="dag-cancel" type="button" hidden>Stop</button>
+          <button id="dag-download-csv" type="button" disabled>Download CSV</button></div>
+      </form>
+      <div id="dag-results" aria-live="polite"></div>
+    </section>
+  </div>
+</main>
+<footer>Sample Size Calculator by Hyungrok Do. <a href="https://github.com/hyungrok-do/sample-size-calc">Source on GitHub</a>.</footer>
+<script type="module" src="dag-entry.js?v=dev"></script>
+</body>
+</html>

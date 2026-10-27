@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <!-- What the page may load: its own scripts, the engine (WebAssembly) and its workers, and the <style> below by its
      hash, which changes with any edit to it (npm test checks it). sw.js sends the same policy as a header. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'sha256-LtGRP7x8nuDcEhoScjv9nKEH1X+KyDisyXq0OFyJt8A='; connect-src 'self'; worker-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'sha256-oUMCQLhHROcrKQ/eem2baHepydt9L9W1ITo5OyK16ro='; connect-src 'self'; worker-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sample Size Calculator</title>
 <meta name="description" content="Sample size and power for study planning. The calculator's C++ engine runs in your browser through WebAssembly; nothing you type leaves the page.">
@@ -87,6 +87,10 @@
     padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--line);
   }
   .brand h1 { font-size: 18px; }
+  .workspace-tabs { display: flex; gap: 6px; }
+  .workspace-tabs a { text-decoration: none; color: var(--ink-2); border-radius: 8px; padding: 7px 12px; font-size: 14px; }
+  .workspace-tabs a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .workspace-tabs a:hover { background: var(--surface-2); }
   .status { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .engine-activity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
   .engine-activity button { font-size: 13px; padding: 4px 10px; }
@@ -271,6 +275,10 @@
 <button id="skip" class="skip" type="button">Skip to the calculator</button>
 <header class="top">
   <div class="brand"><h1>Sample Size Calculator</h1></div>
+  <nav class="workspace-tabs" aria-label="Workspace tabs">
+    <a href="./" aria-current="page">Calculator</a>
+    <a href="dag.html?v=dev">DAG simulator</a>
+  </nav>
   <div class="engine-activity">
     <p id="engine-status" class="status" aria-live="polite">Loading the engine…</p>
     <button id="activity-stop" type="button" class="secondary" hidden>Stop calculation</button>

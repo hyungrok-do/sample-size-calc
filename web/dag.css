@@ -1,0 +1,153 @@
+:root {
+  --bg: #f6f6f3; --surface: #fff; --surface-2: #f0efea; --ink: #1c1c1a; --ink-2: #4a4a45;
+  --muted: #6f6f68; --line: #dddcd4; --field-line: #878780; --accent: #2457c5; --accent-soft: #e8eefb;
+  --accent-ink: #fff; --error: #a8261d; --error-soft: #fbeceb;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --surface: #1f1f1d; --surface-2: #2a2a27; --ink: #ecebe6; --ink-2: #c9c8c1;
+    --muted: #aaa99f; --line: #45453f; --field-line: #85857b; --accent: #9ab9ff; --accent-soft: #22304c;
+    --accent-ink: #0f1420; --error: #f0a29b; --error-soft: #3a201e;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+[hidden] { display: none !important; }
+h1, h2, h3 { line-height: 1.25; margin: 0; }
+h4 { font-size: 14px; margin: 22px 0 10px; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; color: var(--ink); }
+button, select, input, textarea { border: 1px solid var(--field-line); border-radius: 8px; background: var(--surface); }
+button { padding: 8px 13px; cursor: pointer; font-size: 14px; font-weight: 500; }
+button:hover { background: var(--surface-2); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:disabled { cursor: default; opacity: .5; }
+input, select, textarea { padding: 7px 9px; min-width: 0; font-size: 16px; }
+textarea { resize: vertical; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
+.small { font-size: 12.5px; }
+.muted { color: var(--muted); }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.top h1 { font-size: 18px; }
+.workspace-tabs { display: flex; gap: 6px; }
+.workspace-tabs a { text-decoration: none; color: var(--ink-2); border-radius: 8px; padding: 7px 12px; font-size: 14px; }
+.workspace-tabs a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.workspace-tabs a:hover { background: var(--surface-2); }
+.dag-page { max-width: 1500px; margin: 0 auto; padding: 30px 24px 48px; }
+.dag-intro { display: flex; justify-content: space-between; align-items: start; gap: 20px; margin-bottom: 22px; }
+.dag-intro h2 { font-size: 28px; letter-spacing: -.025em; }
+.dag-intro p { color: var(--ink-2); max-width: 72ch; margin: 8px 0 0; }
+.dag-badge { flex: none; font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 5px 10px; border-radius: 20px; }
+.dag-steps { display: flex; flex-wrap: wrap; list-style: none; gap: 12px 28px; padding: 0; margin: 0 0 24px; color: var(--ink-2); font-size: 13px; }
+.dag-steps b { color: var(--accent); margin-right: 6px; }
+.dag-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--surface); padding: 14px; border: 1px solid var(--line); border-radius: 12px 12px 0 0; }
+.dag-toolbar-group { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dag-toolbar label { font-size: 13px; }
+.dag-file { max-width: 190px; font-size: 12px; padding: 4px; }
+.dag-file::file-selector-button { background: var(--surface-2); border: 0; border-radius: 4px; color: var(--ink); padding: 4px; cursor: pointer; }
+.dag-workbench { display: grid; grid-template-columns: minmax(0, 1fr) 325px; align-items: start;
+  border: 1px solid var(--line); border-top: 0; border-radius: 0 0 12px 12px; background: var(--surface); }
+.dag-canvas-column { min-width: 0; padding: 16px; }
+.dag-canvas-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.dag-canvas-heading h3 { font-size: 15px; }
+.dag-canvas-heading span { font-size: 12px; color: var(--muted); }
+.dag-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 10px;
+  background-color: var(--bg); background-image: radial-gradient(var(--line) .8px, transparent .8px); background-size: 20px 20px; }
+#dag-canvas { display: block; width: 100%; min-width: 620px; min-height: 350px; max-height: 600px; aspect-ratio: 1100 / 540; touch-action: none; }
+.dag-node { cursor: grab; user-select: none; }
+.dag-empty { fill: var(--muted); font-size: 20px; }
+.dag-node:active { cursor: grabbing; }
+.dag-node rect { fill: var(--surface); stroke: var(--field-line); stroke-width: 1.5; }
+.dag-node.selected rect, .dag-node.connecting rect { stroke: var(--accent); stroke-width: 3; }
+.dag-node:focus rect { stroke: var(--accent); stroke-width: 3; }
+.dag-node.binary rect { fill: var(--accent-soft); }
+.dag-node text { fill: var(--ink); pointer-events: none; }
+.dag-node .dag-node-role { font-size: 10px; letter-spacing: .09em; fill: var(--muted); font-weight: 600; }
+.dag-node .dag-node-title { font-size: 13px; font-weight: 600; }
+.dag-node .dag-node-family { font-size: 11px; fill: var(--muted); }
+.dag-node.count .dag-node-role { fill: #a66013; }
+.dag-node.survival .dag-node-role { fill: #268059; }
+.dag-port { cursor: crosshair; }
+.dag-port circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
+.dag-port text { fill: var(--accent); font-size: 15px; }
+.dag-edge { cursor: pointer; }
+.dag-edge path { stroke: var(--field-line); stroke-width: 2; fill: none; }
+.dag-edge.selected path { stroke: var(--accent); }
+#dag-arrow path { fill: var(--field-line); }
+.dag-edge text { font-size: 13px; fill: var(--ink-2); paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
+.dag-canvas-help { color: var(--muted); font-size: 12px; margin: 10px 0 16px; }
+.dag-connect { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; border-top: 1px solid var(--line); padding-top: 14px; }
+.dag-connect .dag-field { flex: 1; min-width: 120px; }
+.dag-connect .dag-field:nth-child(3) { max-width: 130px; }
+.dag-field { margin-bottom: 12px; }
+.dag-field label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 4px; }
+.dag-field input, .dag-field select, .dag-field textarea { width: 100%; }
+.dag-field p { margin: 4px 0 0; }
+.dag-connect .dag-field { margin: 0; }
+.dag-connect select { max-width: 200px; }
+.dag-inspector-column { border-left: 1px solid var(--line); padding: 16px; max-height: 820px; overflow-y: auto; }
+.dag-inspector-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 20px 0 16px; }
+.dag-inspector-heading h3 { font-size: 18px; }
+.dag-effect-row { display: grid; grid-template-columns: minmax(0, 1fr) 92px 32px; gap: 8px; align-items: center; margin: 8px 0; font-size: 13px; }
+.dag-effect-row button { padding: 5px; }
+.dag-effect-row input { width: 100%; }
+.dag-interaction-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.dag-interaction-form button { align-self: end; margin-bottom: 12px; }
+.dag-delete { color: var(--error); margin-top: 24px; }
+.dag-message { color: var(--ink-2); margin: 0; padding: 14px 0; min-height: 52px; }
+.error { color: var(--error); background: var(--error-soft); border-radius: 8px; padding: 12px; }
+.dag-bottom { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 20px; align-items: start; }
+.dag-estimand-card { margin-bottom: 20px; }
+.dag-estimand-card > p { max-width: 90ch; }
+.dag-estimand-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dag-estimand-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 24px; margin-top: 22px; align-items: start; }
+.dag-estimand-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.dag-estimand-preview { padding: 18px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; }
+.dag-estimand-preview p { margin: 0 0 14px; font-size: 13px; }
+.dag-estimand-preview p:last-child { margin-bottom: 0; }
+.dag-estimand-preview .dag-estimand-formula { font-size: 16px; font-weight: 600; line-height: 1.7; }
+.dag-estimand-preview .eyebrow { color: var(--muted); font-size: 12px; }
+.dag-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 22px; min-width: 0; }
+.dag-card h3 { font-size: 18px; }
+.dag-card > p { color: var(--ink-2); font-size: 13px; }
+#dag-equations { list-style: none; margin: 18px 0; padding: 0; display: grid; gap: 10px; }
+#dag-equations li { padding: 10px 12px; background: var(--bg); border-radius: 6px; overflow-wrap: anywhere; font-size: 12px; }
+#dag-order { font-size: 12px; }
+.dag-sim-fields { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; }
+.dag-sim-fields .dag-field { flex: 1; min-width: 130px; }
+.dag-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.table-wrap { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 9px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+th { font-weight: 500; color: var(--muted); }
+th:first-child, td:first-child { text-align: left; }
+.dag-result-heading { font-weight: 600; margin-top: 24px; }
+details { margin-top: 20px; font-size: 13px; color: var(--ink-2); }
+summary { cursor: pointer; }
+details li { margin-top: 6px; }
+footer { max-width: 1500px; margin: 0 auto; padding: 0 24px 28px; color: var(--muted); font-size: 12px; }
+@media (max-width: 1000px) {
+  .dag-workbench { grid-template-columns: minmax(0, 1fr); }
+  .dag-inspector-column { border-left: 0; border-top: 1px solid var(--line); max-height: none; overflow-y: visible; }
+  #dag-inspector > form { max-width: 600px; }
+  .dag-bottom { grid-template-columns: minmax(0, 1fr); }
+  .dag-estimand-layout { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .top { padding: 12px 16px; }
+  .dag-page { padding: 22px 12px 32px; }
+  .dag-intro { flex-wrap: wrap; gap: 12px; }
+  .dag-intro h2 { font-size: 24px; }
+  .dag-toolbar-group { width: 100%; }
+  .dag-canvas-column, .dag-card { padding: 14px; }
+  .dag-connect .dag-field { min-width: 100%; }
+  .dag-connect .dag-field:nth-child(3) { max-width: 100%; }
+  .dag-connect select { max-width: 100%; }
+  .dag-estimand-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}

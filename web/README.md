@@ -5,6 +5,12 @@ in the browser. You can search the methods, fill in a form generated from each
 method's description and calculate. Nothing you type leaves the browser, and
 the server only hands out files.
 
+The **DAG simulator** tab is a separate page (`dag.html`) for constructing
+a data generating process from generic variables and their distributions. It does not change the calculator,
+study guide, or C++ engine. Its **What is the estimand?** section records the
+population, comparison, outcome, effect measure, horizon, null value and planning
+alternative for power-analysis design. See [the model contract and scope](../docs/dag-simulator.md).
+
 The page opens on **Browse all methods**, the searchable catalog. **Guide me**,
 an experimental feature, asks study-design questions using chips. Each
 question selects one answer; the optional additional requirements select all

@@ -13,11 +13,13 @@ const CACHE = 'ssc-dev';
 // engine is kept when it is first used, from the next visit)
 const FILES = ['./', 'app.js?v=dev', 'engine.js?v=dev', 'worker.js?engine=ssc_web&v=dev', 'engine/ssc_web.mjs?v=dev',
   'engine/ssc_web.wasm?v=dev', 'guide.js?v=dev', 'guide-data.js?v=dev', 'guide-state.js?v=dev', 'selection.js?v=dev',
-  'format.js?v=dev'];
+  'format.js?v=dev', 'dag.html?v=dev', 'dag.css?v=dev', 'dag-entry.js?v=dev', 'dag.js?v=dev',
+  'dag-model.js?v=dev', 'dag-worker.js?v=dev', 'estimand-model.js?v=dev', 'dag-estimand.js?v=dev'];
 // The only copies kept, each under the one address the page asks for it by: any other address (another query
 // string on a visit, a link to a file with ?x= added) is answered from the network and not stored, so links
 // cannot fill the site's storage with copies.
 const PAGE = new URL('./', self.location).href;
+const DAG_PAGE = new URL('dag.html?v=dev', self.location).href;
 const KEPT = new Set([...FILES, 'worker.js?engine=ssc_web_mt&v=dev', 'engine/ssc_web_mt.mjs?v=dev',
   'engine/ssc_web_mt.wasm?v=dev'].map((file) => new URL(file, self.location).href));
 
@@ -27,6 +29,7 @@ function keptAs(request) {
   if (request.mode !== 'navigate') return KEPT.has(url.href) ? url.href : null;
   // a visit to the page, whatever its query, is kept as the page; a visit to any other file is not
   const path = url.origin + url.pathname;
+  if (path === DAG_PAGE.split('?')[0]) return DAG_PAGE;
   return path === PAGE || path === `${PAGE}index.html` ? PAGE : null;
 }
 
@@ -45,16 +48,21 @@ self.addEventListener('activate', (event) => {
 
 // The policy of the <meta> in index.html, plus frame-ancestors (npm test checks that the two agree).
 const POLICY = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; "
-  + "style-src 'sha256-LtGRP7x8nuDcEhoScjv9nKEH1X+KyDisyXq0OFyJt8A='; connect-src 'self'; worker-src 'self'; "
+  + "style-src 'sha256-oUMCQLhHROcrKQ/eem2baHepydt9L9W1ITo5OyK16ro='; connect-src 'self'; worker-src 'self'; "
   + "img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-function isolated(response) {
+// The independent simulator uses its own stylesheet and no WebAssembly or dynamic evaluation.
+const DAG_POLICY = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; worker-src 'self'; "
+  + "img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+function isolated(response, request) {
   if (response.status === 0) return response;  // an opaque response cannot be changed
   const headers = new Headers(response.headers);
   headers.set('Cross-Origin-Opener-Policy', 'same-origin');
   headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   headers.set('Cross-Origin-Resource-Policy', 'same-origin');
   headers.set('Content-Security-Policy', POLICY);
+  if (new URL(request.url).pathname === new URL(DAG_PAGE).pathname) headers.set('Content-Security-Policy', DAG_POLICY);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
@@ -70,11 +78,11 @@ self.addEventListener('fetch', (event) => {
         const copy = response.clone();
         event.waitUntil(caches.open(CACHE).then((cache) => cache.put(key, copy)));
       }
-      return isolated(response);
+      return isolated(response, request);
     } catch (error) {
       const cached = await caches.match(keptAs(request) ?? request, { ignoreSearch: true });
       if (!cached) throw error;
-      return isolated(cached);
+      return isolated(cached, request);
     }
   })());
 });
