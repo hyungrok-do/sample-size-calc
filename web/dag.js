@@ -2,6 +2,8 @@ import { addEdge, removeEdge, removeNode, makeNode, exampleGraph, emptyGraph, re
   equation, dataCsv, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
 import { mountEstimand } from './dag-estimand.js?v=dev';
+import { mountPower } from './dag-power.js?v=dev';
+import { Engine } from './engine.js?v=dev';
 
 const SVG = 'http://www.w3.org/2000/svg';
 const STORE = 'ssc-dag-v1';
@@ -50,11 +52,11 @@ function download(content, type, name) {
 export function mountDag(root) {
   const $ = (id) => root.querySelector(`#${id}`);
   let graph = emptyGraph(), selected = null, connectFrom = null, result = null, worker = null;
-  let estimand = null, estimandEditor;
+  let estimand = null, estimandEditor, powerEditor, powerSettings = null;
   let history = [], future = [], storageNote = '';
   try {
     const saved = localStorage.getItem(STORE);
-    if (saved) { const design = parseDesign(saved); graph = design.graph; estimand = design.estimand; }
+    if (saved) { const design = parseDesign(saved); graph = design.graph; estimand = design.estimand; powerSettings = design.power ?? null; }
   } catch { storageNote = 'The saved graph could not be restored. An empty canvas is open.'; }
   selected = graph.nodes.at(-1)?.id;
   const canvas = $('dag-canvas');
@@ -63,18 +65,18 @@ export function mountDag(root) {
     $('dag-status').className = error ? 'error' : 'dag-message';
   }
   function persist() {
-    try { localStorage.setItem(STORE, JSON.stringify(exportDesign(graph, estimand))); }
+    try { localStorage.setItem(STORE, JSON.stringify(exportDesign(graph, estimand, powerSettings))); }
     catch { status('Browser storage is unavailable. Export the model to keep your work.'); }
   }
   function clearResult() {
-    worker?.terminate(); worker = null; result = null;
+    worker?.dispose(); worker = null; result = null;
     $('dag-simulate').disabled = !graph.nodes.length;
     $('dag-cancel').hidden = true;
     $('dag-download-csv').disabled = true;
     $('dag-results').replaceChildren(el('p', { class: 'muted' }, 'Simulate data to inspect the generated variables.'));
   }
   function remember() {
-    history.push(JSON.stringify(exportDesign(graph, estimand)));
+    history.push(JSON.stringify(exportDesign(graph, estimand, powerSettings)));
     if (history.length > 50) history.shift();
     future = [];
   }
@@ -89,6 +91,10 @@ export function mountDag(root) {
         catch { nextEstimand = null; note = ' The previous estimand is no longer compatible; define it again below. Undo restores the previous design.'; }
       }
       remember(); graph = next; estimand = nextEstimand;
+      if ('power' in planning) powerSettings = planning.power;
+      if (planning.renameFrom && powerSettings?.calibrationEdge) {
+        powerSettings = { ...powerSettings, calibrationEdge: powerSettings.calibrationEdge.split('>').map((id) => id === planning.renameFrom ? planning.renameTo : id).join('>') };
+      }
       if (!graph.nodes.some((n) => n.id === selected)) selected = graph.nodes.at(-1)?.id;
       connectFrom = null;
       clearResult(); persist(); render();
@@ -337,6 +343,7 @@ export function mountDag(root) {
   function render() {
     draw(); inspector(); buttons();
     estimandEditor?.refresh(estimand);
+    powerEditor?.refresh(powerSettings);
     const { order, byId } = validateGraph(graph);
     $('dag-equations').replaceChildren(...order.map((id) => el('li', {}, el('code', {}, equation(graph, byId.get(id))))));
     $('dag-order').textContent = order.length
@@ -351,7 +358,7 @@ export function mountDag(root) {
     const survivalRows = result.survival.map((s) => [s.id, String(s.events), String(s.censored), `${(100 * s.censored / result.n).toFixed(1)}%`]);
     $('dag-results').replaceChildren(
       el('p', { class: 'dag-result-heading' }, `One simulated dataset · N = ${result.n} · seed ${result.seed}`),
-      el('p', { class: 'small muted' }, 'Descriptive summaries of generated variables. Power analysis will use a separately specified analysis and repeated simulations.'),
+      el('p', { class: 'small muted' }, 'Inspect this single dataset. The power section above analyzes repeated datasets for the saved estimand.'),
       ...(survivalRows.length ? [el('h4', {}, 'Survival observations'),
         table(['Variable', 'Events', 'Censored', 'Censored %'], survivalRows, 'Survival observation summaries'),
         el('p', { class: 'small muted' }, 'For each survival variable T: T is the latent event time, T_time is observed follow-up, and T_event is 1 for an event and 0 for censoring.')] : []),
@@ -385,41 +392,38 @@ export function mountDag(root) {
   });
   function timeTravel(from, to) {
     if (!from.length) return;
-    to.push(JSON.stringify(exportDesign(graph, estimand)));
-    const design = parseDesign(from.pop()); graph = design.graph; estimand = design.estimand;
+    to.push(JSON.stringify(exportDesign(graph, estimand, powerSettings)));
+    const design = parseDesign(from.pop()); graph = design.graph; estimand = design.estimand; powerSettings = design.power ?? null;
     selected = graph.nodes.some((n) => n.id === selected) ? selected : graph.nodes.at(-1)?.id;
     connectFrom = null; clearResult(); persist(); render(); status('Model restored.');
   }
   $('dag-undo').addEventListener('click', () => timeTravel(history, future));
   $('dag-redo').addEventListener('click', () => timeTravel(future, history));
   $('dag-example-load').addEventListener('click', () => apply(exampleGraph($('dag-example').value), 'Example loaded. All numbers are editable example assumptions.'));
-  $('dag-export').addEventListener('click', () => download(JSON.stringify(exportDesign(graph, estimand), null, 2) + '\n', 'application/json', 'simulation-design.json'));
+  $('dag-export').addEventListener('click', () => download(JSON.stringify(exportDesign(graph, estimand, powerSettings), null, 2) + '\n', 'application/json', 'simulation-design.json'));
   $('dag-import').addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
       if (file.size > 1e6) throw new Error('Use a model JSON file smaller than 1 MB.');
       const design = parseDesign(await file.text());
-      apply(design.graph, 'Simulation design imported.', { estimand: design.estimand });
+      apply(design.graph, 'Simulation design imported.', { estimand: design.estimand, power: design.power ?? null });
     } catch (error) { status(`Could not import model: ${error.message}`, true); }
     event.target.value = '';
   });
-  $('dag-simulation').addEventListener('submit', (event) => {
+  $('dag-simulation').addEventListener('submit', async (event) => {
     event.preventDefault(); clearResult();
     try {
       validateGraph(graph);
       const n = inputNumber($('dag-n'), 'Sample size'), seed = inputNumber($('dag-seed'), 'Seed');
-      worker = new Worker(new URL('./dag-worker.js?v=dev', import.meta.url), { type: 'module' });
+      const instance = new Engine(); worker = instance;
       $('dag-simulate').disabled = true; $('dag-cancel').hidden = false;
-      status('Generating data…');
-      worker.onmessage = ({ data }) => {
-        worker.terminate(); worker = null; $('dag-simulate').disabled = false; $('dag-cancel').hidden = true;
-        if (data.error) status(data.error, true);
-        else { result = data.result; showResult(); status('Data generated. Inspect summaries and download the full dataset.'); }
-      };
-      worker.onerror = (error) => { clearResult(); status(`The simulator could not start: ${error.message}`, true); };
-      worker.postMessage({ graph, options: { n, seed } });
-    } catch (error) { clearResult(); status(error.message, true); }
+      status('Generating data in C++/WebAssembly…');
+      const data = await instance.dag({ op: 'simulate', graph, options: { n, seed } });
+      if (worker !== instance) return;
+      instance.dispose(); worker = null; $('dag-simulate').disabled = false; $('dag-cancel').hidden = true;
+      result = data; showResult(); status('Data generated in C++/WebAssembly. Inspect summaries and download the full dataset.');
+    } catch (error) { if (!error.stopped) { clearResult(); status(error.message, true); } }
   });
   $('dag-cancel').addEventListener('click', () => { clearResult(); status('Simulation stopped.'); });
   for (const id of ['dag-n', 'dag-seed']) $(id).addEventListener('input', () => {
@@ -430,10 +434,16 @@ export function mountDag(root) {
   });
   estimandEditor = mountEstimand($('dag-estimand'), {
     getGraph: () => graph,
+    onDraftChange: (dirty) => powerEditor?.setDraft(dirty),
     onSave(value) {
       remember(); estimand = value; persist(); buttons(); estimandEditor.refresh(estimand);
-      status('Estimand saved with this design. Next, specify the analysis and test for power evaluation.');
+      powerEditor?.refresh(powerSettings);
+      status('Estimand saved. Its analysis and power calculation are ready below.');
     },
+  });
+  powerEditor = mountPower($('dag-power'), {
+    getDesign: () => ({ graph, estimand }),
+    onSettings(settings) { powerSettings = settings; persist(); },
   });
   render(); clearResult();
   status(storageNote || (graph.nodes.length

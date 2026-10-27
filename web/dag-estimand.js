@@ -23,7 +23,7 @@ const number = (input, optional = false) => {
   return Number(input.value);
 };
 
-export function mountEstimand(root, { getGraph, onSave }) {
+export function mountEstimand(root, { getGraph, onSave, onDraftChange = () => {} }) {
   function refresh(saved) {
     const graph = getGraph();
     const defaultValue = { version: 1, kind: 'marginal', population: 'Population represented by the data generating process',
@@ -51,7 +51,7 @@ export function mountEstimand(root, { getGraph, onSave }) {
         'The executable population is the graph’s distribution. Describe that population here; text does not subset or reweight generated data.'), field('Estimand type', kind)),
       variableFields, field('Effect measure', measure), levels, horizonField, customField,
       el('div', { class: 'dag-estimand-grid' }, field('Null value', nullValue), field('Planning alternative (optional)', alternative,
-        'A numerical planning target does not automatically recalibrate the graph.')),
+        'Sets the effect used in power simulations. Leave blank to use the graph’s implied effect.')),
       el('button', { type: 'submit', class: 'primary' }, 'Save estimand'));
     function candidate() {
       return { version: 1, kind: kind.value, population: population.value.trim(), definition: definition.value.trim(),
@@ -65,7 +65,7 @@ export function mountEstimand(root, { getGraph, onSave }) {
         const target = candidate(), text = describeEstimand(graph, target);
         preview.replaceChildren(el('p', { class: 'eyebrow' }, 'Target definition'), el('p', { class: 'dag-estimand-formula' }, text.formula),
           el('p', {}, `Population: ${text.population}`), el('p', {}, text.hypothesis), el('p', {}, text.alternative), el('p', { class: 'small muted' }, text.note),
-          el('p', { class: 'small muted' }, 'Next for power: choose an analysis, adjustment set and rejection rule, then evaluate repeated simulations.'));
+          el('p', { class: 'small muted' }, 'Save this target to select its compatible analysis and run repeated simulations in the power section below.'));
       } catch (error) { preview.replaceChildren(el('p', { class: 'muted' }, error.message)); }
     }
     function updateMeasures(resetNull = true) {
@@ -73,7 +73,7 @@ export function mountEstimand(root, { getGraph, onSave }) {
       const options = availableMeasures(graph, kind.value, outcome.value);
       measure.replaceChildren(...options.map((key) => el('option', { value: key }, MEASURES[key].label)));
       measure.value = options.includes(wanted) ? wanted : options[0] ?? '';
-      if (resetNull) nullValue.value = MEASURES[measure.value]?.nullValue ?? 0;
+      if (resetNull) { nullValue.value = MEASURES[measure.value]?.nullValue ?? 0; alternative.value = ''; }
       visibility();
     }
     function visibility() {
@@ -85,8 +85,8 @@ export function mountEstimand(root, { getGraph, onSave }) {
     }
     kind.addEventListener('change', () => updateMeasures());
     outcome.addEventListener('change', () => updateMeasures());
-    measure.addEventListener('change', () => { nullValue.value = MEASURES[measure.value]?.nullValue ?? 0; visibility(); });
-    const edited = () => { badge.textContent = 'Unsaved changes'; showPreview(); };
+    measure.addEventListener('change', () => { nullValue.value = MEASURES[measure.value]?.nullValue ?? 0; alternative.value = ''; visibility(); });
+    const edited = () => { badge.textContent = 'Unsaved changes'; onDraftChange(true); showPreview(); };
     form.addEventListener('input', edited); form.addEventListener('change', edited);
     form.addEventListener('submit', (event) => {
       event.preventDefault();

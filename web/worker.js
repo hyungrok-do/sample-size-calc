@@ -86,6 +86,21 @@ const ops = {
     return all;
   },
   search: (M, { query, limit }) => withText(M, query, (p) => JSON.parse(take(M, M._ssc_search_json(p, limit)))),
+  dag: (M, request, id) => {
+    const token = M._ssc_token_new();
+    M.onDagProgress = (progress) => self.postMessage({ id, stage: 'progress', progress });
+    try {
+      return withText(M, JSON.stringify(request), (p) => {
+        if (!M._ssc_dag_json) throw new Error('This engine predates DAG power. Reload after rebuilding the C++/WebAssembly engine.');
+        const text = take(M, M._ssc_dag_json(p, token));
+        if (text === null) throw new WebAssembly.RuntimeError('out of memory');
+        const answer = JSON.parse(text);
+        if (!answer.ok) throw new Error(answer.error);
+        if (answer.result.engine) answer.result.engine.variant = variant;
+        return { result: answer.result, heapBytes: M._sbrk ? M._sbrk(0) >>> 0 : undefined };
+      });
+    } finally { M.onDagProgress = null; M._ssc_token_free(token); }
+  },
   // maxRows: the rows a page shows (up to 20,000 scenarios would take seconds to copy to it and draw)
   run: (M, { request, maxRows = Infinity }) => {
     const token = M._ssc_token_new();
@@ -121,7 +136,7 @@ self.onmessage = async (event) => {
     const M = await engine;
     if (!ops[op]) throw new Error(`unknown request '${op}'`);
     const t = performance.now();
-    const value = ops[op](M, arg);
+    const value = ops[op](M, arg, id);
     self.postMessage({ id, ok: true, value, ms: performance.now() - t });
   } catch (e) {
     // a trap (out of memory, for one) leaves the engine unusable: the page starts a fresh one

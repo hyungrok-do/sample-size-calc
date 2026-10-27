@@ -1,8 +1,9 @@
+import { simulateGraph } from './dag-engine.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { addEdge, removeEdge, removeNode, renameNode, emptyGraph, exampleGraph, makeNode, parseGraph, validateGraph,
-  topologicalOrder, simulateGraph, equation, dataCsv, DISTRIBUTIONS } from '../dag-model.js';
+  topologicalOrder, equation, dataCsv, DISTRIBUTIONS } from '../dag-model.js';
 const near = (actual, expected, tolerance, label = '') => assert.ok(Math.abs(actual - expected) < tolerance,
   `${label}: expected ${expected} ± ${tolerance}, got ${actual}`);
 const simple = (family = 'gaussian', intercept = 0, coefficient = 0) => ({ version: 1,
@@ -57,12 +58,12 @@ test('model JSON round-trip and variable renaming preserve all dependencies', ()
 test('invalid distributions, parameters and numerical requests fail without clipping', () => {
   for (const sd of [0, -1, Infinity]) {
     const g = simple(); g.nodes[1].sd = sd;
-    assert.throws(() => simulateGraph(g), /sd must be positive/);
+    assert.throws(() => simulateGraph(g), /sd must be positive|sd must be a finite/);
   }
   const mismatch = simple(); mismatch.nodes[1].kind = 'survival';
   assert.throws(() => validateGraph(mismatch), /compatible/);
-  for (const n of [0, 2.5, 50001, NaN]) assert.throws(() => simulateGraph(simple(), { n }), /Sample size/);
-  for (const seed of [-1, 0.5, 4294967296, NaN]) assert.throws(() => simulateGraph(simple(), { seed }), /Seed/);
+  for (const n of [0, 2.5, 50001, NaN]) assert.throws(() => simulateGraph(simple(), { n }), /Sample size|n must|n is/);
+  for (const seed of [-1, 0.5, 4294967296, NaN]) assert.throws(() => simulateGraph(simple(), { seed }), /Seed|seed/);
   for (const intercept of [Math.log(1001), -1000, 1000]) assert.throws(() => simulateGraph(simple('poisson', intercept)), /Poisson rate/);
   const huge = simple(); huge.nodes[1].intercept = Infinity;
   assert.throws(() => validateGraph(huge), /finite intercept/);
@@ -175,7 +176,8 @@ test('the simulator page is independent and its offline header matches its polic
   const meta = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)[1];
   const expression = /const DAG_POLICY = ((?:"[^"]*"\s*\+?\s*)+);/.exec(sw)[1];
   assert.equal([...expression.matchAll(/"([^"]*)"/g)].map((m) => m[1]).join(''), meta + "; frame-ancestors 'none'");
-  assert.doesNotMatch(html, /src="app\.js|unsafe-eval|wasm-unsafe-eval|id="dag-add-role"/);
+  assert.doesNotMatch(html, /src="app\.js|'unsafe-eval'|id="dag-add-role"/);
   assert.doesNotMatch(app, /dag|mountDag/);
-  for (const name of ['dag.html', 'dag.css', 'dag-entry.js', 'dag.js', 'dag-model.js', 'dag-worker.js']) assert.ok(sw.includes(`${name}?v=dev`));
+  assert.match(meta, /wasm-unsafe-eval/);
+  for (const name of ['dag.html', 'dag.css', 'dag-entry.js', 'dag.js', 'dag-model.js']) assert.ok(sw.includes(`${name}?v=dev`));
 });

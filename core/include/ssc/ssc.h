@@ -73,6 +73,12 @@ SSC_API char* ssc_search_json(const char* query, int limit);
  */
 SSC_API char* ssc_run_json(const char* request_json, ssc_token* token);
 
+/** DAG simulation and estimand-linked power. JSON operations: simulate, plan,
+ * population, calibrate, analyze, nullGraph, power. Uses the calculator's RNG,
+ * statistical core and thread pool. Returns {ok:true,result:...} or
+ * {ok:false,error:...}; release the returned string with ssc_free(). */
+SSC_API char* ssc_dag_json(const char* request_json, ssc_token* token);
+
 /** Release a string returned by this library. */
 SSC_API void ssc_free(char* p);
 

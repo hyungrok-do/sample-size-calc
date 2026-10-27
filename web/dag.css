@@ -104,6 +104,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .error { color: var(--error); background: var(--error-soft); border-radius: 8px; padding: 12px; }
 .dag-bottom { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 20px; align-items: start; }
 .dag-estimand-card { margin-bottom: 20px; }
+.dag-power-card { margin-bottom: 20px; }
+.dag-power-card > p { max-width: 100ch; }
+.dag-power-method { margin: 18px 0; padding: 14px 16px; background: var(--accent-soft); border-radius: 8px; }
+.dag-power-method p { margin: 0 0 6px; }
+.dag-power-method p:last-child { margin: 0; }
+.dag-power-method .eyebrow { font-size: 12px; color: var(--muted); }
+#power-method { font-weight: 600; }
+#power-form { max-width: 860px; }
+#power-form details { margin: 4px 0 16px; }
+#power-form details .dag-field { margin-top: 12px; }
+.dag-power-check { display: flex; gap: 8px; align-items: center; margin: 14px 0 18px; font-size: 13px; }
+.dag-power-target { font-weight: 600; }
+.dag-power-recommendation { padding: 12px; border-radius: 8px; background: var(--accent-soft); }
+#power-results p { font-size: 13px; }
 .dag-estimand-card > p { max-width: 90ch; }
 .dag-estimand-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dag-estimand-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 24px; margin-top: 22px; align-items: start; }

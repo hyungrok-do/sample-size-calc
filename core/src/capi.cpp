@@ -11,6 +11,14 @@
 #include "stats/dispatch.hpp"
 #include "util/memory.hpp"
 #include "util/parallel.hpp"
+#include "dag/model.hpp"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+// Called only by the engine's owning worker, between parallel replicate batches.
+EM_JS(void, ssc_dag_progress, (const char* text), {
+  if (Module['onDagProgress']) Module['onDagProgress'](JSON.parse(UTF8ToString(text)));
+});
+#endif
 
 struct ssc_token {
   ssc::Token token;
@@ -125,6 +133,29 @@ SSC_API char* ssc_run_json(const char* request_json, ssc_token* token) {
 }
 
 SSC_API void ssc_free(char* p) { std::free(p); }
+
+SSC_API char* ssc_dag_json(const char* request_json, ssc_token* token) {
+  if (!request_json) return error_answer("empty request");
+  try {
+    ssc::dag::Progress progress;
+#ifdef __EMSCRIPTEN__
+    progress = [](const ssc::json::Value& value) { ssc_dag_progress(value.dump().c_str()); };
+#endif
+    const auto result = ssc::dag::run_request(ssc::json::parse(request_json), token ? &token->token : nullptr, progress);
+    if (token) token->token.check();
+    char* answer = dup_string(ssc::dag::object({{"ok",true},{"result",result}}).dump());
+    if (!answer) throw std::bad_alloc();
+    ssc::memory::release_free_memory();
+    return answer;
+  } catch (const std::bad_alloc&) {
+    ssc::memory::release_free_memory();
+    return no_memory_answer();
+  } catch (const std::exception& e) {
+    return error_answer(e.what());
+  } catch (...) {
+    return error_answer("unknown DAG engine error");
+  }
+}
 
 SSC_API ssc_token* ssc_token_new(void) { return new (std::nothrow) ssc_token(); }
 

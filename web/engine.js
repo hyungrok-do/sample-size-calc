@@ -29,6 +29,7 @@ export class Engine {
       }
       const call = this.pending.get(data.id);
       if (!call) return;
+      if (data.stage === 'progress') { call.onProgress?.(data.progress); return; }
       this.pending.delete(data.id);
       if (data.crashed) {
         // A trapped engine cannot calculate again: a fresh one at once, before anyone can call the old one.  After
@@ -59,6 +60,7 @@ export class Engine {
       },
       (err) => {
         clearTimeout(watchdog);
+        if (this.disposed) throw err;
         if (err.stopped || err.movedOn) return this.ready;  // a fresh worker took over: its answer
         if (this.threaded) {
           this.fallBack();
@@ -116,8 +118,20 @@ export class Engine {
     this.worker.postMessage({ id: call.id, op: call.op, arg: call.arg });
   }
 
-  call(op, arg) {
-    return new Promise((resolve, reject) => this.post({ id: this.next++, op, arg, resolve, reject }));
+  call(op, arg, onProgress) {
+    return new Promise((resolve, reject) => this.post({ id: this.next++, op, arg, resolve, reject, onProgress }));
+  }
+
+  async dag(request, onProgress) {
+    await this.ready;
+    const { value } = await this.call('dag', request, onProgress);
+    return value.result;
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.worker.terminate();
+    this.failAll(Object.assign(new Error('Stopped'), { stopped: true }));
   }
 
   async run(request, maxRows) {

@@ -1,4 +1,5 @@
 import { DISTRIBUTIONS, parseGraph } from './dag-model.js?v=dev';
+import { parsePowerSettings } from './power-settings.js?v=dev';
 
 export const MEASURES = {
   mean_difference: { label: 'Difference in marginal means', kinds: ['continuous', 'count', 'binary'], nullValue: 0 },
@@ -58,7 +59,7 @@ export function validateEstimand(graph, value) {
     if (number === null && label === 'Planning alternative') continue;
     if (!finite(number)) fail(`${label} must be a finite number.`);
     if (spec.positive && number <= 0) fail(`${label} must be positive on a ratio scale.`);
-    if (spec.bounded && (number < -1 || number > 1)) fail(`${label} must lie between −1 and 1.`);
+    if ((spec.bounded || value.kind === 'marginal' && outcome?.kind === 'binary' && value.measure === 'mean_difference') && (number < -1 || number > 1)) fail(`${label} must lie between −1 and 1.`);
     if (value.measure === 'rmst_difference' && Math.abs(number) > value.horizon) fail(`${label} cannot exceed the RMST horizon in magnitude.`);
   }
   if (value.alternative !== null && value.alternative === value.nullValue) fail('The planning alternative must differ from the null value.');
@@ -100,11 +101,13 @@ export function describeEstimand(graph, value) {
     if (MEASURES[value.measure].horizon) note += ' The target concerns latent event times; censoring affects the analysis, not this estimand.';
   }
   return { formula, note, population: value.population, hypothesis: `H₀: θ = ${value.nullValue}`,
-    alternative: value.alternative === null ? 'Planning alternative: use the effect implied by the alternative DGP after calibration.' : `Planning alternative: θ = ${value.alternative}. Calibrate the alternative DGP to this target before evaluating power.` };
+    alternative: value.alternative === null ? 'Planning alternative: use the effect implied by the graph as drawn.'
+      : `Planning alternative: θ = ${value.alternative}. ${value.kind === 'custom' ? 'An executable estimator and test are required for power.' : 'Power calibrates the run DGP to this target and verifies its implied effect.'}` };
 }
-export function exportDesign(graph, estimand) {
+export function exportDesign(graph, estimand, power = null) {
   if (estimand) validateEstimand(graph, estimand);
-  return { version: 1, graph: parseGraph(graph), estimand: estimand ? copyEstimand(estimand) : null };
+  return { version: 1, graph: parseGraph(graph), estimand: estimand ? copyEstimand(estimand) : null,
+    ...(power === null ? {} : { power: parsePowerSettings(power) }) };
 }
 export function parseDesign(input) {
   const raw = typeof input === 'string' ? JSON.parse(input) : input;
@@ -112,5 +115,5 @@ export function parseDesign(input) {
   if (!raw || raw.version !== 1 || !raw.graph) fail('Unsupported simulation design file.');
   const graph = parseGraph(raw.graph), estimand = raw.estimand ? copyEstimand(raw.estimand) : null;
   if (estimand) validateEstimand(graph, estimand);
-  return { graph, estimand };
+  return { graph, estimand, ...(raw.power == null ? {} : { power: parsePowerSettings(raw.power) }) };
 }

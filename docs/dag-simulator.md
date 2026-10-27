@@ -1,7 +1,7 @@
 # DAG simulator and power-analysis design
 
-The **Calculator** tab retains the existing formulas, guide, forms and C++ /
-WebAssembly engine. The new **DAG simulator** tab opens `web/dag.html` and
+The **Calculator** tab retains its existing formulas, guide and forms. Its C++ /
+WebAssembly engine also powers the **DAG simulator** tab, which opens `web/dag.html` and
 constructs a data generating process from generic variables. There are no
 prescribed covariate, treatment, mediator or outcome roles. A label has no
 special effect on the model. A treatment or outcome role is not required to
@@ -21,7 +21,9 @@ section by selecting generic variables for the intended comparison.
    inspect all variable summaries and the first 10 rows, and download CSV.
 5. Define and save the estimand: its population, comparison, outcome, effect
    measure, time horizon where relevant, null value and optional planning alternative.
-6. Export/import the design as JSON. The graph and estimand are also saved in browser storage
+6. Set total sample sizes, repetitions, significance level and rejection direction,
+   then calculate power for the saved estimand. Inspect uncertainty and failed fits.
+7. Export/import the design as JSON. The graph, estimand and power settings are saved in browser storage
    when available. Undo/redo supports 50 edits. A deleted or replaced model
    can be recovered with Undo.
 
@@ -82,9 +84,10 @@ to uncensored; Undo restores them.
 
 ## Executable model contract
 
-`dag-model.js` is independent of the DOM, worker and calculator engine.
-`validateGraph`, `parseGraph` and `simulateGraph` provide the reusable model
-contract. A JSON graph contains `version: 1`, `nodes` and `edges`. Each node has:
+`dag-model.js` provides editor validation, graph transformations and displayed
+equations. All data generation, population-effect evaluation, calibration, model
+fitting, hypothesis tests and power aggregation execute in `core/src/dag/`,
+compiled into the calculator’s existing `ssc_web` and `ssc_web_mt` engines. A JSON graph contains `version: 1`, `nodes` and `edges`. Each node has:
 
 - `id`, `label`, `kind`, `family`, `intercept`, `interactions`, `x`, `y`
 - Distribution parameters such as `sd`, `width`, `shape` and `scale`
@@ -100,20 +103,38 @@ saved but require at least one variable before data generation.
 
 The graph supports 40 variables and 1–50,000 observations, with uint32 seeds.
 Poisson means must be representable and in `(0, 1000]`; extreme parameters that
-produce overflow or underflow stop with an error rather than clipping. Sampling
-uses seeded Mulberry32, Box–Muller Normal draws, inverse transforms for
-Uniform/Log-normal/survival, Marsaglia–Tsang Gamma draws and exact Poisson draws
-using rate chunks. Identical graph order, sample size and seed reproduce a
-dataset. No common random number guarantee is made when sample size or node
-order changes. Moving canvas positions does not change simulated values.
+produce overflow or underflow stop with an error rather than clipping. Sampling uses the calculator’s xoshiro256++ generator with SplitMix64 streams,
+Marsaglia polar Normal draws, Marsaglia–Tsang Gamma draws, inverse transforms
+and exact Poisson additivity. Streams are indexed by seed, replicate, scenario,
+variable ID and subject. Paired interventions reuse the same exogenous draws;
+mediators respond through their structural equations. A larger study contains
+the same first subjects, and reordering or repositioning nodes does not change
+draws. Changing a variable ID selects a different stream. Fixed seeds from the
+former JavaScript prototype will generate different datasets with this engine.
 
-The exported design envelope is `{version: 1, graph, estimand}`. The graph uses
+The `ssc_dag_json(request, token)` C API returns `{ok, result}` or `{ok: false,
+error}`. Operations are `simulate`, `plan`, `population`, `calibrate`, `analyze`,
+`nullGraph` and `power`. Each request contains `graph`; target-related operations
+also contain `estimand`. `power` accepts `settings` and optional `threads`
+(0 selects the available cores); `simulate` accepts `options: {n, seed}`.
+Every request is independently validated in C++. The browser’s method hint
+cannot override the estimator selected by the engine.
+
+The same `Engine` and `worker.js` used by the calculator load WebAssembly in a
+background worker. A cross-origin isolated page uses the pthread build; other
+pages or failed threaded starts use the single-thread build. Replicates use the
+calculator’s C++ thread pool and are reduced in replicate order, so changing
+thread count does not change results. A memory budget limits concurrent fit
+workspaces. Progress is posted between native batches; Stop terminates the
+worker. There is no JavaScript simulation or numerical-analysis fallback.
+
+The exported design envelope is `{version: 1, graph, estimand, power}`. The graph uses
 the contract above; `estimand` is null until saved. `estimand-model.js` validates
 the target independently of data generation. Standalone graph files can still
 be imported. Renaming a variable updates estimand references; an incompatible
 graph change clears the saved target with an explanation. Undo restores both
-the graph and estimand. Estimand choices never add/remove arrows or choose an
-analysis adjustment set.
+the graph and estimand. Estimand choices never add/remove arrows in the drawn graph. The saved target
+selects a compatible executable analysis, shown before calculation.
 
 Data generation runs in a cancellable module worker. Structural edits and
 simulation input changes invalidate results and stop pending work. JSON export
@@ -143,9 +164,9 @@ not subset or reweight simulated data. Survival probability and RMST targets
 require a positive horizon and refer to latent event time, independent of the
 observation/censoring mechanism. The target preview shows its formula, the null
 value, and any planning alternative. Ratio nulls default to one; difference
-and coefficient nulls default to zero. A numerical alternative is a planning
-target, not an automatic recalibration of the DGP. Its consistency with the
-alternative generating model must be established before computing power.
+and coefficient nulls default to zero. A numerical planning alternative calibrates an eligible arrow in a copy of the
+DGP before power simulation. Changing the effect measure clears an alternative
+entered on the old scale. Leaving it blank uses the graph as drawn.
 
 The estimand is saved separately, included in JSON export and undo/redo, and
 restored on reopening the design. Changing it does not invalidate generated
@@ -153,14 +174,80 @@ raw data, because the DGP itself is unchanged.
 
 ## Analysis and power evaluation
 
-Keep the data generating graph separate from the study design, estimand and
-analysis specification. Future repeated simulations will fit the selected
-analysis to each dataset and record rejection probabilities, Monte Carlo
-uncertainty and fitting failures. The graph alone does not select a test or
-identify the desired treatment contrast. A null for a total effect cannot in
-general be formed by zeroing only a direct arrow while mediated paths remain.
-Clustering, longitudinal processes and further distributions need explicit
-extensions; none are inferred from a variable's name.
+Saving an estimand selects the estimator, test scale, null and survival horizon.
+The power form adds total sample sizes, repetitions, alpha, a two-sided or
+one-sided rejection rule, a seed and target power. Changing the saved target,
+graph or settings clears previous results; an unsaved estimand cannot run.
+
+| Saved target | Analysis fitted to each simulated study |
+| --- | --- |
+| Marginal mean difference (continuous/count) | Welch t test |
+| Binary mean/risk difference | Two-proportion score test at null 0; Wald at a shifted null |
+| Marginal risk or odds ratio | Wald test on the log ratio scale |
+| Survival probability difference at the horizon | Kaplan–Meier estimate and Greenwood Wald test |
+| RMST difference through the horizon | Kaplan–Meier area and its Greenwood covariance variance, Wald test |
+| Conditional Normal/Uniform coefficient | Linear regression coefficient t test (approximate for Uniform errors) |
+| Conditional Log-normal coefficient | Log-response linear regression t test |
+| Conditional Bernoulli/Poisson/Gamma coefficient | Logistic or log-link GLM Wald test; Gamma dispersion estimated from the sample |
+| Conditional survival coefficient / hazard ratio | Cox PH Wald test with Breslow ties; ratio targets tested on the log scale |
+
+Marginal arm comparisons currently require a nondegenerate binary root variable,
+representing independent randomization. Confounded or continuous interventions
+can be described and simulated, but need another estimator before power can
+run. Conditional analyses fit all outcome parents and specified interactions,
+retaining the selected structural coefficient. Rank deficiency, separation and
+nonconvergence are explicit failures. No true DGP variance or coefficient is
+substituted for an estimated standard error.
+
+Survival fits use observed time and event status, never latent outcome values.
+Unadjusted KM power refuses event/censoring shared ancestors beyond the arm,
+and horizons beyond administrative follow-up. Within a replicate, a positive
+KM curve is not extended beyond the last observed follow-up; insufficient
+follow-up is reported as an analysis failure. Cox power rejects censoring that
+depends on the event time and regressions using censored latent predictors.
+Normal/Wald approximations still require adequate sample sizes and events.
+Custom text targets require an executable estimator/test and cannot run power.
+
+### Alternative and null DGPs
+
+Marginal effects are evaluated by paired `do(A=active)` and `do(A=reference)`
+population simulations. Calibration adjusts a selected arrow on a directed path
+to the outcome using bracketed search. Mediated paths are included: for the
+mediation example, the total mean difference is `0.3 + 0.8 * 0.6 = 0.78`.
+Targeting 0.5 therefore adjusts the direct arrow toward 0.02, not 0.5. A separate
+random stream verifies the resulting effect and reports population Monte Carlo
+uncertainty. Unreachable targets or failed calibration stop the run. Conditional
+coefficient calibration is exact (log transform for an exponentiated target).
+The graph stays as drawn; the report includes the actual alternative graph.
+
+For the usual marginal no-effect null, every exposure effect on causal paths
+to the outcome, including interactions involving the exposure, is zeroed.
+Other paths and observation rules remain. This handles mediated effects rather
+than zeroing only the direct arrow. Conditional nulls set the selected
+coefficient. Shifted marginal nulls are Monte Carlo calibrated and labeled
+approximate reference scenarios, with their effect uncertainty exposed.
+
+### Results and reproduction
+
+Power is rejections divided by **all** simulated studies. Failed generation or
+analysis remains in the denominator as non-rejection, with failure reasons and
+counts shown. Results include pointwise 95% Wilson Monte Carlo intervals,
+Monte Carlo SEs, mean estimates, empirical SDs, mean test-scale SEs and optional
+null rejection rates. The reported sample size is the first **tested** N whose
+point estimate reaches target power; intermediate sizes are not inferred.
+
+Download the complete JSON report or the power table as CSV. The JSON is a
+superset of the design envelope, with the original graph, saved estimand,
+settings, calibrated graphs, verified effects, analysis and engine metadata,
+results and diagnostics. It can be reimported as a design. Reproduction uses
+the same engine version, seed and settings; floating-point library differences
+may produce small differences between native and WebAssembly builds.
+Clustering, longitudinal processes and additional estimators require explicit
+extensions; none are inferred from variable labels.
+
+Method references: [R survival Cox documentation](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/coxph.html),
+[R survival methods](https://cran.r-project.org/web/packages/survival/vignettes/methods.pdf),
+[Emscripten pthreads](https://emscripten.org/docs/porting/pthreads.html).
 
 ## Validation
 
@@ -175,9 +262,15 @@ comparison levels, custom targets, renaming and saved-design round trips.
 The site tests exercise the separate page, cycle checks, editing, simulation,
 CSV/JSON downloads, survival and censoring, offline use and return to the
 calculator. Both pages and their assets are versioned and cached; each page
-retains its own Content Security Policy. The DAG page loads no calculator
-engine or WebAssembly.
+retains its own Content Security Policy. The DAG page uses the same C++/WebAssembly engine loader, thread fallback and
+offline cache as the calculator. Its policy permits WebAssembly compilation.
+
+The C++ tests check independent NumPy/SciPy fits for seven model families,
+KM/RMST variance, invalid and singular analyses, native cancellation and
+identical one-thread/four-thread power results. The web tests call the real
+WebAssembly engine for distribution checks, calibration, null construction,
+survival observation handling, power curves and saved-report reproduction.
 
 ## Preview
 
-![Saved RMST estimand in the design builder](dag-estimand-preview-1793133536450.jpg)
+![RMST estimand linked to C++/WebAssembly power results](dag-power-wasm-1793138096933.jpg)

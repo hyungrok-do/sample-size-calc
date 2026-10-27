@@ -6,10 +6,11 @@ method's description and calculate. Nothing you type leaves the browser, and
 the server only hands out files.
 
 The **DAG simulator** tab is a separate page (`dag.html`) for constructing
-a data generating process from generic variables and their distributions. It does not change the calculator,
-study guide, or C++ engine. Its **What is the estimand?** section records the
-population, comparison, outcome, effect measure, horizon, null value and planning
-alternative for power-analysis design. See [the model contract and scope](../docs/dag-simulator.md).
+a data generating process from generic variables and their distributions. The existing calculator and study guide keep their behavior. Its **What is the estimand?**
+section selects the actual estimator, null and horizon for repeated power
+simulation. Dataset previews, population calibration, model fits and power all
+run in the same C++/WebAssembly engines, with the same thread pool and
+single-thread fallback. There is no JavaScript numerical fallback. See [the model contract and scope](../docs/dag-simulator.md).
 
 The page opens on **Browse all methods**, the searchable catalog. **Guide me**,
 an experimental feature, asks study-design questions using chips. Each
@@ -261,7 +262,7 @@ cmake --build build-wasm-tests --parallel
 node build-wasm-tests/ssc_tests.js
 ```
 
-All 88 test cases pass, the same as in the native build. Every method and
+All 157 test cases pass, the same as in the native build. Every method and
 solve-for choice with its defaults gives the native answer to within 4 parts
 in 10¹², the difference between two math libraries. CI runs these tests and
 builds the page on every push.
