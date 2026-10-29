@@ -181,20 +181,57 @@ graph or settings clears previous results; an unsaved estimand cannot run.
 
 | Saved target | Analysis fitted to each simulated study |
 | --- | --- |
-| Marginal mean difference (continuous/count) | Welch t test |
+| Marginal mean difference (continuous/count), randomized comparison | Welch t test |
 | Binary mean/risk difference | Two-proportion score test at null 0; Wald at a shifted null |
 | Marginal risk or odds ratio | Wald test on the log ratio scale |
 | Survival probability difference at the horizon | Kaplan–Meier estimate and Greenwood Wald test |
 | RMST difference through the horizon | Kaplan–Meier area and its Greenwood covariance variance, Wald test |
+| Marginal mean/risk difference, risk ratio or odds ratio, confounded binary comparison | Doubly robust AIPW Wald test (below) |
 | Conditional Normal/Uniform coefficient | Linear regression coefficient t test (approximate for Uniform errors) |
 | Conditional Log-normal coefficient | Log-response linear regression t test |
 | Conditional Bernoulli/Poisson/Gamma coefficient | Logistic or log-link GLM Wald test; Gamma dispersion estimated from the sample |
 | Conditional survival coefficient / hazard ratio | Cox PH Wald test with Breslow ties; ratio targets tested on the log scale |
 
-Marginal arm comparisons currently require a nondegenerate binary root variable,
-representing independent randomization. Confounded or continuous interventions
-can be described and simulated, but need another estimator before power can
-run. Conditional analyses fit all outcome parents and specified interactions,
+Marginal arm comparisons require a binary comparison variable. A root
+variable represents independent randomization and uses the unadjusted tests
+above. A comparison variable with parents is confounded, and its power uses
+the augmented inverse probability weighting (AIPW) estimator described next.
+Continuous or count interventions can be described and simulated, but need
+another estimator before power can run.
+
+### Confounded comparisons (AIPW)
+
+When arrows enter the comparison variable `A`, each simulated study is
+analyzed with the doubly robust AIPW estimator (Robins, Rotnitzky & Zhao
+1994; Bang & Robins 2005):
+
+- **Adjustment set.** The parents of `A`, which block every back-door path in
+  the drawn DAG because all of them are generated and observed, plus the
+  outcome's parents that `A` does not affect, which add precision. Mediators
+  and other descendants of `A` are never adjusted for. A parent of `A` that is
+  a censored event time cannot be used, because its latent value is unseen.
+- **Propensity model.** Logistic regression of `A` on its own terms in the
+  DGP (its parents and their interactions), so it is correctly specified by
+  construction.
+- **Outcome model.** Within each arm, a regression of the outcome on the
+  adjustment set (main effects, plus interactions in the DGP between two of
+  its variables): least squares for Normal and Uniform outcomes, logistic for
+  Bernoulli, Poisson log-link for counts, and Gamma log-link for Gamma and
+  Log-normal outcomes. It may be misspecified; the estimator remains
+  consistent because the propensity model is correct.
+- **Inference.** The standard error is the empirical SD of the estimated
+  influence function over `sqrt(n)`, with a normal reference distribution.
+  Risk and odds ratios are tested on the log scale by the delta method.
+  Propensities are not truncated. Poor overlap shows as larger standard
+  errors; a study whose propensity fit separates the arms or reaches 0 or 1
+  fails (`positivity` or `nonconvergence`) and counts as a non-rejection.
+
+Influence-function standard errors are slightly small in small samples, so
+the null rejection rate can exceed alpha by about a percentage point at a
+few hundred subjects. Keep **Also simulate a reference/null scenario** on
+to see it. Survival outcomes
+with a confounded comparison are refused: they need an estimator that adjusts
+for confounding and censoring together. Conditional analyses fit all outcome parents and specified interactions,
 retaining the selected structural coefficient. Rank deficiency, separation and
 nonconvergence are explicit failures. No true DGP variance or coefficient is
 substituted for an estimated standard error.
@@ -267,7 +304,11 @@ offline cache as the calculator. Its policy permits WebAssembly compilation.
 
 The C++ tests check independent NumPy/SciPy fits for seven model families,
 KM/RMST variance, invalid and singular analyses, native cancellation and
-identical one-thread/four-thread power results. The web tests call the real
+identical one-thread/four-thread power results. AIPW estimates, standard
+errors and p-values match an independent NumPy implementation for Normal,
+Bernoulli (risk difference, risk ratio, odds ratio), Poisson and Gamma
+outcomes; simulated AIPW power under confounding recovers the total effect
+of a mediated exposure and holds its type I error. The web tests call the real
 WebAssembly engine for distribution checks, calibration, null construction,
 survival observation handling, power curves and saved-report reproduction.
 

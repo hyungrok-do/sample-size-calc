@@ -24,6 +24,35 @@ export function calibrationEdges(graph, estimand) {
   return graph.edges.filter((e) => after.has(e.source) && before.has(e.target)).sort((a, b) =>
     Number(b.source === estimand.exposure && b.target === estimand.outcome) - Number(a.source === estimand.exposure && a.target === estimand.outcome));
 }
+const termText = (terms) => terms.map((t) => t.right ? `${t.left} × ${t.right}` : t.left).join(' + ');
+// Mirrors the engine's AIPW plan for a binary comparison variable with parents: the exposure's own terms as
+// the propensity model; within each arm, an outcome model on the exposure's parents plus the outcome's
+// parents that the exposure does not affect.
+function aipwPlan(graph, estimand, exposure, outcome) {
+  if (outcome.kind === 'survival')
+    fail('A survival outcome with a confounded comparison variable needs a confounding- and censoring-adjusted estimator, which is not available yet. Remove the arrows into the comparison variable or use a conditional hazard-ratio target.');
+  const node = (id) => graph.nodes.find((n) => n.id === id);
+  const censored = (id) => node(id).kind === 'survival' && node(id).censoring.mode !== 'none';
+  const intoA = graph.edges.filter((e) => e.target === exposure.id);
+  const propensity = [...intoA.map((e) => ({ left: e.source })), ...exposure.interactions.map((t) => ({ left: t.left, right: t.right }))];
+  if (intoA.some((e) => censored(e.source)))
+    fail('A parent of the comparison variable is a censored event time. Its latent values cannot be used to adjust for confounding.');
+  const affected = descendants(graph, exposure.id);
+  const chosen = new Set(intoA.map((e) => e.source));
+  for (const e of graph.edges) if (e.target === outcome.id && !affected.has(e.source) && !censored(e.source)) chosen.add(e.source);
+  const terms = graph.nodes.filter((n) => chosen.has(n.id)).map((n) => ({ left: n.id }));
+  for (const t of [...exposure.interactions, ...outcome.interactions])
+    if (chosen.has(t.left) && chosen.has(t.right) && !terms.some((u) => u.right && [u.left, u.right].sort().join() === [t.left, t.right].sort().join()))
+      terms.push({ left: t.left, right: t.right });
+  const outcomeModel = outcome.family === 'bernoulli' ? 'bernoulli' : outcome.family === 'poisson' ? 'poisson'
+    : ['gamma', 'lognormal'].includes(outcome.family) ? 'gamma' : 'gaussian';
+  const scale = estimand.measure === 'risk_ratio' ? 'log risk ratio' : estimand.measure === 'odds_ratio' ? 'log odds ratio'
+    : estimand.measure === 'risk_difference' || outcome.kind === 'binary' ? 'risk difference' : 'mean difference';
+  const model = { gaussian: 'linear regression', bernoulli: 'logistic regression', poisson: 'Poisson log-link regression', gamma: 'Gamma log-link regression' }[outcomeModel];
+  return { method: 'aipw', label: `Doubly robust AIPW Wald test of the marginal ${scale}, adjusting for ${termText(terms)}`, terms,
+    propensityTerms: propensity, outcomeModel,
+    formula: `${outcome.id}: ${exposure.id} = ${estimand.active} versus ${estimand.reference}; propensity ${exposure.id} ~ ${termText(propensity)} (logistic); outcome ${outcome.id} ~ ${termText(terms)} within each arm (${model})` };
+}
 export function compilePowerPlan(graph, estimand) {
   validateGraph(graph); validateEstimand(graph, estimand);
   if (estimand.kind === 'custom') fail('A custom text definition needs an executable estimator and test. Choose a supported target to run power.');
@@ -32,8 +61,11 @@ export function compilePowerPlan(graph, estimand) {
   const edges = calibrationEdges(graph, estimand);
   let method, label, terms = [], targetIndex = -1;
   if (estimand.kind === 'marginal') {
-    if (exposure.kind !== 'binary' || graph.edges.some((e) => e.target === exposure.id))
-      fail('Marginal arm-comparison power currently requires a binary comparison variable with no parents (independent randomization). A confounded or continuous comparison needs a different estimator.');
+    if (exposure.kind !== 'binary')
+      fail('Marginal arm-comparison power currently requires a binary comparison variable. A continuous or count intervention needs a different estimator.');
+    if (graph.edges.some((e) => e.target === exposure.id))
+      return { ...aipwPlan(graph, estimand, exposure, outcome), targetIndex: -1, outcome: outcome.id, exposure: exposure.id,
+        family: outcome.family, calibrationEdges: edges, testScale: MEASURES[estimand.measure].positive ? 'log' : 'original' };
     const p = 1 / (1 + Math.exp(-exposure.intercept));
     if (!(p > 0 && p < 1)) fail('The comparison variable gives an empty arm. Use a nondegenerate allocation probability.');
     if (estimand.measure === 'mean_difference' && outcome.kind !== 'binary') { method = 'welch'; label = 'Welch t test of the marginal mean difference'; }
@@ -77,7 +109,7 @@ export function compilePowerPlan(graph, estimand) {
   if (!method) fail('No executable analysis is available for this estimand.');
   return { method, label, terms, targetIndex, outcome: outcome.id, exposure: exposure.id, family: outcome.family,
     calibrationEdges: edges, testScale: MEASURES[estimand.measure].positive ? 'log' : 'original',
-    formula: estimand.kind === 'coefficient' ? `${method === 'ols_log' ? `log(${outcome.id})` : outcome.id} ~ ${terms.map((t) => t.right ? `${t.left} × ${t.right}` : t.left).join(' + ')}`
+    formula: estimand.kind === 'coefficient' ? `${method === 'ols_log' ? `log(${outcome.id})` : outcome.id} ~ ${termText(terms)}`
       : `${outcome.id}: ${exposure.id} = ${estimand.active} versus ${estimand.reference}` };
 }
 export function powerCompatibility(graph, estimand) {
