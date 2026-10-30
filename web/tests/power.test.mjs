@@ -50,10 +50,24 @@ test('a confounded comparison uses AIPW, adjusting for its parents and not for m
   assert.deepEqual(engine.terms, plan.terms);
   assert.deepEqual(engine.propensityTerms, plan.propensityTerms);
   assert.doesNotThrow(() => compilePowerPlan(graph, target({ kind: 'coefficient', measure: 'coefficient' })));
-  assert.throws(() => compilePowerPlan(exampleGraph(), target({ exposure: 'X' })), /binary comparison/);
+});
+
+test('every other comparison runs with the g-formula, and says what it assumes', () => {
+  const continuous = compilePowerPlan(exampleGraph(), target({ exposure: 'X' }));
+  assert.equal(continuous.method, 'gformula');
+  assert.deepEqual(continuous.models.map((m) => m.node), ['M', 'Y']);
+  assert.match(continuous.formula, /refitted M ~ X \+ A, Y ~ X \+ M \+ A; other variables as observed/);
   const survival = exampleGraph('survival');
   survival.edges.push({ source: 'X', target: 'A', coefficient: .6 });
-  assert.throws(() => compilePowerPlan(survival, target({ outcome: 'T', measure: 'rmst_difference', horizon: 14 })), /censoring-adjusted/);
+  const rmst = compilePowerPlan(survival, target({ outcome: 'T', measure: 'rmst_difference', horizon: 14 }));
+  assert.equal(rmst.method, 'gformula');
+  assert.match(rmst.label, /RMST difference through time 14/);
+  const reverse = compilePowerPlan(exampleGraph(), target({ exposure: 'M', outcome: 'X' }));
+  assert.deepEqual(reverse.models, []);
+  assert.match(reverse.notes[0], /X lies upstream of M/);
+  for (const [graph, estimand] of [[exampleGraph(), target({ exposure: 'X' })], [survival, target({ outcome: 'T', measure: 'rmst_difference', horizon: 14 })],
+    [exampleGraph(), target({ exposure: 'M', outcome: 'X' })]])
+    assert.deepEqual(native({ op: 'plan', graph, estimand }), compilePowerPlan(graph, estimand));
 });
 
 test('AIPW power recovers the total effect of a confounded exposure in WebAssembly', () => {
@@ -69,17 +83,19 @@ test('AIPW power recovers the total effect of a confounded exposure in WebAssemb
   assert.ok(answer.results[0].null.probability < .12);
 });
 
-test('KM power rejects dependent censoring and horizons beyond administrative support', () => {
+test('dependent censoring and horizons past follow-up move from Kaplan–Meier to the g-formula', () => {
   const graph = exampleGraph('survival');
   const estimand = target({ outcome: 'T', measure: 'rmst_difference', horizon: 14 });
   graph.edges.push({ source: 'X', target: 'C', coefficient: .3 });
-  assert.throws(() => compilePowerPlan(graph, estimand), /Unadjusted KM/);
-  assert.doesNotThrow(() => compilePowerPlan(graph, { ...estimand, kind: 'coefficient', measure: 'coefficient', horizon: null }));
+  assert.equal(compilePowerPlan(graph, estimand).method, 'gformula');
+  assert.deepEqual(compilePowerPlan(graph, estimand).notes, []);
+  assert.equal(compilePowerPlan(graph, { ...estimand, kind: 'coefficient', measure: 'coefficient', horizon: null }).method, 'cox');
   graph.edges.push({ source: 'T', target: 'C', coefficient: .01 });
-  assert.throws(() => compilePowerPlan(graph, { ...estimand, kind: 'coefficient', measure: 'coefficient', horizon: null }), /descendant/);
+  assert.match(compilePowerPlan(graph, { ...estimand, kind: 'coefficient', measure: 'coefficient', horizon: null }).notes[0], /C censors T but depends on T itself/);
   const administrative = exampleGraph('survival');
   administrative.nodes.find((n) => n.id === 'T').censoring = { mode: 'administrative', time: 10, variable: '' };
-  assert.throws(() => compilePowerPlan(administrative, estimand), /horizon exceeds/);
+  assert.match(compilePowerPlan(administrative, estimand).notes[0], /horizon 14 lies past the follow-up cutoff 10/);
+  for (const [g, e] of [[graph, estimand], [administrative, estimand]]) assert.deepEqual(native({ op: 'plan', graph: g, estimand: e }), compilePowerPlan(g, e));
 });
 
 

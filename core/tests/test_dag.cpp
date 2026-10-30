@@ -274,7 +274,11 @@ TEST_CASE("dag: AIPW power under confounding is unbiased and holds its size") {
   }
   CHECK(previous > .95);
 }
-TEST_CASE("dag: AIPW refuses targets it cannot identify or estimate") {
+TEST_CASE("dag: targets AIPW does not cover run with the g-formula or a note") {
+  const auto plan = [](const J &graph, const J &estimand) {
+    return run_request(
+        object({{"op", "plan"}, {"graph", graph}, {"estimand", estimand}}));
+  };
   J graph = confounded_graph();
   J nodes = graph.get("nodes");
   J survival = variable("T", "survival", "weibull");
@@ -286,8 +290,8 @@ TEST_CASE("dag: AIPW refuses targets it cannot identify or estimate") {
   J rmst = marginal("T");
   rmst.set("measure", "rmst_difference");
   rmst.set("horizon", 5);
-  CHECK(refusal(graph, rmst).find("censoring-adjusted") != std::string::npos);
-  // A censored event time cannot be a confounder: its latent value is unseen.
+  CHECK_EQ(plan(graph, rmst).get("method").as_string(), std::string("gformula"));
+  // A censored confounder is adjusted for by its latent value, with a note.
   survival.set("censoring", object({{"mode", "administrative"},
                                     {"time", 5},
                                     {"variable", ""}}));
@@ -297,13 +301,19 @@ TEST_CASE("dag: AIPW refuses targets it cannot identify or estimate") {
   cedges.push(arrow("T", "A", .1));
   censored.set("nodes", cnodes);
   censored.set("edges", cedges);
-  CHECK(refusal(censored, marginal()).find("censored event time") !=
+  const J noted = plan(censored, marginal());
+  CHECK_EQ(noted.get("method").as_string(), std::string("aipw"));
+  CHECK(noted.get("notes").at(0).as_string().find("latent values") !=
         std::string::npos);
   J continuous = marginal();
   continuous.set("exposure", "X");
   continuous.set("active", 1);
-  CHECK(refusal(confounded_graph(), continuous).find("binary comparison") !=
-        std::string::npos);
+  const J refit = plan(confounded_graph(), continuous);
+  CHECK_EQ(refit.get("method").as_string(), std::string("gformula"));
+  CHECK_EQ(refit.get("formula").as_string(),
+           std::string("Y: X = 1 versus 0; refitted A ~ X + W, M ~ A, "
+                       "Y ~ X + W + M + A; other variables as observed"));
+  CHECK_EQ(refusal(confounded_graph(), continuous), std::string());
   // A study whose propensity fit separates the arms fails, never a clipped
   // weight: it counts as a non-rejection.
   const J separated = confounded_graph(40);
@@ -320,4 +330,199 @@ TEST_CASE("dag: AIPW refuses targets it cannot identify or estimate") {
             .get("alternative")
             .get("failures")
             .as_number() > 0);
+}
+namespace {
+// A confounded continuous exposure with a mediator; the total effect of one
+// unit is 0.3 + 0.8 * 0.6 = 0.78.
+J continuous_graph() {
+  J nodes = J::array(), edges = J::array();
+  for (const auto &v : {variable("X", "continuous", "gaussian"),
+                        variable("A", "continuous", "gaussian"),
+                        variable("M", "continuous", "gaussian"),
+                        variable("Y", "continuous", "gaussian")})
+    nodes.push(v);
+  for (const auto &e : {arrow("X", "A", .7), arrow("X", "M", .4),
+                        arrow("X", "Y", .4), arrow("A", "M", .8),
+                        arrow("M", "Y", .6), arrow("A", "Y", .3)})
+    edges.push(e);
+  return object({{"version", 1}, {"nodes", nodes}, {"edges", edges}});
+}
+// A confounded binary exposure and an event time whose censoring shares the
+// confounder: Kaplan-Meier and AIPW identify neither.
+J confounded_survival() {
+  J t = variable("T", "survival", "weibull"), c = variable("C", "survival",
+                                                           "exponential");
+  t.set("shape", 1.5);
+  t.set("censoring",
+        object({{"mode", "variable"}, {"time", 20}, {"variable", "C"}}));
+  c.set("scale", 18);
+  J nodes = J::array(), edges = J::array();
+  for (const auto &v : {variable("X", "continuous", "gaussian"),
+                        variable("A", "binary", "bernoulli"), c, t})
+    nodes.push(v);
+  for (const auto &e : {arrow("X", "A", .8), arrow("X", "T", .5),
+                        arrow("A", "T", -.5), arrow("X", "C", .6)})
+    edges.push(e);
+  return object({{"version", 1}, {"nodes", nodes}, {"edges", edges}});
+}
+J power_of(const J &graph, const J &estimand, int n, int repetitions) {
+  return run_request(object(
+      {{"op", "power"},
+       {"graph", graph},
+       {"estimand", estimand},
+       {"settings", object({{"sampleSizes", array({static_cast<double>(n)})},
+                            {"repetitions", repetitions},
+                            {"populationSize", 20000}})},
+       {"threads", 4}}));
+}
+// Mean estimate near the truth, model SE near the estimates' spread, and the
+// null rejected at about alpha.
+void check_calibrated(const J &result, double scale = 1) {
+  const auto &row = result.get("results").at(0);
+  const auto &alt = row.get("alternative"), &null = row.get("null");
+  const double reps = alt.get("repetitions").as_number(),
+               truth =
+                   result.get("alternative").get("truth").get("estimate").as_number();
+  CHECK_EQ(alt.get("failures").as_number(), 0.0);
+  CHECK_CLOSE(alt.get("meanEstimate").as_number(), truth, 0,
+              4.5 * alt.get("estimateSD").as_number() / std::sqrt(reps));
+  CHECK_CLOSE(null.get("meanEstimate").as_number(), scale == 1 ? 0 : 1, 0,
+              4.5 * null.get("estimateSD").as_number() / std::sqrt(reps));
+  CHECK_CLOSE(alt.get("meanSE").as_number() * scale,
+              alt.get("estimateSD").as_number(), .15, 0);
+  CHECK_CLOSE(null.get("probability").as_number(), .05, 0, .035);
+}
+} // namespace
+TEST_CASE("dag: the g-formula recovers continuous, count and event-time targets") {
+  J e = marginal();
+  check_calibrated(power_of(continuous_graph(), e, 300, 500));
+  J rmst = marginal("T");
+  rmst.set("measure", "rmst_difference");
+  rmst.set("horizon", 10);
+  const J survival = power_of(confounded_survival(), rmst, 400, 400);
+  CHECK_EQ(survival.get("analysis").get("method").as_string(),
+           std::string("gformula"));
+  check_calibrated(survival);
+  J share = rmst;
+  share.set("measure", "survival_difference");
+  check_calibrated(power_of(confounded_survival(), share, 400, 400));
+  // a count exposure compared at 2 versus 0, Poisson outcome
+  J nodes = J::array(), edges = J::array();
+  nodes.push(variable("X", "continuous", "gaussian"));
+  nodes.push(variable("A", "count", "poisson", .3));
+  nodes.push(variable("Y", "count", "poisson", .5));
+  for (const auto &a : {arrow("X", "A", .3), arrow("X", "Y", .3),
+                        arrow("A", "Y", .15)})
+    edges.push(a);
+  J count = marginal();
+  count.set("active", 2);
+  check_calibrated(power_of(object({{"version", 1}, {"nodes", nodes},
+                                    {"edges", edges}}),
+                            count, 400, 400));
+}
+TEST_CASE("dag: the g-formula extrapolates past follow-up and notes the "
+          "assumptions it cannot check") {
+  J t = variable("T", "survival", "weibull");
+  t.set("shape", 1.3);
+  t.set("censoring",
+        object({{"mode", "administrative"}, {"time", 8}, {"variable", ""}}));
+  J nodes = J::array(), edges = J::array();
+  nodes.push(variable("A", "binary", "bernoulli"));
+  nodes.push(t);
+  edges.push(arrow("A", "T", -.6));
+  const J graph = object({{"version", 1}, {"nodes", nodes}, {"edges", edges}});
+  J e = marginal("T");
+  e.set("measure", "survival_difference");
+  e.set("horizon", 12);
+  const J result = power_of(graph, e, 400, 400);
+  CHECK_EQ(result.get("analysis").get("method").as_string(),
+           std::string("gformula"));
+  CHECK(result.get("warnings").at(0).as_string().find("extrapolates") !=
+        std::string::npos);
+  check_calibrated(result);
+  // Censoring caused by the event time itself: the run goes ahead and says so.
+  J informative = graph;
+  J inodes = J::array(), iedges = J::array();
+  J it = variable("T", "survival", "weibull");
+  it.set("censoring",
+         object({{"mode", "variable"}, {"time", 20}, {"variable", "C"}}));
+  inodes.push(variable("A", "binary", "bernoulli"));
+  inodes.push(it);
+  inodes.push(variable("C", "continuous", "lognormal", 1.5));
+  iedges.push(arrow("A", "T", -.5));
+  iedges.push(arrow("T", "C", .05));
+  informative.set("nodes", inodes);
+  informative.set("edges", iedges);
+  J rmst = marginal("T");
+  rmst.set("measure", "rmst_difference");
+  rmst.set("horizon", 8);
+  const J plan = run_request(
+      object({{"op", "plan"}, {"graph", informative}, {"estimand", rmst}}));
+  CHECK(plan.get("notes").at(0).as_string().find("depends on T itself") !=
+        std::string::npos);
+  CHECK_EQ(plan.get("models").at(0).get("node").as_string(), std::string("T"));
+}
+TEST_CASE("dag: the censored Weibull fit recovers its shape and coefficient") {
+  J t = variable("T", "survival", "weibull");
+  t.set("shape", 1.7);
+  t.set("scale", 5);
+  t.set("censoring",
+        object({{"mode", "administrative"}, {"time", 6}, {"variable", ""}}));
+  J nodes = J::array(), edges = J::array();
+  nodes.push(variable("A", "binary", "bernoulli"));
+  nodes.push(t);
+  edges.push(arrow("A", "T", -.7));
+  const auto g =
+      parse_graph(object({{"version", 1}, {"nodes", nodes}, {"edges", edges}}));
+  const auto d = simulate(g, 40000, 11);
+  const auto m = model_matrix(d, g.nodes[1].terms, true);
+  const auto fit = fit_weibull(m, d.times[1], d.events[1], false);
+  CHECK_CLOSE(std::exp(fit.beta[2]), 1.7, 0, .03);
+  CHECK_CLOSE(fit.beta[1] / m.scales[1], -.7, 0, .03);
+  // H(t | A) = (t / 5)^1.7 exp(-0.7 A): the intercept at A = 0 is -1.7 log 5
+  CHECK_CLOSE(fit.beta[0] - fit.beta[1] * m.means[1] / m.scales[1],
+              -1.7 * std::log(5.0), 0, .06);
+}
+TEST_CASE("dag: a comparison without a causal path still runs") {
+  const auto plan = [](const J &estimand) {
+    return run_request(object({{"op", "plan"},
+                               {"graph", confounded_graph()},
+                               {"estimand", estimand}}));
+  };
+  // X causes M through A: M cannot change X, in any study.
+  J reverse = marginal("X");
+  reverse.set("exposure", "M");
+  const J fixed = plan(reverse);
+  CHECK_EQ(fixed.get("method").as_string(), std::string("gformula"));
+  CHECK_EQ(fixed.get("models").size(), std::size_t(0));
+  CHECK(fixed.get("notes").at(0).as_string().find("X lies upstream of M") !=
+        std::string::npos);
+  const auto row = power_of(confounded_graph(), reverse, 100, 50)
+                       .get("results")
+                       .at(0)
+                       .get("alternative");
+  CHECK_EQ(row.get("failures").as_number(), 0.0);
+  CHECK_EQ(row.get("probability").as_number(), 0.0);
+  CHECK_EQ(row.get("meanEstimate").as_number(), 0.0);
+  // A confounded binary comparison whose parent is the outcome: not AIPW,
+  // which would adjust for the outcome itself.
+  J parent = marginal("W");
+  parent.set("measure", "risk_difference");
+  CHECK_EQ(plan(parent).get("method").as_string(), std::string("gformula"));
+  // No path between W and X: the test runs at its false-positive rate, and a
+  // requested effect that no arrow can carry keeps the drawn model.
+  J apart = marginal("X");
+  apart.set("exposure", "W");
+  apart.set("alternative", .3);
+  CHECK(plan(apart).get("notes").at(0).as_string().find("No arrow path") !=
+        std::string::npos);
+  const J result = power_of(confounded_graph(), apart, 200, 400);
+  bool kept = false;
+  for (const auto &w : result.get("warnings").elements())
+    kept |= w.as_string().find("planning effect 0.3 cannot be set") !=
+            std::string::npos;
+  CHECK(kept);
+  CHECK_CLOSE(result.get("results").at(0).get("alternative").get("probability")
+                  .as_number(),
+              .05, 0, .035);
 }

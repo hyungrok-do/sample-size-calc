@@ -84,6 +84,7 @@ Matrix model_matrix(const Data &d, const std::vector<Term> &terms,
     bad("too_few_observations", "Too few observations for the planned model.");
   m.x.resize(static_cast<std::size_t>(m.n) * m.p);
   m.scales.resize(m.p, 1);
+  m.means.resize(m.p, 0);
   if (intercept)
     for (int i = 0; i < m.n; ++i)
       m.x[i * m.p] = 1;
@@ -102,6 +103,7 @@ Matrix model_matrix(const Data &d, const std::vector<Term> &terms,
       bad("constant_predictor", "A planned predictor has no variation or "
                                 "finite scale in this replicate.");
     m.scales[j + offset] = scale;
+    m.means[j + offset] = s.mean;
     for (int i = 0; i < m.n; ++i)
       m.x[i * m.p + j + offset] = (values[i] - s.mean) / scale;
   }
@@ -252,6 +254,98 @@ Fit fit_glm(const Matrix &m, const Vec &y, int target,
     dispersion = pearson / (m.n - m.p);
   }
   return finish_fit(m, fit.beta, fit.info, target, dispersion);
+}
+static Vec inverse(const Vec &factor, int p) {
+  Vec out(static_cast<std::size_t>(p) * p);
+  for (int j = 0; j < p; ++j) {
+    Vec unit(p);
+    unit[j] = 1;
+    const auto column = solve(factor, unit, p);
+    for (int i = 0; i < p; ++i)
+      out[i * p + j] = column[i];
+  }
+  return out;
+}
+ModelFit fit_model(const Matrix &m, const Vec &y, const std::string &family) {
+  ModelFit out;
+  Vec info;
+  if (family == "gaussian") {
+    out.beta = least_squares(m, y, info);
+    double sse = 0;
+    for (int i = 0; i < m.n; ++i) {
+      const double r = y[i] - predictor(m, out.beta, i);
+      sse += r * r;
+    }
+    out.dispersion = sse / (m.n - m.p);
+    if (!(out.dispersion > 0) || !std::isfinite(out.dispersion))
+      bad("zero_variance", "A fitted model has no residual variation.");
+  } else {
+    const auto fit = maximize_glm(m, y, family);
+    out.beta = fit.beta;
+    info = fit.info;
+    if (family == "gamma") {
+      double pearson = 0;
+      for (int i = 0; i < m.n; ++i) {
+        const double r = y[i] / std::exp(predictor(m, out.beta, i)) - 1;
+        pearson += r * r;
+      }
+      out.dispersion = pearson / (m.n - m.p);
+      if (!(out.dispersion > 0) || !std::isfinite(out.dispersion))
+        bad("zero_variance", "A fitted Gamma model has no dispersion.");
+    }
+  }
+  out.covariance = inverse(cholesky(info, m.p), m.p);
+  for (double &v : out.covariance)
+    v *= out.dispersion;
+  return out;
+}
+ModelFit fit_weibull(const Matrix &m, const Vec &times, const Vec &events,
+                     bool exponential) {
+  double count = 0, exposure = 0;
+  for (int i = 0; i < m.n; ++i) {
+    count += events[i];
+    exposure += times[i];
+  }
+  const int p = m.p + (exponential ? 0 : 1);
+  if (count <= p + 1)
+    bad("too_few_events", "Too few observed events for the event-time model.");
+  const auto evaluate = [&](const Vec &theta, bool derivatives) {
+    Evaluation e;
+    e.score.assign(p, 0);
+    e.info.assign(static_cast<std::size_t>(p) * p, 0);
+    const double k = exponential ? 1 : std::exp(theta[m.p]);
+    for (int i = 0; i < m.n; ++i) {
+      if (!(times[i] > 0))
+        continue;  // follow-up of length 0: no event possible, no exposure
+      const double lt = std::log(times[i]), eta = predictor(m, theta, i),
+                   a = std::exp(k * lt + eta), kl = k * lt, d = events[i];
+      if (!std::isfinite(a)) {
+        e.ll = -INFINITY;
+        return e;
+      }
+      e.ll += d * (std::log(k) + (k - 1) * lt + eta) - a;
+      if (!derivatives)
+        continue;
+      for (int j = 0; j < m.p; ++j) {
+        const double x = m.x[i * m.p + j];
+        e.score[j] += (d - a) * x;
+        for (int l = 0; l <= j; ++l)
+          e.info[j * p + l] += a * x * m.x[i * m.p + l];
+        if (!exponential)
+          e.info[m.p * p + j] += a * kl * x;
+      }
+      if (!exponential) {
+        e.score[m.p] += d * (1 + kl) - a * kl;
+        e.info[m.p * p + m.p] += a * kl * (kl + 1) - d * kl;
+      }
+    }
+    symmetrize(e.info, p);
+    return e;
+  };
+  Vec initial(p);
+  initial[0] = std::log(count / exposure);
+  const auto fit = maximize(initial, evaluate, m.n);
+  return {fit.beta, inverse(cholesky(fit.info, p), p), 1};
 }
 Vec fitted_means(const Matrix &m, const Vec &y, const std::vector<int> &rows,
                  const std::string &family) {

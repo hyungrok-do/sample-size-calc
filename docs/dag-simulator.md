@@ -45,7 +45,8 @@ selecting generic variables for it.
    time horizon for survival measures and an optional effect to detect) and the
    design (total sample sizes, studies per size, alpha, the test's sides and
    target power), then **Calculate power**. The panel starts from a runnable
-   choice and shows the analysis it will fit, or why it cannot run, as you edit.
+   choice and shows the analysis it will fit, with notes on what it assumes,
+   as you edit.
    Null value, comparison levels, seed, calibration and the null-scenario check
    are under **More settings**. Inspect uncertainty and failed fits.
 6. Export/import the design as JSON. The graph, estimand and power settings are saved in browser storage
@@ -206,7 +207,10 @@ raw data, because the DGP itself is unchanged.
 The target selects the estimator, test scale, null and survival horizon.
 The design adds total sample sizes, repetitions, alpha, a two-sided or
 one-sided rejection rule, a seed and target power. Changing the saved target,
-graph or settings clears previous results; an invalid target cannot run, and the panel says why.
+graph or settings clears previous results. Every comparison in the graph has
+an analysis: the panel names it before the run, with notes on any assumption
+the drawn graph does not grant, and only invalid input (such as a risk
+difference outside −1 to 1) stops a run.
 
 | Saved target | Analysis fitted to each simulated study |
 | --- | --- |
@@ -216,17 +220,17 @@ graph or settings clears previous results; an invalid target cannot run, and the
 | Survival probability difference at the horizon | Kaplan–Meier estimate and Greenwood Wald test |
 | RMST difference through the horizon | Kaplan–Meier area and its Greenwood covariance variance, Wald test |
 | Marginal mean/risk difference, risk ratio or odds ratio, confounded binary comparison | Doubly robust AIPW Wald test (below) |
+| Any other marginal target: continuous, count or event-time comparison variable; event-time outcome with a confounded comparison, censoring that shares causes with the event, or a horizon past follow-up | Parametric g-formula Wald test (below) |
 | Conditional Normal/Uniform coefficient | Linear regression coefficient t test (approximate for Uniform errors) |
 | Conditional Log-normal coefficient | Log-response linear regression t test |
 | Conditional Bernoulli/Poisson/Gamma coefficient | Logistic or log-link GLM Wald test; Gamma dispersion estimated from the sample |
 | Conditional survival coefficient / hazard ratio | Cox PH Wald test with Breslow ties; ratio targets tested on the log scale |
 
-Marginal arm comparisons require a binary comparison variable. A root
-variable represents independent randomization and uses the unadjusted tests
-above. A comparison variable with parents is confounded, and its power uses
-the augmented inverse probability weighting (AIPW) estimator described next.
-Continuous or count interventions can be described and simulated, but need
-another estimator before power can run.
+A binary root variable represents independent randomization and uses the
+unadjusted tests above. A binary comparison variable with parents is
+confounded, and its power uses the augmented inverse probability weighting
+(AIPW) estimator described next. Everything else uses the parametric
+g-formula, so continuous, count and event-time interventions run too.
 
 ### Confounded comparisons (AIPW)
 
@@ -238,7 +242,8 @@ analyzed with the doubly robust AIPW estimator (Robins, Rotnitzky & Zhao
   the drawn DAG because all of them are generated and observed, plus the
   outcome's parents that `A` does not affect, which add precision. Mediators
   and other descendants of `A` are never adjusted for. A parent of `A` that is
-  a censored event time cannot be used, because its latent value is unseen.
+  a censored event time is used at its latent value, with a note that a real
+  study could not see it.
 - **Propensity model.** Logistic regression of `A` on its own terms in the
   DGP (its parents and their interactions), so it is correctly specified by
   construction.
@@ -258,21 +263,54 @@ analyzed with the doubly robust AIPW estimator (Robins, Rotnitzky & Zhao
 Influence-function standard errors are slightly small in small samples, so
 the null rejection rate can exceed alpha by about a percentage point at a
 few hundred subjects. Keep **Also simulate a reference/null scenario** on
-to see it. Survival outcomes
-with a confounded comparison are refused: they need an estimator that adjusts
-for confounding and censoring together. Conditional analyses fit all outcome parents and specified interactions,
+to see it. Event-time outcomes with a confounded comparison use the
+g-formula instead, which adjusts for confounding and censoring together.
+
+### Every other comparison (parametric g-formula)
+
+The g-formula (Robins 1986) refits the DGP's own conditional model for the
+outcome and for every variable the comparison variable `A` affects on the way
+to it (the mediators), each on its parents and interactions, by maximum
+likelihood: least squares with an estimated SD for Normal, Uniform and
+Log-normal (on the log scale) variables, logistic, Poisson and Gamma GLMs, and
+a Weibull proportional-hazards fit to observed time and event status for event
+times (Exponential holds the shape at 1). Every other variable keeps its
+observed values. The estimate averages the outcome's mean, risk, survival at
+the horizon or RMST to the horizon over the study's rows with `A` set to each
+level; mediators are drawn from their fitted models with common random numbers,
+`ceil(1000 / n)` draws per row, at most 20. Conditioning each model on its
+parents identifies the target in the drawn DAG whatever the type of `A`, and
+censoring by a variable that shares causes with the event is ignorable given
+the event time's parents. The standard error adds the rows' variation to the
+fitted parameters' (a delta method evaluated at ± one Cholesky column of each
+model's covariance); ratios are tested on the log scale.
+
+When the drawn graph does not grant what an analysis needs, the run goes
+ahead and the panel and report say so:
+
+- a censored event time used as a covariate enters at its latent value;
+- censoring caused by the event time itself biases every analysis of the
+  observed data, and the results show that bias;
+- a horizon past administrative follow-up is reached by extrapolating the
+  Weibull model;
+- with no arrow path from `A` to the outcome the effect is zero, so the
+  rejection rate is the test's false-positive rate, and an effect to detect
+  cannot be set (the run keeps the drawn model and says so);
+- an outcome upstream of `A` cannot be changed by it: the contrast is zero by
+  construction and no study rejects.
+
+Conditional analyses fit all outcome parents and specified interactions,
 retaining the selected structural coefficient. Rank deficiency, separation and
 nonconvergence are explicit failures. No true DGP variance or coefficient is
 substituted for an estimated standard error.
 
 Survival fits use observed time and event status, never latent outcome values.
-Unadjusted KM power refuses event/censoring shared ancestors beyond the arm,
-and horizons beyond administrative follow-up. Within a replicate, a positive
-KM curve is not extended beyond the last observed follow-up; insufficient
-follow-up is reported as an analysis failure. Cox power rejects censoring that
-depends on the event time and regressions using censored latent predictors.
-Normal/Wald approximations still require adequate sample sizes and events.
-Custom text targets require an executable estimator/test and cannot run power.
+Kaplan–Meier is used only when censoring shares no causes with the event
+beyond the arm and follow-up reaches the horizon; otherwise the g-formula
+takes over. Within a replicate, a positive KM curve is not extended beyond the
+last observed follow-up; insufficient follow-up is reported as an analysis
+failure. Normal/Wald approximations still require adequate sample sizes and
+events.
 
 ### Alternative and null DGPs
 
@@ -282,7 +320,8 @@ to the outcome using bracketed search. Mediated paths are included: for the
 mediation example, the total mean difference is `0.3 + 0.8 * 0.6 = 0.78`.
 Targeting 0.5 therefore adjusts the direct arrow toward 0.02, not 0.5. A separate
 random stream verifies the resulting effect and reports population Monte Carlo
-uncertainty. Unreachable targets or failed calibration stop the run. Conditional
+uncertainty. A target the selected arrow cannot reach within its bounds stops
+the run with the bounds to widen. Conditional
 coefficient calibration is exact (log transform for an exponentiated target).
 The graph stays as drawn; the report includes the actual alternative graph.
 

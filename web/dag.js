@@ -298,7 +298,10 @@ export function mountDag(root) {
     const mark = (keys) => { for (const g of canvas.querySelectorAll('.dag-edge')) g.classList.toggle('path', keys.includes(g.dataset.edge)); };
     if (!a || !y || !graph.nodes.some((n) => n.id === a) || !graph.nodes.some((n) => n.id === y)) { box.replaceChildren(); return; }
     const plan = powerCompatibility(graph, estimand);
-    const adjusted = new Set((plan.supported ? plan.terms : []).flatMap((t) => [t.left, t.right]).filter((v) => v && v !== a));
+    // the g-formula redraws the variables it refits (mediators and the outcome), so only the others are held fixed
+    const terms = !plan.supported ? [] : plan.method === 'gformula' ? plan.models.flatMap((m) => m.terms) : plan.terms;
+    const redrawn = new Set([a, ...(plan.models ?? []).map((m) => m.node)]);
+    const adjusted = new Set(terms.flatMap((t) => [t.left, t.right]).filter((v) => v && !redrawn.has(v)));
     const { paths: list, truncated } = findPaths(graph, a, y);
     const rows = list.map((path) => {
       const c = classifyPath(graph, path, adjusted);

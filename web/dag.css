@@ -160,6 +160,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-power-summary p.error { margin: -10px -12px; }
 #power-method { font-weight: 600; }
 .dag-power-formula { color: var(--ink-2); margin-top: 2px !important; overflow-wrap: anywhere; }
+.dag-power-notes { margin: 6px 0 0; padding-left: 18px; color: var(--ink); }
+.dag-power-notes li { margin-top: 2px; }
+.dag-power-note { padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--surface-2); border-radius: 0 6px 6px 0; font-size: 13px; max-width: 760px; }
 #power-progress { margin-left: 4px; }
 .dag-power-results { min-width: 0; border-top: 1px solid var(--line); padding-top: 12px; }
 .dag-power-results > p:first-child { margin-top: 0; }

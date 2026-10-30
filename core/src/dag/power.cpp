@@ -1,3 +1,4 @@
+#include "gformula.hpp"
 #include "model.hpp"
 #include "sim/random.hpp"
 #include "sim/simulate.hpp"
@@ -105,7 +106,41 @@ struct Plan {
   // model's.
   std::vector<Term> terms, propensity;
   std::vector<int> edges;
+  // For the g-formula, the refitted models in generation order.
+  std::vector<ChainModel> chain;
+  // What the analysis assumes that the drawn DGP does not grant: reported
+  // with the results instead of refusing the run.
+  std::vector<std::string> notes;
 };
+void note(Plan &p, const std::string &text) {
+  if (std::find(p.notes.begin(), p.notes.end(), text) == p.notes.end())
+    p.notes.push_back(text);
+}
+bool censored(const Node &node) {
+  return node.kind == "survival" && node.censor != "none";
+}
+std::string latent_note(const Node &node) {
+  return node.id + " is a censored event time; the analysis uses its latent "
+                   "values as if they were measured.";
+}
+std::string informative_note(const Graph &g, const Node &node) {
+  const auto &c = g.nodes[node.censor_index].id;
+  return c + " censors " + node.id + " but depends on " + node.id +
+         " itself, so no analysis of the observed data is unbiased; the "
+         "results show the bias.";
+}
+std::string reverse_note(const Node &a, const Node &y) {
+  return y.id + " lies upstream of " + a.id + ", so " + a.id +
+         " cannot change " + y.id +
+         ": the effect is zero by construction and no study can detect one. "
+         "Swap the two roles to study the effect of " + y.id + " on " + a.id +
+         ".";
+}
+std::string no_path_note(const Node &a, const Node &y) {
+  return "No arrow path leads from " + a.id + " to " + y.id + ", so " + a.id +
+         " has no effect on " + y.id +
+         " here; the rejection rate is the test's false-positive rate.";
+}
 std::string term_text(const Graph &g, const std::vector<Term> &terms) {
   std::string out;
   for (std::size_t j = 0; j < terms.size(); ++j) {
@@ -127,11 +162,6 @@ std::string term_text(const Graph &g, const std::vector<Term> &terms) {
 void plan_aipw(const Graph &g, const J &e, Plan &p) {
   const auto &a = g.nodes[p.exposure];
   const auto &y = g.nodes[p.outcome];
-  if (y.kind == "survival")
-    fail("A survival outcome with a confounded comparison variable needs a "
-         "confounding- and censoring-adjusted estimator, which is not "
-         "available yet. Remove the arrows into the comparison variable or "
-         "use a conditional hazard-ratio target.");
   const auto affected = descendants(g, p.exposure);
   const int count = static_cast<int>(g.nodes.size());
   std::vector<bool> chosen(count);
@@ -139,9 +169,8 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
     for (int v : {t.left, t.right})
       if (v >= 0) {
         const auto &node = g.nodes[v];
-        if (node.kind == "survival" && node.censor != "none")
-          fail("A parent of the comparison variable is a censored event time. "
-               "Its latent values cannot be used to adjust for confounding.");
+        if (censored(node))
+          note(p, latent_note(node));
         chosen[v] = true;
       }
   for (const auto &t : y.terms) {
@@ -190,6 +219,77 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
               " (logistic); outcome " + y.id + " ~ " + term_text(g, p.terms) +
               " within each arm (" + model + ")";
 }
+std::string measure_scale(const J &e, const Node &y) {
+  const auto measure = e.get("measure").as_string();
+  return measure == "risk_ratio"            ? std::string("log risk ratio")
+         : measure == "odds_ratio"          ? std::string("log odds ratio")
+         : measure == "survival_difference" ? "survival difference at time " +
+                                                  e.get("horizon").to_text()
+         : measure == "rmst_difference"
+             ? "RMST difference through time " + e.get("horizon").to_text()
+         : measure == "risk_difference" || y.kind == "binary"
+             ? std::string("risk difference")
+             : std::string("mean difference");
+}
+// Any other marginal target: the parametric g-formula. The analysis refits
+// the DGP's own conditional model for the outcome and for every variable the
+// comparison affects on the way to it (event times by censored Weibull
+// likelihood), then averages the outcome over the study's rows with the
+// comparison set to each level. Conditioning each model on its parents
+// identifies the target in the drawn DAG, whatever the comparison variable's
+// type or parents, and censoring that shares causes with the event is
+// ignorable given the event time's parents.
+void plan_gformula(const Graph &g, const J &e, Plan &p) {
+  const auto &a = g.nodes[p.exposure];
+  const auto &y = g.nodes[p.outcome];
+  const auto after = descendants(g, p.exposure),
+             before = ancestors(g, p.outcome);
+  if (descendants(g, p.outcome)[p.exposure]) {
+    // The outcome causes the comparison variable: nothing to refit, and the
+    // contrast is zero in every study.
+    p.method = "gformula";
+    p.label = "Parametric g-formula Wald test of the marginal " +
+              std::string(measure_scale(e, y));
+    p.formula = y.id + ": " + a.id + " = " + e.get("active").to_text() +
+                " versus " + e.get("reference").to_text() +
+                "; zero by construction";
+    return;
+  }
+  for (int v : g.order)
+    if (v != p.exposure && after[v] && before[v])
+      p.chain.push_back({v, g.nodes[v].terms});
+  if (!after[p.outcome]) {
+    // No path: the analysis still estimates a comparison, which is null.
+    auto terms = y.terms;
+    terms.insert(terms.begin(), Term{p.exposure, -1, 0});
+    p.chain.push_back({p.outcome, terms});
+  }
+  for (const auto &c : p.chain)
+    for (const auto &t : c.terms)
+      for (int v : {t.left, t.right})
+        if (v >= 0 && v != p.exposure && censored(g.nodes[v]))
+          note(p, latent_note(g.nodes[v]));
+  for (const auto &c : p.chain) {
+    const auto &node = g.nodes[c.node];
+    if (node.censor == "variable" && descendants(g, c.node)[node.censor_index])
+      note(p, informative_note(g, node));
+  }
+  if (y.censor == "administrative" && e.get("horizon").as_number() > y.cutoff)
+    note(p, "The horizon " + e.get("horizon").to_text() +
+                " lies past the follow-up cutoff " + J(y.cutoff).to_text() +
+                "; the Weibull model extrapolates beyond the data.");
+  p.terms = p.chain.back().terms;
+  p.method = "gformula";
+  p.label = "Parametric g-formula Wald test of the marginal " +
+            measure_scale(e, y);
+  std::string models;
+  for (const auto &c : p.chain)
+    models += (models.empty() ? "" : ", ") + g.nodes[c.node].id + " ~ " +
+              term_text(g, c.terms);
+  p.formula = y.id + ": " + a.id + " = " + e.get("active").to_text() +
+              " versus " + e.get("reference").to_text() + "; refitted " +
+              models + "; other variables as observed";
+}
 Plan compile_plan(const Graph &g, const J &e) {
   validate_estimand(g, e);
   Plan p;
@@ -203,10 +303,19 @@ Plan compile_plan(const Graph &g, const J &e) {
   p.edges = calibration_edges(g, e);
   p.testScale = positive(measure) ? "log" : "original";
   if (kind == "marginal") {
-    if (a.kind != "binary")
-      fail("Marginal arm-comparison power currently requires a binary "
-           "comparison variable. A continuous or count intervention needs a "
-           "different estimator.");
+    const bool upstream = descendants(g, p.outcome)[p.exposure];
+    if (upstream)
+      note(p, reverse_note(a, y));
+    else if (!descendants(g, p.exposure)[p.outcome])
+      note(p, no_path_note(a, y));
+    // A two-level comparison of a confounded binary variable uses AIPW; any
+    // other comparison variable, or a confounded one with an event-time
+    // outcome, the g-formula.
+    if (upstream || a.kind != "binary" ||
+        (!a.terms.empty() && y.kind == "survival")) {
+      plan_gformula(g, e, p);
+      return p;
+    }
     if (!a.terms.empty()) {
       plan_aipw(g, e, p);
       return p;
@@ -238,23 +347,20 @@ Plan compile_plan(const Graph &g, const J &e) {
       p.label = "Kaplan–Meier RMST Wald test through time " +
                 e.get("horizon").to_text();
     }
+    // Kaplan–Meier needs follow-up to the horizon and censoring independent
+    // of the event time within arms; otherwise the g-formula.
     if (y.kind == "survival") {
-      if (y.censor == "administrative" &&
-          e.get("horizon").as_number() > y.cutoff)
-        fail("The estimand horizon exceeds the administrative follow-up "
-             "cutoff. It cannot be estimated by this KM analysis.");
+      bool shared = false;
       if (y.censor == "variable") {
         const auto t = ancestors(g, p.outcome),
                    c = ancestors(g, y.censor_index);
-        std::string shared;
         for (int j = 0; j < static_cast<int>(g.nodes.size()); ++j)
-          if (j != p.exposure && t[j] && c[j])
-            shared += (shared.empty() ? "" : ", ") + g.nodes[j].id;
-        if (!shared.empty())
-          fail("The event and censoring mechanisms share " + shared +
-               " beyond the randomized arm. Unadjusted KM does not identify "
-               "this marginal target; change the censoring DGP or use a "
-               "censoring-adjusted estimator.");
+          shared |= j != p.exposure && t[j] && c[j];
+      }
+      if (shared || (y.censor == "administrative" &&
+                     e.get("horizon").as_number() > y.cutoff)) {
+        plan_gformula(g, e, p);
+        return p;
       }
     }
     p.formula = y.id + ": " + a.id + " = " + e.get("active").to_text() +
@@ -267,10 +373,8 @@ Plan compile_plan(const Graph &g, const J &e) {
         continue;
       if (t.left == p.exposure)
         p.targetIndex = j;
-      const auto &parent = g.nodes[t.left];
-      if (parent.kind == "survival" && parent.censor != "none")
-        fail("The planned regression includes a censored event-time predictor. "
-             "It cannot use its latent values as observed covariates.");
+      if (censored(g.nodes[t.left]))
+        note(p, latent_note(g.nodes[t.left]));
     }
     if (y.family == "gaussian" || y.family == "uniform" ||
         y.family == "lognormal") {
@@ -291,9 +395,7 @@ Plan compile_plan(const Graph &g, const J &e) {
       p.method = "cox";
       p.label = "Cox PH coefficient Wald test (Breslow ties)";
       if (y.censor == "variable" && ancestors(g, y.censor_index)[p.outcome])
-        fail("The censoring variable is a descendant of the event time. The "
-             "proposed Cox analysis requires independent censoring given its "
-             "fitted parents.");
+        note(p, informative_note(g, y));
     }
     p.formula = (p.method == "ols_log" ? "log(" + y.id + ")" : y.id) +
                 " ~ " + term_text(g, p.terms);
@@ -331,6 +433,17 @@ J plan_json(const Graph &g, const Plan &p) {
     out.set("propensityTerms", terms_json(g, p.propensity));
     out.set("outcomeModel", p.outcomeModel);
   }
+  if (p.method == "gformula") {
+    J models = J::array();
+    for (const auto &c : p.chain)
+      models.push(object(
+          {{"node", g.nodes[c.node].id}, {"terms", terms_json(g, c.terms)}}));
+    out.set("models", models);
+  }
+  J notes = J::array();
+  for (const auto &text : p.notes)
+    notes.push(text);
+  out.set("notes", notes);
   return out;
 }
 // AIPW (augmented inverse probability weighting): Robins, Rotnitzky & Zhao
@@ -394,6 +507,19 @@ Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
   const auto measure = e.get("measure").as_string();
   if (p.method == "aipw")
     out = analyze_aipw(e, d, p);
+  else if (p.method == "gformula" && p.chain.empty()) {
+    // Zero by construction: an estimate without spread, never rejected.
+    out.estimate = positive(measure) ? 1 : 0;
+    return out;
+  } else if (p.method == "gformula") {
+    const auto r = gformula(
+        g, d, p.chain, p.exposure, e.get("reference").as_number(),
+        e.get("active").as_number(), measure,
+        e.get("horizon").is_null() ? 0 : e.get("horizon").as_number());
+    out.estimate = r.estimate;
+    out.testEstimate = r.testEstimate;
+    out.se = r.se;
+  }
   else if (e.get("kind").as_string() == "coefficient") {
     const auto m = model_matrix(d, p.terms, p.method != "cox");
     const int target = p.targetIndex + (p.method == "cox" ? 0 : 1);
@@ -674,10 +800,13 @@ J calibrate(const Graph &g, const J &e, double target, const Settings &s,
   const auto verification = sim::stream_seed(seed, 0x564552494659ULL);
   if (std::fabs(initial.get("estimate").as_number() - target) <= tolerance)
     return answer(g.json, effect(g, verification), J(), tolerance);
-  if (chosen < 0)
-    fail("The requested planning alternative differs from the DGP, but no "
-         "tunable arrow lies on a path from the comparison variable to the "
-         "outcome.");
+  if (chosen < 0) {
+    // No arrow moves the target: the run keeps the drawn DGP and says so.
+    auto out = answer(g.json, effect(g, verification), J(), 0);
+    out.set("target", J());
+    out.set("unreachable", target);
+    return out;
+  }
   if (progress)
     progress(object(
         {{"stage", "calibration"},
@@ -817,7 +946,21 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                 "interpreting rejection.");
     }
   }
-  J warnings = J::array(), results = J::array(), first;
+  J warnings = J::array(), results = J::array(), first, notes = J::array();
+  for (const auto &text : plan.notes) {
+    warnings.push(text);
+    notes.push(text);
+  }
+  for (const auto *scenario : {&alternative, &nullScenario})
+    if (!scenario->get("unreachable").is_null())
+      warnings.push(
+          "No arrow lies on a path from " + e.get("exposure").as_string() +
+          " to " + e.get("outcome").as_string() + ", so the " +
+          (scenario == &alternative ? "planning effect " : "null value ") +
+          scenario->get("unreachable").to_text() +
+          " cannot be set; the run keeps the drawn model, whose effect is " +
+          J(scenario->get("truth").get("estimate").as_number()).to_text() +
+          ".");
   if (!alternative.get("target").is_null() &&
       std::fabs(alternative.get("truth").get("estimate").as_number() -
                 alternative.get("target").as_number()) >
@@ -919,7 +1062,8 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
        {"analysis", object({{"method", plan.method},
                             {"label", plan.label},
                             {"formula", plan.formula},
-                            {"testScale", plan.testScale}})},
+                            {"testScale", plan.testScale},
+                            {"notes", notes}})},
        {"alternative", alternative},
        {"nullScenario", nullScenario},
        {"results", results},

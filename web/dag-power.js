@@ -99,7 +99,9 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     const first = answer.results.find((row) => row.n === answer.firstTestedN);
     const nodes = [el('p', { class: 'dag-power-recommendation' }, first
       ? `N = ${first.n} is the first tested size with power ≥ ${pct(answer.power.targetPower)} (estimated ${pct(first.alternative.probability)}). Sizes between the tested values were not simulated.`
-      : `No tested sample size reached ${pct(answer.power.targetPower)} power. Try larger sizes.`),
+      : answer.alternative.truth.estimate === answer.estimand.nullValue
+        ? 'The true effect equals the null value, so no sample size gives more than the false-positive rate.'
+        : `No tested sample size reached ${pct(answer.power.targetPower)} power. Try larger sizes.`),
     el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
       el('table', { id: 'power-table' }, el('thead', {}, el('tr', {}, header.map((title) => el('th', { scope: 'col' }, title)))), el('tbody', {}, rows)))];
     const truth = answer.alternative.truth, facts = [];
@@ -110,7 +112,10 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     facts.push(el('li', {}, `${answer.power.repetitions} studies per size · ${answer.power.side} test at α = ${answer.power.alpha} · intervals show simulation error only. ${answer.denominator}`));
     facts.push(el('li', { id: 'power-engine' }, `C++/WebAssembly · ${answer.engine.threads} thread${answer.engine.threads === 1 ? '' : 's'} · ${answer.engine.rng}`));
     nodes.push(el('ul', { class: 'dag-power-facts small muted' }, facts));
-    const messages = [...answer.warnings];
+    // the analysis's own notes read as notes; anything else the run found, as a warning
+    const notes = answer.analysis.notes ?? [];
+    for (const note of notes) nodes.push(el('p', { class: 'dag-power-note' }, note));
+    const messages = answer.warnings.filter((message) => !notes.includes(message));
     if (answer.results.some((row) => row.alternative.failures || row.null?.failures)) messages.push('Some studies could not be generated or analyzed. They count as non-rejections; check the failures before reading power.');
     if (!answer.results.some((row) => row.alternative.valid > 0)) messages.push('No analysis succeeded, so these results do not establish power for this design.');
     for (const message of messages) nodes.push(el('p', { class: 'error' }, message));
@@ -163,6 +168,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     sizesField.classList.add('dag-wide');
     const calibration = el('div', { class: 'dag-grid' }, field('Arrow set to the effect to detect', edge), field('Lowest value', lower), field('Highest value', upper));
     const formula = el('p', { id: 'power-estimand', class: 'dag-power-formula' }), method = el('p', { id: 'power-method' });
+    const notes = el('ul', { id: 'power-notes', class: 'dag-power-notes', hidden: true });
     const form = el('form', { id: 'power-form', novalidate: true },
       el('p', { class: 'dag-group' }, 'What to detect'),
       el('div', { class: 'dag-grid' }, field('Effect', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure),
@@ -175,7 +181,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
           field('Population draws for the true effect', population)),
         calibration,
         el('label', { class: 'dag-power-check', for: 'power-null-check' }, nullCheck, 'Also simulate the null scenario (type I error check)')),
-      el('div', { class: 'dag-power-summary' }, method, formula),
+      el('div', { class: 'dag-power-summary' }, method, formula, notes),
       el('div', { class: 'dag-actions' }, el('button', { id: 'power-run', type: 'submit', class: 'primary' }, 'Calculate power'),
         el('button', { id: 'power-stop', type: 'button', hidden: true }, 'Stop'),
         el('button', { id: 'power-json', type: 'button', disabled: true }, 'Download report'),
@@ -233,6 +239,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       method.textContent = problem ?? `Analysis: ${plan.label}.`;
       formula.textContent = problem ? '' : `${describeEstimand(graph, value).formula}; H₀: θ = ${value.nullValue}.`;
       formula.hidden = Boolean(problem);
+      notes.replaceChildren(...(problem ? [] : plan.notes).map((text) => el('li', {}, text)));
+      notes.hidden = !notes.children.length;
       if (!worker) $('power-run').disabled = !ready;
     }
     // a role set from the graph: the other role swaps in if it was this variable; a coefficient target becomes a
