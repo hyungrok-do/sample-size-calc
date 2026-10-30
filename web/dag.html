@@ -27,6 +27,7 @@
       <button id="dag-add" type="button" class="primary">+ Add variable</button>
       <button id="dag-undo" type="button" disabled>Undo</button>
       <button id="dag-redo" type="button" disabled>Redo</button>
+      <button id="dag-tidy" type="button">Tidy layout</button>
     </div>
     <div class="dag-toolbar-group">
       <label for="dag-example">Example</label>
@@ -40,14 +41,8 @@
   <div class="dag-workbench">
     <div class="dag-canvas-column">
       <div class="dag-canvas-heading"><h3>Data generating process</h3><span id="dag-node-count"></span></div>
-      <div class="dag-scroll"><svg id="dag-canvas" viewBox="0 0 1100 540" role="group" aria-label="Editable distribution DAG"></svg></div>
-      <p class="dag-canvas-help">Drag to move · select to edit · draw an arrow from a variable’s + port, or below · Esc cancels.</p>
-      <form id="dag-connect" class="dag-connect" novalidate>
-        <div class="dag-field"><label for="dag-source">From</label><select id="dag-source"></select></div>
-        <div class="dag-field"><label for="dag-target">To</label><select id="dag-target"></select></div>
-        <div class="dag-field"><label for="dag-coefficient">Coefficient</label><input id="dag-coefficient" type="number" step="any" value="0.5"></div>
-        <button type="submit">Add arrow</button>
-      </form>
+      <div class="dag-scroll"><svg id="dag-canvas" viewBox="0 -16 1100 556" role="group" aria-label="Editable distribution DAG"></svg></div>
+      <p class="dag-canvas-help">A box shows its variable’s values if it has no parents, otherwise the scale its arrows act on. Drag to move · a + port draws an arrow · Esc cancels.</p>
       <div class="dag-model" aria-labelledby="dag-model-title">
         <h4 id="dag-model-title">Equations</h4>
         <ul id="dag-equations"></ul><p id="dag-order" class="small muted"></p>
@@ -60,17 +55,17 @@
   </div>
   <p id="dag-status" class="dag-message" role="status" aria-live="polite"></p>
   <section id="dag-power" class="dag-card dag-power-card" aria-label="Power analysis"></section>
-  <section class="dag-card dag-sim-card" aria-labelledby="dag-sim-title">
-    <div class="dag-card-heading"><h3 id="dag-sim-title">Simulate one dataset</h3><span class="small muted">Inspect or download data generated from the graph</span></div>
+  <details id="dag-sim" class="dag-card dag-sim-card">
+    <summary><span>Simulated dataset</span> <span class="small muted">Generate one dataset to check or download as CSV</span></summary>
     <form id="dag-simulation" class="dag-sim-form" novalidate>
       <div class="dag-field"><label for="dag-n">Observations</label><input id="dag-n" type="number" min="1" max="50000" step="1" value="500"></div>
       <div class="dag-field"><label for="dag-seed">Random seed</label><input id="dag-seed" type="number" min="0" max="4294967295" step="1" value="2026"></div>
-      <div class="dag-actions"><button id="dag-simulate" type="submit" class="primary">Generate data</button>
+      <div class="dag-actions"><button id="dag-simulate" type="submit">Generate</button>
         <button id="dag-cancel" type="button" hidden>Stop</button>
         <button id="dag-download-csv" type="button" disabled>Download CSV</button></div>
     </form>
     <div id="dag-results" aria-live="polite"></div>
-  </section>
+  </details>
   <details class="dag-notes"><summary>Assumptions and scope</summary>
     <ul>
       <li>Variables have a type and a distribution; labels such as treatment or outcome impose nothing. Any directed acyclic graph is allowed.</li>

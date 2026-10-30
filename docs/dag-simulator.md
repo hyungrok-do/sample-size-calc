@@ -14,11 +14,19 @@ selecting generic variables for it.
 2. Select the variable and edit its identifier, label, type, distribution and
    parameters. Apply the settings. Renaming updates arrows, interactions and
    censoring references.
-3. Connect variables using their plus ports or the From / To form. An arrow
-   adds a parent term to the child's conditional predictor. Select the child
-   to edit coefficients or add interactions between two parents.
-4. Inspect the displayed conditional equations. Generate a seeded dataset,
-   inspect all variable summaries and the first 10 rows, and download CSV.
+3. Connect variables with a variable's plus port on the canvas, or with
+   **Add** under *New arrow into …* in the selected variable's settings, which
+   offers only parents that keep the graph acyclic. An arrow adds a parent term
+   to the child's conditional predictor. Select the child to edit coefficients
+   or add interactions between two parents. **Tidy layout** arranges the graph
+   left to right in generation order.
+4. Read the graph and the conditional equations below it. A box shows its
+   variable's values if it has no parents (for example `Normal · mean 0, SD 1`),
+   otherwise the scale its incoming coefficients act on (`Bernoulli · log-odds`,
+   `Weibull · log HR`). The power analysis's variables are tagged *Compared*
+   (or *Predictor*) and *Outcome*, and the arrows that carry the tested effect
+   are highlighted. **Simulated dataset**, folded away at the bottom, generates
+   one seeded dataset, summarizes every column and downloads it as CSV.
 5. In **Power analysis**, choose what to detect (a group difference or a
    regression coefficient, the variable compared, the outcome, the measure, a
    time horizon for survival measures and an optional effect to detect) and the
@@ -32,7 +40,7 @@ selecting generic variables for it.
    can be recovered with Undo.
 
 Drag nodes or move them with keyboard arrow keys. All model editing is also
-available through the inspector and forms. The canvas scrolls on small screens.
+available through the variable settings. The canvas scrolls on small screens.
 
 ## Distributions
 

@@ -213,6 +213,10 @@ try {
   assert.equal(await page.locator('#engine-status, #method, #guide').count(), 0);
   assert.equal(page.workers().length, 0, 'the DAG page does not start the calculator engine');
   assert.deepEqual([...new Set(await loaded(page))], [next], 'the simulator scripts use the current version');
+  // the graph marks the power analysis's variables and the arrows that carry its effect
+  assert.match(await page.textContent('#dag-canvas'), /Compared[\s\S]*Outcome|Outcome[\s\S]*Compared/);
+  assert.equal(await page.locator('#dag-canvas .dag-edge.effect').count(), 3, 'A → M, M → Y and A → Y carry the total effect');
+  await page.click('#dag-sim > summary');
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');
   assert.match(await page.textContent('#dag-results'), /N = 500/);
@@ -220,11 +224,22 @@ try {
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');
   assert.equal(await page.textContent('#dag-results'), firstData, 'same graph and seed reproduce the trial');
-  await page.selectOption('#dag-source', 'Y');
-  await page.selectOption('#dag-target', 'M');
+  // a variable is offered only the new parents that keep the graph acyclic
+  await page.selectOption('#dag-node-select', 'A');
+  assert.deepEqual(await page.$$eval('#dag-source option', (o) => o.map((x) => x.value)), ['X']);
   await page.getByRole('button', { name: 'Add arrow', exact: true }).click();
+  assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 6);
+  await page.click('#dag-undo');
+  assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
+  await page.selectOption('#dag-node-select', 'M');
+  assert.equal(await page.locator('#dag-source').count(), 0, 'X and A already point at M, and Y depends on it');
+  // an arrow drawn on the canvas that would close a cycle is refused
+  await page.getByRole('button', { name: 'Start an arrow from Y', exact: true }).click();
+  await page.locator('#dag-canvas .dag-node', { hasText: 'M · Mediator' }).click();
   assert.match(await page.textContent('#dag-status'), /cycle/);
   assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
+  await page.keyboard.press('Escape');
+  await page.selectOption('#dag-node-select', 'Y');
   await page.getByRole('button', { name: 'Add interaction', exact: true }).click();
   assert.match(await page.textContent('#dag-equations'), /0.2 × X × M/);
   assert.equal(await page.locator('#dag-results table').count(), 0, 'a structural edit clears old results');
@@ -236,6 +251,10 @@ try {
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');
   assert.match(await page.textContent('#dag-equations'), /logit/);
+  await page.click('#dag-tidy');
+  const at = (id) => page.locator('#dag-canvas .dag-node', { hasText: `${id} · ` }).getAttribute('transform');
+  assert.equal((await at('X')).split(' ')[0], (await at('A')).split(' ')[0], 'Tidy puts the two roots in the first column');
+  assert.notEqual((await at('Y')).split(' ')[0], (await at('X')).split(' ')[0]);
   // the power panel starts from a target it can run: the binary variable that affects others, on what it affects
   assert.equal(await page.inputValue('#estimand-exposure'), 'A');
   assert.equal(await page.inputValue('#estimand-outcome'), 'Y');
@@ -300,7 +319,7 @@ try {
   assert.match(await page.textContent('#power-estimand'), /min\(T, 28\)/);
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');
-  assert.match(await page.textContent('#dag-results'), /Survival observations/);
+  assert.match(await page.textContent('#dag-results'), /Censored %/);
   assert.match(await page.textContent('#dag-results'), /T_time/);
   // The graph is kept independently of calculator inputs, including when the page is reopened offline.
   down = true;
@@ -313,6 +332,7 @@ try {
   await page.waitForSelector('#power-table');
   assert.match(await page.textContent('#power-method'), /RMST/);
   assert.equal(await page.locator('#power-table tbody tr').count(), 2, 'the cached worker calculates power offline');
+  await page.click('#dag-sim > summary');
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');
   down = false;

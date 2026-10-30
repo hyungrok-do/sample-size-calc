@@ -58,16 +58,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-canvas-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
 .dag-canvas-heading h3 { font-size: 15px; }
 .dag-canvas-heading span { font-size: 12px; color: var(--muted); }
+.dag-legend-effect::before { content: ''; display: inline-block; width: 18px; height: 3px; border-radius: 2px; background: var(--accent); vertical-align: middle; margin: 0 6px 2px 12px; }
 .dag-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 10px;
   background-color: var(--bg); background-image: radial-gradient(var(--line) .8px, transparent .8px); background-size: 20px 20px; }
-#dag-canvas { display: block; width: 100%; min-width: 620px; min-height: 320px; max-height: 520px; aspect-ratio: 1100 / 540; touch-action: none; }
+#dag-canvas { display: block; width: 100%; min-width: 620px; min-height: 320px; max-height: 520px; aspect-ratio: 1100 / 556; touch-action: none; }
 .dag-node { cursor: grab; user-select: none; }
 .dag-empty { fill: var(--muted); font-size: 20px; }
 .dag-node:active { cursor: grabbing; }
-.dag-node rect { fill: var(--surface); stroke: var(--field-line); stroke-width: 1.5; }
-.dag-node.selected rect, .dag-node.connecting rect { stroke: var(--accent); stroke-width: 3; }
-.dag-node:focus rect { stroke: var(--accent); stroke-width: 3; }
-.dag-node.binary rect { fill: var(--accent-soft); }
+.dag-node .dag-box { fill: var(--surface); stroke: var(--field-line); stroke-width: 1.5; }
+.dag-node.selected .dag-box, .dag-node.connecting .dag-box { stroke: var(--accent); stroke-width: 3; }
+.dag-node:focus .dag-box { stroke: var(--accent); stroke-width: 3; }
+.dag-node.binary .dag-box { fill: var(--accent-soft); }
 .dag-node text { fill: var(--ink); pointer-events: none; }
 .dag-node .dag-node-role { font-size: 10px; letter-spacing: .09em; fill: var(--muted); font-weight: 600; }
 .dag-node .dag-node-title { font-size: 13px; font-weight: 600; }
@@ -79,14 +80,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-port text { fill: var(--accent); font-size: 15px; }
 .dag-edge { cursor: pointer; }
 .dag-edge path { stroke: var(--field-line); stroke-width: 2; fill: none; }
-.dag-edge.selected path { stroke: var(--accent); }
+.dag-edge.selected path { stroke: var(--ink-2); stroke-width: 2.5; }
+.dag-edge.effect path { stroke: var(--accent); stroke-width: 3; }
+.dag-edge.effect text { fill: var(--accent); font-weight: 600; }
 #dag-arrow path { fill: var(--field-line); }
+#dag-arrow-effect path { fill: var(--accent); }
+.dag-node-tag rect { fill: var(--accent); stroke: none; }
+.dag-node .dag-node-tag text, .dag-node-tag text { fill: var(--accent-ink); font-size: 11px; font-weight: 600; }
 .dag-edge text { font-size: 13px; fill: var(--ink-2); paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
 .dag-canvas-help { color: var(--muted); font-size: 12px; margin: 8px 0 12px; }
-.dag-connect { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
-.dag-connect .dag-field { flex: 1; min-width: 120px; max-width: 220px; margin: 0; }
-.dag-connect .dag-field:nth-child(3) { max-width: 120px; }
-.dag-model { margin-top: 14px; border-top: 1px solid var(--line); }
+.dag-model { margin-top: 4px; border-top: 1px solid var(--line); }
 #dag-equations { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 #dag-equations li { padding: 5px 10px; background: var(--bg); border-radius: 6px; overflow-wrap: anywhere;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -98,6 +101,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 8px; }
 .dag-effect-row { display: grid; grid-template-columns: minmax(0, 1fr) 92px 32px; gap: 8px; align-items: center; margin: 6px 0; font-size: 13px; }
 .dag-effect-row button { padding: 4px; }
+.dag-add-arrow { display: grid; grid-template-columns: minmax(0, 1fr) 64px auto; gap: 4px 8px; align-items: center; margin: 10px 0 6px; }
+.dag-add-arrow label { grid-column: 1 / -1; font-size: 12.5px; color: var(--ink-2); }
+.dag-add-arrow button { padding: 6px 10px; }
 .dag-effect-row input { width: 100%; }
 .dag-interaction-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; margin-top: 8px; }
 .dag-interaction-form button { align-self: end; margin-bottom: 10px; }
@@ -140,11 +146,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-power-facts li { margin-top: 3px; }
 #power-table tr.reached td { font-weight: 600; }
 
-/* one dataset */
+/* one dataset, folded away */
+.dag-sim-card { padding: 12px 20px; }
+.dag-sim-card > summary { font-size: 15px; color: var(--ink); }
+.dag-sim-card > summary span:first-child { font-weight: 600; }
+.dag-sim-card[open] > summary { margin-bottom: 12px; }
 .dag-sim-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0 12px; }
 .dag-sim-form .dag-field { width: 160px; }
 .dag-sim-form .dag-actions { margin-bottom: 10px; }
-#dag-results > p.muted { margin: 2px 0 0; font-size: 13px; }
+#dag-results .table-wrap { max-width: 760px; }
 
 .table-wrap { overflow-x: auto; margin-top: 10px; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
@@ -172,7 +182,6 @@ footer { max-width: 1400px; margin: 0 auto; padding: 0 24px 28px; color: var(--m
   .dag-intro h2 { font-size: 21px; }
   .dag-toolbar-group { width: 100%; }
   .dag-canvas-column, .dag-card { padding: 14px; }
-  .dag-connect .dag-field, .dag-connect .dag-field:nth-child(3) { min-width: 100%; max-width: 100%; }
   .dag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dag-sim-form .dag-field { width: calc(50% - 6px); }
 }

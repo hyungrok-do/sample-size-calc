@@ -160,11 +160,12 @@ export function exampleGraph(name = 'mediation') {
     { source: 'A', target: 'M', coefficient: 0.8 }, { source: 'M', target: 'Y', coefficient: 0.6 },
     { source: 'A', target: 'Y', coefficient: 0.3 }] };
 }
+const shown = (x) => String(Number(x.toPrecision(6)));  // equations show six significant digits
 export function equation(graph, node) {
-  let predictor = String(node.intercept);
+  let predictor = shown(node.intercept);
   for (const term of [...graph.edges.filter((e) => e.target === node.id).map((e) => ({ value: e.coefficient, name: e.source })),
     ...node.interactions.map((t) => ({ value: t.coefficient, name: `${t.left} × ${t.right}` }))])
-    predictor += ` ${term.value < 0 ? '−' : '+'} ${Math.abs(term.value)} × ${term.name}`;
+    predictor += ` ${term.value < 0 ? '−' : '+'} ${shown(Math.abs(term.value))} × ${term.name}`;
   if (node.family === 'gaussian') return `${node.id} = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})`;
   if (node.family === 'uniform') return `${node.id} ~ Uniform(η − ${node.width / 2}, η + ${node.width / 2}), η = ${predictor}`;
   if (node.family === 'lognormal') return `log(${node.id}) = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})`;
