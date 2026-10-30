@@ -6,9 +6,9 @@ method's description and calculate. Nothing you type leaves the browser, and
 the server only hands out files.
 
 The **DAG simulator** tab is a separate page (`dag.html`) for constructing
-a data generating process from generic variables and their distributions. The existing calculator and study guide keep their behavior. Its **What is the estimand?**
-section selects the actual estimator, null and horizon for repeated power
-simulation. Dataset previews, population calibration, model fits and power all
+a data generating process from generic variables and their distributions. The existing calculator and study guide keep their behavior. Its **Power analysis**
+panel names the comparison to detect and the design, and selects the actual
+estimator, null and horizon for repeated power simulation. Dataset previews, population calibration, model fits and power all
 run in the same C++/WebAssembly engines, with the same thread pool and
 single-thread fallback. There is no JavaScript numerical fallback. See [the model contract and scope](../docs/dag-simulator.md).
 

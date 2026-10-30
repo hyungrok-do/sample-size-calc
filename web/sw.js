@@ -14,7 +14,7 @@ const CACHE = 'ssc-dev';
 const FILES = ['./', 'app.js?v=dev', 'engine.js?v=dev', 'worker.js?engine=ssc_web&v=dev', 'engine/ssc_web.mjs?v=dev',
   'engine/ssc_web.wasm?v=dev', 'guide.js?v=dev', 'guide-data.js?v=dev', 'guide-state.js?v=dev', 'selection.js?v=dev',
   'format.js?v=dev', 'dag.html?v=dev', 'dag.css?v=dev', 'dag-entry.js?v=dev', 'dag.js?v=dev',
-  'dag-model.js?v=dev', 'estimand-model.js?v=dev', 'dag-estimand.js?v=dev',
+  'dag-model.js?v=dev', 'estimand-model.js?v=dev',
   'power-settings.js?v=dev', 'power-model.js?v=dev', 'dag-power.js?v=dev'];
 // The only copies kept, each under the one address the page asks for it by: any other address (another query
 // string on a visit, a link to a file with ?x= added) is answered from the network and not stored, so links

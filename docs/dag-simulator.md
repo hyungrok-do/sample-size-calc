@@ -5,8 +5,8 @@ WebAssembly engine also powers the **DAG simulator** tab, which opens `web/dag.h
 constructs a data generating process from generic variables. There are no
 prescribed covariate, treatment, mediator or outcome roles. A label has no
 special effect on the model. A treatment or outcome role is not required to
-generate data. Power-analysis targets are specified in the separate estimand
-section by selecting generic variables for the intended comparison.
+generate data. The **Power analysis** panel names the comparison to detect by
+selecting generic variables for it.
 
 ## Workflow
 
@@ -19,11 +19,15 @@ section by selecting generic variables for the intended comparison.
    to edit coefficients or add interactions between two parents.
 4. Inspect the displayed conditional equations. Generate a seeded dataset,
    inspect all variable summaries and the first 10 rows, and download CSV.
-5. Define and save the estimand: its population, comparison, outcome, effect
-   measure, time horizon where relevant, null value and optional planning alternative.
-6. Set total sample sizes, repetitions, significance level and rejection direction,
-   then calculate power for the saved estimand. Inspect uncertainty and failed fits.
-7. Export/import the design as JSON. The graph, estimand and power settings are saved in browser storage
+5. In **Power analysis**, choose what to detect (a group difference or a
+   regression coefficient, the variable compared, the outcome, the measure, a
+   time horizon for survival measures and an optional effect to detect) and the
+   design (total sample sizes, studies per size, alpha, the test's sides and
+   target power), then **Calculate power**. The panel starts from a runnable
+   choice and shows the analysis it will fit, or why it cannot run, as you edit.
+   Null value, comparison levels, seed, calibration and the null-scenario check
+   are under **More settings**. Inspect uncertainty and failed fits.
+6. Export/import the design as JSON. The graph, estimand and power settings are saved in browser storage
    when available. Undo/redo supports 50 edits. A deleted or replaced model
    can be recovered with Undo.
 
@@ -129,55 +133,59 @@ workspaces. Progress is posted between native batches; Stop terminates the
 worker. There is no JavaScript simulation or numerical-analysis fallback.
 
 The exported design envelope is `{version: 1, graph, estimand, power}`. The graph uses
-the contract above; `estimand` is null until saved. `estimand-model.js` validates
-the target independently of data generation. Standalone graph files can still
-be imported. Renaming a variable updates estimand references; an incompatible
-graph change clears the saved target with an explanation. Undo restores both
-the graph and estimand. Estimand choices never add/remove arrows in the drawn graph. The saved target
-selects a compatible executable analysis, shown before calculation.
+the contract above; `estimand` holds the power panel's target (null while the
+graph has fewer than two variables). `estimand-model.js` validates the target
+independently of data generation. Standalone graph files can still be imported.
+Renaming a variable updates the target's references; a graph change that makes
+the target invalid replaces it with the panel's default and says so. Undo
+restores both the graph and the target. Target choices never add/remove arrows
+in the drawn graph. The target selects a compatible executable analysis, shown
+before calculation.
 
 Data generation runs in a cancellable module worker. Structural edits and
 simulation input changes invalidate results and stop pending work. JSON export
 contains the structural model; sample size and seed are run inputs shown with
 the result. CSV includes every variable and derived survival observation column.
 
-## What is the estimand?
+## The power target (estimand)
 
-The target is distinct from the estimator or analysis used for power. The UI
-supports three target types:
+The target is distinct from the estimator or analysis used for power. The panel
+supports two target types:
 
-- **Marginal total-effect contrast:** intervention levels for a selected
+- **Group difference** (a marginal total-effect contrast): intervention levels for a selected
   variable, with a difference in means, binary risk difference/ratio or marginal
   odds ratio, survival probability difference at a time, or RMST difference.
   Marginal targets integrate over the population specified by the DGP. Mediators
   follow their generating models under each intervention; they are not held
   fixed or automatically included as adjustment variables.
-- **Conditional model coefficient:** an existing predictor-to-outcome arrow,
+- **Regression coefficient** (a conditional model coefficient): an existing predictor-to-outcome arrow,
   on the child's predictor scale or an exponentiated scale when meaningful.
   With interactions, the main coefficient applies at zero values of the
   interacting parents. It is not presented as a marginal total effect.
-- **Custom definition:** a user-written population quantity, recorded for an
-  explicit estimator and simulation evaluation to be supplied separately.
 
-The population description documents the graph's target population; it does
-not subset or reweight simulated data. Survival probability and RMST targets
-require a positive horizon and refer to latent event time, independent of the
-observation/censoring mechanism. The target preview shows its formula, the null
-value, and any planning alternative. Ratio nulls default to one; difference
+The population is the graph's distribution; the exported target records it as
+text, which does not subset or reweight simulated data. A custom text target,
+which has no executable analysis, can still be read by `estimand-model.js`; the
+panel replaces it with its default. For a binary outcome the panel offers the
+risk difference and not the identical mean difference. Survival probability and
+RMST targets require a positive horizon (by default the administrative cutoff
+or the baseline time scale) and refer to latent event time, independent of the
+observation/censoring mechanism. The panel shows the target's formula and null
+value under the analysis it selects. Ratio nulls default to one; difference
 and coefficient nulls default to zero. A numerical planning alternative calibrates an eligible arrow in a copy of the
 DGP before power simulation. Changing the effect measure clears an alternative
 entered on the old scale. Leaving it blank uses the graph as drawn.
 
-The estimand is saved separately, included in JSON export and undo/redo, and
-restored on reopening the design. Changing it does not invalidate generated
+The target is kept with the design, included in JSON export and undo/redo,
+and restored on reopening the design. Changing it does not invalidate generated
 raw data, because the DGP itself is unchanged.
 
 ## Analysis and power evaluation
 
-Saving an estimand selects the estimator, test scale, null and survival horizon.
-The power form adds total sample sizes, repetitions, alpha, a two-sided or
+The target selects the estimator, test scale, null and survival horizon.
+The design adds total sample sizes, repetitions, alpha, a two-sided or
 one-sided rejection rule, a seed and target power. Changing the saved target,
-graph or settings clears previous results; an unsaved estimand cannot run.
+graph or settings clears previous results; an invalid target cannot run, and the panel says why.
 
 | Saved target | Analysis fitted to each simulated study |
 | --- | --- |
@@ -273,4 +281,4 @@ survival observation handling, power curves and saved-report reproduction.
 
 ## Preview
 
-![RMST estimand linked to C++/WebAssembly power results](dag-power-wasm-1793138096933.jpg)
+![The power analysis panel with simulated power by sample size](dag-power-panel.jpg)

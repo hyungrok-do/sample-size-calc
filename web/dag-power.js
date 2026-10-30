@@ -1,6 +1,12 @@
+// The power-analysis panel: what to detect (comparison, outcome, measure), the design, and the results, in one form.
+// Its target is kept as an estimand object (estimand-model.js), which the C++ engine validates and analyzes.
 import { DEFAULT_POWER, parsePowerSettings, powerCompatibility } from './power-model.js?v=dev';
-import { describeEstimand } from './estimand-model.js?v=dev';
+import { MEASURES, availableMeasures, validateEstimand, describeEstimand, copyEstimand } from './estimand-model.js?v=dev';
 import { Engine } from './engine.js?v=dev';
+
+const POPULATION = 'Population represented by the data generating process';
+const SHORT = { mean_difference: 'Mean difference', risk_difference: 'Risk difference', risk_ratio: 'Risk ratio', odds_ratio: 'Odds ratio',
+  survival_difference: 'Survival difference', rmst_difference: 'RMST difference', coefficient: 'Coefficient', exponentiated_coefficient: 'exp(coefficient)' };
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -15,11 +21,13 @@ function field(title, input, help = '') {
   return el('div', { class: 'dag-field' }, el('label', { for: input.id }, title), input,
     ...(help ? [el('p', { class: 'small muted' }, help)] : []));
 }
-function select(id, options, value) {
-  const input = el('select', { id }, options.map(([key, label]) => el('option', { value: key }, label)));
-  input.value = value; return input;
+function options(input, list, value) {
+  input.replaceChildren(...list.map(([key, label]) => el('option', { value: key }, label)));
+  input.value = list.some(([key]) => key === value) ? value : list[0]?.[0] ?? '';
+  return input;
 }
-const numeric = (id, value, attrs = {}) => el('input', { id, type: 'number', step: 'any', value, ...attrs });
+const select = (id, list, value) => options(el('select', { id }), list, value);
+const numeric = (id, value, attrs = {}) => el('input', { id, type: 'number', step: 'any', value: value ?? '', ...attrs });
 const fmt = (value) => value == null || !Number.isFinite(value) ? '—' : Number(value.toPrecision(5)).toString();
 const pct = (value) => `${(100 * value).toFixed(1)}%`;
 function download(value, mime, filename) {
@@ -33,139 +41,227 @@ function csv(result) {
     row.null?.probability ?? '', row.null?.failures ?? ''].join(','));
   return [head.join(','), ...rows].join('\n') + '\n';
 }
+const hasParents = (graph, id) => graph.edges.some((e) => e.target === id);
+const hasChildren = (graph, id) => graph.edges.some((e) => e.source === id);
+function below(graph, id) {
+  const found = new Set([id]), queue = [id];
+  for (let i = 0; i < queue.length; i++) for (const edge of graph.edges)
+    if (edge.source === queue[i] && !found.has(edge.target)) { found.add(edge.target); queue.push(edge.target); }
+  found.delete(id); return found;
+}
+const horizonFor = (node) => node.censoring?.mode === 'administrative' ? node.censoring.time : node.scale;
+const levelsFor = (node) => node.kind === 'survival' ? [1, 2] : [0, 1];
 
-export function mountPower(root, { getDesign, onSettings }) {
-  let worker = null, generation = 0, draft = false, result = null, activePlan = null;
+// A ready-to-run target for a graph: a binary variable that affects others, compared on a variable it affects.
+export function defaultTarget(graph) {
+  if (graph.nodes.length < 2) return null;
+  const binary = graph.nodes.filter((n) => n.kind === 'binary');
+  const exposure = binary.find((n) => !hasParents(graph, n.id) && hasChildren(graph, n.id))
+    ?? binary.find((n) => hasChildren(graph, n.id)) ?? binary[0] ?? graph.nodes[0];
+  const affected = below(graph, exposure.id), last = [...graph.nodes].reverse();
+  const outcome = last.find((n) => affected.has(n.id) && !hasChildren(graph, n.id)) ?? last.find((n) => affected.has(n.id))
+    ?? last.find((n) => n.id !== exposure.id);
+  const measures = availableMeasures(graph, 'marginal', outcome.id);
+  const measure = outcome.kind === 'binary' && measures.includes('risk_difference') ? 'risk_difference' : measures[0];
+  const [reference, active] = levelsFor(exposure);
+  const target = { version: 1, kind: 'marginal', population: POPULATION, definition: '', exposure: exposure.id, outcome: outcome.id,
+    measure, reference, active, horizon: MEASURES[measure]?.horizon ? horizonFor(outcome) : null,
+    nullValue: MEASURES[measure]?.nullValue ?? 0, alternative: null };
+  try { validateEstimand(graph, target); return target; } catch { return null; }
+}
+
+export function mountPower(root, { getGraph, onTarget, onSettings }) {
+  let worker = null, generation = 0, result = null, ready = false;
   const $ = (id) => root.querySelector(`#${id}`);
+  const idle = 'Each simulated study draws data from the graph, fits the analysis above and applies its test.';
   function stop() {
     generation++; worker?.dispose(); worker = null;
-    if ($('power-run')) $('power-run').disabled = draft || !activePlan?.supported;
+    if ($('power-run')) $('power-run').disabled = !ready;
     if ($('power-stop')) $('power-stop').hidden = true;
   }
-  function invalidate(message = 'Run the selected analysis across simulated studies to estimate power.') {
+  function invalidate(message = idle) {
     stop(); result = null;
-    if ($('power-results')) $('power-results').replaceChildren(el('p', { class: 'muted' }, message));
-    if ($('power-json')) $('power-json').disabled = true;
-    if ($('power-csv')) $('power-csv').disabled = true;
+    $('power-results')?.replaceChildren(el('p', { class: 'muted small' }, message));
+    for (const id of ['power-json', 'power-csv']) if ($(id)) $(id).disabled = true;
     if ($('power-progress')) $('power-progress').textContent = '';
   }
-  function setDraft(value) {
-    draft = value;
-    invalidate(value ? 'The estimand has unsaved changes. Save it above before calculating power.' : undefined);
-  }
   function display(answer) {
-    const header = ['Total N', 'Power', '95% MC interval', 'Failed studies', ...(answer.nullScenario ? ['Null rejection', 'Null failures'] : [])];
-    const rows = answer.results.map((row) => el('tr', {},
+    const header = ['Total N', 'Power', '95% MC interval', 'Failed', ...(answer.nullScenario ? ['Null rejection'] : [])];
+    const rows = answer.results.map((row) => el('tr', { class: row.n === answer.firstTestedN ? 'reached' : null },
       ...[row.n, row.alternative.valid ? pct(row.alternative.probability) : 'No valid analyses',
         `${pct(row.alternative.interval[0])}–${pct(row.alternative.interval[1])}`,
         `${row.alternative.failures} / ${row.alternative.repetitions}`,
-        ...(row.null ? [row.null.valid ? pct(row.null.probability) : 'No valid analyses', `${row.null.failures} / ${row.null.repetitions}`] : [])]
+        ...(row.null ? [row.null.valid ? pct(row.null.probability) : 'No valid analyses'] : [])]
         .map((value) => el('td', {}, String(value)))));
-    const truth = answer.alternative.truth;
-    const truthText = truth.exact ? `DGP estimand: ${fmt(truth.estimate)} (exact model coefficient).`
-      : `Verified DGP estimand: ${fmt(truth.estimate)}; population Monte Carlo SE ${fmt(truth.mcSE)}${truth.interval ? `, 95% interval [${truth.interval.map(fmt).join(', ')}]` : ''}.`;
-    const nodes = [el('h4', {}, 'Power for the saved estimand'),
-      el('p', { class: 'dag-power-target' }, describeEstimand(answer.graph, answer.estimand).formula),
-      el('p', {}, `${answer.analysis.label}. H₀: θ = ${answer.estimand.nullValue}; ${answer.power.side}; α = ${answer.power.alpha}.`),
-      el('p', { id: 'power-truth' }, truthText)];
-    nodes.push(el('p', { id: 'power-engine', class: 'small muted' }, `C++/WebAssembly · ${answer.engine.threads} simulation thread${answer.engine.threads === 1 ? '' : 's'} · ${answer.engine.rng}`));
-    if (answer.alternative.parameter) {
-      const parameter = answer.alternative.parameter;
-      nodes.push(el('p', { id: 'power-calibration' }, `Run DGP: ${parameter.edge.replace('>', ' → ')} = ${fmt(parameter.used)} (drawn value ${fmt(parameter.drawn)}), calibrated to planning effect ${fmt(answer.alternative.target)}. The graph is retained as drawn; the calibrated run graph is included in the report.`));
-    } else nodes.push(el('p', {}, answer.alternative.target === null ? 'The alternative uses the graph parameters as drawn.' : 'The drawn DGP already matches the planning effect within calibration tolerance.'));
-    nodes.push(el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
-      el('table', { id: 'power-table' }, el('thead', {}, el('tr', {}, header.map((title) => el('th', { scope: 'col' }, title)))), el('tbody', {}, rows))),
-      el('p', { class: 'small muted' }, `${answer.power.repetitions} studies per sample size and scenario. Intervals describe Monte Carlo uncertainty, not uncertainty in the assumed DGP. ${answer.denominator}`));
-    const validRows = answer.results.filter((row) => row.alternative.valid > 0);
-    nodes.push(el('p', { class: 'dag-power-recommendation' }, answer.firstTestedN === null
-      ? `No tested sample size reached the ${pct(answer.power.targetPower)} target by its point estimate.`
-      : `First tested sample size with estimated power at least ${pct(answer.power.targetPower)}: N = ${answer.firstTestedN}. Review its Monte Carlo interval; sizes between the tested values have not been evaluated.`));
-    if (answer.nullScenario) nodes.push(el('details', {}, el('summary', {}, answer.nullScenario.exactNull ? 'Null scenario and type I error check' : 'Calibrated reference scenario'),
-      el('p', {}, answer.nullScenario.construction), el('p', {}, `Reference DGP estimand: ${fmt(answer.nullScenario.truth.estimate)}; population MC SE ${fmt(answer.nullScenario.truth.mcSE)}.`)));
+    const first = answer.results.find((row) => row.n === answer.firstTestedN);
+    const nodes = [el('p', { class: 'dag-power-recommendation' }, first
+      ? `N = ${first.n} is the first tested size with power ≥ ${pct(answer.power.targetPower)} (estimated ${pct(first.alternative.probability)}). Sizes between the tested values were not simulated.`
+      : `No tested sample size reached ${pct(answer.power.targetPower)} power. Try larger sizes.`),
+    el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
+      el('table', { id: 'power-table' }, el('thead', {}, el('tr', {}, header.map((title) => el('th', { scope: 'col' }, title)))), el('tbody', {}, rows)))];
+    const truth = answer.alternative.truth, facts = [];
+    facts.push(el('li', { id: 'power-truth' }, truth.exact ? `True effect in the graph: ${fmt(truth.estimate)} (model coefficient).`
+      : `True effect in the graph: ${fmt(truth.estimate)} (Monte Carlo SE ${fmt(truth.mcSE)}).`));
+    const parameter = answer.alternative.parameter;
+    if (parameter) facts.push(el('li', { id: 'power-calibration' }, `${parameter.edge.replace('>', ' → ')} set to ${fmt(parameter.used)} (drawn ${fmt(parameter.drawn)}) to give the planning effect ${fmt(answer.alternative.target)}; the drawn graph is unchanged.`));
+    facts.push(el('li', {}, `${answer.power.repetitions} studies per size · ${answer.power.side} test at α = ${answer.power.alpha} · intervals show simulation error only. ${answer.denominator}`));
+    facts.push(el('li', { id: 'power-engine' }, `C++/WebAssembly · ${answer.engine.threads} thread${answer.engine.threads === 1 ? '' : 's'} · ${answer.engine.rng}`));
+    nodes.push(el('ul', { class: 'dag-power-facts small muted' }, facts));
+    const messages = [...answer.warnings];
+    if (answer.results.some((row) => row.alternative.failures || row.null?.failures)) messages.push('Some studies could not be generated or analyzed. They count as non-rejections; check the failures before reading power.');
+    if (!answer.results.some((row) => row.alternative.valid > 0)) messages.push('No analysis succeeded, so these results do not establish power for this design.');
+    for (const message of messages) nodes.push(el('p', { class: 'error' }, message));
     const diagnostics = [];
     for (const row of answer.results) for (const name of ['alternative', 'null']) if (row[name]) {
       const item = row[name];
-      diagnostics.push(el('li', {}, `N=${row.n}, ${name}: ${item.valid} valid analyses; mean estimate ${fmt(item.meanEstimate)}; empirical SD ${fmt(item.estimateSD)}; mean SE on the test scale ${fmt(item.meanSE)}.`
+      diagnostics.push(el('li', {}, `N=${row.n}, ${name}: ${item.valid} valid; mean estimate ${fmt(item.meanEstimate)}; SD ${fmt(item.estimateSD)}; mean SE ${fmt(item.meanSE)}.`
         + (item.failures ? ` Failures: ${Object.entries(item.failureReasons).map(([reason, count]) => `${reason.replaceAll('_', ' ')} ${count}`).join(', ')}.` : '')));
     }
-    nodes.push(el('details', {}, el('summary', {}, 'Analysis diagnostics'), el('ul', {}, diagnostics)));
-    const messages = [...answer.warnings];
-    if (answer.results.some((row) => row.alternative.failures || row.null?.failures)) messages.push('Some studies could not be generated or analyzed. They remain in the denominator as non-rejections; inspect the failure counts before interpreting power.');
-    if (!validRows.length) messages.push('No alternative-scenario analysis succeeded. These results do not establish usable power for this design.');
-    for (const message of messages) nodes.push(el('p', { class: 'error' }, message));
+    if (answer.nullScenario) diagnostics.push(el('li', {}, `${answer.nullScenario.exactNull ? 'Null scenario' : 'Reference scenario'}: ${answer.nullScenario.construction} Its effect: ${fmt(answer.nullScenario.truth.estimate)}.`));
+    nodes.push(el('details', {}, el('summary', {}, 'Diagnostics'), el('ul', {}, diagnostics)));
     $('power-results').replaceChildren(...nodes); $('power-json').disabled = false; $('power-csv').disabled = false;
   }
-  function refresh(savedSettings = null) {
-    draft = false; invalidate();
-    const design = getDesign(), plan = powerCompatibility(design.graph, design.estimand); activePlan = plan;
+
+  function refresh(saved, savedSettings = null) {
+    stop();
+    const graph = getGraph();
     let settings;
     try { settings = parsePowerSettings(savedSettings ?? DEFAULT_POWER); } catch { settings = parsePowerSettings(); }
-    const edges = plan.supported ? plan.calibrationEdges : [];
-    const edgeValue = edges.some((edge) => `${edge.source}>${edge.target}` === settings.calibrationEdge) ? settings.calibrationEdge : edges[0] ? `${edges[0].source}>${edges[0].target}` : '';
+    let start = null;
+    try { if (saved && saved.kind !== 'custom') start = validateEstimand(graph, saved); } catch { /* replaced below */ }
+    start ??= defaultTarget(graph);
+    if (start && start !== saved) onTarget(copyEstimand(start), 'auto');
+    if (!start) {
+      ready = false;
+      root.replaceChildren(el('div', { class: 'dag-card-heading' }, el('h3', {}, 'Power analysis')),
+        el('p', { id: 'power-method', class: 'muted' }, 'Add at least two variables and an arrow to compare groups and calculate power.'));
+      return;
+    }
+    const nodeList = graph.nodes.map((n) => [n.id, `${n.id} · ${n.label}`]);
+    const kind = select('estimand-kind', [['marginal', 'Group difference'], ['coefficient', 'Regression coefficient']], start.kind);
+    const exposure = el('select', { id: 'estimand-exposure' }), outcome = el('select', { id: 'estimand-outcome' });
+    const measure = el('select', { id: 'estimand-measure' });
+    const horizon = numeric('estimand-horizon', start.horizon, { min: 0 });
+    const alternative = numeric('estimand-alternative', start.alternative, { placeholder: 'As drawn' });
+    const active = numeric('estimand-active', start.active), reference = numeric('estimand-reference', start.reference);
+    const nullValue = numeric('estimand-null', start.nullValue);
     const sizes = el('input', { id: 'power-sizes', type: 'text', value: settings.sampleSizes.join(', '), inputmode: 'numeric' });
     const repetitions = numeric('power-repetitions', settings.repetitions, { min: 10, max: 10000, step: 1 });
     const alpha = numeric('power-alpha', settings.alpha, { min: 0, max: 1 });
-    const side = select('power-side', [['two-sided', 'Two-sided'], ['greater', 'Greater than null'], ['less', 'Less than null']], settings.side);
+    const side = select('power-side', [['two-sided', 'Two-sided'], ['greater', 'One-sided, greater'], ['less', 'One-sided, less']], settings.side);
+    const targetPower = numeric('power-target', settings.targetPower, { min: 0, max: 1 });
     const seed = numeric('power-seed', settings.seed, { min: 0, max: 4294967295, step: 1 });
-    const target = numeric('power-target', settings.targetPower, { min: 0, max: 1 });
     const population = numeric('power-population', settings.populationSize, { min: 1000, max: 50000, step: 1 });
-    const edge = select('power-edge', edges.map((item) => [`${item.source}>${item.target}`, `${item.source} → ${item.target} (drawn ${fmt(item.coefficient)})`]), edgeValue);
+    const edge = el('select', { id: 'power-edge' });
     const lower = numeric('power-lower', settings.calibrationLower), upper = numeric('power-upper', settings.calibrationUpper);
     const nullCheck = el('input', { id: 'power-null-check', type: 'checkbox', checked: settings.checkNull });
-    const needsCalibration = design.estimand?.alternative !== null && design.estimand?.alternative !== undefined;
-    edge.disabled = !edges.length || design.estimand?.kind === 'coefficient';
+    const horizonField = field('Time horizon', horizon), levelsFields = [field('Active level', active), field('Reference level', reference)];
+    const sizesField = field('Total sample sizes', sizes);
+    sizesField.classList.add('dag-wide');
+    const calibration = el('div', { class: 'dag-grid' }, field('Arrow set to the effect to detect', edge), field('Lowest value', lower), field('Highest value', upper));
+    const formula = el('p', { id: 'power-estimand', class: 'dag-power-formula' }), method = el('p', { id: 'power-method' });
     const form = el('form', { id: 'power-form', novalidate: true },
-      el('div', { class: 'dag-estimand-grid' }, field('Total sample sizes', sizes, 'Comma-separated sample sizes for repeated simulation.'), field('Simulated studies per sample size', repetitions)),
-      el('div', { class: 'dag-estimand-grid' }, field('Significance level α', alpha), field('Rejection rule', side)),
-      el('div', { class: 'dag-estimand-grid' }, field('Random seed', seed), field('Target power', target)),
-      el('div', { class: 'dag-power-calibration-fields', hidden: !needsCalibration && design.estimand?.nullValue === (design.estimand?.measure?.includes('ratio') ? 1 : 0) },
-        field('Arrow to calibrate to the planning effect', edge, 'Only arrows on causal paths to the selected outcome are eligible. A conditional-coefficient target uses its own arrow.'),
-        el('div', { class: 'dag-estimand-grid', hidden: design.estimand?.kind === 'coefficient' }, field('Lower coefficient bound', lower), field('Upper coefficient bound', upper))),
-      el('details', {}, el('summary', {}, 'Population calibration precision'), field('Population observations for effect calibration', population,
-        'Paired intervention simulations evaluate the estimand. An independent stream verifies the calibrated effect.')),
-      el('label', { class: 'dag-power-check', for: 'power-null-check' }, nullCheck, 'Also simulate a reference/null scenario'),
-      el('div', { class: 'dag-actions' }, el('button', { id: 'power-run', type: 'submit', class: 'primary', disabled: !plan.supported }, 'Calculate power'),
-        el('button', { id: 'power-stop', type: 'button', hidden: true }, 'Stop power calculation'),
+      el('p', { class: 'dag-group' }, 'What to detect'),
+      el('div', { class: 'dag-grid' }, field('Effect', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure),
+        horizonField, field('Effect to detect', alternative)),
+      el('p', { class: 'dag-group' }, 'Design'),
+      el('div', { class: 'dag-grid' }, sizesField, field('Studies per size', repetitions), field('Significance level α', alpha),
+        field('Test', side), field('Target power', targetPower)),
+      el('details', { id: 'power-more' }, el('summary', {}, 'More settings'),
+        el('div', { class: 'dag-grid' }, ...levelsFields, field('Null value', nullValue), field('Random seed', seed),
+          field('Population draws for the true effect', population)),
+        calibration,
+        el('label', { class: 'dag-power-check', for: 'power-null-check' }, nullCheck, 'Also simulate the null scenario (type I error check)')),
+      el('div', { class: 'dag-power-summary' }, method, formula),
+      el('div', { class: 'dag-actions' }, el('button', { id: 'power-run', type: 'submit', class: 'primary' }, 'Calculate power'),
+        el('button', { id: 'power-stop', type: 'button', hidden: true }, 'Stop'),
         el('button', { id: 'power-json', type: 'button', disabled: true }, 'Download report'),
-        el('button', { id: 'power-csv', type: 'button', disabled: true }, 'Download power CSV')));
-    const method = plan.supported ? el('div', { class: 'dag-power-method' },
-      el('p', { class: 'eyebrow' }, 'Analysis selected from the saved estimand'), el('p', { id: 'power-method' }, plan.label),
-      el('p', { class: 'small' }, plan.formula),
-      el('p', { class: 'small muted' }, needsCalibration ? `The alternative will be calibrated to θ = ${design.estimand.alternative} before simulating studies.` : 'Power uses the effect implied by the graph as drawn.'))
-      : el('p', { id: 'power-method', class: 'muted' }, plan.reason);
-    root.replaceChildren(el('h3', {}, 'Power for this estimand'), method, form,
-      el('p', { id: 'power-progress', role: 'status', 'aria-live': 'polite', class: 'small muted' }),
-      el('div', { id: 'power-results' }, el('p', { class: 'muted' }, 'Each replicate will generate data from the DAG, estimate the selected target, and apply its rejection rule.')));
-    const readNumber = (input) => input.value.trim() === '' ? NaN : Number(input.value);
-    const read = () => parsePowerSettings({ sampleSizes: sizes.value, repetitions: readNumber(repetitions), alpha: readNumber(alpha), side: side.value,
-      seed: readNumber(seed), targetPower: readNumber(target), populationSize: readNumber(population), calibrationEdge: edge.value,
-      calibrationLower: readNumber(lower), calibrationUpper: readNumber(upper), checkNull: nullCheck.checked });
-    const edited = () => { invalidate('Power settings changed. Calculate again to update the result.'); try { onSettings(read()); } catch { /* the run button reports invalid inputs */ } };
-    form.addEventListener('input', edited); form.addEventListener('change', edited);
+        el('button', { id: 'power-csv', type: 'button', disabled: true }, 'Download CSV'),
+        el('span', { id: 'power-progress', role: 'status', 'aria-live': 'polite', class: 'small muted' })));
+    root.replaceChildren(el('div', { class: 'dag-card-heading' }, el('h3', {}, 'Power analysis'),
+      el('span', { class: 'small muted' }, 'Repeated simulated studies from the graph above')),
+    el('div', { class: 'dag-power-layout' }, form, el('div', { id: 'power-results', class: 'dag-power-results', 'aria-live': 'polite' })));
+
+    const num = (input, optional = false) => input.value.trim() === '' ? (optional ? null : NaN) : Number(input.value);
+    const node = (id) => graph.nodes.find((n) => n.id === id);
+    function choices(keep = {}) {
+      if (kind.value === 'coefficient') {
+        options(outcome, nodeList.filter(([id]) => hasParents(graph, id)), keep.outcome ?? outcome.value);
+        options(exposure, graph.edges.filter((e) => e.target === outcome.value).map((e) => [e.source, `${e.source} · ${node(e.source).label}`]), keep.exposure ?? exposure.value);
+      } else {
+        options(exposure, nodeList, keep.exposure ?? exposure.value);
+        options(outcome, nodeList, keep.outcome ?? outcome.value);
+      }
+      // for a 0/1 outcome the mean difference is the risk difference: offer it once
+      const measures = availableMeasures(graph, kind.value, outcome.value)
+        .filter((key) => !(key === 'mean_difference' && node(outcome.value)?.kind === 'binary'));
+      options(measure, measures.map((key) => [key, SHORT[key] ?? MEASURES[key].label]), keep.measure ?? measure.value);
+      exposure.previousElementSibling.textContent = kind.value === 'coefficient' ? 'Coefficient of' : 'Compare';
+      for (const item of levelsFields) item.hidden = kind.value !== 'marginal';
+      horizonField.hidden = !MEASURES[measure.value]?.horizon;
+      if (!horizonField.hidden && horizon.value.trim() === '' && node(outcome.value)) horizon.value = horizonFor(node(outcome.value));
+      if (kind.value === 'marginal' && keep.exposure === undefined && node(exposure.value)) {
+        const levels = levelsFor(node(exposure.value));
+        if (!levels.includes(num(active)) || !levels.includes(num(reference))) [reference.value, active.value] = levels;
+      }
+    }
+    function measureChanged() { nullValue.value = MEASURES[measure.value]?.nullValue ?? 0; alternative.value = ''; }
+    const target = () => ({ version: 1, kind: kind.value, population: POPULATION, definition: '', exposure: exposure.value,
+      outcome: outcome.value, measure: measure.value, reference: num(reference), active: num(active),
+      horizon: MEASURES[measure.value]?.horizon ? num(horizon) : null, nullValue: num(nullValue), alternative: num(alternative, true) });
+    const readSettings = () => parsePowerSettings({ sampleSizes: sizes.value, repetitions: num(repetitions), alpha: num(alpha), side: side.value,
+      seed: num(seed), targetPower: num(targetPower), populationSize: num(population), calibrationEdge: edge.value,
+      calibrationLower: num(lower), calibrationUpper: num(upper), checkNull: nullCheck.checked });
+    // Reads the form, keeps what is valid, and says what the run would do or why it cannot run.  mode: 'auto' (the
+    // form as built), 'edit' (typing) or 'commit' (a finished change, which undo can take back).
+    function sync(mode) {
+      const value = target();
+      let problem = null, plan = null;
+      try { validateEstimand(graph, value); onTarget(copyEstimand(value), mode); plan = powerCompatibility(graph, value); }
+      catch (error) { problem = error.message; }
+      const edges = plan?.supported ? plan.calibrationEdges : [];
+      const wanted = edge.value || settings.calibrationEdge;
+      options(edge, edges.map((e) => [`${e.source}>${e.target}`, `${e.source} → ${e.target} (drawn ${fmt(e.coefficient)})`]), wanted);
+      edge.disabled = !edges.length || value.kind === 'coefficient';
+      lower.closest('.dag-field').hidden = upper.closest('.dag-field').hidden = value.kind === 'coefficient';
+      calibration.hidden = value.alternative === null && value.nullValue === (MEASURES[value.measure]?.nullValue ?? 0);
+      try { settings = readSettings(); onSettings(settings); } catch (error) { problem ??= error.message; }
+      if (!problem && plan && !plan.supported) problem = plan.reason;
+      ready = !problem;
+      method.className = problem ? 'error' : '';
+      method.textContent = problem ?? `Analysis: ${plan.label}.`;
+      formula.textContent = problem ? '' : `${describeEstimand(graph, value).formula}; H₀: θ = ${value.nullValue}.`;
+      formula.hidden = Boolean(problem);
+      if (!worker) $('power-run').disabled = !ready;
+    }
+    kind.addEventListener('change', () => { choices({ exposure: undefined }); measureChanged(); });
+    outcome.addEventListener('change', () => { const was = measure.value; choices(); if (measure.value !== was) measureChanged(); });
+    exposure.addEventListener('change', () => choices());
+    measure.addEventListener('change', () => { choices(); measureChanged(); });
+    form.addEventListener('input', () => { invalidate('Settings changed. Calculate again to update the results.'); sync('edit'); });
+    form.addEventListener('change', () => { invalidate('Settings changed. Calculate again to update the results.'); sync('commit'); });
     form.addEventListener('submit', async (event) => {
-      event.preventDefault(); invalidate();
-      if (draft) return;
+      event.preventDefault(); invalidate(); sync('commit');
+      if (!ready) return;
       try {
-        const current = getDesign(), configuration = read();
-        const compatible = powerCompatibility(current.graph, current.estimand);
-        if (!compatible.supported) throw new Error(compatible.reason);
-        onSettings(configuration);
+        const graph = getGraph(), estimand = copyEstimand(target()), configuration = readSettings();
         const token = generation, instance = new Engine();
         worker = instance; $('power-run').disabled = true; $('power-stop').hidden = false;
-        $('power-progress').textContent = 'Starting the C++/WebAssembly engine…';
-        const answer = await instance.dag({ op: 'power', graph: current.graph, estimand: current.estimand, settings: configuration }, (info) => {
+        $('power-progress').textContent = 'Starting the engine…';
+        const answer = await instance.dag({ op: 'power', graph, estimand, settings: configuration }, (info) => {
           if (token !== generation) return;
-          $('power-progress').textContent = info.message ?? `${info.completed} / ${info.total} studies · N=${info.n} · ${info.scenario} · ${info.threads} C++ thread${info.threads === 1 ? '' : 's'}`;
+          $('power-progress').textContent = info.message ?? `${info.completed} / ${info.total} studies · N = ${info.n} · ${info.scenario}`;
         });
         if (token !== generation) return;
         instance.dispose(); worker = null; $('power-run').disabled = false; $('power-stop').hidden = true;
-        result = answer; display(result); $('power-progress').textContent = 'Power calculation complete for the saved estimand.';
+        result = answer; display(result); $('power-progress').textContent = '';
       } catch (error) { if (!error.stopped) { invalidate(); $('power-results').replaceChildren(el('p', { class: 'error', role: 'alert' }, error.message)); } }
     });
-    $('power-stop').addEventListener('click', () => { invalidate('Power calculation stopped.'); $('power-progress').textContent = ''; });
-    $('power-json').addEventListener('click', () => { if (result) download(JSON.stringify(result, null, 2) + '\n', 'application/json', 'estimand-power-report.json'); });
-    $('power-csv').addEventListener('click', () => { if (result) download(csv(result), 'text/csv', 'estimand-power.csv'); });
-    onSettings({ ...settings, calibrationEdge: edgeValue });
+    $('power-stop').addEventListener('click', () => invalidate('Power calculation stopped.'));
+    $('power-json').addEventListener('click', () => { if (result) download(JSON.stringify(result, null, 2) + '\n', 'application/json', 'power-report.json'); });
+    $('power-csv').addEventListener('click', () => { if (result) download(csv(result), 'text/csv', 'power.csv'); });
+    choices({ exposure: start.exposure, outcome: start.outcome, measure: start.measure });
+    invalidate(); sync('auto');
   }
-  return { refresh, setDraft, stop };
+  return { refresh, stop };
 }
