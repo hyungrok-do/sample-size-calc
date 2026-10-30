@@ -2,7 +2,8 @@ import { addEdge, removeEdge, removeNode, makeNode, exampleGraph, emptyGraph, re
   equation, dataCsv, topologicalOrder, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
 import { mountPower } from './dag-power.js?v=dev';
-import { calibrationEdges } from './power-model.js?v=dev';
+import { calibrationEdges, powerCompatibility } from './power-model.js?v=dev';
+import { sketch, findPaths, classifyPath, pathText } from './dag-view.js?v=dev';
 import { Engine } from './engine.js?v=dev';
 
 const SVG = 'http://www.w3.org/2000/svg';
@@ -10,7 +11,8 @@ const STORE = 'ssc-dag-v1';
 const number = (x) => x === null ? '—' : Number.isInteger(x) ? String(x) : x.toFixed(3);
 const kindNames = { continuous: 'Continuous', binary: 'Binary', count: 'Count', survival: 'Survival time' };
 const parameterLabels = { sd: 'Standard deviation', width: 'Uniform width', shape: 'Shape', scale: 'Baseline time scale' };
-const W = 180, H = 84;  // node box; positions run 0–920 × 0–440 in a 1100 × 540 drawing
+const W = 180, H = 104;  // node box; positions run 0–920 × 0–440 in a 1100 × 564 drawing
+const PREVIEW_N = 2000;  // observations drawn to sketch each variable's distribution
 const short = (x) => String(Number(x.toPrecision(3))).replace('-', '−');
 // What a node's box says about its distribution: a root's values, or the scale its incoming arrows act on.
 function summary(graph, node) {
@@ -84,6 +86,10 @@ export function mountDag(root) {
   let estimand = null, powerEditor, powerSettings = null;
   // pending: the design before target edits that have not yet become an undo step
   let history = [], future = [], pending = null, storageNote = '';
+  // a sample from the current graph, drawn in the boxes; `key` is the model it came from (positions aside)
+  const preview = { columns: null, key: '', token: 0, engine: null, timer: 0 };
+  const modelKey = () => JSON.stringify([graph.nodes.map(({ x, y, ...rest }) => rest), graph.edges]);
+  let menu = null;
   try {
     const saved = localStorage.getItem(STORE);
     if (saved) { const design = parseDesign(saved); graph = design.graph; estimand = design.estimand; powerSettings = design.power ?? null; }
@@ -171,20 +177,26 @@ export function mountDag(root) {
         : [[x1 + Math.sign(dx) * bend, y1], [x2 - Math.sign(dx) * bend, y2]];
       const d = `M ${x1} ${y1} C ${c1[0]} ${c1[1]}, ${c2[0]} ${c2[1]}, ${x2} ${y2}`;
       const mid = [0, 1].map((k) => ([x1, y1][k] + 3 * c1[k] + 3 * c2[k] + [x2, y2][k]) / 8);  // the curve at t = 1/2
-      const group = svg('g', { class: `dag-edge${edge.target === selected ? ' selected' : ''}${effect.has(`${edge.source}>${edge.target}`) ? ' effect' : ''}`,
-        role: 'button', tabindex: 0, 'aria-label': `Edit ${edge.source} to ${edge.target}, coefficient ${edge.coefficient}` },
-      svg('path', { d, 'marker-end': `url(#dag-arrow${effect.has(`${edge.source}>${edge.target}`) ? '-effect' : ''})` }),
-      svg('text', { x: mid[0], y: mid[1] - 8, 'text-anchor': 'middle' }, short(edge.coefficient)));
-      const pick = () => { updateSelection(edge.target); document.getElementById(`dag-edge-${edge.source}`)?.focus(); };
-      group.addEventListener('click', pick);
-      group.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+      const key = `${edge.source}>${edge.target}`;
+      const group = svg('g', { class: `dag-edge${edge.target === selected ? ' selected' : ''}${effect.has(key) ? ' effect' : ''}`,
+        'data-edge': key, role: 'button', tabindex: 0,
+        'aria-label': `${edge.source} to ${edge.target}, coefficient ${edge.coefficient}. Enter or click the number to change it.` },
+      svg('path', { d, 'marker-end': `url(#dag-arrow${effect.has(key) ? '-effect' : ''})` }),
+      svg('text', { x: mid[0], y: mid[1] - 8, 'text-anchor': 'middle', class: 'dag-edge-label' }, short(edge.coefficient)));
+      group.addEventListener('click', (e) => {
+        if (e.target.classList.contains('dag-edge-label')) editCoefficient(edge, e.target);
+        else updateSelection(edge.target);
+      });
+      group.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editCoefficient(edge, group.querySelector('text')); }
+      });
       lines.append(group);
     }
     const nodes = svg('g', {});
     for (const node of graph.nodes) {
       const group = svg('g', { class: `dag-node ${node.kind}${node.id === selected ? ' selected' : ''}${node.id === connectFrom ? ' connecting' : ''}`,
         transform: `translate(${node.x} ${node.y})`, tabindex: 0, role: 'button',
-        'aria-label': `${node.id}, ${node.label}, ${kindNames[node.kind]}. Enter to edit. Arrow keys to move.` },
+        'aria-label': `${node.id}, ${node.label}, ${kindNames[node.kind]}. Enter to edit, arrow keys to move, C to compare it, O to make it the outcome.` },
       svg('rect', { class: 'dag-box', width: W, height: H, rx: 12 }),
       svg('text', { x: 14, y: 22, class: 'dag-node-role' }, node.kind.toUpperCase()
         + (node.kind === 'survival' && node.censoring.mode !== 'none'
@@ -193,6 +205,13 @@ export function mountDag(root) {
       svg('text', { x: 14, y: 66, class: 'dag-node-family' }, summary(graph, node)));
       const role = estimand?.exposure === node.id ? (estimand.kind === 'coefficient' ? 'Predictor' : 'Compared')
         : estimand?.outcome === node.id ? 'Outcome' : null;
+      const values = preview.columns?.[node.id];
+      const drawn = values && sketch(node.kind, values, values && (node.kind === 'binary' || node.kind === 'survival') ? 92 : W - 28, 22);
+      if (drawn) group.append(svg('g', { class: `dag-spark${preview.key === modelKey() ? '' : ' stale'}`, transform: `translate(14 ${H - 30})` },
+        svg('title', {}, drawn.title), svg('line', { x1: 0, x2: W - 28, y1: 22.5, y2: 22.5 }),
+        ...(drawn.bars ? [svg('path', { class: 'bars', d: drawn.bars })] : []),
+        ...(drawn.line ? [svg('path', { class: 'curve', d: drawn.line })] : []),
+        ...(drawn.label ? [svg('text', { x: 100, y: 17 }, drawn.label)] : [])));
       if (role) group.append(svg('g', { class: 'dag-node-tag' }, svg('rect', { x: 10, y: -11, width: 70, height: 20, rx: 10 }),
         svg('text', { x: 45, y: 3, 'text-anchor': 'middle' }, role)));
       const port = svg('g', { class: 'dag-port', role: 'button', tabindex: 0, 'aria-label': `Start an arrow from ${node.id}` },
@@ -232,8 +251,18 @@ export function mountDag(root) {
         if (connectFrom) connectTo(node.id);
         else updateSelection(node.id);
       });
+      group.addEventListener('contextmenu', (event) => { event.preventDefault(); openMenu(node, event.clientX, event.clientY); });
       group.addEventListener('keydown', (event) => {
         if (event.target !== group) return;
+        const role = { c: 'exposure', o: 'outcome' }[event.key.toLowerCase()];
+        if (role && !event.ctrlKey && !event.metaKey && !event.altKey) {
+          event.preventDefault(); assignRole(role, node.id);
+          [...canvas.querySelectorAll('.dag-node')].find((g) => g.getAttribute('aria-label').startsWith(`${node.id},`))?.focus();
+          return;
+        }
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          event.preventDefault(); const box = group.getBoundingClientRect(); openMenu(node, box.left + 20, box.bottom - 10); return;
+        }
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           if (connectFrom) connectTo(node.id); else { updateSelection(node.id); $('dag-node-label').focus(); }
@@ -258,6 +287,108 @@ export function mountDag(root) {
     $('dag-node-select').value = selected ?? '';
     $('dag-node-select').disabled = !graph.nodes.length;
     $('dag-tidy').disabled = graph.nodes.length < 2;
+    for (const [role, id] of [['exposure', 'dag-role-exposure'], ['outcome', 'dag-role-outcome']])
+      $(id)?.setAttribute('aria-pressed', String(estimand?.[role] === selected));
+    paths();
+  }
+  // The paths between the compared variable and the outcome, and whether the planned analysis leaves each open.
+  function paths() {
+    const box = $('dag-paths');
+    const a = estimand?.exposure, y = estimand?.outcome;
+    const mark = (keys) => { for (const g of canvas.querySelectorAll('.dag-edge')) g.classList.toggle('path', keys.includes(g.dataset.edge)); };
+    if (!a || !y || !graph.nodes.some((n) => n.id === a) || !graph.nodes.some((n) => n.id === y)) { box.replaceChildren(); return; }
+    const plan = powerCompatibility(graph, estimand);
+    const adjusted = new Set((plan.supported ? plan.terms : []).flatMap((t) => [t.left, t.right]).filter((v) => v && v !== a));
+    const { paths: list, truncated } = findPaths(graph, a, y);
+    const rows = list.map((path) => {
+      const c = classifyPath(graph, path, adjusted);
+      const what = c.kind === 'causal' ? 'causal' : c.kind === 'backdoor' ? 'back-door' : 'non-causal';
+      const why = c.open ? (c.kind === 'causal' ? 'open: carries effect' : 'open: biases the estimate')
+        : c.collider ? `blocked at collider ${c.by}` : `blocked: ${c.by} is adjusted for`;
+      const keys = path.map((s) => s.forward ? `${s.from}>${s.to}` : `${s.to}>${s.from}`);
+      const row = el('li', { class: `${c.kind}${c.open ? ' open' : ''}`, tabindex: 0 },
+        el('span', { class: 'dag-path-text' }, pathText(path)), el('span', { class: 'dag-path-kind' }, `${what} · ${why}`));
+      const show = (on) => mark(on ? keys : []);
+      row.addEventListener('mouseenter', () => show(true)); row.addEventListener('mouseleave', () => show(false));
+      row.addEventListener('focus', () => show(true)); row.addEventListener('blur', () => show(false));
+      return { row, c };
+    });
+    const biased = rows.filter(({ c }) => c.open && c.kind !== 'causal').length;
+    const heading = `Paths from ${a} to ${y}` + (adjusted.size ? ` · analysis adjusts for ${[...adjusted].join(', ')}` : '');
+    box.replaceChildren(el('h4', {}, heading),
+      rows.length ? el('ul', {}, rows.map(({ row }) => row)) : el('p', { class: 'small muted' }, `No path connects ${a} and ${y}: the effect is zero.`),
+      ...(truncated ? [el('p', { class: 'small muted' }, `The first ${list.length} paths are shown.`)] : []),
+      ...(biased ? [el('p', { class: 'small error' }, `${biased} open non-causal path${biased === 1 ? '' : 's'}: the estimate would mix confounding into the effect.`)] : []));
+  }
+  function assignRole(role, id) {
+    if (!powerEditor?.assign(role, id)) status('The power analysis needs at least two variables.', true);
+    else status(`${id} is now the ${role === 'exposure' ? 'compared variable' : 'outcome'} in the power analysis.`);
+  }
+  function closeMenu() { menu?.remove(); menu = null; }
+  function openMenu(node, x, y) {
+    closeMenu();
+    const item = (text, action) => el('button', { type: 'button', role: 'menuitem', onclick: () => { closeMenu(); action(); } }, text);
+    menu = el('div', { class: 'dag-menu', role: 'menu', 'aria-label': `${node.id} actions` },
+      item('Compare this variable', () => assignRole('exposure', node.id)),
+      item('Use as the outcome', () => assignRole('outcome', node.id)),
+      item('Edit', () => { updateSelection(node.id); $('dag-node-label').focus(); }),
+      item('Draw an arrow from it', () => connectTo(node.id)),
+      item('Delete', () => apply(removeNode(graph, node.id), `${node.id} and its arrows removed. Undo restores them.`)));
+    document.body.append(menu);
+    menu.style.left = `${Math.min(x, innerWidth - menu.offsetWidth - 8) + scrollX}px`;
+    menu.style.top = `${Math.min(y, innerHeight - menu.offsetHeight - 8) + scrollY}px`;
+    menu.querySelector('button').focus();
+    menu.addEventListener('keydown', (e) => {
+      const items = [...menu.querySelectorAll('button')], at = items.indexOf(document.activeElement);
+      if (e.key === 'Escape') { closeMenu(); e.stopPropagation(); }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus(); }
+    });
+  }
+  // A coefficient changed where it is drawn: a small field over the arrow's number.
+  function editCoefficient(edge, label) {
+    const host = canvas.parentElement, at = label.getBoundingClientRect(), base = host.getBoundingClientRect();
+    const input = el('input', { type: 'number', step: 'any', value: edge.coefficient, class: 'dag-inline',
+      'aria-label': `Coefficient of ${edge.source} → ${edge.target}` });
+    host.append(input);
+    input.style.left = `${at.left - base.left + host.scrollLeft + at.width / 2 - 36}px`;
+    input.style.top = `${at.top - base.top + host.scrollTop - 6}px`;
+    let done = false;
+    const finish = (save) => {
+      if (done) return; done = true; input.remove();
+      if (save && input.value.trim() !== '' && Number(input.value) !== edge.coefficient) {
+        try { apply({ ...graph, edges: graph.edges.map((e) => e === edge ? { ...e, coefficient: inputNumber(input, 'Arrow coefficient') } : e) },
+          `${edge.source} → ${edge.target} set to ${input.value}.`); }
+        catch (error) { status(error.message, true); }
+      }
+      canvas.querySelector(`[data-edge="${edge.source}>${edge.target}"]`)?.focus();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+    input.focus(); input.select();
+  }
+  // Draws a fresh sample from the model for the boxes, a moment after the last change.
+  function schedulePreview() {
+    clearTimeout(preview.timer);
+    preview.timer = setTimeout(async () => {
+      const token = ++preview.token, key = modelKey();
+      preview.engine?.dispose();
+      if (!graph.nodes.length) { preview.columns = null; preview.engine = null; draw(); return; }
+      const instance = new Engine(); preview.engine = instance;
+      try {
+        const data = await instance.dag({ op: 'simulate', graph, options: { n: PREVIEW_N, seed: 1 } });
+        if (token !== preview.token) return;
+        preview.columns = data.columns; preview.key = key;
+      } catch (error) {
+        if (token !== preview.token || error.stopped) return;
+        preview.columns = null;
+      } finally {
+        if (preview.engine === instance) { instance.dispose(); preview.engine = null; }
+      }
+      draw();
+    }, 250);
   }
   function point(event) {
     const p = canvas.createSVGPoint(); p.x = event.clientX; p.y = event.clientY;
@@ -268,7 +399,10 @@ export function mountDag(root) {
     const box = $('dag-inspector'); box.replaceChildren();
     if (!node) { box.append(el('p', { class: 'muted small' }, 'Add a variable, then choose its type and distribution here.')); return; }
     box.append(el('div', { class: 'dag-inspector-heading' }, el('h3', {}, node.id),
-      el('span', { class: 'small muted' }, kindNames[node.kind])));
+      el('span', { class: 'small muted' }, kindNames[node.kind])),
+    el('div', { class: 'dag-roles', role: 'group', 'aria-label': 'Role in the power analysis' },
+      el('button', { id: 'dag-role-exposure', type: 'button', 'aria-pressed': String(estimand?.exposure === node.id), onclick: () => assignRole('exposure', node.id) }, 'Compared'),
+      el('button', { id: 'dag-role-outcome', type: 'button', 'aria-pressed': String(estimand?.outcome === node.id), onclick: () => assignRole('outcome', node.id) }, 'Outcome')));
     const id = el('input', { id: 'dag-node-id', type: 'text', maxlength: 32, value: node.id, required: true });
     const label = el('input', { id: 'dag-node-label', type: 'text', maxlength: 80, value: node.label, required: true });
     const kind = select('dag-node-kind', KINDS.map((k) => [k, kindNames[k]]), node.kind);
@@ -393,6 +527,7 @@ export function mountDag(root) {
   function render() {
     draw(); inspector(); buttons();
     powerEditor?.refresh(estimand, powerSettings);
+    if (preview.key !== modelKey()) schedulePreview();
     const { order, byId } = validateGraph(graph);
     $('dag-equations').replaceChildren(...order.map((id) => el('li', {}, el('code', {}, equation(graph, byId.get(id))))));
     $('dag-order').textContent = order.length
@@ -427,7 +562,7 @@ export function mountDag(root) {
   });
   $('dag-node-select').addEventListener('change', (e) => updateSelection(e.target.value));
   root.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { connectFrom = null; draw(); status('Arrow connection cancelled.'); }
+    if (event.key === 'Escape') { closeMenu(); connectFrom = null; draw(); status('Arrow connection cancelled.'); }
   });
   function timeTravel(from, to) {
     if (!from.length) return;
@@ -488,6 +623,7 @@ export function mountDag(root) {
     },
     onSettings(settings) { powerSettings = settings; persist(); },
   });
+  document.addEventListener('pointerdown', (event) => { if (menu && !menu.contains(event.target)) closeMenu(); });
   render(); clearResult();
   status(storageNote || (graph.nodes.length
     ? 'Design restored from this browser.'

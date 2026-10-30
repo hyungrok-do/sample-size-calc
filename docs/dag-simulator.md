@@ -23,10 +23,23 @@ selecting generic variables for it.
 4. Read the graph and the conditional equations below it. A box shows its
    variable's values if it has no parents (for example `Normal · mean 0, SD 1`),
    otherwise the scale its incoming coefficients act on (`Bernoulli · log-odds`,
-   `Weibull · log HR`). The power analysis's variables are tagged *Compared*
-   (or *Predictor*) and *Outcome*, and the arrows that carry the tested effect
-   are highlighted. **Simulated dataset**, folded away at the bottom, generates
-   one seeded dataset, summarizes every column and downloads it as CSV.
+   `Weibull · log HR`), and sketches the variable from 2,000 draws of the
+   current model (seed 1), redrawn a moment after each change: a histogram,
+   the share of 1s for a binary variable, or the survival curve of an event
+   time. Click the number on an arrow (or press Enter on a focused arrow) to
+   change its coefficient in place. Right-click a box, press C or O on it, or
+   use the *Compared* / *Outcome* buttons in its settings to make it the power
+   analysis's compared variable or outcome; the two swap if needed. The
+   power analysis's variables are tagged on the graph, and the arrows that
+   carry the tested effect are highlighted.
+   **Paths from A to Y**, under the graph, lists every path between the
+   compared variable and the outcome (up to 40) as causal, back-door or other
+   non-causal, and whether the planned analysis leaves it open or blocks it (at
+   a collider, or by adjusting for a variable); hovering a path marks its
+   arrows. An open non-causal path is flagged because it would mix
+   confounding into the estimate. **Simulated dataset**, folded away at the
+   bottom, generates one seeded dataset, summarizes every column and downloads
+   it as CSV.
 5. In **Power analysis**, choose what to detect (a group difference or a
    regression coefficient, the variable compared, the outcome, the measure, a
    time horizon for survival measures and an optional effect to detect) and the

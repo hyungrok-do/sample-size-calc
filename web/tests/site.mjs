@@ -211,11 +211,36 @@ try {
   assert.equal(await page.locator('#dag-canvas .dag-node').count(), 4);
   assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
   assert.equal(await page.locator('#engine-status, #method, #guide').count(), 0);
-  assert.equal(page.workers().length, 0, 'the DAG page does not start the calculator engine');
+  // each box sketches its variable from a sample the engine draws in the background; that engine then closes
+  await page.waitForFunction(() => document.querySelectorAll('#dag-canvas .dag-spark:not(.stale)').length === 4);
+  for (let i = 0; i < 50 && page.workers().length; i++) await page.waitForTimeout(100);
+  assert.equal(page.workers().length, 0, 'no engine keeps running on the DAG page');
   assert.deepEqual([...new Set(await loaded(page))], [next], 'the simulator scripts use the current version');
   // the graph marks the power analysis's variables and the arrows that carry its effect
   assert.match(await page.textContent('#dag-canvas'), /Compared[\s\S]*Outcome|Outcome[\s\S]*Compared/);
   assert.equal(await page.locator('#dag-canvas .dag-edge.effect').count(), 3, 'A → M, M → Y and A → Y carry the total effect');
+  assert.match(await page.textContent('#dag-paths'), /A → M → Y\s*causal · open/);
+  assert.match(await page.textContent('#dag-paths'), /A → M ← X → Y\s*non-causal · blocked at collider M/);
+  // a coefficient is changed where it is drawn, and roles are set on the graph (keyboard, menu, variable settings)
+  await page.locator('[data-edge="A>Y"] .dag-edge-label').click();
+  await page.fill('.dag-inline', '0.35');
+  await page.keyboard.press('Enter');
+  assert.match(await page.textContent('#dag-equations'), /0\.35 × A/);
+  await page.click('#dag-undo');
+  assert.match(await page.textContent('#dag-equations'), /0\.3 × A/);
+  const box = (id) => page.locator('#dag-canvas .dag-node', { hasText: `${id} · ` });
+  await box('M').focus();
+  await page.keyboard.press('o');
+  assert.equal(await page.inputValue('#estimand-outcome'), 'M');
+  assert.match(await page.textContent('#dag-paths'), /Paths from A to M/);
+  await page.click('#dag-undo');
+  assert.equal(await page.inputValue('#estimand-outcome'), 'Y');
+  await box('X').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Compare this variable', exact: true }).click();
+  assert.equal(await page.inputValue('#estimand-exposure'), 'X');
+  await page.selectOption('#dag-node-select', 'A');
+  await page.click('#dag-role-exposure');
+  assert.equal(await page.inputValue('#estimand-exposure'), 'A');
   await page.click('#dag-sim > summary');
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');

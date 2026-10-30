@@ -4,6 +4,7 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { addEdge, removeEdge, removeNode, renameNode, emptyGraph, exampleGraph, makeNode, parseGraph, validateGraph,
   topologicalOrder, equation, dataCsv, DISTRIBUTIONS } from '../dag-model.js';
+import { sketch, findPaths, classifyPath, pathText } from '../dag-view.js';
 const near = (actual, expected, tolerance, label = '') => assert.ok(Math.abs(actual - expected) < tolerance,
   `${label}: expected ${expected} ± ${tolerance}, got ${actual}`);
 const simple = (family = 'gaussian', intercept = 0, coefficient = 0) => ({ version: 1,
@@ -180,4 +181,40 @@ test('the simulator page is independent and its offline header matches its polic
   assert.doesNotMatch(app, /dag|mountDag/);
   assert.match(meta, /wasm-unsafe-eval/);
   for (const name of ['dag.html', 'dag.css', 'dag-entry.js', 'dag.js', 'dag-model.js']) assert.ok(sw.includes(`${name}?v=dev`));
+});
+
+test('paths between the compared variable and the outcome are found and classified as d-separation says', () => {
+  const graph = exampleGraph();  // X → M, X → Y, A → M, M → Y, A → Y
+  const describe = (adjusted) => Object.fromEntries(findPaths(graph, 'A', 'Y').paths.map((p) => {
+    const c = classifyPath(graph, p, new Set(adjusted));
+    return [pathText(p), `${c.kind} ${c.open ? 'open' : `blocked by ${c.by}`}`];
+  }));
+  assert.deepEqual(describe([]), { 'A → M → Y': 'causal open', 'A → M ← X → Y': 'other blocked by M', 'A → Y': 'causal open' });
+  // adjusting for the mediator blocks its causal path and opens the collider path through it
+  assert.deepEqual(describe(['M']), { 'A → M → Y': 'causal blocked by M', 'A → M ← X → Y': 'other open', 'A → Y': 'causal open' });
+  // a confounder opens a back-door path that adjusting for it closes
+  graph.edges.push({ source: 'X', target: 'A', coefficient: .5 });
+  assert.equal(describe([])['A ← X → Y'], 'backdoor open');
+  assert.equal(describe(['X'])['A ← X → Y'], 'backdoor blocked by X');
+  // a descendant of a collider opens it too
+  const g = { version: 1, nodes: ['A', 'C', 'D', 'Y'].map((id) => makeNode(id)), edges: [
+    { source: 'A', target: 'C', coefficient: 1 }, { source: 'Y', target: 'C', coefficient: 1 }, { source: 'C', target: 'D', coefficient: 1 }] };
+  const [path] = findPaths(g, 'A', 'Y').paths;
+  assert.equal(classifyPath(g, path).open, false);
+  assert.equal(classifyPath(g, path, new Set(['D'])).open, true);
+  assert.deepEqual(findPaths(exampleGraph(), 'A', 'Y', 2), { paths: findPaths(exampleGraph(), 'A', 'Y').paths.slice(0, 2), truncated: true });
+});
+
+test('the box sketches summarize a sample: shares for 0/1, a histogram, a survival curve', () => {
+  const binary = sketch('binary', [0, 1, 1, 1], 92, 22);
+  assert.equal(binary.label, 'P(1) ≈ 0.75');
+  const normal = sketch('continuous', Array.from({ length: 1000 }, (_, i) => Math.sin(i) * 3), 152, 22);
+  assert.equal(normal.bars.split('Z').filter(Boolean).length > 10, true);
+  assert.match(normal.title, /mean −?0\.\d+, SD 2\.1/);
+  const curve = sketch('survival', Array.from({ length: 100 }, (_, i) => i + 1), 92, 22);
+  assert.match(curve.line, /^M0\.0 0\.0/, 'everyone survives at time 0');
+  assert.match(curve.label, /median 5[01]/);
+  assert.ok(sketch('count', [0, 0, 1, 2, 2, 2, 5], 152, 22).bars.length > 0);
+  assert.equal(sketch('continuous', [], 152, 22), null);
+  assert.ok(sketch('continuous', [3, 3, 3], 152, 22).bars, 'a constant still draws');
 });

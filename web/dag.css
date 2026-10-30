@@ -1,14 +1,14 @@
 :root {
   --bg: #f6f6f3; --surface: #fff; --surface-2: #f0efea; --ink: #1c1c1a; --ink-2: #4a4a45;
   --muted: #6f6f68; --line: #dddcd4; --field-line: #878780; --accent: #2457c5; --accent-soft: #e8eefb;
-  --accent-ink: #fff; --error: #a8261d; --error-soft: #fbeceb;
+  --accent-ink: #fff; --error: #a8261d; --error-soft: #fbeceb; --path: #d97706;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #161615; --surface: #1f1f1d; --surface-2: #2a2a27; --ink: #ecebe6; --ink-2: #c9c8c1;
     --muted: #aaa99f; --line: #45453f; --field-line: #85857b; --accent: #9ab9ff; --accent-soft: #22304c;
-    --accent-ink: #0f1420; --error: #f0a29b; --error-soft: #3a201e;
+    --accent-ink: #0f1420; --error: #f0a29b; --error-soft: #3a201e; --path: #fbbf24;
     color-scheme: dark;
   }
 }
@@ -59,9 +59,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-canvas-heading h3 { font-size: 15px; }
 .dag-canvas-heading span { font-size: 12px; color: var(--muted); }
 .dag-legend-effect::before { content: ''; display: inline-block; width: 18px; height: 3px; border-radius: 2px; background: var(--accent); vertical-align: middle; margin: 0 6px 2px 12px; }
-.dag-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 10px;
+.dag-scroll { position: relative; overflow: auto; border: 1px solid var(--line); border-radius: 10px;
   background-color: var(--bg); background-image: radial-gradient(var(--line) .8px, transparent .8px); background-size: 20px 20px; }
-#dag-canvas { display: block; width: 100%; min-width: 620px; min-height: 320px; max-height: 520px; aspect-ratio: 1100 / 556; touch-action: none; }
+#dag-canvas { display: block; width: 100%; min-width: 620px; min-height: 320px; max-height: 520px; aspect-ratio: 1100 / 580; touch-action: none; }
 .dag-node { cursor: grab; user-select: none; }
 .dag-empty { fill: var(--muted); font-size: 20px; }
 .dag-node:active { cursor: grabbing; }
@@ -83,6 +83,30 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-edge.selected path { stroke: var(--ink-2); stroke-width: 2.5; }
 .dag-edge.effect path { stroke: var(--accent); stroke-width: 3; }
 .dag-edge.effect text { fill: var(--accent); font-weight: 600; }
+.dag-edge .dag-edge-label { cursor: text; text-decoration: underline dotted; text-underline-offset: 3px; }
+.dag-edge.path path { stroke: var(--path); stroke-width: 4; }
+.dag-spark line { stroke: var(--line); }
+.dag-spark .bars { fill: var(--accent); opacity: .55; }
+.dag-spark .curve { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.dag-node .dag-spark text { font-size: 10.5px; fill: var(--ink-2); }
+.dag-spark.stale { opacity: .35; }
+.dag-inline { position: absolute; z-index: 2; width: 72px; padding: 2px 6px; font-size: 13px; }
+.dag-menu { position: absolute; z-index: 20; display: grid; min-width: 190px; padding: 4px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
+.dag-menu button { border: 0; border-radius: 6px; background: none; text-align: left; padding: 7px 12px; font-weight: 400; }
+.dag-menu button:hover, .dag-menu button:focus-visible { background: var(--surface-2); outline-offset: -2px; }
+.dag-roles { display: flex; gap: 6px; margin: -2px 0 12px; }
+.dag-roles button { padding: 4px 10px; font-size: 13px; border-radius: 999px; }
+.dag-roles button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.dag-paths h4 { margin: 6px 0; }
+.dag-paths ul { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 2px; }
+.dag-paths li { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 16px; padding: 4px 8px; border-radius: 6px; font-size: 12.5px; }
+.dag-paths li:hover, .dag-paths li:focus { background: var(--surface-2); outline: none; }
+.dag-path-text { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.dag-path-kind { color: var(--muted); }
+.dag-paths li.causal.open .dag-path-kind { color: var(--accent); }
+.dag-paths li.open:not(.causal) .dag-path-kind { color: var(--error); font-weight: 600; }
+.dag-paths p.error { padding: 6px 10px; }
 #dag-arrow path { fill: var(--field-line); }
 #dag-arrow-effect path { fill: var(--accent); }
 .dag-node-tag rect { fill: var(--accent); stroke: none; }

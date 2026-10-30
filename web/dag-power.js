@@ -51,6 +51,9 @@ function below(graph, id) {
 }
 const horizonFor = (node) => node.censoring?.mode === 'administrative' ? node.censoring.time : node.scale;
 const levelsFor = (node) => node.kind === 'survival' ? [1, 2] : [0, 1];
+// comparison levels a variable of this type can take (and two different ones)
+const levelsFit = (node, a, b) => Number.isFinite(a) && Number.isFinite(b) && a !== b && [a, b].every((v) =>
+  node.kind === 'binary' ? v === 0 || v === 1 : node.kind === 'count' ? Number.isInteger(v) && v >= 0 : node.kind === 'survival' ? v > 0 : true);
 
 // A ready-to-run target for a graph: a binary variable that affects others, compared on a variable it affects.
 export function defaultTarget(graph) {
@@ -71,7 +74,7 @@ export function defaultTarget(graph) {
 }
 
 export function mountPower(root, { getGraph, onTarget, onSettings }) {
-  let worker = null, generation = 0, result = null, ready = false;
+  let worker = null, generation = 0, result = null, ready = false, assign = () => false;
   const $ = (id) => root.querySelector(`#${id}`);
   const idle = 'Each simulated study draws data from the graph, fits the analysis above and applies its test.';
   function stop() {
@@ -132,7 +135,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     start ??= defaultTarget(graph);
     if (start && start !== saved) onTarget(copyEstimand(start), 'auto');
     if (!start) {
-      ready = false;
+      ready = false; assign = () => false;
       root.replaceChildren(el('div', { class: 'dag-card-heading' }, el('h3', {}, 'Power analysis')),
         el('p', { id: 'power-method', class: 'muted' }, 'Add at least two variables and an arrow to compare groups and calculate power.'));
       return;
@@ -200,10 +203,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       for (const item of levelsFields) item.hidden = kind.value !== 'marginal';
       horizonField.hidden = !MEASURES[measure.value]?.horizon;
       if (!horizonField.hidden && horizon.value.trim() === '' && node(outcome.value)) horizon.value = horizonFor(node(outcome.value));
-      if (kind.value === 'marginal' && keep.exposure === undefined && node(exposure.value)) {
-        const levels = levelsFor(node(exposure.value));
-        if (!levels.includes(num(active)) || !levels.includes(num(reference))) [reference.value, active.value] = levels;
-      }
+      if (kind.value === 'marginal' && node(exposure.value) && !levelsFit(node(exposure.value), num(reference), num(active)))
+        [reference.value, active.value] = levelsFor(node(exposure.value));
     }
     function measureChanged() { nullValue.value = MEASURES[measure.value]?.nullValue ?? 0; alternative.value = ''; }
     const target = () => ({ version: 1, kind: kind.value, population: POPULATION, definition: '', exposure: exposure.value,
@@ -234,7 +235,19 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       formula.hidden = Boolean(problem);
       if (!worker) $('power-run').disabled = !ready;
     }
-    kind.addEventListener('change', () => { choices({ exposure: undefined }); measureChanged(); });
+    // a role set from the graph: the other role swaps in if it was this variable; a coefficient target becomes a
+    // group difference when the variable cannot take part in it
+    assign = (role, id) => {
+      const other = role === 'exposure' ? 'outcome' : 'exposure', current = { exposure: exposure.value, outcome: outcome.value };
+      if (kind.value === 'coefficient' && (role === 'outcome' ? !hasParents(graph, id)
+        : !graph.edges.some((e) => e.source === id && e.target === outcome.value))) kind.value = 'marginal';
+      const was = measure.value;
+      choices({ [role]: id, [other]: current[other] === id ? current[role] : current[other] });
+      if (measure.value !== was) measureChanged();
+      invalidate('Settings changed. Calculate again to update the results.'); sync('commit');
+      return true;
+    };
+    kind.addEventListener('change', () => { choices(); measureChanged(); });
     outcome.addEventListener('change', () => { const was = measure.value; choices(); if (measure.value !== was) measureChanged(); });
     exposure.addEventListener('change', () => choices());
     measure.addEventListener('change', () => { choices(); measureChanged(); });
@@ -263,5 +276,5 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     choices({ exposure: start.exposure, outcome: start.outcome, measure: start.measure });
     invalidate(); sync('auto');
   }
-  return { refresh, stop };
+  return { refresh, stop, assign: (role, id) => assign(role, id) };
 }

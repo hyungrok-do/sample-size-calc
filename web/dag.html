@@ -41,8 +41,9 @@
   <div class="dag-workbench">
     <div class="dag-canvas-column">
       <div class="dag-canvas-heading"><h3>Data generating process</h3><span id="dag-node-count"></span></div>
-      <div class="dag-scroll"><svg id="dag-canvas" viewBox="0 -16 1100 556" role="group" aria-label="Editable distribution DAG"></svg></div>
-      <p class="dag-canvas-help">A box shows its variable’s values if it has no parents, otherwise the scale its arrows act on. Drag to move · a + port draws an arrow · Esc cancels.</p>
+      <div class="dag-scroll"><svg id="dag-canvas" viewBox="0 -16 1100 580" role="group" aria-label="Editable distribution DAG"></svg></div>
+      <p class="dag-canvas-help">Boxes sketch 2,000 simulated draws. Click an arrow’s number to change it · right-click a box, or press C or O on it, to make it the compared variable or the outcome · a + port draws an arrow · Esc cancels.</p>
+      <div id="dag-paths" class="dag-paths" aria-live="polite"></div>
       <div class="dag-model" aria-labelledby="dag-model-title">
         <h4 id="dag-model-title">Equations</h4>
         <ul id="dag-equations"></ul><p id="dag-order" class="small muted"></p>
