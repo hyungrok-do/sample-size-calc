@@ -83,7 +83,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-edge.selected path { stroke: var(--ink-2); stroke-width: 2.5; }
 .dag-edge.effect path { stroke: var(--accent); stroke-width: 3; }
 .dag-edge.effect text { fill: var(--accent); font-weight: 600; }
-.dag-edge .dag-edge-label { cursor: text; text-decoration: underline dotted; text-underline-offset: 3px; }
+.dag-edge .dag-edge-label { cursor: text; }
+.dag-edge-label rect { fill: var(--bg); opacity: .9; }
+.dag-edge-label text { text-decoration: underline dotted; text-underline-offset: 3px; }
 .dag-edge.path path { stroke: var(--path); stroke-width: 4; }
 .dag-spark line { stroke: var(--line); }
 .dag-spark .bars { fill: var(--accent); opacity: .55; }

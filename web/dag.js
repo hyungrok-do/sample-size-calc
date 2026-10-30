@@ -177,18 +177,22 @@ export function mountDag(root) {
         : [[x1 + Math.sign(dx) * bend, y1], [x2 - Math.sign(dx) * bend, y2]];
       const d = `M ${x1} ${y1} C ${c1[0]} ${c1[1]}, ${c2[0]} ${c2[1]}, ${x2} ${y2}`;
       const mid = [0, 1].map((k) => ([x1, y1][k] + 3 * c1[k] + 3 * c2[k] + [x2, y2][k]) / 8);  // the curve at t = 1/2
-      const key = `${edge.source}>${edge.target}`;
+      const key = `${edge.source}>${edge.target}`, number = short(edge.coefficient), width = 8.5 * number.length + 10;
       const group = svg('g', { class: `dag-edge${edge.target === selected ? ' selected' : ''}${effect.has(key) ? ' effect' : ''}`,
         'data-edge': key, role: 'button', tabindex: 0,
         'aria-label': `${edge.source} to ${edge.target}, coefficient ${edge.coefficient}. Enter or click the number to change it.` },
       svg('path', { d, 'marker-end': `url(#dag-arrow${effect.has(key) ? '-effect' : ''})` }),
-      svg('text', { x: mid[0], y: mid[1] - 8, 'text-anchor': 'middle', class: 'dag-edge-label' }, short(edge.coefficient)));
+      // the number sits on a backing so it reads over the curve and a click anywhere on it edits it
+      svg('g', { class: 'dag-edge-label' },
+        svg('rect', { x: mid[0] - width / 2, y: mid[1] - 22, width, height: 19, rx: 4 }),
+        svg('text', { x: mid[0], y: mid[1] - 8, 'text-anchor': 'middle' }, number)));
       group.addEventListener('click', (e) => {
-        if (e.target.classList.contains('dag-edge-label')) editCoefficient(edge, e.target);
+        const label = e.target.closest('.dag-edge-label');
+        if (label) editCoefficient(edge, label);
         else updateSelection(edge.target);
       });
       group.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editCoefficient(edge, group.querySelector('text')); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editCoefficient(edge, group.querySelector('.dag-edge-label')); }
       });
       lines.append(group);
     }
