@@ -128,8 +128,9 @@ static Fit finish_fit(const Matrix &m, const Vec &beta, const Vec &info,
     bad("zero_variance", "No finite positive regression standard error.");
   return {beta[target] / m.scales[target], se, df};
 }
-Fit fit_linear(const Matrix &m, const Vec &y, int target) {
-  Vec info(m.p * m.p), score(m.p);
+static Vec least_squares(const Matrix &m, const Vec &y, Vec &info) {
+  info.assign(m.p * m.p, 0);
+  Vec score(m.p);
   for (int i = 0; i < m.n; ++i)
     for (int j = 0; j < m.p; ++j) {
       const double x = m.x[i * m.p + j];
@@ -138,7 +139,11 @@ Fit fit_linear(const Matrix &m, const Vec &y, int target) {
         info[j * m.p + k] += x * m.x[i * m.p + k];
     }
   symmetrize(info, m.p);
-  const auto beta = solve(cholesky(info, m.p), score, m.p);
+  return solve(cholesky(info, m.p), score, m.p);
+}
+Fit fit_linear(const Matrix &m, const Vec &y, int target) {
+  Vec info;
+  const auto beta = least_squares(m, y, info);
   double sse = 0;
   for (int i = 0; i < m.n; ++i) {
     const double r = y[i] - predictor(m, beta, i);
@@ -190,8 +195,8 @@ maximize(Vec beta, const std::function<Evaluation(const Vec &, bool)> &evaluate,
                         "infinite coefficient may be present.");
   return {};
 }
-Fit fit_glm(const Matrix &m, const Vec &y, int target,
-            const std::string &family) {
+static Evaluation maximize_glm(const Matrix &m, const Vec &y,
+                               const std::string &family) {
   const double average = moments(y).mean;
   if (!(average > 0) || (family == "bernoulli" && average >= 1))
     bad("boundary_response", "All responses lie on a distribution boundary.");
@@ -232,7 +237,11 @@ Fit fit_glm(const Matrix &m, const Vec &y, int target,
   Vec initial(m.p);
   initial[0] = family == "bernoulli" ? std::log(average / (1 - average))
                                      : std::log(average);
-  const auto fit = maximize(initial, evaluate, m.n);
+  return maximize(initial, evaluate, m.n);
+}
+Fit fit_glm(const Matrix &m, const Vec &y, int target,
+            const std::string &family) {
+  const auto fit = maximize_glm(m, y, family);
   double dispersion = 1;
   if (family == "gamma") {
     double pearson = 0;
@@ -243,6 +252,40 @@ Fit fit_glm(const Matrix &m, const Vec &y, int target,
     dispersion = pearson / (m.n - m.p);
   }
   return finish_fit(m, fit.beta, fit.info, target, dispersion);
+}
+Vec fitted_means(const Matrix &m, const Vec &y, const std::vector<int> &rows,
+                 const std::string &family) {
+  Matrix part;
+  part.n = static_cast<int>(rows.size());
+  part.p = m.p;
+  part.scales = m.scales;
+  if (part.n <= part.p + 1)
+    bad("too_few_observations",
+        "Too few observations in an arm for the outcome model.");
+  part.x.reserve(static_cast<std::size_t>(part.n) * part.p);
+  Vec response;
+  response.reserve(part.n);
+  for (int i : rows) {
+    part.x.insert(part.x.end(), m.x.begin() + i * m.p,
+                  m.x.begin() + (i + 1) * m.p);
+    response.push_back(y[i]);
+  }
+  Vec info;
+  const auto beta = family == "gaussian"
+                        ? least_squares(part, response, info)
+                        : maximize_glm(part, response, family).beta;
+  Vec out(m.n);
+  for (int i = 0; i < m.n; ++i) {
+    const double eta = predictor(m, beta, i);
+    out[i] = family == "gaussian"    ? eta
+             : family == "bernoulli" ? (eta >= 0 ? 1 / (1 + std::exp(-eta))
+                                                 : std::exp(eta) /
+                                                       (1 + std::exp(eta)))
+                                     : std::exp(eta);
+    if (!std::isfinite(out[i]))
+      bad("numerical", "A fitted mean overflowed.");
+  }
+  return out;
 }
 Fit fit_cox(const Matrix &m, const Vec &times, const Vec &events, int target) {
   const int count =

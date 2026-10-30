@@ -20,6 +20,11 @@ struct Fit {
 Fit fit_linear(const Matrix &matrix, const Vec &response, int target);
 Fit fit_glm(const Matrix &matrix, const Vec &response, int target,
             const std::string &family);
+// Means for every row of `matrix` from a model fitted to `rows` only: least
+// squares ("gaussian") or a canonical/log-link GLM ("bernoulli", "poisson",
+// "gamma").
+Vec fitted_means(const Matrix &matrix, const Vec &response,
+                 const std::vector<int> &rows, const std::string &family);
 Fit fit_cox(const Matrix &matrix, const Vec &times, const Vec &events,
             int target);
 struct KM {

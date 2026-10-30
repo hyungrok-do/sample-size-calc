@@ -36,12 +36,37 @@ test('the saved estimand chooses the estimator, test scale, and survival horizon
   assert.equal(powerCompatibility(graph, target({ kind: 'custom', measure: 'custom', definition: 'A custom functional' })).supported, false);
 });
 
-test('causal arm comparisons do not silently use confounded or continuous exposures', () => {
+test('a confounded comparison uses AIPW, adjusting for its parents and not for mediators', () => {
   const graph = exampleGraph();
   graph.edges.push({ source: 'X', target: 'A', coefficient: .6 });
-  assert.throws(() => compilePowerPlan(graph, target()), /independent randomization/);
+  const plan = compilePowerPlan(graph, target());
+  assert.equal(plan.method, 'aipw');
+  assert.deepEqual(plan.terms, [{ left: 'X' }]);
+  assert.deepEqual(plan.propensityTerms, [{ left: 'X' }]);
+  assert.match(plan.label, /AIPW/);
+  assert.match(plan.formula, /propensity A ~ X \(logistic\); outcome Y ~ X within each arm/);
+  const engine = native({ op: 'plan', graph, estimand: target() });
+  for (const key of ['method', 'label', 'formula', 'testScale', 'outcomeModel']) assert.equal(engine[key], plan[key]);
+  assert.deepEqual(engine.terms, plan.terms);
+  assert.deepEqual(engine.propensityTerms, plan.propensityTerms);
   assert.doesNotThrow(() => compilePowerPlan(graph, target({ kind: 'coefficient', measure: 'coefficient' })));
   assert.throws(() => compilePowerPlan(exampleGraph(), target({ exposure: 'X' })), /binary comparison/);
+  const survival = exampleGraph('survival');
+  survival.edges.push({ source: 'X', target: 'A', coefficient: .6 });
+  assert.throws(() => compilePowerPlan(survival, target({ outcome: 'T', measure: 'rmst_difference', horizon: 14 })), /censoring-adjusted/);
+});
+
+test('AIPW power recovers the total effect of a confounded exposure in WebAssembly', () => {
+  const graph = exampleGraph();
+  graph.edges.push({ source: 'X', target: 'A', coefficient: .8 });
+  const truth = populationEffect(graph, target(), { n: 2000 });
+  near(truth.estimate, .78, 1e-9);
+  const answer = runPower(graph, target(), settings({ sampleSizes: [200], repetitions: 200 }));
+  assert.equal(answer.analysis.method, 'aipw');
+  const alt = answer.results[0].alternative;
+  assert.equal(alt.failures, 0);
+  near(alt.meanEstimate, .78, 4 * alt.estimateSD / Math.sqrt(200));
+  assert.ok(answer.results[0].null.probability < .12);
 });
 
 test('KM power rejects dependent censoring and horizons beyond administrative support', () => {

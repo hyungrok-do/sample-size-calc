@@ -99,11 +99,97 @@ void validate_estimand(const Graph &g, const J &e) {
     fail("The planning alternative must differ from the null value.");
 }
 struct Plan {
-  std::string method, label, formula, testScale, family;
+  std::string method, label, formula, testScale, family, outcomeModel;
   int exposure = 0, outcome = 0, targetIndex = -1;
-  std::vector<Term> terms;
+  // For AIPW, `terms` are the outcome model's and `propensity` the exposure
+  // model's.
+  std::vector<Term> terms, propensity;
   std::vector<int> edges;
 };
+std::string term_text(const Graph &g, const std::vector<Term> &terms) {
+  std::string out;
+  for (std::size_t j = 0; j < terms.size(); ++j) {
+    const auto &t = terms[j];
+    if (j)
+      out += " + ";
+    out += g.nodes[t.left].id;
+    if (t.right >= 0)
+      out += " × " + g.nodes[t.right].id;
+  }
+  return out;
+}
+// A confounded binary exposure: the doubly robust (AIPW) estimator, with the
+// exposure's own DGP terms as the propensity model and, within each arm, an
+// outcome model on the exposure's parents plus the outcome's parents that are
+// not affected by the exposure. Conditioning on the exposure's parents
+// identifies the marginal target in this DAG, and the added outcome parents
+// only improve precision.
+void plan_aipw(const Graph &g, const J &e, Plan &p) {
+  const auto &a = g.nodes[p.exposure];
+  const auto &y = g.nodes[p.outcome];
+  if (y.kind == "survival")
+    fail("A survival outcome with a confounded comparison variable needs a "
+         "confounding- and censoring-adjusted estimator, which is not "
+         "available yet. Remove the arrows into the comparison variable or "
+         "use a conditional hazard-ratio target.");
+  const auto affected = descendants(g, p.exposure);
+  const int count = static_cast<int>(g.nodes.size());
+  std::vector<bool> chosen(count);
+  for (const auto &t : a.terms)
+    for (int v : {t.left, t.right})
+      if (v >= 0) {
+        const auto &node = g.nodes[v];
+        if (node.kind == "survival" && node.censor != "none")
+          fail("A parent of the comparison variable is a censored event time. "
+               "Its latent values cannot be used to adjust for confounding.");
+        chosen[v] = true;
+      }
+  for (const auto &t : y.terms) {
+    if (t.right >= 0 || affected[t.left])
+      continue;
+    const auto &node = g.nodes[t.left];
+    if (!(node.kind == "survival" && node.censor != "none"))
+      chosen[t.left] = true;
+  }
+  for (int v = 0; v < count; ++v)
+    if (chosen[v])
+      p.terms.push_back({v, -1, 0});
+  for (const auto *source : {&a.terms, &y.terms})
+    for (const auto &t : *source)
+      if (t.right >= 0 && chosen[t.left] && chosen[t.right] &&
+          std::none_of(p.terms.begin(), p.terms.end(), [&](const Term &u) {
+            return std::minmax(u.left, u.right) ==
+                   std::minmax(t.left, t.right);
+          }))
+        p.terms.push_back({t.left, t.right, 0});
+  for (const auto &t : a.terms)
+    p.propensity.push_back({t.left, t.right, 0});
+  p.outcomeModel = y.family == "bernoulli" ? "bernoulli"
+                   : y.family == "poisson" ? "poisson"
+                   : y.family == "gamma" || y.family == "lognormal"
+                       ? "gamma"
+                       : "gaussian";
+  const auto measure = e.get("measure").as_string();
+  p.method = "aipw";
+  p.label = "Doubly robust AIPW Wald test of the marginal " +
+            std::string(measure == "risk_ratio"   ? "log risk ratio"
+                        : measure == "odds_ratio" ? "log odds ratio"
+                        : measure == "risk_difference" ||
+                                y.kind == "binary"
+                            ? "risk difference"
+                            : "mean difference") +
+            ", adjusting for " + term_text(g, p.terms);
+  const std::string model =
+      p.outcomeModel == "gaussian"    ? "linear regression"
+      : p.outcomeModel == "bernoulli" ? "logistic regression"
+      : p.outcomeModel == "poisson"   ? "Poisson log-link regression"
+                                      : "Gamma log-link regression";
+  p.formula = y.id + ": " + a.id + " = " + e.get("active").to_text() +
+              " versus " + e.get("reference").to_text() + "; propensity " +
+              a.id + " ~ " + term_text(g, p.propensity) +
+              " (logistic); outcome " + y.id + " ~ " + term_text(g, p.terms) +
+              " within each arm (" + model + ")";
+}
 Plan compile_plan(const Graph &g, const J &e) {
   validate_estimand(g, e);
   Plan p;
@@ -117,10 +203,14 @@ Plan compile_plan(const Graph &g, const J &e) {
   p.edges = calibration_edges(g, e);
   p.testScale = positive(measure) ? "log" : "original";
   if (kind == "marginal") {
-    if (a.kind != "binary" || !a.terms.empty())
+    if (a.kind != "binary")
       fail("Marginal arm-comparison power currently requires a binary "
-           "comparison variable with no parents (independent randomization). A "
-           "confounded or continuous comparison needs a different estimator.");
+           "comparison variable. A continuous or count intervention needs a "
+           "different estimator.");
+    if (!a.terms.empty()) {
+      plan_aipw(g, e, p);
+      return p;
+    }
     const double allocation = 1 / (1 + std::exp(-a.intercept));
     if (!(allocation > 0 && allocation < 1))
       fail("The comparison variable gives an empty arm. Use a nondegenerate "
@@ -205,29 +295,29 @@ Plan compile_plan(const Graph &g, const J &e) {
              "proposed Cox analysis requires independent censoring given its "
              "fitted parents.");
     }
-    p.formula = (p.method == "ols_log" ? "log(" + y.id + ")" : y.id) + " ~ ";
-    for (std::size_t j = 0; j < p.terms.size(); ++j) {
-      const auto &t = p.terms[j];
-      if (j)
-        p.formula += " + ";
-      p.formula += g.nodes[t.left].id;
-      if (t.right >= 0)
-        p.formula += " × " + g.nodes[t.right].id;
-    }
+    p.formula = (p.method == "ols_log" ? "log(" + y.id + ")" : y.id) +
+                " ~ " + term_text(g, p.terms);
   }
   return p;
 }
-J plan_json(const Graph &g, const Plan &p) {
-  J terms = J::array(), edges = J::array();
-  for (const auto &t : p.terms) {
+struct Analysis {
+  double estimate = 0, testEstimate = 0, se = 0, df = INFINITY, statistic = 0;
+};
+J terms_json(const Graph &g, const std::vector<Term> &list) {
+  J terms = J::array();
+  for (const auto &t : list) {
     J x = object({{"left", g.nodes[t.left].id}});
     if (t.right >= 0)
       x.set("right", g.nodes[t.right].id);
     terms.push(x);
   }
+  return terms;
+}
+J plan_json(const Graph &g, const Plan &p) {
+  J terms = terms_json(g, p.terms), edges = J::array();
   for (int i : p.edges)
     edges.push(g.json.get("edges").at(i));
-  return object({{"method", p.method},
+  J out = object({{"method", p.method},
                  {"label", p.label},
                  {"formula", p.formula},
                  {"testScale", p.testScale},
@@ -237,14 +327,74 @@ J plan_json(const Graph &g, const Plan &p) {
                  {"outcome", g.nodes[p.outcome].id},
                  {"exposure", g.nodes[p.exposure].id},
                  {"family", p.family}});
+  if (p.method == "aipw") {
+    out.set("propensityTerms", terms_json(g, p.propensity));
+    out.set("outcomeModel", p.outcomeModel);
+  }
+  return out;
 }
-struct Analysis {
-  double estimate = 0, testEstimate = 0, se = 0, df = INFINITY, statistic = 0;
-};
+// AIPW (augmented inverse probability weighting): Robins, Rotnitzky & Zhao
+// (1994); Bang & Robins (2005). The standard error is the empirical SD of the
+// estimated influence function over sqrt(n); ratios use the delta method on
+// the log scale. Propensities are not truncated: near-violations of positivity
+// show as larger standard errors, and fitted probabilities of exactly 0 or 1
+// fail the study.
+Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
+  const int n = d.n;
+  const double active = e.get("active").as_number();
+  Vec z(n);
+  for (int i = 0; i < n; ++i)
+    z[i] = d.values[p.exposure][i] == active ? 1 : 0;
+  std::vector<int> rows[2];
+  for (int i = 0; i < n; ++i)
+    rows[static_cast<int>(z[i])].push_back(i);
+  if (rows[0].size() < 2 || rows[1].size() < 2)
+    throw Error("empty_arm", "An analysis arm has fewer than two observations.");
+  const auto pm = model_matrix(d, p.propensity, true);
+  std::vector<int> everyone(n);
+  std::iota(everyone.begin(), everyone.end(), 0);
+  const auto pi = fitted_means(pm, z, everyone, "bernoulli");
+  const auto om = model_matrix(d, p.terms, true);
+  const auto &y = d.values[p.outcome];
+  const auto m0 = fitted_means(om, y, rows[0], p.outcomeModel),
+             m1 = fitted_means(om, y, rows[1], p.outcomeModel);
+  Vec phi0(n), phi1(n);
+  for (int i = 0; i < n; ++i) {
+    if (!(pi[i] > 0 && pi[i] < 1))
+      throw Error("positivity", "A fitted propensity equals 0 or 1; the "
+                                "arms do not overlap in this study.");
+    phi1[i] = m1[i] + z[i] * (y[i] - m1[i]) / pi[i];
+    phi0[i] = m0[i] + (1 - z[i]) * (y[i] - m0[i]) / (1 - pi[i]);
+  }
+  const double psi0 = moments(phi0).mean, psi1 = moments(phi1).mean;
+  const auto measure = e.get("measure").as_string();
+  Vec influence(n);
+  Analysis out;
+  if (!positive(measure)) {
+    for (int i = 0; i < n; ++i)
+      influence[i] = phi1[i] - phi0[i];
+    out.estimate = out.testEstimate = psi1 - psi0;
+  } else {
+    const bool rr = measure == "risk_ratio";
+    if (!(psi0 > 0 && psi1 > 0) || (!rr && !(psi0 < 1 && psi1 < 1)))
+      throw Error("boundary_response",
+                  "An AIPW arm mean lies outside the range of a probability.");
+    const double d0 = rr ? psi0 : psi0 * (1 - psi0),
+                 d1 = rr ? psi1 : psi1 * (1 - psi1);
+    for (int i = 0; i < n; ++i)
+      influence[i] = (phi1[i] - psi1) / d1 - (phi0[i] - psi0) / d0;
+    out.estimate = rr ? psi1 / psi0 : (psi1 / (1 - psi1)) / (psi0 / (1 - psi0));
+    out.testEstimate = std::log(out.estimate);
+  }
+  out.se = std::sqrt(moments(influence).variance / n);
+  return out;
+}
 Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
   Analysis out;
   const auto measure = e.get("measure").as_string();
-  if (e.get("kind").as_string() == "coefficient") {
+  if (p.method == "aipw")
+    out = analyze_aipw(e, d, p);
+  else if (e.get("kind").as_string() == "coefficient") {
     const auto m = model_matrix(d, p.terms, p.method != "cox");
     const int target = p.targetIndex + (p.method == "cox" ? 0 : 1);
     Fit fit;
