@@ -10,6 +10,8 @@ export const MEASURES = {
   rmst_difference: { label: 'Restricted mean survival time difference', kinds: ['survival'], nullValue: 0, horizon: true },
   coefficient: { label: 'Conditional predictor coefficient', nullValue: 0 },
   exponentiated_coefficient: { label: 'Exponentiated conditional coefficient', nullValue: 1, positive: true },
+  overall_effect: { label: 'Overall predictor effect (joint test)', nullValue: 0 },
+  nonlinearity: { label: 'Nonlinearity beyond linear terms (joint test)', nullValue: 0 },
   custom: { label: 'Custom estimand', nullValue: 0 },
 };
 const finite = (x) => typeof x === 'number' && Number.isFinite(x);
@@ -20,11 +22,12 @@ export function availableMeasures(graph, kind, outcome) {
   const node = graph.nodes.find((n) => n.id === outcome);
   if (kind === 'custom') return ['custom'];
   if (!node) return [];
+  if (kind === 'joint') return ['overall_effect', 'nonlinearity'];
   if (kind === 'coefficient') return ['coefficient', ...(logLinks.includes(node.family) ? ['exponentiated_coefficient'] : [])];
   return Object.entries(MEASURES).filter(([, spec]) => spec.kinds?.includes(node.kind)).map(([key]) => key);
 }
 export function validateEstimand(graph, value) {
-  if (!value || value.version !== 1 || !['marginal', 'coefficient', 'custom'].includes(value.kind)) fail('Choose an estimand type.');
+  if (!value || value.version !== 1 || !['marginal', 'coefficient', 'joint', 'custom'].includes(value.kind)) fail('Choose an estimand type.');
   if (typeof value.population !== 'string' || !value.population.trim() || value.population.length > 1000)
     fail('Describe the target population (up to 1,000 characters).');
   if (typeof value.definition !== 'string' || value.definition.length > 3000) fail('The estimand definition must be text of up to 3,000 characters.');
@@ -40,7 +43,9 @@ export function validateEstimand(graph, value) {
     if (!outcome || !exposure) fail('Select an outcome variable and a comparison variable.');
     if (outcome.id === exposure.id) fail('The outcome and comparison variable must differ.');
     if (!availableMeasures(graph, value.kind, value.outcome).includes(value.measure)) fail('Choose an effect measure compatible with the outcome distribution.');
-    if (value.kind === 'coefficient') {
+    if (value.kind === 'coefficient' || value.kind === 'joint') {
+      if (value.kind === 'joint' && (value.nullValue !== 0 || value.alternative !== null)) fail('Joint tests use a zero coefficient-block null and the graph as drawn.');
+      if (value.kind === 'joint' && value.measure === 'nonlinearity' && exposure.kind === 'binary') fail('A binary predictor has no nonlinear dose-response component.');
       if (!graph.edges.some((e) => e.source === exposure.id && e.target === outcome.id))
         fail('A conditional coefficient requires an arrow from the selected predictor to the outcome.');
     } else {
@@ -82,13 +87,16 @@ export function describeEstimand(graph, value) {
   if (value.kind === 'custom') {
     formula = value.definition;
     note = 'This definition is recorded for planning. Its estimator and simulation evaluation must be specified explicitly.';
+  } else if (value.kind === 'joint') {
+    formula = `H₀: ${value.measure === 'nonlinearity' ? 'all nonlinear terms in' : 'all terms involving'} ${a} in the model for ${y} equal zero`;
+    note = 'This is a conditional regression block test. Its hypothesis depends on the specified analysis basis. It is not a marginal causal contrast.';
   } else if (value.kind === 'coefficient') {
     const node = graph.nodes.find((n) => n.id === y);
     const coefficient = graph.edges.find((e) => e.source === a && e.target === y).coefficient;
     const ratio = value.measure === 'exponentiated_coefficient';
     formula = ratio ? `θ = exp(β_${a}→${y}); current DGP value = ${Math.exp(coefficient)}`
       : `θ = β_${a}→${y} on the ${DISTRIBUTIONS[node.family].link} scale; current DGP value = ${coefficient}`;
-    note = 'This is a conditional structural coefficient, rather than a marginal total effect. With interactions, it applies when the interacting parents equal zero. The analysis must target this coefficient.';
+    note = 'This is a conditional structural coefficient, rather than a marginal total effect. With ordinary products, it applies when the other interacting parents equal zero. Additional response terms can also contribute to effects and derivatives; this coefficient alone is not the full effect. The analysis must target this coefficient.';
   } else {
     const intervention = (term, level) => `${term} under do(${a} = ${level})`;
     if (value.measure === 'mean_difference') formula = `θ = E[${intervention(y, hi)}] − E[${intervention(y, lo)}]`;
@@ -117,3 +125,4 @@ export function parseDesign(input) {
   if (estimand) validateEstimand(graph, estimand);
   return { graph, estimand, ...(raw.power == null ? {} : { power: parsePowerSettings(raw.power) }) };
 }
+

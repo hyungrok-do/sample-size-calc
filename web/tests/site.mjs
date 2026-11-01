@@ -271,6 +271,31 @@ try {
   assert.equal(await page.isDisabled('#dag-download-csv'), true);
   await page.click('#dag-undo');
   assert.doesNotMatch(await page.textContent('#dag-equations'), /0.2 × X × M/);
+  // Nonlinear terms are editable, previewed, exported and undoable; analysis
+  // changes are separate from the graph and participate in the same history.
+  await page.click('#dag-function-add > summary');
+  await page.selectOption('#dag-function-left', 'X');
+  await page.selectOption('#dag-function-kind', 'square');
+  await page.fill('#dag-function-coefficient', '0.3');
+  await page.getByRole('button', { name: 'Add response term', exact: true }).click();
+  assert.match(await page.textContent('#dag-equations'), /square\(\(X - 0\) \/ 1\)/);
+  await page.click('#dag-curve-panel > summary');
+  assert.equal(await page.locator('#dag-curve-preview svg path').count(), 1);
+  await page.click('#power-analysis-models > summary');
+  await page.selectOption('#analysis-method', 'gformula');
+  await page.selectOption('#analysis-basis', 'linear');
+  const curveEvent = page.waitForEvent('download');
+  await page.click('#dag-export');
+  const curveFile = await curveEvent;
+  const curveDesign = JSON.parse(await readFile(await curveFile.path(), 'utf8'));
+  assert.equal(curveDesign.graph.nodes.find((n) => n.id === 'Y').functions[0].transform.kind, 'square');
+  assert.equal(curveDesign.power.analysis.basis, 'linear');
+  await page.click('#dag-undo');
+  assert.equal(await page.inputValue('#analysis-basis'), 'match');
+  await page.click('#dag-undo');
+  assert.equal(await page.inputValue('#analysis-method'), 'auto');
+  await page.click('#dag-undo');
+  assert.doesNotMatch(await page.textContent('#dag-equations'), /square/);
   await page.selectOption('#dag-example', 'binary');
   await page.click('#dag-example-load');
   await page.click('#dag-simulate');
@@ -332,6 +357,35 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('#dag-canvas .dag-node').length === 3);
   assert.equal(await page.inputValue('#estimand-measure'), 'risk_difference');
   assert.equal(await page.inputValue('#power-repetitions'), '40');
+  await page.fill('#estimand-alternative', '');
+  await page.click('#power-more > summary');
+  await page.selectOption('#power-null-mode', 'average_effect');
+  assert.equal(await page.isVisible('#power-lower'), true, 'the average-effect reference exposes calibration bounds');
+  await page.selectOption('#power-null-mode', 'no_effect');
+  await page.click('#power-more > summary');
+  await page.click('#power-analysis-models > summary');
+  await page.selectOption('#analysis-method', 'tmle');
+  await page.selectOption('#analysis-basis', 'quadratic');
+  await page.fill('#analysis-folds', '2');
+  await page.fill('#power-sizes', '400');
+  await page.fill('#power-repetitions', '20');
+  await page.click('#power-run');
+  await page.waitForSelector('#power-table');
+  assert.match(await page.textContent('#power-method'), /TMLE/);
+  assert.match(await page.textContent('#power-results'), /CI coverage/);
+  // A built-in U-shaped example supplies a ready-to-run dose contrast and
+  // can instead be tested for its nonlinear regression block.
+  await page.selectOption('#analysis-method', 'auto');
+  await page.fill('#analysis-folds', '1');
+  await page.selectOption('#dag-example', 'nonlinear-dose');
+  await page.click('#dag-example-load');
+  await page.selectOption('#estimand-kind', 'joint');
+  await page.selectOption('#estimand-measure', 'nonlinearity');
+  await page.click('#power-run');
+  await page.waitForSelector('#power-table');
+  assert.match(await page.textContent('#power-method'), /Joint Wald test of nonlinearity/);
+  assert.match(await page.textContent('#power-truth'), /predictor-block coefficients/);
+  await page.setInputFiles('#dag-import', { name: 'trial-dag.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(model)) });
   await page.selectOption('#dag-example', 'survival');
   await page.click('#dag-example-load');
   await page.selectOption('#dag-node-select', 'T');
@@ -372,3 +426,4 @@ try {
   await browser.close();
   server.close();
 }
+

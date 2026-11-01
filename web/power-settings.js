@@ -1,6 +1,7 @@
+import { parseAnalysis } from './dag-functions.js?v=dev';
 export const DEFAULT_POWER = { sampleSizes: [100, 200, 400], repetitions: 500, alpha: .05,
   side: 'two-sided', seed: 2026, populationSize: 20000, calibrationEdge: '',
-  calibrationLower: -3, calibrationUpper: 3, checkNull: true, targetPower: .8 };
+  calibrationLower: -3, calibrationUpper: 3, checkNull: true, targetPower: .8, nullMode: 'no_effect', analysis: { method: 'auto', basis: 'match', folds: 1 } };
 const fail = (message) => { throw new Error(message); };
 export function parsePowerSettings(raw = {}) {
   const x = { ...DEFAULT_POWER, ...raw };
@@ -16,5 +17,8 @@ export function parsePowerSettings(raw = {}) {
   if (!['two-sided', 'greater', 'less'].includes(x.side)) fail('Choose a two-sided, greater-than, or less-than test.');
   if (typeof x.checkNull !== 'boolean') fail('The null-check setting must be true or false.');
   if (typeof x.calibrationEdge !== 'string') fail('Choose a calibration arrow.');
+  if (!['no_effect', 'average_effect'].includes(x.nullMode)) fail('Choose a no-effect or average-effect null.');
+  x.analysis = parseAnalysis(x.analysis);
   return Object.fromEntries(Object.keys(DEFAULT_POWER).map((key) => [key, x[key]]));
 }
+

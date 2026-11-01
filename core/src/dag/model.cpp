@@ -152,6 +152,19 @@ Graph parse_graph(const J &raw) {
         fail("That interaction already exists.");
       node.terms.push_back({left, right, number(t, "coefficient")});
     }
+    if (v.find("functions")) {
+      if (!v.get("functions").is_array() || v.get("functions").size() > 120)
+        fail("Use at most 120 additional response terms per variable.");
+      std::set<std::string> seen;
+      for(const auto &t:node.terms) seen.insert(term_key(t));
+      for (const auto &value : v.get("functions").elements()) {
+        const auto t = parse_term(g, value);
+        if (!pairs.count({t.left, i}) || (t.right >= 0 && !pairs.count({t.right, i})))
+          fail("Response terms must use existing parents of the child.");
+        if (!seen.insert(term_key(t)).second) fail("Duplicate response term.");
+        node.terms.push_back(t);
+      }
+    }
     if (node.kind != "survival")
       continue;
     if (node.censor == "variable") {
@@ -221,8 +234,8 @@ Data simulate(const Graph &g, int n, std::uint64_t seed,
       sim::Rng rng(seed, node.stream, static_cast<std::uint64_t>(i));
       double eta = node.intercept;
       for (const auto &t : node.terms)
-        eta += t.coefficient * data.values[t.left][i] *
-               (t.right < 0 ? 1 : data.values[t.right][i]);
+        eta += t.coefficient * term_value(t, data.values[t.left][i],
+               t.right < 0 ? 1 : data.values[t.right][i]);
       if (!std::isfinite(eta))
         throw Error("generation_error",
                     node.label + ": a conditional predictor overflowed.");
@@ -435,6 +448,16 @@ J null_graph(const Graph &g, const J &e) {
       terms.push(term);
     }
     node.set("interactions", terms);
+    if (node.find("functions")) {
+      J functions = J::array();
+      for (J term : node.get("functions").elements()) {
+        if (before[g.index(node.get("id").as_string())] &&
+            (term.get("left").as_string() == a || term.get("right").as_string() == a))
+          term.set("coefficient", 0);
+        functions.push(term);
+      }
+      node.set("functions", functions);
+    }
     nodes.push(node);
   }
   out.set("edges", edges);
@@ -442,3 +465,4 @@ J null_graph(const Graph &g, const J &e) {
   return out;
 }
 } // namespace ssc::dag
+
