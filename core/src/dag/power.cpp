@@ -194,21 +194,17 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
   for (int v = 0; v < count; ++v)
     if (chosen[v])
       p.terms.push_back({v, -1, 0});
-  for (const auto *source : {&a.terms, &y.terms})
-    for (const auto &t : *source)
-      if (t.right >= 0 && t.transform.kind == "identity" && t.rightTransform.kind == "identity" && chosen[t.left] && chosen[t.right] &&
-          std::none_of(p.terms.begin(), p.terms.end(), [&](const Term &u) {
-            return std::minmax(u.left, u.right) ==
-                   std::minmax(t.left, t.right);
-          }))
-        p.terms.push_back({t.left, t.right, 0});
-  // Retain transformed covariates in matching outcome models as well.
-  for (const auto *source : {&a.terms, &y.terms}) for (const auto &t : *source)
-    if ((t.transform.kind != "identity" || t.rightTransform.kind != "identity") &&
-        chosen[t.left] && (t.right < 0 || chosen[t.right]) &&
+  // Within an exposure arm its factors are constants: A * f(X) contributes
+  // f(X) to the arm-specific model. Keep that basis even without a main f(X).
+  for (const auto *source : {&a.terms, &y.terms}) for (auto t : *source) {
+    if (t.left == p.exposure && t.right >= 0) {
+      t.left=t.right; t.transform=t.rightTransform; t.right=-1; t.rightTransform=Transform{};
+    } else if (t.right == p.exposure) { t.right=-1; t.rightTransform=Transform{}; }
+    if (chosen[t.left] && (t.right < 0 || chosen[t.right]) &&
         std::none_of(p.terms.begin(), p.terms.end(), [&](const Term &u) {
-          return term_json(g,u).dump() == term_json(g,t).dump();
+          return term_key(u) == term_key(t);
         })) p.terms.push_back(t);
+  }
   for (const auto &t : a.terms)
     p.propensity.push_back(t);
   p.outcomeModel = y.family == "bernoulli" ? "bernoulli"

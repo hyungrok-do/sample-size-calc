@@ -364,8 +364,9 @@ analyzed with the doubly robust AIPW estimator (Robins, Rotnitzky & Zhao
   nonlinear functions), so it is correctly specified by construction in that
   default. A different analysis basis can deliberately misspecify it.
 - **Outcome model.** Within each arm, a regression of the outcome on the
-  adjustment set (main effects, plus interactions in the DGP between two of
-  its variables): least squares for Normal and Uniform outcomes, logistic for
+  adjustment set, including matching nonlinear functions and interactions.
+  Exposure interactions such as `A * X²` supply `X²` to the separate arm models,
+  even without a standalone `X²` term. Fits use least squares for Normal and Uniform outcomes, logistic for
   Bernoulli, Poisson log-link for counts, and Gamma log-link for Gamma and
   Log-normal outcomes. It may be misspecified; the estimator remains
   consistent if the propensity model is correct, under positivity and the

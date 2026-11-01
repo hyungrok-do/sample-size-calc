@@ -1,4 +1,4 @@
-import { nodeTerms, termText as oneTermText, parseAnalysis, analysisTerms, nonlinearIn } from './dag-functions.js?v=dev';
+import { nodeTerms, termKey, termText as oneTermText, parseAnalysis, analysisTerms, nonlinearIn } from './dag-functions.js?v=dev';
 // UI compatibility hints only. The C++ engine independently validates and selects the actual analysis.
 import { validateGraph, topologicalOrder } from './dag-model.js?v=dev';
 import { validateEstimand, MEASURES } from './estimand-model.js?v=dev';
@@ -53,11 +53,12 @@ function aipwPlan(graph, estimand, exposure, outcome, notes) {
   }
   for (const t of nodeTerms(graph, outcome)) if (!t.right && !affected.has(t.left) && !censored(node(t.left))) chosen.add(t.left);
   const terms = graph.nodes.filter((n) => chosen.has(n.id)).map((n) => ({ left: n.id }));
-  for (const t of [...exposure.interactions, ...outcome.interactions])
-    if (chosen.has(t.left) && chosen.has(t.right) && !terms.some((u) => u.right && [u.left, u.right].sort().join() === [t.left, t.right].sort().join()))
-      terms.push({ left: t.left, right: t.right });
-  for (const t of [...nodeTerms(graph, exposure), ...nodeTerms(graph, outcome)])
-    if ((t.transform || t.rightTransform) && chosen.has(t.left) && (!t.right || chosen.has(t.right)) && !terms.some((u) => JSON.stringify(u) === JSON.stringify(t))) terms.push(t);
+  for (const raw of [...nodeTerms(graph, exposure), ...nodeTerms(graph, outcome)]) {
+    let t = { ...raw };
+    if (t.left === exposure.id && t.right) t = { left: t.right, ...(t.rightTransform ? { transform: t.rightTransform } : {}) };
+    else if (t.right === exposure.id) { delete t.right; delete t.rightTransform; }
+    if (chosen.has(t.left) && (!t.right || chosen.has(t.right)) && !terms.some((u) => termKey(u) === termKey(t))) terms.push(t);
+  }
   const outcomeModel = outcome.family === 'bernoulli' ? 'bernoulli' : outcome.family === 'poisson' ? 'poisson'
     : ['gamma', 'lognormal'].includes(outcome.family) ? 'gamma' : 'gaussian';
   const scale = estimand.measure === 'risk_ratio' ? 'log risk ratio' : estimand.measure === 'odds_ratio' ? 'log odds ratio'

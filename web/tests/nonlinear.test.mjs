@@ -125,6 +125,23 @@ test('cross-fitted binary TMLE gives bounded risk contrasts and calibrated infer
   }
 });
 
+test('matching arm-specific models retain nonlinear exposure interactions', () => {
+  const graph = confounded();
+  delete graph.nodes[1].functions;
+  graph.nodes[1].intercept = -1;
+  graph.edges[0].coefficient = 1.2;
+  graph.nodes[2].functions = [{ left: 'A', right: 'X', rightTransform: { kind: 'square' }, coefficient: .7 }];
+  const analysis = parseAnalysis({ method: 'aipw', basis: 'match', propensity: { basis: 'custom', terms: [] }, folds: 2 });
+  const plan = native({ op: 'plan', graph, estimand: target(), analysis });
+  assert.deepEqual(plan, compilePowerPlan(graph, target(), analysis));
+  assert.ok(plan.terms.some((t) => t.left === 'X' && t.transform?.kind === 'square' && !t.right));
+  graph.nodes[2].functions = [{ left: 'X', transform: { kind: 'square' }, right: 'A', coefficient: .7 }];
+  assert.deepEqual(native({ op: 'plan', graph, estimand: target(), analysis }), plan);
+  const answer = runPower(graph, target(), settings({ sampleSizes: [800], analysis }));
+  assert.ok(Math.abs(answer.results[0].alternative.bias) < .06);
+  assert.ok(answer.results[0].alternative.valid > 290);
+});
+
 test('the average-effect reference retains nonlinear subgroup effects', () => {
   const graph = { version: 1, nodes: [makeNode('X'), makeNode('A', 'binary'), { ...makeNode('Y'),
     functions: [{ left: 'X', transform: { kind: 'square' }, right: 'A', coefficient: .5 }] }],
