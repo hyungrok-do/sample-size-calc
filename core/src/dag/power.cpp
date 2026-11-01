@@ -754,9 +754,9 @@ Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
   return out;
 }
 J analysis_json(const Analysis &a) {
-  return object({{"estimate", a.estimate},
-                 {"testEstimate", a.testEstimate},
-                 {"se", a.se},
+  return object({{"estimate", a.jointP >= 0 ? J() : J(a.estimate)},
+                 {"testEstimate", a.jointP >= 0 ? J() : J(a.testEstimate)},
+                 {"se", a.jointP >= 0 ? J() : J(a.se)},
                  {"df", std::isfinite(a.df) ? J(a.df) : J()},
                  {"statistic", a.statistic}});
 }
@@ -1230,9 +1230,9 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                {"interval",
                 array({summary.rejections ? summary.lo : 0,
                        summary.rejections == summary.reps ? 1 : summary.hi})},
-               {"meanEstimate", summary.mean_estimate},
-               {"estimateSD", summary.sd_estimate},
-               {"meanSE", summary.mean_se},
+               {"meanEstimate", scalar ? J(summary.mean_estimate) : J()},
+               {"estimateSD", scalar ? J(summary.sd_estimate) : J()},
+               {"meanSE", scalar ? J(summary.mean_se) : J()},
                {"failureReasons", failures},
                 {"bias",scalar && summary.reps>summary.failures ? J(summary.mean_estimate-truth) : J()},
                 {"coverage",scalar && summary.reps>summary.failures ? J(static_cast<double>(coverageCount)/(summary.reps-summary.failures)) : J()},

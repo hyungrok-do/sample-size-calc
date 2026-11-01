@@ -358,6 +358,11 @@ try {
   assert.equal(await page.inputValue('#estimand-measure'), 'risk_difference');
   assert.equal(await page.inputValue('#power-repetitions'), '40');
   await page.fill('#estimand-alternative', '');
+  await page.click('#power-more > summary');
+  await page.selectOption('#power-null-mode', 'average_effect');
+  assert.equal(await page.isVisible('#power-lower'), true, 'the average-effect reference exposes calibration bounds');
+  await page.selectOption('#power-null-mode', 'no_effect');
+  await page.click('#power-more > summary');
   await page.click('#power-analysis-models > summary');
   await page.selectOption('#analysis-method', 'tmle');
   await page.selectOption('#analysis-basis', 'quadratic');

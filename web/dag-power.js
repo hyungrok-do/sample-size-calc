@@ -290,7 +290,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       options(edge, edges.map((e) => [`${e.source}>${e.target}`, `${e.source} → ${e.target} (drawn ${fmt(e.coefficient)})`]), wanted);
       edge.disabled = !edges.length || value.kind === 'coefficient';
       lower.closest('.dag-field').hidden = upper.closest('.dag-field').hidden = value.kind === 'coefficient';
-      calibration.hidden = value.alternative === null && value.nullValue === (MEASURES[value.measure]?.nullValue ?? 0);
+      calibration.hidden = value.kind === 'joint' || (value.alternative === null && value.nullValue === (MEASURES[value.measure]?.nullValue ?? 0)
+        && !(value.kind === 'marginal' && nullCheck.checked && nullMode.value === 'average_effect'));
       try { settings = readSettings(); onSettings(settings, mode); } catch (error) { problem ??= error.message; }
       if (!problem && plan && !plan.supported) problem = plan.reason;
       ready = !problem;

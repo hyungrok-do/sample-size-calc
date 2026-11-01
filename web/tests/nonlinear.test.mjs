@@ -90,6 +90,10 @@ test('joint tests detect a U-shaped response while a linear block has little pow
   assert.ok(linear.results[0].alternative.probability < .12);
   assert.ok(curved.results[0].null.probability < .10);
   assert.equal(curved.results[0].alternative.coverage, null);
+  assert.equal(curved.results[0].alternative.meanEstimate, null);
+  const fit = native({ op: 'analyze', graph, estimand: e, data: simulateGraph(graph, { n: 400, seed: 4 }), analysis: { basis: 'quadratic' } });
+  assert.equal(fit.estimate, null);
+  assert.ok(fit.pValue < .05);
   const nonlinearity = runPower(graph, target({ kind: 'joint', measure: 'nonlinearity' }), settings({ analysis: { basis: 'quadratic' } }));
   assert.ok(nonlinearity.results[0].alternative.probability > .95);
   assert.throws(() => compilePowerPlan(graph, target({ kind: 'joint', measure: 'nonlinearity' }), { basis: 'linear' }), /no terms/);
