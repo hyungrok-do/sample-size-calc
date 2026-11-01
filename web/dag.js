@@ -1,3 +1,5 @@
+import { reconcileAnalysis } from './dag-functions.js?v=dev';
+import { mountFunctions } from './dag-function-editor.js?v=dev';
 import { addEdge, removeEdge, removeNode, makeNode, exampleGraph, emptyGraph, renameNode, validateGraph,
   equation, dataCsv, topologicalOrder, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
@@ -134,6 +136,7 @@ export function mountDag(root) {
       if (planning.renameFrom && powerSettings?.calibrationEdge) {
         powerSettings = { ...powerSettings, calibrationEdge: powerSettings.calibrationEdge.split('>').map((id) => id === planning.renameFrom ? planning.renameTo : id).join('>') };
       }
+      if (powerSettings?.analysis) powerSettings = { ...powerSettings, analysis: reconcileAnalysis(powerSettings.analysis, graph, planning.renameFrom, planning.renameTo) };
       if (!graph.nodes.some((n) => n.id === selected)) selected = graph.nodes.at(-1)?.id;
       connectFrom = null;
       clearResult(); persist(); render();
@@ -301,7 +304,7 @@ export function mountDag(root) {
     const a = estimand?.exposure, y = estimand?.outcome;
     const mark = (keys) => { for (const g of canvas.querySelectorAll('.dag-edge')) g.classList.toggle('path', keys.includes(g.dataset.edge)); };
     if (!a || !y || !graph.nodes.some((n) => n.id === a) || !graph.nodes.some((n) => n.id === y)) { box.replaceChildren(); return; }
-    const plan = powerCompatibility(graph, estimand);
+    const plan = powerCompatibility(graph, estimand, powerSettings?.analysis);
     // the g-formula redraws the variables it refits (mediators and the outcome), so only the others are held fixed
     const terms = !plan.supported ? [] : plan.method === 'gformula' ? plan.models.flatMap((m) => m.terms) : plan.terms;
     const redrawn = new Set([a, ...(plan.models ?? []).map((m) => m.node)]);
@@ -435,8 +438,8 @@ export function mountDag(root) {
     function params() {
       const spec = DISTRIBUTIONS[family.value];
       parameters.replaceChildren(family.value === 'bernoulli'
-        ? field('Probability when parents are 0', probability, 'Arrows add to its log odds.')
-        : field(`Intercept (${spec.link})`, intercept, 'Value when parents are 0; arrows add to it.'));
+        ? field('Baseline probability (before parent terms)', probability, 'Arrows add to its log odds.')
+        : field(`Intercept (${spec.link})`, intercept, 'Baseline predictor; arrows and response terms add to it.'));
       for (const key of spec.parameters) parameters.append(field(
         key === 'sd' && family.value === 'lognormal' ? 'Standard deviation of log values' : parameterLabels[key], inputs[key]));
       if (kind.value === 'survival') parameters.append(el('p', { class: 'small muted' }, 'Arrow coefficients are log hazard ratios.'));
@@ -528,6 +531,7 @@ export function mountDag(root) {
       });
       box.append(interaction);
     }
+    mountFunctions(box, { graph, node, onChange: (next) => apply(next), onError: (message) => status(message, true) });
     box.append(el('button', { type: 'button', class: 'secondary dag-delete', onclick: () => apply(removeNode(graph, selected), 'Variable and its arrows removed. Any observation rule using it was reset. Undo restores them.') }, 'Delete variable'));
   }
   function buttons() { $('dag-undo').disabled = !history.length; $('dag-redo').disabled = !future.length; }
@@ -628,7 +632,19 @@ export function mountDag(root) {
         pending = null; buttons();
       }
     },
-    onSettings(settings) { powerSettings = settings; persist(); },
+    onSettings(settings, mode) {
+      const before = JSON.stringify(exportDesign(graph, estimand, powerSettings));
+      if (JSON.stringify(settings) !== JSON.stringify(powerSettings)) {
+        if (mode !== 'auto') pending ??= before;
+        powerSettings = settings; persist(); paths();
+      }
+      if (mode === 'commit' && pending !== null) {
+        if (pending !== JSON.stringify(exportDesign(graph, estimand, powerSettings))) {
+          history.push(pending); if (history.length > 50) history.shift(); future = [];
+        }
+        pending = null; buttons();
+      }
+    },
   });
   document.addEventListener('pointerdown', (event) => { if (menu && !menu.contains(event.target)) closeMenu(); });
   render(); clearResult();
@@ -636,3 +652,4 @@ export function mountDag(root) {
     ? 'Design restored from this browser.'
     : 'Add a variable or load an example to start.'));
 }
+

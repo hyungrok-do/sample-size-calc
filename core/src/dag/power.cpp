@@ -3,6 +3,7 @@
 #include "sim/random.hpp"
 #include "sim/simulate.hpp"
 #include "statistics.hpp"
+#include "stats/stats.hpp"
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -31,7 +32,7 @@ void validate_estimand(const Graph &g, const J &e) {
   if (kind == "custom")
     fail("A custom text definition needs an executable estimator and test. "
          "Choose a supported target to run power.");
-  if (kind != "marginal" && kind != "coefficient")
+  if (kind != "marginal" && kind != "coefficient" && kind != "joint")
     fail("Choose an estimand type.");
   if (e.get("population").as_string().empty())
     fail("Describe the target population.");
@@ -43,10 +44,10 @@ void validate_estimand(const Graph &g, const J &e) {
   const auto &exposure = g.nodes[a];
   const double lo = number(e, "reference"), hi = number(e, "active");
   bool compatible = false;
-  if (kind == "coefficient") {
+  if (kind == "coefficient" || kind == "joint") {
     bool arrow = false;
     for (const auto &term : outcome.terms)
-      if (term.left == a && term.right < 0)
+      if (term.left == a && term.right < 0 && term.transform.kind == "identity")
         arrow = true;
     if (!arrow)
       fail("A conditional coefficient requires an arrow from the selected "
@@ -54,6 +55,13 @@ void validate_estimand(const Graph &g, const J &e) {
     compatible = measure == "coefficient" ||
                  (measure == "exponentiated_coefficient" &&
                   outcome.family != "gaussian" && outcome.family != "uniform");
+    if (kind == "joint") {
+      compatible = measure == "overall_effect" || measure == "nonlinearity";
+      if (number(e,"nullValue") != 0 || !e.get("alternative").is_null())
+        fail("Joint tests use a zero coefficient-block null and the graph as drawn.");
+      if (measure == "nonlinearity" && exposure.kind == "binary")
+        fail("A binary predictor has no nonlinear dose-response component.");
+    }
   } else {
     if (lo == hi)
       fail("Enter two different comparison levels.");
@@ -101,7 +109,9 @@ void validate_estimand(const Graph &g, const J &e) {
 }
 struct Plan {
   std::string method, label, formula, testScale, family, outcomeModel;
-  int exposure = 0, outcome = 0, targetIndex = -1;
+  int exposure = 0, outcome = 0, targetIndex = -1, folds = 1;
+  std::vector<int> tested;
+  J specification;
   // For AIPW, `terms` are the outcome model's and `propensity` the exposure
   // model's.
   std::vector<Term> terms, propensity;
@@ -147,9 +157,9 @@ std::string term_text(const Graph &g, const std::vector<Term> &terms) {
     const auto &t = terms[j];
     if (j)
       out += " + ";
-    out += g.nodes[t.left].id;
+    out += transform_text(g.nodes[t.left].id, t.transform);
     if (t.right >= 0)
-      out += " × " + g.nodes[t.right].id;
+      out += " × " + transform_text(g.nodes[t.right].id, t.rightTransform);
   }
   return out;
 }
@@ -160,6 +170,7 @@ std::string term_text(const Graph &g, const std::vector<Term> &terms) {
 // identifies the marginal target in this DAG, and the added outcome parents
 // only improve precision.
 void plan_aipw(const Graph &g, const J &e, Plan &p) {
+  p.terms.clear(); p.propensity.clear(); p.chain.clear();
   const auto &a = g.nodes[p.exposure];
   const auto &y = g.nodes[p.outcome];
   const auto affected = descendants(g, p.exposure);
@@ -185,14 +196,21 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
       p.terms.push_back({v, -1, 0});
   for (const auto *source : {&a.terms, &y.terms})
     for (const auto &t : *source)
-      if (t.right >= 0 && chosen[t.left] && chosen[t.right] &&
+      if (t.right >= 0 && t.transform.kind == "identity" && t.rightTransform.kind == "identity" && chosen[t.left] && chosen[t.right] &&
           std::none_of(p.terms.begin(), p.terms.end(), [&](const Term &u) {
             return std::minmax(u.left, u.right) ==
                    std::minmax(t.left, t.right);
           }))
         p.terms.push_back({t.left, t.right, 0});
+  // Retain transformed covariates in matching outcome models as well.
+  for (const auto *source : {&a.terms, &y.terms}) for (const auto &t : *source)
+    if ((t.transform.kind != "identity" || t.rightTransform.kind != "identity") &&
+        chosen[t.left] && (t.right < 0 || chosen[t.right]) &&
+        std::none_of(p.terms.begin(), p.terms.end(), [&](const Term &u) {
+          return term_json(g,u).dump() == term_json(g,t).dump();
+        })) p.terms.push_back(t);
   for (const auto &t : a.terms)
-    p.propensity.push_back({t.left, t.right, 0});
+    p.propensity.push_back(t);
   p.outcomeModel = y.family == "bernoulli" ? "bernoulli"
                    : y.family == "poisson" ? "poisson"
                    : y.family == "gamma" || y.family == "lognormal"
@@ -240,6 +258,7 @@ std::string measure_scale(const J &e, const Node &y) {
 // type or parents, and censoring that shares causes with the event is
 // ignorable given the event time's parents.
 void plan_gformula(const Graph &g, const J &e, Plan &p) {
+  p.terms.clear(); p.propensity.clear(); p.chain.clear();
   const auto &a = g.nodes[p.exposure];
   const auto &y = g.nodes[p.outcome];
   const auto after = descendants(g, p.exposure),
@@ -290,7 +309,7 @@ void plan_gformula(const Graph &g, const J &e, Plan &p) {
               " versus " + e.get("reference").to_text() + "; refitted " +
               models + "; other variables as observed";
 }
-Plan compile_plan(const Graph &g, const J &e) {
+Plan default_plan(const Graph &g, const J &e) {
   validate_estimand(g, e);
   Plan p;
   p.exposure = g.index(e.get("exposure").as_string());
@@ -369,7 +388,7 @@ Plan compile_plan(const Graph &g, const J &e) {
     p.terms = y.terms;
     for (int j = 0; j < static_cast<int>(p.terms.size()); ++j) {
       const auto &t = p.terms[j];
-      if (t.right >= 0)
+      if (t.right >= 0 || t.transform.kind != "identity")
         continue;
       if (t.left == p.exposure)
         p.targetIndex = j;
@@ -402,16 +421,82 @@ Plan compile_plan(const Graph &g, const J &e) {
   }
   return p;
 }
+Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
+  const J spec = parse_analysis(raw);
+  for(const auto &kv:spec.get("models").items()) g.index(kv.first);
+  Plan p = default_plan(g,e);
+  const auto method=spec.get("method").as_string(), kind=e.get("kind").as_string();
+  const auto &a=g.nodes[p.exposure], &y=g.nodes[p.outcome];
+  if(kind != "marginal" && method != "auto") fail("Conditional and joint targets use a regression test.");
+  if(method=="gformula") plan_gformula(g,e,p);
+  if(method=="aipw" || method=="tmle") {
+    if(a.kind!="binary" || y.kind=="survival" || descendants(g,p.outcome)[p.exposure])
+      fail("AIPW/TMLE require a binary exposure, a nonsurvival outcome, and an outcome downstream or unrelated to exposure.");
+    if(method=="tmle" && y.kind!="binary") fail("This TMLE implementation supports binary outcomes.");
+    plan_aipw(g,e,p);
+    p.method=method;
+  }
+  p.specification=spec;
+  p.folds=integer(spec,"folds",1,10,1);
+  if(p.folds>1 && p.method!="aipw" && p.method!="tmle")
+    fail("Cross-fitting is available for AIPW and binary-outcome TMLE. Select one of those methods.");
+  p.terms=analysis_terms(g,p.terms,spec,p.outcome);
+  if(p.method=="aipw" || p.method=="tmle") {
+    p.propensity=analysis_terms(g,p.propensity,spec,p.exposure,true);
+    const auto affected=descendants(g,p.exposure);
+    for(const auto *terms:{&p.terms,&p.propensity}) for(const auto &t:*terms)
+      if(affected[t.left] || (t.right>=0 && affected[t.right]))
+        fail("AIPW/TMLE adjustment cannot include the exposure or its descendants.");
+    p.label=(p.method=="tmle" ? "Binary-outcome TMLE" : "Doubly robust AIPW") +
+      std::string(" Wald test of the marginal ") + measure_scale(e,y) + ", adjusting for " + term_text(g,p.terms) +
+      (p.folds>1 ? " with " + std::to_string(p.folds) + "-fold cross-fitting" : "");
+    const std::string model=p.outcomeModel=="gaussian" ? "linear regression" : p.outcomeModel=="bernoulli" ? "logistic regression" : p.outcomeModel=="poisson" ? "Poisson log-link regression" : "Gamma log-link regression";
+    p.formula=y.id+": "+a.id+" = "+e.get("active").to_text()+" versus "+e.get("reference").to_text()+
+      "; propensity "+a.id+" ~ "+term_text(g,p.propensity)+" (logistic); outcome "+y.id+" ~ "+term_text(g,p.terms)+" within each arm ("+model+")";
+  }
+  if(p.method=="gformula") {
+    for(auto &c:p.chain) {
+      c.terms=analysis_terms(g,c.terms,spec,c.node);
+      const auto later=descendants(g,c.node);
+      for(const auto &t:c.terms) if(later[t.left] || (t.right>=0 && later[t.right]))
+        fail("A g-computation model cannot condition on itself or its descendants.");
+    }
+    if(!p.chain.empty()) p.terms=p.chain.back().terms;
+    std::string models;
+    for(const auto &c:p.chain) models+=(models.empty()?"":", ")+g.nodes[c.node].id+" ~ "+term_text(g,c.terms);
+    if(!p.chain.empty()) p.formula=y.id+": "+a.id+" = "+e.get("active").to_text()+" versus "+e.get("reference").to_text()+"; refitted "+models+"; other variables as observed";
+  }
+  if(kind=="coefficient" || kind=="joint") {
+    p.targetIndex=-1;
+    for(int j=0;j<static_cast<int>(p.terms.size());++j) {
+      const auto &t=p.terms[j];
+      if(t.left==p.exposure && t.right<0 && t.transform.kind=="identity") p.targetIndex=j;
+      if(kind=="joint" && (e.get("measure").as_string()=="nonlinearity" ? nonlinear_in(t,p.exposure) : t.left==p.exposure || t.right==p.exposure)) p.tested.push_back(j+1);
+    }
+    if(kind=="coefficient" && p.targetIndex<0) fail("The planned model omits the selected linear coefficient.");
+    if(kind=="joint") {
+      if(p.tested.empty()) fail("The planned model has no terms for the selected joint test.");
+      p.method="joint";
+      p.label=std::string("Joint Wald test of ")+(e.get("measure").as_string()=="nonlinearity" ? "nonlinearity" : "all predictor terms")+" ("+std::to_string(p.tested.size())+" df)";
+      if(y.kind=="survival") note(p,"The joint survival test fits a parametric Weibull proportional-hazards model.");
+      else note(p,"The joint Wald test uses a sandwich covariance and a large-sample chi-square reference distribution.");
+    }
+    p.formula=(y.family=="lognormal" ? "log("+y.id+")" : y.id)+" ~ "+term_text(g,p.terms);
+  }
+  if(spec.get("basis").as_string()!="match" || spec.find("propensity") || spec.find("models"))
+    note(p,"Analysis terms are specified separately from the generating model. Inspect bias, interval coverage and null rejection when they differ.");
+  if(kind=="marginal" && p.method!="gformula" && p.method!="aipw" && p.method!="tmle" &&
+      (spec.get("basis").as_string()!="match" || spec.find("propensity") || spec.find("models")))
+    note(p,"The automatic two-arm test does not fit covariate models. Select g-computation, AIPW or TMLE to use the specified regression terms.");
+  return p;
+}
 struct Analysis {
-  double estimate = 0, testEstimate = 0, se = 0, df = INFINITY, statistic = 0;
+  double estimate = 0, testEstimate = 0, se = 0, df = INFINITY, statistic = 0, jointP = -1;
 };
 J terms_json(const Graph &g, const std::vector<Term> &list) {
   J terms = J::array();
   for (const auto &t : list) {
-    J x = object({{"left", g.nodes[t.left].id}});
-    if (t.right >= 0)
-      x.set("right", g.nodes[t.right].id);
-    terms.push(x);
+    terms.push(term_json(g,t));
   }
   return terms;
 }
@@ -429,7 +514,7 @@ J plan_json(const Graph &g, const Plan &p) {
                  {"outcome", g.nodes[p.outcome].id},
                  {"exposure", g.nodes[p.exposure].id},
                  {"family", p.family}});
-  if (p.method == "aipw") {
+  if (p.method == "aipw" || p.method == "tmle") {
     out.set("propensityTerms", terms_json(g, p.propensity));
     out.set("outcomeModel", p.outcomeModel);
   }
@@ -444,6 +529,10 @@ J plan_json(const Graph &g, const Plan &p) {
   for (const auto &text : p.notes)
     notes.push(text);
   out.set("notes", notes);
+  out.set("analysis", p.specification);
+  out.set("folds", p.folds);
+  J tested=J::array(); for(int i:p.tested) tested.push(i);
+  if(!p.tested.empty()) out.set("testedIndices",tested);
   return out;
 }
 // AIPW (augmented inverse probability weighting): Robins, Rotnitzky & Zhao
@@ -464,13 +553,49 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
   if (rows[0].size() < 2 || rows[1].size() < 2)
     throw Error("empty_arm", "An analysis arm has fewer than two observations.");
   const auto pm = model_matrix(d, p.propensity, true);
-  std::vector<int> everyone(n);
-  std::iota(everyone.begin(), everyone.end(), 0);
-  const auto pi = fitted_means(pm, z, everyone, "bernoulli");
   const auto om = model_matrix(d, p.terms, true);
   const auto &y = d.values[p.outcome];
-  const auto m0 = fitted_means(om, y, rows[0], p.outcomeModel),
-             m1 = fitted_means(om, y, rows[1], p.outcomeModel);
+  Vec pi(n), m0(n), m1(n);
+  std::vector<int> fold(n);
+  for(int arm=0;arm<2;++arm) for(std::size_t j=0;j<rows[arm].size();++j)
+    fold[rows[arm][j]]=static_cast<int>(j)%p.folds;
+  for(int k=0;k<p.folds;++k) {
+    std::vector<int> train, arms[2];
+    for(int i=0;i<n;++i) if(p.folds==1 || fold[i]!=k) {
+      train.push_back(i); arms[static_cast<int>(z[i])].push_back(i);
+    }
+    const auto prob=fitted_means(pm,z,train,"bernoulli"),
+               q0=fitted_means(om,y,arms[0],p.outcomeModel),
+               q1=fitted_means(om,y,arms[1],p.outcomeModel);
+    for(int i=0;i<n;++i) if(p.folds==1 || fold[i]==k) {
+      pi[i]=prob[i]; m0[i]=q0[i]; m1[i]=q1[i];
+    }
+  }
+  if(p.method=="tmle") {
+    const auto expit=[](double x) { return x>=0 ? 1/(1+std::exp(-x)) : std::exp(x)/(1+std::exp(x)); };
+    for(int arm=0;arm<2;++arm) {
+      auto &q=arm ? m1 : m0;
+      Vec offsets(n), h(n);
+      for(int i=0;i<n;++i) {
+        const double prob=arm ? pi[i] : 1-pi[i];
+        if(!(prob>0 && prob<1 && q[i]>0 && q[i]<1))
+          throw Error("positivity","TMLE needs interior nuisance probabilities.");
+        h[i]=1/prob; offsets[i]=std::log(q[i])-std::log1p(-q[i]);
+      }
+      const auto score=[&](double eps) {
+        double score=0;
+        for(int i:rows[arm]) score+=h[i]*(y[i]-expit(offsets[i]+eps*h[i]));
+        return score;
+      };
+      double lo=-1,hi=1;
+      for(int j=0;j<50 && score(lo)<0;++j) lo*=2;
+      for(int j=0;j<50 && score(hi)>0;++j) hi*=2;
+      if(score(lo)<0 || score(hi)>0) throw Error("nonconvergence","The TMLE targeting step did not bracket a solution.");
+      for(int j=0;j<80;++j) { const double mid=(lo+hi)/2; if(score(mid)>0) lo=mid; else hi=mid; }
+      const double eps=(lo+hi)/2;
+      for(int i=0;i<n;++i) q[i]=expit(offsets[i]+eps*h[i]);
+    }
+  }
   Vec phi0(n), phi1(n);
   for (int i = 0; i < n; ++i) {
     if (!(pi[i] > 0 && pi[i] < 1))
@@ -479,7 +604,8 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
     phi1[i] = m1[i] + z[i] * (y[i] - m1[i]) / pi[i];
     phi0[i] = m0[i] + (1 - z[i]) * (y[i] - m0[i]) / (1 - pi[i]);
   }
-  const double psi0 = moments(phi0).mean, psi1 = moments(phi1).mean;
+  const double psi0 = moments(p.method=="tmle" ? m0 : phi0).mean,
+               psi1 = moments(p.method=="tmle" ? m1 : phi1).mean;
   const auto measure = e.get("measure").as_string();
   Vec influence(n);
   Analysis out;
@@ -505,8 +631,22 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
 Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
   Analysis out;
   const auto measure = e.get("measure").as_string();
-  if (p.method == "aipw")
+  if (p.method == "aipw" || p.method == "tmle")
     out = analyze_aipw(e, d, p);
+  else if(p.method=="joint") {
+    const auto m=model_matrix(d,p.terms,true);
+    ModelFit model;
+    if(g.nodes[p.outcome].kind=="survival")
+      model=fit_weibull(m,d.times[p.outcome],d.events[p.outcome],p.family=="exponential");
+    else {
+      Vec y=d.values[p.outcome];
+      if(p.family=="lognormal") for(double &v:y) v=std::log(v);
+      model=fit_model(m,y,(p.family=="uniform" || p.family=="lognormal") ? "gaussian" : p.family,true);
+    }
+    out.statistic=wald_statistic(model,p.tested);
+    out.jointP=stats::pchisq(out.statistic,static_cast<double>(p.tested.size()),false);
+    return out;
+  }
   else if (p.method == "gformula" && p.chain.empty()) {
     // Zero by construction: an estimate without spread, never rejected.
     out.estimate = positive(measure) ? 1 : 0;
@@ -627,10 +767,20 @@ J population(const Graph &g, const J &e, int n, std::uint64_t seed,
              measure = e.get("measure").as_string();
   const int a = g.index(e.get("exposure").as_string()),
             y = g.index(e.get("outcome").as_string());
+  if(kind=="joint") {
+    J coefficients=J::array(); bool null=true;
+    for(const auto &t:g.nodes[y].terms)
+      if(measure=="nonlinearity" ? nonlinear_in(t,a) : t.left==a || t.right==a) {
+        coefficients.push(t.coefficient); null &= t.coefficient==0;
+      }
+    return object({{"estimate",J()},{"mcSE",0},{"n",0},{"exact",true},
+      {"jointNull",null},{"coefficients",coefficients},
+      {"description","Generating coefficients of the tested predictor block; fitted-model hypotheses depend on the specified analysis basis."}});
+  }
   if (kind == "coefficient") {
     double beta = 0;
     for (const auto &term : g.nodes[y].terms)
-      if (term.left == a && term.right < 0)
+      if (term.left == a && term.right < 0 && term.transform.kind == "identity")
         beta = term.coefficient;
     const double effect = positive(measure) ? std::exp(beta) : beta;
     if (!std::isfinite(effect))
@@ -687,12 +837,12 @@ J population(const Graph &g, const J &e, int n, std::uint64_t seed,
                  {"exact", false}});
 }
 struct Settings {
-  J json;
+  J json, analysis;
   std::vector<int> sizes;
   int repetitions = 500, populationSize = 20000;
   std::uint64_t seed = 2026;
   double alpha = .05, targetPower = .8, lower = -3, upper = 3;
-  std::string side = "two-sided", edge;
+  std::string side = "two-sided", edge, nullMode = "no_effect";
   bool checkNull = true;
 };
 Settings settings(const J &raw) {
@@ -741,6 +891,9 @@ Settings settings(const J &raw) {
       fail("The null-check setting must be true or false.");
     s.checkNull = raw.get("checkNull").as_bool();
   }
+  s.analysis=parse_analysis(raw.get("analysis"));
+  if(raw.find("nullMode")) s.nullMode=raw.get("nullMode").as_string();
+  if(s.nullMode!="no_effect" && s.nullMode!="average_effect") fail("Choose a no-effect or average-effect null.");
   J ns = J::array();
   for (int n : s.sizes)
     ns.push(n);
@@ -754,7 +907,7 @@ Settings settings(const J &raw) {
                    {"calibrationLower", s.lower},
                    {"calibrationUpper", s.upper},
                    {"checkNull", s.checkNull},
-                   {"targetPower", s.targetPower}});
+                   {"targetPower", s.targetPower}, {"analysis",s.analysis}, {"nullMode",s.nullMode}});
   return s;
 }
 std::string edge_key(const J &edge) {
@@ -876,7 +1029,8 @@ J calibrate(const Graph &g, const J &e, double target, const Settings &s,
 }
 J power(const Graph &g, const J &e, const Settings &s, int requested,
         Token *token, const Progress &progress) {
-  const auto plan = compile_plan(g, e);
+  const auto plan = compile_plan(g, e, s.analysis);
+  if(e.get("kind").as_string()=="joint" && s.side!="two-sided") fail("Joint tests use an omnibus two-sided hypothesis.");
   if (!s.edge.empty() &&
       std::none_of(plan.edges.begin(), plan.edges.end(), [&](int i) {
         return edge_key(g.json.get("edges").at(i)) == s.edge;
@@ -919,7 +1073,31 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                                   truthSeed, token, progress);
   J nullScenario;
   if (s.checkNull) {
-    if (e.get("kind").as_string() == "marginal" &&
+    if(e.get("kind").as_string()=="joint") {
+      J ng=g.json, nodes=J::array(), edges=J::array();
+      const auto a=e.get("exposure").as_string(), y=e.get("outcome").as_string();
+      const bool overall=e.get("measure").as_string()=="overall_effect";
+      for(J edge:g.json.get("edges").elements()) {
+        if(overall && edge.get("source").as_string()==a && edge.get("target").as_string()==y) edge.set("coefficient",0);
+        edges.push(edge);
+      }
+      for(J node:g.json.get("nodes").elements()) {
+        if(node.get("id").as_string()==y) for(const auto &key:{"interactions","functions"}) {
+          if(!node.find(key)) continue;
+          J terms=J::array();
+          for(J term:node.get(key).elements()) {
+            const auto t=parse_term(g,term);
+            if(overall ? t.left==plan.exposure || t.right==plan.exposure : nonlinear_in(t,plan.exposure)) term.set("coefficient",0);
+            terms.push(term);
+          }
+          node.set(key,terms);
+        }
+        nodes.push(node);
+      }
+      ng.set("nodes",nodes); ng.set("edges",edges);
+      nullScenario=object({{"graph",ng},{"truth",population(parse_graph(ng),e,s.populationSize,truthSeed,token)},
+        {"exactNull",true},{"construction","The tested generating coefficient block is zeroed; other outcome terms and paths remain. Under misspecified analysis, this need not be a null for the working-model coefficients."}});
+    } else if (s.nullMode=="no_effect" && e.get("kind").as_string() == "marginal" &&
         e.get("nullValue").as_number() ==
             (positive(e.get("measure").as_string()) ? 1 : 0)) {
       const auto ng = parse_graph(null_graph(g, e));
@@ -941,9 +1119,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
           "construction",
           exact
               ? "The selected conditional coefficient is set to its null value."
-              : "The reference DGP is Monte Carlo calibrated to the shifted "
-                "null; its effect uncertainty must be considered when "
-                "interpreting rejection.");
+              : "One arrow is Monte Carlo calibrated to the null contrast while other terms, including heterogeneity, remain. The verified effect and its Monte Carlo uncertainty must be considered when interpreting rejection.");
     }
   }
   J warnings = J::array(), results = J::array(), first, notes = J::array();
@@ -983,6 +1159,9 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
           parse_graph((scenario ? nullScenario : alternative).get("graph"));
       sim::Accumulator accumulator;
       std::map<std::string, int> reasons;
+      int coverageCount=0;
+      const bool scalar=e.get("kind").as_string()!="joint";
+      const double truth=(scenario ? nullScenario : alternative).get("truth").get("estimate").as_number();
       // Batches keep progress responsive and aggregation in replicate order,
       // independent of thread scheduling.
       constexpr int batchSize = 64;
@@ -990,6 +1169,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
         const int count = std::min(batchSize, s.repetitions - begin);
         std::vector<sim::Outcome> outcomes(count);
         std::vector<std::string> failures(count);
+        std::vector<int> covered(count);
         parallel_for(
             count, threads,
             [&](std::size_t i) {
@@ -1002,10 +1182,15 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                                  static_cast<std::uint64_t>(scenario)),
                              {}, true, token);
                 const auto fit = analyze(runGraph, e, data, plan);
-                out.reject = p_value(fit.statistic, fit.df, s.side) < s.alpha;
+                out.reject = (fit.jointP>=0 ? fit.jointP : p_value(fit.statistic, fit.df, s.side)) < s.alpha;
                 out.estimate = fit.estimate;
                 out.se = fit.se;
                 out.df = fit.df;
+                if(scalar) {
+                  const double center=positive(e.get("measure").as_string()) ? std::log(truth) : truth;
+                  const double critical=std::isfinite(fit.df) ? stats::qt(1-s.alpha/2,fit.df) : stats::qnorm(1-s.alpha/2);
+                  covered[i]=std::isfinite(center) && std::fabs(fit.testEstimate-center)<=critical*fit.se;
+                }
               } catch (const Error &error) {
                 out.failed = true;
                 failures[i] = error.code;
@@ -1016,6 +1201,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
             token);
         for (int i = 0; i < count; ++i) {
           accumulator.add(outcomes[i]);
+          coverageCount+=covered[i];
           if (!failures[i].empty())
             ++reasons[failures[i]];
         }
@@ -1047,7 +1233,10 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                {"meanEstimate", summary.mean_estimate},
                {"estimateSD", summary.sd_estimate},
                {"meanSE", summary.mean_se},
-               {"failureReasons", failures}}));
+               {"failureReasons", failures},
+                {"bias",scalar && summary.reps>summary.failures ? J(summary.mean_estimate-truth) : J()},
+                {"coverage",scalar && summary.reps>summary.failures ? J(static_cast<double>(coverageCount)/(summary.reps-summary.failures)) : J()},
+                {"coverageValid",summary.reps-summary.failures}}));
     }
     if (first.is_null() &&
         row.get("alternative").get("probability").as_number() >= s.targetPower)
@@ -1063,7 +1252,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                             {"label", plan.label},
                             {"formula", plan.formula},
                             {"testScale", plan.testScale},
-                            {"notes", notes}})},
+                            {"notes", notes}, {"specification",s.analysis}})},
        {"alternative", alternative},
        {"nullScenario", nullScenario},
        {"results", results},
@@ -1099,14 +1288,14 @@ J run_request(const J &request, Token *token, const Progress &progress) {
                      seed, options.get("summarize").as_bool(true));
   }
   if (op == "plan")
-    return plan_json(graph, compile_plan(graph, e));
+    return plan_json(graph, compile_plan(graph, e, request.get("analysis")));
   if (op == "analyze") {
     const auto fit = analyze(graph, e, read_data(graph, request.get("data")),
-                             compile_plan(graph, e));
+                             compile_plan(graph, e, request.get("analysis")));
     J out = analysis_json(fit);
     const auto side = request.get("side").as_string();
     out.set("pValue",
-            p_value(fit.statistic, fit.df, side.empty() ? "two-sided" : side));
+            fit.jointP>=0 ? fit.jointP : p_value(fit.statistic, fit.df, side.empty() ? "two-sided" : side));
     return out;
   }
   if (op == "population")
@@ -1131,3 +1320,4 @@ J run_request(const J &request, Token *token, const Progress &progress) {
   fail("Unknown DAG engine operation: " + op);
 }
 } // namespace ssc::dag
+

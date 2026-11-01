@@ -214,3 +214,8 @@ footer { max-width: 1400px; margin: 0 auto; padding: 0 24px 28px; color: var(--m
   .dag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dag-sim-form .dag-field { width: calc(50% - 6px); }
 }
+
+
+#dag-function-form { display: grid; gap: 8px; margin-top: 10px; }
+#dag-curve-preview svg { display: block; width: 100%; height: auto; }
+#power-analysis-models > .dag-grid { margin-top: 10px; }

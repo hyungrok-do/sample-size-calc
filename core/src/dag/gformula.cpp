@@ -34,7 +34,7 @@ double linear(const Fitted &f, const Vec &theta, const double *row) {
   double eta = theta[0];
   for (std::size_t j = 0; j < f.terms.size(); ++j) {
     const auto &t = f.terms[j];
-    const double x = row[t.left] * (t.right < 0 ? 1 : row[t.right]);
+    const double x = term_value(t, row[t.left], t.right < 0 ? 1 : row[t.right]);
     eta += theta[j + 1] * (x - f.means[j + 1]) / f.scales[j + 1];
   }
   return eta;
@@ -282,3 +282,4 @@ GFormula gformula(const Graph &g, const Data &d,
   return out;
 }
 } // namespace ssc::dag
+

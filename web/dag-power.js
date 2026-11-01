@@ -1,3 +1,4 @@
+import { BASES, parseAnalysis } from './dag-functions.js?v=dev';
 // The power-analysis panel: what to detect (comparison, outcome, measure), the design, and the results, in one form.
 // Its target is kept as an estimand object (estimand-model.js), which the C++ engine validates and analyzes.
 import { DEFAULT_POWER, parsePowerSettings, powerCompatibility } from './power-model.js?v=dev';
@@ -6,7 +7,7 @@ import { Engine } from './engine.js?v=dev';
 
 const POPULATION = 'Population represented by the data generating process';
 const SHORT = { mean_difference: 'Mean difference', risk_difference: 'Risk difference', risk_ratio: 'Risk ratio', odds_ratio: 'Odds ratio',
-  survival_difference: 'Survival difference', rmst_difference: 'RMST difference', coefficient: 'Coefficient', exponentiated_coefficient: 'exp(coefficient)' };
+  survival_difference: 'Survival difference', rmst_difference: 'RMST difference', coefficient: 'Coefficient', exponentiated_coefficient: 'exp(coefficient)', overall_effect: 'Overall effect', nonlinearity: 'Nonlinearity' };
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -35,9 +36,9 @@ function download(value, mime, filename) {
   document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function csv(result) {
-  const head = ['n', 'repetitions', 'power', 'mc_lower', 'mc_upper', 'mc_se', 'analysis_failures', 'mean_estimate', 'null_rejection', 'null_failures'];
+  const head = ['n', 'repetitions', 'power', 'mc_lower', 'mc_upper', 'mc_se', 'analysis_failures', 'mean_estimate', 'bias', 'ci_coverage_valid', 'null_rejection', 'null_failures'];
   const rows = result.results.map((row) => [row.n, row.alternative.repetitions, row.alternative.probability,
-    ...row.alternative.interval, row.alternative.mcSE, row.alternative.failures, row.alternative.meanEstimate,
+    ...row.alternative.interval, row.alternative.mcSE, row.alternative.failures, row.alternative.meanEstimate, row.alternative.bias ?? '', row.alternative.coverage ?? '',
     row.null?.probability ?? '', row.null?.failures ?? ''].join(','));
   return [head.join(','), ...rows].join('\n') + '\n';
 }
@@ -105,7 +106,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
       el('table', { id: 'power-table' }, el('thead', {}, el('tr', {}, header.map((title) => el('th', { scope: 'col' }, title)))), el('tbody', {}, rows)))];
     const truth = answer.alternative.truth, facts = [];
-    facts.push(el('li', { id: 'power-truth' }, truth.exact ? `True effect in the graph: ${fmt(truth.estimate)} (model coefficient).`
+    facts.push(el('li', { id: 'power-truth' }, answer.estimand.kind === 'joint' ? `Generating predictor-block coefficients: ${truth.coefficients?.map(fmt).join(', ') || 'none'}. The hypothesis concerns the specified regression basis.` : truth.exact ? `True effect in the graph: ${fmt(truth.estimate)} (model coefficient).`
       : `True effect in the graph: ${fmt(truth.estimate)} (Monte Carlo SE ${fmt(truth.mcSE)}).`));
     const parameter = answer.alternative.parameter;
     if (parameter) facts.push(el('li', { id: 'power-calibration' }, `${parameter.edge.replace('>', ' → ')} set to ${fmt(parameter.used)} (drawn ${fmt(parameter.drawn)}) to give the planning effect ${fmt(answer.alternative.target)}; the drawn graph is unchanged.`));
@@ -122,7 +123,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     const diagnostics = [];
     for (const row of answer.results) for (const name of ['alternative', 'null']) if (row[name]) {
       const item = row[name];
-      diagnostics.push(el('li', {}, `N=${row.n}, ${name}: ${item.valid} valid; mean estimate ${fmt(item.meanEstimate)}; SD ${fmt(item.estimateSD)}; mean SE ${fmt(item.meanSE)}.`
+      diagnostics.push(el('li', {}, `N=${row.n}, ${name}: ${item.valid} valid.` + (answer.estimand.kind === 'joint' ? '' : ` Mean estimate ${fmt(item.meanEstimate)}; bias ${fmt(item.bias)}; SD ${fmt(item.estimateSD)}; mean SE ${fmt(item.meanSE)}; ${pct(1 - answer.power.alpha)} CI coverage ${item.coverage == null ? '—' : pct(item.coverage)} among valid fits.`)
         + (item.failures ? ` Failures: ${Object.entries(item.failureReasons).map(([reason, count]) => `${reason.replaceAll('_', ' ')} ${count}`).join(', ')}.` : '')));
     }
     if (answer.nullScenario) diagnostics.push(el('li', {}, `${answer.nullScenario.exactNull ? 'Null scenario' : 'Reference scenario'}: ${answer.nullScenario.construction} Its effect: ${fmt(answer.nullScenario.truth.estimate)}.`));
@@ -146,7 +147,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       return;
     }
     const nodeList = graph.nodes.map((n) => [n.id, `${n.id} · ${n.label}`]);
-    const kind = select('estimand-kind', [['marginal', 'Group difference'], ['coefficient', 'Regression coefficient']], start.kind);
+    const kind = select('estimand-kind', [['marginal', 'Group / dose contrast'], ['coefficient', 'Regression coefficient'], ['joint', 'Overall effect / nonlinearity']], start.kind);
     const exposure = el('select', { id: 'estimand-exposure' }), outcome = el('select', { id: 'estimand-outcome' });
     const measure = el('select', { id: 'estimand-measure' });
     const horizon = numeric('estimand-horizon', start.horizon, { min: 0 });
@@ -163,6 +164,59 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     const edge = el('select', { id: 'power-edge' });
     const lower = numeric('power-lower', settings.calibrationLower), upper = numeric('power-upper', settings.calibrationUpper);
     const nullCheck = el('input', { id: 'power-null-check', type: 'checkbox', checked: settings.checkNull });
+    const nullMode = select('power-null-mode', [['no_effect', 'Remove all exposure effects'], ['average_effect', 'Calibrate the contrast; retain other effects']], settings.nullMode);
+    const currentAnalysis = settings.analysis;
+    const analysisMethod = select('analysis-method', [['auto', 'Automatic'], ['gformula', 'Parametric g-computation'], ['aipw', 'AIPW'], ['tmle', 'TMLE (binary outcome)']], currentAnalysis.method);
+    const analysisBasis = select('analysis-basis', [...BASES, ...(currentAnalysis.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.basis);
+    const propensityBasis = select('analysis-propensity', [['same', 'Use the analysis basis'], ...BASES, ...(currentAnalysis.propensity?.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.propensity?.basis ?? 'same');
+    const folds = numeric('analysis-folds', currentAnalysis.folds, { min: 1, max: 10, step: 1 });
+    const knots = el('input', { id: 'analysis-knots', type: 'text', value: (currentAnalysis.knots ?? [-1, 0, 1]).join(', ') });
+    const propensityKnots = el('input', { id: 'analysis-propensity-knots', type: 'text', value: (currentAnalysis.propensity?.knots ?? [-1, 0, 1]).join(', ') });
+    const interactions = el('input', { id: 'analysis-interactions', type: 'checkbox', checked: currentAnalysis.interactions });
+    const propensityInteractions = el('input', { id: 'analysis-propensity-interactions', type: 'checkbox', checked: currentAnalysis.propensity?.interactions });
+    const overrides = new Map();
+    const overrideRows = graph.nodes.filter((n) => hasParents(graph, n.id)).map((n) => {
+      const cfg = currentAnalysis.models?.[n.id];
+      const choice = select(`analysis-model-${n.id}`, [['default', 'Use common settings'], ...BASES, ...(cfg?.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], cfg?.basis ?? 'default');
+      const modelKnots = el('input', { id: `analysis-model-knots-${n.id}`, type: 'text', value: (cfg?.knots ?? [-1, 0, 1]).join(', ') });
+      const modelInteractions = el('input', { id: `analysis-model-interactions-${n.id}`, type: 'checkbox', checked: cfg?.interactions });
+      overrides.set(n.id, { choice, knots: modelKnots, interactions: modelInteractions, cfg });
+      const k = field('Spline knots', modelKnots), inter = el('label', {}, modelInteractions, 'Include pairwise interactions');
+      const visibility = () => { k.hidden = choice.value !== 'spline'; inter.hidden = ['default', 'match', 'custom'].includes(choice.value); };
+      choice.addEventListener('change', visibility); visibility();
+      return el('div', { class: 'dag-grid' }, field(`Model for ${n.id}`, choice), k, inter);
+    });
+    const knotsField = field('Analysis spline knots', knots, 'Fixed knots in the original predictor units; includes linear terms.'),
+      propensityKnotsField = field('Propensity spline knots', propensityKnots);
+    function analysisFields() {
+      knotsField.hidden = analysisBasis.value !== 'spline'; propensityKnotsField.hidden = propensityBasis.value !== 'spline';
+      folds.disabled = !['auto', 'aipw', 'tmle'].includes(analysisMethod.value);
+      if (folds.disabled) folds.value = 1;
+      if (kind.value !== 'marginal') { analysisMethod.value = 'auto'; folds.value = 1; }
+      analysisMethod.disabled = kind.value !== 'marginal';
+      nullMode.disabled = kind.value !== 'marginal';
+    }
+    const parseKnots = (input) => input.value.trim().split(/[\s,]+/).filter(Boolean).map(Number);
+    const readAnalysis = () => {
+      const config = { ...(analysisBasis.value === 'custom' ? currentAnalysis : {}), method: analysisMethod.value,
+        basis: analysisBasis.value, folds: Number(folds.value), interactions: interactions.checked,
+        ...(analysisBasis.value === 'spline' ? { knots: parseKnots(knots) } : {}) };
+      if (propensityBasis.value !== 'same') config.propensity = { ...(propensityBasis.value === 'custom' ? currentAnalysis.propensity : {}), basis: propensityBasis.value,
+        interactions: propensityInteractions.checked, ...(propensityBasis.value === 'spline' ? { knots: parseKnots(propensityKnots) } : {}) };
+      const models = Object.fromEntries([...overrides].filter(([, v]) => v.choice.value !== 'default').map(([id, v]) => [id,
+        { ...(v.choice.value === 'custom' ? v.cfg : {}), basis: v.choice.value, interactions: v.interactions.checked,
+          ...(v.choice.value === 'spline' ? { knots: parseKnots(v.knots) } : {}) }]));
+      if (Object.keys(models).length) config.models = models;
+      return parseAnalysis(config);
+    };
+    const analysisPanel = el('details', { id: 'power-analysis-models' }, el('summary', {}, 'Planned analysis models'),
+      el('p', { class: 'small muted' }, 'These settings change the fitted analysis, independently of the generating graph. Cross-fitting applies to AIPW and binary-outcome TMLE.'),
+      el('div', { class: 'dag-grid' }, field('Estimator', analysisMethod), field('Outcome / mediator terms', analysisBasis), field('Cross-fitting folds (1 = none)', folds), knotsField),
+      el('label', {}, interactions, 'Include pairwise interactions with linear, quadratic or spline terms'),
+      el('div', { class: 'dag-grid' }, field('Propensity terms (AIPW / TMLE)', propensityBasis), propensityKnotsField),
+      el('label', {}, propensityInteractions, 'Include pairwise propensity interactions'),
+      el('details', {}, el('summary', {}, 'Override individual models'), overrideRows));
+    for (const input of [analysisMethod, analysisBasis, propensityBasis]) input.addEventListener('change', analysisFields);
     const horizonField = field('Time horizon', horizon), levelsFields = [field('Active level', active), field('Reference level', reference)];
     const sizesField = field('Total sample sizes', sizes);
     sizesField.classList.add('dag-wide');
@@ -173,13 +227,14 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       el('p', { class: 'dag-group' }, 'What to detect'),
       el('div', { class: 'dag-grid' }, field('Effect', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure),
         horizonField, field('Effect to detect', alternative)),
+      analysisPanel,
       el('p', { class: 'dag-group' }, 'Design'),
       el('div', { class: 'dag-grid' }, sizesField, field('Studies per size', repetitions), field('Significance level α', alpha),
         field('Test', side), field('Target power', targetPower)),
       el('details', { id: 'power-more' }, el('summary', {}, 'More settings'),
         el('div', { class: 'dag-grid' }, ...levelsFields, field('Null value', nullValue), field('Random seed', seed),
           field('Population draws for the true effect', population)),
-        calibration,
+        calibration, field('Reference / null construction', nullMode),
         el('label', { class: 'dag-power-check', for: 'power-null-check' }, nullCheck, 'Also simulate the null scenario (type I error check)')),
       el('div', { class: 'dag-power-summary' }, method, formula, notes),
       el('div', { class: 'dag-actions' }, el('button', { id: 'power-run', type: 'submit', class: 'primary' }, 'Calculate power'),
@@ -194,7 +249,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     const num = (input, optional = false) => input.value.trim() === '' ? (optional ? null : NaN) : Number(input.value);
     const node = (id) => graph.nodes.find((n) => n.id === id);
     function choices(keep = {}) {
-      if (kind.value === 'coefficient') {
+      if (['coefficient', 'joint'].includes(kind.value)) {
         options(outcome, nodeList.filter(([id]) => hasParents(graph, id)), keep.outcome ?? outcome.value);
         options(exposure, graph.edges.filter((e) => e.target === outcome.value).map((e) => [e.source, `${e.source} · ${node(e.source).label}`]), keep.exposure ?? exposure.value);
       } else {
@@ -205,6 +260,10 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       const measures = availableMeasures(graph, kind.value, outcome.value)
         .filter((key) => !(key === 'mean_difference' && node(outcome.value)?.kind === 'binary'));
       options(measure, measures.map((key) => [key, SHORT[key] ?? MEASURES[key].label]), keep.measure ?? measure.value);
+      alternative.closest('.dag-field').hidden = kind.value === 'joint';
+      nullValue.disabled = side.disabled = kind.value === 'joint';
+      if (kind.value === 'joint') { alternative.value = ''; nullValue.value = 0; side.value = 'two-sided'; }
+      analysisFields();
       exposure.previousElementSibling.textContent = kind.value === 'coefficient' ? 'Coefficient of' : 'Compare';
       for (const item of levelsFields) item.hidden = kind.value !== 'marginal';
       horizonField.hidden = !MEASURES[measure.value]?.horizon;
@@ -218,13 +277,13 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       horizon: MEASURES[measure.value]?.horizon ? num(horizon) : null, nullValue: num(nullValue), alternative: num(alternative, true) });
     const readSettings = () => parsePowerSettings({ sampleSizes: sizes.value, repetitions: num(repetitions), alpha: num(alpha), side: side.value,
       seed: num(seed), targetPower: num(targetPower), populationSize: num(population), calibrationEdge: edge.value,
-      calibrationLower: num(lower), calibrationUpper: num(upper), checkNull: nullCheck.checked });
+      calibrationLower: num(lower), calibrationUpper: num(upper), checkNull: nullCheck.checked, nullMode: nullMode.value, analysis: readAnalysis() });
     // Reads the form, keeps what is valid, and says what the run would do or why it cannot run.  mode: 'auto' (the
     // form as built), 'edit' (typing) or 'commit' (a finished change, which undo can take back).
     function sync(mode) {
       const value = target();
       let problem = null, plan = null;
-      try { validateEstimand(graph, value); onTarget(copyEstimand(value), mode); plan = powerCompatibility(graph, value); }
+      try { validateEstimand(graph, value); onTarget(copyEstimand(value), mode === 'auto' ? 'auto' : 'edit'); plan = powerCompatibility(graph, value, readAnalysis()); }
       catch (error) { problem = error.message; }
       const edges = plan?.supported ? plan.calibrationEdges : [];
       const wanted = edge.value || settings.calibrationEdge;
@@ -232,12 +291,12 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       edge.disabled = !edges.length || value.kind === 'coefficient';
       lower.closest('.dag-field').hidden = upper.closest('.dag-field').hidden = value.kind === 'coefficient';
       calibration.hidden = value.alternative === null && value.nullValue === (MEASURES[value.measure]?.nullValue ?? 0);
-      try { settings = readSettings(); onSettings(settings); } catch (error) { problem ??= error.message; }
+      try { settings = readSettings(); onSettings(settings, mode); } catch (error) { problem ??= error.message; }
       if (!problem && plan && !plan.supported) problem = plan.reason;
       ready = !problem;
       method.className = problem ? 'error' : '';
       method.textContent = problem ?? `Analysis: ${plan.label}.`;
-      formula.textContent = problem ? '' : `${describeEstimand(graph, value).formula}; H₀: θ = ${value.nullValue}.`;
+      formula.textContent = problem ? '' : describeEstimand(graph, value).formula + (value.kind === 'joint' ? '' : `; H₀: θ = ${value.nullValue}.`);
       formula.hidden = Boolean(problem);
       notes.replaceChildren(...(problem ? [] : plan.notes).map((text) => el('li', {}, text)));
       notes.hidden = !notes.children.length;
@@ -247,7 +306,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     // group difference when the variable cannot take part in it
     assign = (role, id) => {
       const other = role === 'exposure' ? 'outcome' : 'exposure', current = { exposure: exposure.value, outcome: outcome.value };
-      if (kind.value === 'coefficient' && (role === 'outcome' ? !hasParents(graph, id)
+      if (['coefficient', 'joint'].includes(kind.value) && (role === 'outcome' ? !hasParents(graph, id)
         : !graph.edges.some((e) => e.source === id && e.target === outcome.value))) kind.value = 'marginal';
       const was = measure.value;
       choices({ [role]: id, [other]: current[other] === id ? current[role] : current[other] });
@@ -286,3 +345,4 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
   }
   return { refresh, stop, assign: (role, id) => assign(role, id) };
 }
+

@@ -92,8 +92,8 @@ Matrix model_matrix(const Data &d, const std::vector<Term> &terms,
     const auto &term = terms[j];
     Vec values(m.n);
     for (int i = 0; i < m.n; ++i) {
-      values[i] = d.values[term.left][i] *
-                  (term.right < 0 ? 1 : d.values[term.right][i]);
+      values[i] = term_value(term, d.values[term.left][i],
+                  term.right < 0 ? 1 : d.values[term.right][i]);
       if (!std::isfinite(values[i]))
         bad("numerical", "A model term overflowed.");
     }
@@ -266,7 +266,7 @@ static Vec inverse(const Vec &factor, int p) {
   }
   return out;
 }
-ModelFit fit_model(const Matrix &m, const Vec &y, const std::string &family) {
+ModelFit fit_model(const Matrix &m, const Vec &y, const std::string &family, bool robust) {
   ModelFit out;
   Vec info;
   if (family == "gaussian") {
@@ -295,9 +295,45 @@ ModelFit fit_model(const Matrix &m, const Vec &y, const std::string &family) {
     }
   }
   out.covariance = inverse(cholesky(info, m.p), m.p);
-  for (double &v : out.covariance)
-    v *= out.dispersion;
+  if(robust) {
+    // Gamma uses a noncanonical log link. Under misspecification the score
+    // Jacobian is sum(y / mu * x x'), not its model-based expectation.
+    if(family=="gamma") {
+      Vec jacobian(m.p*m.p);
+      for(int i=0;i<m.n;++i) {
+        const double weight=y[i]/std::exp(predictor(m,out.beta,i));
+        for(int j=0;j<m.p;++j) for(int k=0;k<m.p;++k)
+          jacobian[j*m.p+k]+=weight*m.x[i*m.p+j]*m.x[i*m.p+k];
+      }
+      out.covariance=inverse(cholesky(jacobian,m.p),m.p);
+    }
+    const Vec bread=out.covariance;
+    Vec covariance(m.p*m.p);
+    for(int i=0;i<m.n;++i) {
+      const double eta=predictor(m,out.beta,i),
+        mu=family=="gaussian" ? eta : family=="bernoulli" ? 1/(1+std::exp(-eta)) : std::exp(eta),
+        residual=family=="gamma" ? y[i]/mu-1 : y[i]-mu;
+      Vec influence(m.p);
+      for(int j=0;j<m.p;++j) for(int k=0;k<m.p;++k)
+        influence[j]+=bread[j*m.p+k]*m.x[i*m.p+k]*residual;
+      for(int j=0;j<m.p;++j) for(int k=0;k<m.p;++k)
+        covariance[j*m.p+k]+=influence[j]*influence[k];
+    }
+    for(double &v:covariance) v*=static_cast<double>(m.n)/(m.n-m.p);
+    out.covariance=std::move(covariance);
+  } else for (double &v : out.covariance) v *= out.dispersion;
   return out;
+}
+double wald_statistic(const ModelFit &fit, const std::vector<int> &indices) {
+  const int p=static_cast<int>(fit.beta.size()), q=static_cast<int>(indices.size());
+  Vec covariance(q*q),beta(q);
+  for(int i=0;i<q;++i) {
+    beta[i]=fit.beta.at(indices[i]);
+    for(int j=0;j<q;++j) covariance[i*q+j]=fit.covariance.at(indices[i]*p+indices[j]);
+  }
+  const auto x=solve(cholesky(covariance,q),beta,q);
+  double value=0; for(int i=0;i<q;++i) value+=beta[i]*x[i];
+  return std::max(0.0,value);
 }
 ModelFit fit_weibull(const Matrix &m, const Vec &times, const Vec &events,
                      bool exponential) {
@@ -497,3 +533,4 @@ KM kaplan_meier(const Vec &times, const Vec &events, double horizon) {
   return k;
 }
 } // namespace ssc::dag
+

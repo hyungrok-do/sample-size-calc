@@ -59,7 +59,7 @@ available through the variable settings. The canvas scrolls on small screens.
 ## Distributions
 
 For each variable the predictor is `eta = intercept + sum(beta * parent)` plus
-any explicitly specified pairwise products. Coefficients use the parents'
+explicit pairwise products and optional transformed response terms (below). Coefficients use the parents'
 original units. All generated variables can be parents, subject to acyclicity.
 
 | Type | Distribution | Conditional parameters |
@@ -84,6 +84,53 @@ through parent terms and shared ancestors. Roots are independent unless an
 explicit ancestor is introduced. Variable labels do not enforce randomization
 or determine an adjustment set. Interactions apply on the child's predictor
 scale; main coefficients then apply when interacting parents equal zero.
+
+## Nonlinear response functions
+
+Select a child variable and open **Response curves**. Its existing arrows
+remain linear terms. Additional terms support:
+
+| Function | Definition and parameters |
+| --- | --- |
+| Quadratic | `((x - center) / scale)^2`, with positive scale |
+| Threshold | `1{x > knot}` (strict inequality) |
+| Hinge | `max(0, x - knot)` |
+| Saturation | `tanh((x - center) / scale)` |
+| Restricted cubic spline | 3–7 fixed, increasing knots in original units; one linear arrow plus `K - 2` nonlinear components |
+
+A response term can multiply two transformed parents, including the same
+parent. Both variables must already have arrows into the child. Terms are
+explicit data, never expressions evaluated as code. Duplicate terms are
+rejected; other linear dependencies (e.g., a binary variable and its square)
+can still make a planned regression unidentified and are reported as failed
+fits. Terms survive JSON export/import, renaming and Undo; removing a parent
+arrow removes its dependent terms.
+
+For example, add this to a node to generate a quadratic effect and a nonlinear
+interaction:
+
+```json
+"functions": [
+  {"left": "X", "transform": {"kind": "square"}, "coefficient": 0.7},
+  {"left": "X", "transform": {"kind": "saturation", "center": 0, "scale": 1},
+   "right": "A", "coefficient": 0.3}
+]
+```
+
+A spline component is `{"kind":"spline","knots":[-2,-1,1,2],"index":0}`.
+The JSON index is zero-based (the editor shows one-based components). For
+knots `k1 < ... < kK`, component `j=1,...,K-2` is
+`[(x-kj)+^3 - (x-k(K-1))+^3 (kK-kj)/(kK-k(K-1)) +
+(x-kK)+^3 (k(K-1)-kj)/(kK-k(K-1))] / (kK-k1)^2`.
+Both tails are linear; the upper tail is evaluated directly to avoid
+cancellation. The linear arrow is a separate coefficient.
+
+**Preview the conditional response** plots the implied mean, probability or
+hazard multiplier as one parent varies. Other parents are held at the
+editable values shown (initially zero); this is a conditional slice, not a
+marginal effect or a simulated dataset. Built-in examples demonstrate a
+U-shaped dose response, nonlinear confounding, and a zero average effect
+with heterogeneous subgroup effects.
 
 ## Survival observations
 
@@ -119,7 +166,7 @@ compiled into the calculator’s existing `ssc_web` and `ssc_web_mt` engines. A 
 - Distribution parameters such as `sd`, `width`, `shape` and `scale`
 - For survival: `censoring: {mode, time, variable}`
 
-Arrows have `{source, target, coefficient}`. Interactions on a child have
+Arrows have `{source, target, coefficient}`. A node may also have a `functions` array of explicit transformed terms. Interactions on a child have
 `{left, right, coefficient}`, using two different existing parents. Deleting a
 parent arrow also deletes interactions that depend on it. Renaming a variable
 updates all references. Unknown imported fields are discarded, never executed.
@@ -172,7 +219,7 @@ the result. CSV includes every variable and derived survival observation column.
 ## The power target (estimand)
 
 The target is distinct from the estimator or analysis used for power. The panel
-supports two target types:
+supports three target types:
 
 - **Group difference** (a marginal total-effect contrast): intervention levels for a selected
   variable, with a difference in means, binary risk difference/ratio or marginal
@@ -182,8 +229,20 @@ supports two target types:
   fixed or automatically included as adjustment variables.
 - **Regression coefficient** (a conditional model coefficient): an existing predictor-to-outcome arrow,
   on the child's predictor scale or an exponentiated scale when meaningful.
-  With interactions, the main coefficient applies at zero values of the
-  interacting parents. It is not presented as a marginal total effect.
+  With ordinary interactions, the main coefficient applies at zero values of the
+  other interacting parents. Nonlinear terms can also contribute to effects and
+  derivatives, so the linear coefficient alone is not the full effect. It is not presented as a marginal total effect.
+
+- **Overall effect / nonlinearity** (a joint conditional regression test):
+  `overall_effect` tests all fitted terms involving the selected predictor;
+  `nonlinearity` tests only terms nonlinear in that predictor, retaining its
+  linear terms. The latter is unavailable for a binary predictor. Transformed
+  interactions are included when they are nonlinear in the selected predictor.
+  The fitted basis defines the hypothesis; this is not a marginal total-effect
+  test. The graph supplies the alternative; a scalar effect-size calibration
+  is not meaningful for a coefficient block. Joint tests use a sandwich Wald
+  chi-square test for nonsurvival outcomes and a model-based Weibull PH Wald
+  test for survival outcomes. Both are large-sample tests.
 
 The population is the graph's distribution; the exported target records it as
 text, which does not subset or reweight simulated data. A custom text target,
@@ -232,6 +291,62 @@ confounded, and its power uses the augmented inverse probability weighting
 (AIPW) estimator described next. Everything else uses the parametric
 g-formula, so continuous, count and event-time interventions run too.
 
+### Independently specifying the planned analysis
+
+Open **Planned analysis models** to choose the estimator and regression terms
+independently of the generating graph. Existing designs default to the
+original automatic estimator with matching terms and no cross-fitting.
+Selecting g-computation also allows adjusted analyses of randomized binary
+comparisons. AIPW and TMLE require a binary exposure and nonsurvival outcome;
+this TMLE implementation is restricted to binary outcomes. Incompatible
+selections produce an explicit explanation before running.
+
+Term presets are matching generating terms, linear main effects, linear plus
+quadratic terms, or restricted cubic splines with fixed user-specified knots.
+Binary variables contribute a single linear term. Optional pairwise
+interactions use linear parent values. Propensity terms and individual node
+models can be overridden separately. Fixed knots use original predictor
+units; choose appropriate ranges rather than treating the default -1, 0, 1
+as universal. In the JSON API, a `custom` basis accepts an explicit `terms`
+list with the same transformations as generating functions, without
+coefficients. G-computation disallows conditioning a node on itself or its
+descendants; AIPW/TMLE disallow exposure descendants in adjustment models.
+
+The design stores this under `power.analysis`. `plan` and `analyze` requests
+accept the same object as a top-level `analysis` argument. For example:
+
+```json
+{
+  "method": "aipw",
+  "basis": "linear",
+  "propensity": {"basis": "quadratic"},
+  "folds": 5,
+  "models": {"Y": {"basis": "spline", "knots": [-2, 0, 2]}}
+}
+```
+
+An override keyed by the exposure ID takes precedence over `propensity`.
+The overall/mediator preset applies to each g-computation model unless its
+node is overridden. Numerical coefficients are always estimated anew from
+each study; the analysis does not receive generating coefficients.
+
+AIPW/TMLE support 2–10 folds (`folds:1` disables splitting). Folds are assigned
+deterministically within exposure arms. Each study refits its propensity and
+arm-specific outcome models using training folds only and predicts on held-out
+rows. Centering/scaling uses the full covariate matrix, an invertible linear
+reparameterization that does not change these unpenalized regression fits.
+There is no automatic propensity truncation. Failed or separated fits remain
+explicit failures. Cross-fitting does not guarantee valid inference with
+poor overlap, small samples, or misspecified nuisance models.
+
+Binary-outcome TMLE updates the cross-fitted outcome probabilities with two
+arm-specific logistic offset fluctuations using inverse propensity clever
+covariates. Its treatment-specific means are averages of the updated
+probabilities, so they stay within the probability range. Wald standard
+errors use the empirical efficient influence function, with delta-method
+log-scale inference for risk and odds ratios. This is a finite-basis TMLE;
+no automatic machine-learning model selection is performed.
+
 ### Confounded comparisons (AIPW)
 
 When arrows enter the comparison variable `A`, each simulated study is
@@ -244,15 +359,20 @@ analyzed with the doubly robust AIPW estimator (Robins, Rotnitzky & Zhao
   and other descendants of `A` are never adjusted for. A parent of `A` that is
   a censored event time is used at its latent value, with a note that a real
   study could not see it.
-- **Propensity model.** Logistic regression of `A` on its own terms in the
-  DGP (its parents and their interactions), so it is correctly specified by
-  construction.
+- **Propensity model.** Logistic regression on the independently selected
+  exposure terms. The default matches the generating terms (including
+  nonlinear functions), so it is correctly specified by construction in that
+  default. A different analysis basis can deliberately misspecify it.
 - **Outcome model.** Within each arm, a regression of the outcome on the
   adjustment set (main effects, plus interactions in the DGP between two of
   its variables): least squares for Normal and Uniform outcomes, logistic for
   Bernoulli, Poisson log-link for counts, and Gamma log-link for Gamma and
   Log-normal outcomes. It may be misspecified; the estimator remains
-  consistent because the propensity model is correct.
+  consistent if the propensity model is correct, under positivity and the
+  usual regularity conditions. Alternatively, a correct outcome regression
+  supplies consistency when the propensity model is misspecified. Neither
+  double robustness nor cross-fitting by itself guarantees Wald coverage
+  under every single-model misspecification scenario.
 - **Inference.** The standard error is the empirical SD of the estimated
   influence function over `sqrt(n)`, with a normal reference distribution.
   Risk and odds ratios are tested on the log scale by the delta method.
@@ -268,9 +388,10 @@ g-formula instead, which adjusts for confounding and censoring together.
 
 ### Every other comparison (parametric g-formula)
 
-The g-formula (Robins 1986) refits the DGP's own conditional model for the
+The g-formula (Robins 1986) refits the specified conditional model for the
 outcome and for every variable the comparison variable `A` affects on the way
-to it (the mediators), each on its parents and interactions, by maximum
+to it (the mediators), each on its specified terms (the parents, interactions
+and nonlinear functions by default), by maximum
 likelihood: least squares with an estimated SD for Normal, Uniform and
 Log-normal (on the log scale) variables, logistic, Poisson and Gamma GLMs, and
 a Weibull proportional-hazards fit to observed time and event status for event
@@ -325,12 +446,24 @@ the run with the bounds to widen. Conditional
 coefficient calibration is exact (log transform for an exponentiated target).
 The graph stays as drawn; the report includes the actual alternative graph.
 
-For the usual marginal no-effect null, every exposure effect on causal paths
+The default reference is the marginal no-effect null. For this null, every exposure effect on causal paths
 to the outcome, including interactions involving the exposure, is zeroed.
 Other paths and observation rules remain. This handles mediated effects rather
 than zeroing only the direct arrow. Conditional nulls set the selected
 coefficient. Shifted marginal nulls are Monte Carlo calibrated and labeled
 approximate reference scenarios, with their effect uncertainty exposed.
+
+The alternative **Calibrate the contrast; retain other effects** reference
+changes one selected linear arrow to reach the null contrast while preserving
+all other terms. It can retain nonzero subgroup effects when their population
+average is zero. This reference is Monte Carlo calibrated and independently
+verified, so the report calls it approximate and reports its remaining effect
+and uncertainty. Rejection is only interpretable relative to that verified
+reference; finite calibration error is not evidence of type I error failure.
+A requested reference outside the selected arrow's reachable range fails
+explicitly. For joint tests, the selected generating coefficient block is
+zeroed while other terms remain; under misspecified analysis this need not be
+a null for the working-model coefficient block.
 
 ### Results and reproduction
 
@@ -338,7 +471,11 @@ Power is rejections divided by **all** simulated studies. Failed generation or
 analysis remains in the denominator as non-rejection, with failure reasons and
 counts shown. Results include pointwise 95% Wilson Monte Carlo intervals,
 Monte Carlo SEs, mean estimates, empirical SDs, mean test-scale SEs and optional
-null rejection rates. The reported sample size is the first **tested** N whose
+null rejection rates. Scalar targets also report bias and confidence-interval
+coverage at the known generating target, among valid fits. The interval level
+is `1 - alpha`, even for a one-sided power test. Bias is on the reported effect
+scale; coverage uses the test scale (log for ratios). Joint tests have no
+single effect estimate or interval coverage. The reported sample size is the first **tested** N whose
 point estimate reaches target power; intermediate sizes are not inferred.
 
 Download the complete JSON report or the power table as CSV. The JSON is a
@@ -376,10 +513,15 @@ identical one-thread/four-thread power results. AIPW estimates, standard
 errors and p-values match an independent NumPy implementation for Normal,
 Bernoulli (risk difference, risk ratio, odds ratio), Poisson and Gamma
 outcomes; simulated AIPW power under confounding recovers the total effect
-of a mediated exposure and holds its type I error. The web tests call the real
+of a mediated exposure and holds its type I error. `web/tests/nonlinear.test.mjs` checks explicit function values, spline tails,
+transformed interactions, independent analysis plans, U-shaped signals,
+misspecified regressions, cross-fitted AIPW/TMLE, interval coverage and
+heterogeneous average-effect nulls. The site tests exercise curve editing,
+previewing, export, analysis Undo, TMLE and joint tests. The web tests call the real
 WebAssembly engine for distribution checks, calibration, null construction,
 survival observation handling, power curves and saved-report reproduction.
 
 ## Preview
 
 ![The power analysis panel with simulated power by sample size](dag-power-panel.jpg)
+

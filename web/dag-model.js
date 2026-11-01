@@ -1,3 +1,4 @@
+import { parseFunction, termText, termKey } from './dag-functions.js?v=dev';
 // Executable distribution DAG. Variables have types and distributions, without prescribed scientific roles.
 // Parent effects and interactions are explicit terms on the child's conditional distribution scale. No eval.
 export const DAG_VERSION = 1;
@@ -84,6 +85,17 @@ export function validateGraph(graph) {
       if (terms.has(pair)) fail(`${node.label}: that interaction already exists.`);
       terms.add(pair);
     }
+    if (node.functions != null) {
+      if (!Array.isArray(node.functions) || node.functions.length > 120) fail('Use at most 120 additional response terms per variable.');
+      const seen = new Set([...p.map((left) => termKey({ left })), ...node.interactions.map(termKey)]);
+      for (const raw of node.functions) {
+        const term = parseFunction(raw);
+        if (!p.includes(term.left) || term.right && !p.includes(term.right)) fail('Response terms must use existing parents of the child.');
+        const key = termKey(term);
+        if (seen.has(key)) fail('Duplicate response term.');
+        seen.add(key);
+      }
+    }
     if (node.kind === 'survival') {
       if (node.censoring.mode === 'variable') {
         const other = byId.get(node.censoring.variable);
@@ -108,6 +120,7 @@ export function parseGraph(input) {
       censoring: n.kind === 'survival' ? { mode: n.censoring.mode,
         time: n.censoring.mode === 'administrative' ? n.censoring.time : 20,
         variable: n.censoring.mode === 'variable' ? n.censoring.variable : '' } : { mode: 'none', time: 20, variable: '' },
+      ...(n.functions?.length ? { functions: n.functions.map((t) => parseFunction(t)) } : {}),
       interactions: n.interactions.map((t) => ({ left: t.left, right: t.right, coefficient: t.coefficient })) })),
     edges: raw.edges.map((e) => ({ source: e.source, target: e.target, coefficient: e.coefficient })) };
 }
@@ -118,16 +131,18 @@ export function addEdge(graph, source, target, coefficient = 0.5) {
 export function removeNode(graph, id) {
   return { ...graph, nodes: graph.nodes.filter((n) => n.id !== id).map((n) => ({ ...n,
     censoring: n.censoring?.mode === 'variable' && n.censoring.variable === id ? { mode: 'none', time: 20, variable: '' } : n.censoring,
+    ...(n.functions ? { functions: n.functions.filter((t) => t.left !== id && t.right !== id) } : {}),
     interactions: n.interactions.filter((t) => t.left !== id && t.right !== id) })),
   edges: graph.edges.filter((e) => e.source !== id && e.target !== id) };
 }
 export function removeEdge(graph, source, target) {
   return { ...graph, edges: graph.edges.filter((e) => e.source !== source || e.target !== target),
-    nodes: graph.nodes.map((n) => n.id !== target ? n : { ...n, interactions: n.interactions.filter((t) => t.left !== source && t.right !== source) }) };
+    nodes: graph.nodes.map((n) => n.id !== target ? n : { ...n, ...(n.functions ? { functions: n.functions.filter((t) => t.left !== source && t.right !== source) } : {}), interactions: n.interactions.filter((t) => t.left !== source && t.right !== source) }) };
 }
 export function renameNode(graph, oldId, newId) {
   const next = { ...graph, nodes: graph.nodes.map((n) => ({ ...n, id: n.id === oldId ? newId : n.id,
     censoring: n.censoring?.mode === 'variable' && n.censoring.variable === oldId ? { ...n.censoring, variable: newId } : n.censoring,
+    ...(n.functions ? { functions: n.functions.map((t) => ({ ...t, left: t.left === oldId ? newId : t.left, ...(t.right ? { right: t.right === oldId ? newId : t.right } : {}) })) } : {}),
     interactions: n.interactions.map((t) => ({ ...t, left: t.left === oldId ? newId : t.left, right: t.right === oldId ? newId : t.right })) })),
     edges: graph.edges.map((e) => ({ ...e, source: e.source === oldId ? newId : e.source, target: e.target === oldId ? newId : e.target })) };
   validateGraph(next); return next;
@@ -143,6 +158,24 @@ export function exampleGraph(name = 'mediation') {
   const a = { ...makeNode('A', 'binary', 30, 300), label: 'Treatment' };
   const m = { ...makeNode('M', 'continuous', 430, 300), label: 'Mediator' };
   const y = { ...makeNode('Y', name === 'binary' ? 'binary' : 'continuous', 830, 60), label: 'Outcome' };
+  if (name === 'nonlinear-dose') {
+    const dose = { ...makeNode('A', 'continuous', 30, 180), label: 'Dose' };
+    y.functions = [{ left: 'A', transform: { kind: 'square' }, coefficient: .8 }];
+    return { version: DAG_VERSION, nodes: [dose, y], edges: [{ source: 'A', target: 'Y', coefficient: 0 }] };
+  }
+  if (name === 'nonlinear-confounding') {
+    x.family = 'uniform'; x.width = 4;
+    a.intercept = -.5;
+    a.functions = [{ left: 'X', transform: { kind: 'square' }, coefficient: .3 }];
+    y.functions = [{ left: 'X', transform: { kind: 'square' }, coefficient: .7 }];
+    return { version: DAG_VERSION, nodes: [x, a, y], edges: [
+      { source: 'X', target: 'A', coefficient: .2 }, { source: 'X', target: 'Y', coefficient: .2 }, { source: 'A', target: 'Y', coefficient: .4 }] };
+  }
+  if (name === 'heterogeneous-null') {
+    y.functions = [{ left: 'X', transform: { kind: 'square' }, right: 'A', coefficient: .5 }];
+    return { version: DAG_VERSION, nodes: [x, a, y], edges: [
+      { source: 'X', target: 'Y', coefficient: .1 }, { source: 'A', target: 'Y', coefficient: -.5 }] };
+  }
   if (name === 'binary') {
     y.intercept = -1;
     return { version: DAG_VERSION, nodes: [x, a, y], edges: [
@@ -164,7 +197,8 @@ const shown = (x) => String(Number(x.toPrecision(6)));  // equations show six si
 export function equation(graph, node) {
   let predictor = shown(node.intercept);
   for (const term of [...graph.edges.filter((e) => e.target === node.id).map((e) => ({ value: e.coefficient, name: e.source })),
-    ...node.interactions.map((t) => ({ value: t.coefficient, name: `${t.left} × ${t.right}` }))])
+    ...node.interactions.map((t) => ({ value: t.coefficient, name: `${t.left} × ${t.right}` })),
+    ...(node.functions ?? []).map((t) => ({ value: t.coefficient, name: termText(t) }))])
     predictor += ` ${term.value < 0 ? '−' : '+'} ${shown(Math.abs(term.value))} × ${term.name}`;
   if (node.family === 'gaussian') return `${node.id} = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})`;
   if (node.family === 'uniform') return `${node.id} ~ Uniform(η − ${node.width / 2}, η + ${node.width / 2}), η = ${predictor}`;
@@ -180,3 +214,4 @@ export function dataCsv(_graph, result) {
   const ids = Object.keys(result.columns);
   return [ids.join(','), ...Array.from({ length: result.n }, (_, i) => ids.map((id) => result.columns[id][i]).join(','))].join('\n') + '\n';
 }
+

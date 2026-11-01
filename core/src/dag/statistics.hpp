@@ -38,7 +38,8 @@ struct ModelFit {
 };
 // "gaussian" (least squares), "bernoulli", "poisson" or "gamma" (log link).
 ModelFit fit_model(const Matrix &matrix, const Vec &response,
-                   const std::string &family);
+                   const std::string &family, bool robust = false);
+double wald_statistic(const ModelFit &fit, const std::vector<int> &indices);
 // Weibull proportional hazards with right censoring, H(t | x) = t^k exp(x'b):
 // `beta` holds b and then log k, unless `exponential` fixes k = 1.
 ModelFit fit_weibull(const Matrix &matrix, const Vec &times, const Vec &events,
@@ -49,3 +50,4 @@ struct KM {
 KM kaplan_meier(const Vec &times, const Vec &events, double horizon);
 double p_value(double statistic, double df, const std::string &side);
 } // namespace ssc::dag
+
