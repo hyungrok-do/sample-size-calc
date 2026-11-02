@@ -1,3 +1,4 @@
+import { validateStudy, parseStudy, updateStudyReferences } from './dag-study.js?v=dev';
 import { parseFunction, termText, termKey } from './dag-functions.js?v=dev';
 // Executable distribution DAG. Variables have types and distributions, without prescribed scientific roles.
 // Parent effects and interactions are explicit terms on the child's conditional distribution scale. No eval.
@@ -108,15 +109,18 @@ export function validateGraph(graph) {
       }
     }
   }
+  validateStudy(graph);
   return { order, parents, byId };
 }
 export function parseGraph(input) {
   const raw = typeof input === 'string' ? JSON.parse(input) : input;
   validateGraph(raw);
-  return { version: DAG_VERSION,
+  return { version: DAG_VERSION, ...(raw.study ? { study: parseStudy(raw.study) } : {}),
     nodes: raw.nodes.map((n) => ({ id: n.id, label: n.label, kind: n.kind, family: n.family, intercept: n.intercept,
       ...Object.fromEntries(Object.entries(DEFAULT_PARAMETERS).map(([key, value]) => [key, finite(n[key]) && n[key] > 0 ? n[key] : value])),
       x: n.x, y: n.y,
+      ...(raw.study ? { scope: n.scope ?? 'subject', repeated: Object.fromEntries(['subjectSD', 'slopeSD', 'slopeCorrelation', 'clusterSD', 'residualCorrelation'].map((k) => [k, n.repeated?.[k] ?? 0])),
+        lags: (n.lags ?? []).map((l) => ({ source: l.source, lag: l.lag, coefficient: l.coefficient, initial: l.initial ?? 0 })) } : {}),
       censoring: n.kind === 'survival' ? { mode: n.censoring.mode,
         time: n.censoring.mode === 'administrative' ? n.censoring.time : 20,
         variable: n.censoring.mode === 'variable' ? n.censoring.variable : '' } : { mode: 'none', time: 20, variable: '' },
@@ -129,7 +133,8 @@ export function addEdge(graph, source, target, coefficient = 0.5) {
   validateGraph(next); return next;
 }
 export function removeNode(graph, id) {
-  return { ...graph, nodes: graph.nodes.filter((n) => n.id !== id).map((n) => ({ ...n,
+  return { ...graph, ...(graph.study ? { study: updateStudyReferences(graph.study, id, null) } : {}), nodes: graph.nodes.filter((n) => n.id !== id).map((n) => ({ ...n,
+    ...(n.lags ? { lags: n.lags.filter((l) => l.source !== id) } : {}),
     censoring: n.censoring?.mode === 'variable' && n.censoring.variable === id ? { mode: 'none', time: 20, variable: '' } : n.censoring,
     ...(n.functions ? { functions: n.functions.filter((t) => t.left !== id && t.right !== id) } : {}),
     interactions: n.interactions.filter((t) => t.left !== id && t.right !== id) })),
@@ -140,7 +145,8 @@ export function removeEdge(graph, source, target) {
     nodes: graph.nodes.map((n) => n.id !== target ? n : { ...n, ...(n.functions ? { functions: n.functions.filter((t) => t.left !== source && t.right !== source) } : {}), interactions: n.interactions.filter((t) => t.left !== source && t.right !== source) }) };
 }
 export function renameNode(graph, oldId, newId) {
-  const next = { ...graph, nodes: graph.nodes.map((n) => ({ ...n, id: n.id === oldId ? newId : n.id,
+  const next = { ...graph, ...(graph.study ? { study: updateStudyReferences(graph.study, oldId, newId) } : {}), nodes: graph.nodes.map((n) => ({ ...n, id: n.id === oldId ? newId : n.id,
+    ...(n.lags ? { lags: n.lags.map((l) => ({ ...l, source: l.source === oldId ? newId : l.source })) } : {}),
     censoring: n.censoring?.mode === 'variable' && n.censoring.variable === oldId ? { ...n.censoring, variable: newId } : n.censoring,
     ...(n.functions ? { functions: n.functions.map((t) => ({ ...t, left: t.left === oldId ? newId : t.left, ...(t.right ? { right: t.right === oldId ? newId : t.right } : {}) })) } : {}),
     interactions: n.interactions.map((t) => ({ ...t, left: t.left === oldId ? newId : t.left, right: t.right === oldId ? newId : t.right })) })),
@@ -158,6 +164,17 @@ export function exampleGraph(name = 'mediation') {
   const a = { ...makeNode('A', 'binary', 30, 300), label: 'Treatment' };
   const m = { ...makeNode('M', 'continuous', 430, 300), label: 'Mediator' };
   const y = { ...makeNode('Y', name === 'binary' ? 'binary' : 'continuous', 830, 60), label: 'Outcome' };
+  if (name === 'trial') return { version: DAG_VERSION, nodes: [{ ...a, x: 240, y: 180 }, { ...y, x: 680, y: 180 }],
+    edges: [{ source: 'A', target: 'Y', coefficient: .5 }] };
+  if (['repeated', 'clustered-repeated', 'repeated-binary'].includes(name)) {
+    const time = { ...makeNode('Time', 'continuous', 400, 300), label: 'Visit time', scope: 'time' };
+    a.scope = name === 'clustered-repeated' ? 'cluster' : 'subject'; x.scope = 'subject';
+    y.scope = 'visit'; y.repeated = { subjectSD: .7, slopeSD: .04, slopeCorrelation: .2, clusterSD: name === 'clustered-repeated' ? .4 : 0, residualCorrelation: 0 };
+    if (name === 'repeated-binary') { y.kind = 'binary'; y.family = 'bernoulli'; y.intercept = -1; }
+    y.interactions = [{ left: 'A', right: 'Time', coefficient: .06 }];
+    return { version: DAG_VERSION, study: parseStudy({ times: [0, 3, 6, 12], clusterSizes: name === 'clustered-repeated' ? [8, 12, 16] : [] }), nodes: [x, a, time, y],
+      edges: [{ source: 'X', target: 'Y', coefficient: .4 }, { source: 'A', target: 'Y', coefficient: 0 }, { source: 'Time', target: 'Y', coefficient: .1 }] };
+  }
   if (name === 'nonlinear-dose') {
     const dose = { ...makeNode('A', 'continuous', 30, 180), label: 'Dose' };
     y.functions = [{ left: 'A', transform: { kind: 'square' }, coefficient: .8 }];
@@ -195,11 +212,20 @@ export function exampleGraph(name = 'mediation') {
 }
 const shown = (x) => String(Number(x.toPrecision(6)));  // equations show six significant digits
 export function equation(graph, node) {
+  if (graph.study && node.scope === 'time') return `${node.id} = visit time from [${graph.study.times.join(', ')}]`;
+
   let predictor = shown(node.intercept);
   for (const term of [...graph.edges.filter((e) => e.target === node.id).map((e) => ({ value: e.coefficient, name: e.source })),
     ...node.interactions.map((t) => ({ value: t.coefficient, name: `${t.left} × ${t.right}` })),
     ...(node.functions ?? []).map((t) => ({ value: t.coefficient, name: termText(t) }))])
     predictor += ` ${term.value < 0 ? '−' : '+'} ${shown(Math.abs(term.value))} × ${term.name}`;
+  if (graph.study) {
+    for (const l of node.lags ?? []) predictor += ` + ${l.coefficient} × ${l.source}[visit − ${l.lag}] (initial ${l.initial ?? 0})`;
+    const r = node.repeated ?? {};
+    if (r.subjectSD) predictor += ` + subject intercept (SD ${r.subjectSD})`;
+    if (r.slopeSD) predictor += ` + subject slope × elapsed time (SD ${r.slopeSD})`;
+    if (r.clusterSD) predictor += ` + cluster intercept (SD ${r.clusterSD})`;
+  }
   if (node.family === 'gaussian') return `${node.id} = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})`;
   if (node.family === 'uniform') return `${node.id} ~ Uniform(η − ${node.width / 2}, η + ${node.width / 2}), η = ${predictor}`;
   if (node.family === 'lognormal') return `log(${node.id}) = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})`;

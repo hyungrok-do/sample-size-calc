@@ -1,5 +1,6 @@
 #include "gformula.hpp"
 #include "model.hpp"
+#include "study.hpp"
 #include "sim/random.hpp"
 #include "sim/simulate.hpp"
 #include "statistics.hpp"
@@ -98,7 +99,7 @@ void validate_estimand(const Graph &g, const J &e) {
     if ((measure == "risk_difference" || measure == "survival_difference" ||
          (kind == "marginal" && measure == "mean_difference" &&
           outcome.kind == "binary")) &&
-        std::fabs(v) > 1)
+        !g.study.enabled && std::fabs(v) > 1)
       fail("A probability difference must lie between -1 and 1.");
     if (measure == "rmst_difference" && std::fabs(v) > horizon)
       fail("An RMST difference cannot exceed its horizon in magnitude.");
@@ -419,6 +420,16 @@ Plan default_plan(const Graph &g, const J &e) {
 }
 Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
   const J spec = parse_analysis(raw);
+  if(g.study.enabled) {
+    validate_estimand(g,e);
+    const auto p0=study_plan(g,e,spec);
+    Plan p; p.method=p0.get("method").as_string(); p.label=p0.get("label").as_string(); p.formula=p0.get("formula").as_string();
+    p.exposure=g.index(e.get("exposure").as_string()); p.outcome=g.index(e.get("outcome").as_string());
+    p.family=g.nodes[p.outcome].family; p.testScale="identity"; p.specification=spec; p.edges=calibration_edges(g,e);
+    for(const auto &n:p0.get("notes").elements()) p.notes.push_back(n.as_string());
+    return p;
+  }
+  if(spec.get("method").as_string()=="mmrm" || spec.get("method").as_string()=="lmm" || spec.get("method").as_string()=="trajectory") fail("A trajectory analysis requires study structure.");
   for(const auto &kv:spec.get("models").items()) g.index(kv.first);
   Plan p = default_plan(g,e);
   const auto method=spec.get("method").as_string(), kind=e.get("kind").as_string();
@@ -627,7 +638,11 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
 Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
   Analysis out;
   const auto measure = e.get("measure").as_string();
-  if (p.method == "aipw" || p.method == "tmle")
+  if(g.study.enabled) {
+    const auto f=analyze_study(g,e,d,p.specification);
+    out.estimate=out.testEstimate=f.coefficient; out.se=f.se; out.df=f.df;
+  }
+  else if (p.method == "aipw" || p.method == "tmle")
     out = analyze_aipw(e, d, p);
   else if(p.method=="joint") {
     const auto m=model_matrix(d,p.terms,true);
@@ -759,6 +774,7 @@ J analysis_json(const Analysis &a) {
 J population(const Graph &g, const J &e, int n, std::uint64_t seed,
              const Token *token) {
   validate_estimand(g, e);
+  if(g.study.enabled) return study_population(g,e,n,seed,token);
   const auto kind = e.get("kind").as_string(),
              measure = e.get("measure").as_string();
   const int a = g.index(e.get("exposure").as_string()),
@@ -1033,7 +1049,9 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
       }))
     fail("The selected calibration arrow no longer belongs to this estimand. "
          "Choose it again.");
-  const double draws = std::accumulate(s.sizes.begin(), s.sizes.end(), 0.0) *
+  double rows=0;
+  for(int n:s.sizes) rows+=g.study.enabled ? study_rows(g,n) : n;
+  const double draws = rows *
                        s.repetitions * g.nodes.size() * (s.checkNull ? 2 : 1);
   if (draws > 200000000)
     fail("This run exceeds the browser work limit. Reduce sample sizes, "
@@ -1041,8 +1059,8 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
   // Bound concurrent workspaces, especially for wide regressions. The
   // calculator's pool is still shared.
   const double terms = plan.terms.size() + 1,
-               bytes = 8 * (s.sizes.back() * (g.nodes.size() * 3 + terms + 10) +
-                            8 * terms * terms);
+               bytes = 8 * ((g.study.enabled ? study_rows(g,s.sizes.back()) : s.sizes.back()) * (g.nodes.size() * 4 + terms + 10) +
+                            8 * terms * terms) + (plan.method=="lmm" ? 2000.0*s.sizes.back() : 0);
   const int memoryThreads = static_cast<int>(
       std::min(128.0, std::floor(256e6 / std::max(1.0, bytes))));
   if (memoryThreads < 1)
@@ -1150,6 +1168,10 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
     token->set_total(total);
   for (int n : s.sizes) {
     J row = object({{"n", n}});
+    if(g.study.enabled) {
+      row.set("measurementRows",study_rows(g,n)); row.set("subjects",study_rows(g,n)/static_cast<int>(g.study.times.size()));
+      row.set("sizeUnit",g.study.clusterSizes.empty()?"subjects":"clusters");
+    }
     for (int scenario = 0; scenario < scenarios; ++scenario) {
       const auto runGraph =
           parse_graph((scenario ? nullScenario : alternative).get("graph"));
@@ -1253,6 +1275,8 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
        {"nullScenario", nullScenario},
        {"results", results},
        {"firstTestedN", first},
+       {"sizeUnit",g.study.enabled && !g.study.clusterSizes.empty()?"clusters":"subjects"},
+       {"assumptions","Power is conditional on the specified data-generating scenario. Monte Carlo intervals quantify simulation error only; they do not quantify uncertainty about the generating model."},
        {"warnings", warnings},
        {"engine", object({{"backend", "C++"},
                           {"threads", threads},

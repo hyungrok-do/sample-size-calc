@@ -122,7 +122,7 @@ static J basis(const J &raw) {
 J parse_analysis(const J &raw) {
   J out = basis(raw);
   const auto method = (out.find("method") ? out.get("method").as_string() : "auto");
-  if (method != "auto" && method != "gformula" && method != "aipw" && method != "tmle")
+  if (method != "auto" && method != "gformula" && method != "aipw" && method != "tmle" && method != "mmrm" && method != "lmm" && method != "trajectory")
     fail("Choose automatic analysis, g-computation, AIPW or binary-outcome TMLE.");
   out.set("method",method);
   const int folds = integer(out,"folds",1,10,1);

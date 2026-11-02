@@ -2,10 +2,37 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { exampleGraph, makeNode, removeNode } from '../dag-model.js';
 import { availableMeasures, validateEstimand, describeEstimand, renameEstimand, exportDesign, parseDesign } from '../estimand-model.js';
+import { questionSummary, studySummary } from '../dag-workflow.js';
 
 const target = (extra = {}) => ({ version: 1, kind: 'marginal', population: 'Eligible participants represented by the DGP',
   definition: '', outcome: 'Y', exposure: 'A', measure: 'mean_difference', reference: 0, active: 1,
   horizon: null, nullValue: 0, alternative: null, ...extra });
+
+test('plain-language questions preserve comparison direction and distinguish intervention from coefficient targets', () => {
+  const graph = exampleGraph('trial');
+  assert.match(questionSummary(graph, target({ active: 0, reference: 1 })), /Treatment were set to 0 versus 1.*mean difference/);
+  const coefficient = questionSummary(graph, target({ kind: 'coefficient', measure: 'coefficient' }));
+  assert.match(coefficient, /coefficient of Treatment in the model for Outcome/);
+  assert.doesNotMatch(coefficient, /were set|mean difference/);
+  assert.doesNotThrow(() => validateEstimand(graph, target()));
+});
+
+test('plain-language questions preserve scheduled visit, change, trend and custom-weight targets', () => {
+  const graph = exampleGraph('repeated');
+  const describe = (repeated) => questionSummary(graph, target({ repeated }));
+  assert.match(describe({ contrast: 'final', visit: 1 }), /Outcome at time 3/);
+  assert.match(describe({ contrast: 'change' }), /change in Outcome from time 0 to 12/);
+  assert.match(describe({ contrast: 'slope' }), /linear trend in Outcome over time/);
+  assert.match(describe({ contrast: 'average' }), /averaged across scheduled visits/);
+  assert.match(describe({ contrast: 'custom', weights: [-1, 0, 0, 1] }), /custom visit weights/);
+  assert.match(studySummary(exampleGraph('clustered-repeated')), /size counts clusters/);
+});
+
+test('plain-language survival questions distinguish a time point from restricted follow-up', () => {
+  const graph = exampleGraph('survival');
+  assert.match(questionSummary(graph, target({ outcome: 'T', horizon: 28, measure: 'survival_difference' })), /at time 28.*survival probability difference/);
+  assert.match(questionSummary(graph, target({ outcome: 'T', horizon: 28, measure: 'rmst_difference' })), /through time 28.*restricted mean survival time difference/);
+});
 
 test('a marginal total effect is defined independently of the graph’s mediator labels', () => {
   const graph = exampleGraph(), estimand = target();
@@ -29,7 +56,7 @@ test('conditional coefficients require an existing arrow and distinguish coeffic
   assert.throws(() => validateEstimand(graph, { ...coefficient, measure: 'exponentiated_coefficient', nullValue: 1 }), /compatible/);
   const survival = exampleGraph('survival');
   const hazardRatio = target({ kind: 'coefficient', outcome: 'T', measure: 'exponentiated_coefficient', nullValue: 1 });
-  assert.match(describeEstimand(survival, hazardRatio).formula, /current DGP value = 0.7/);
+  assert.match(describeEstimand(survival, hazardRatio).formula, /current DGP value = 0.7/i);
 });
 
 test('binary contrasts validate ratio and difference scales', () => {

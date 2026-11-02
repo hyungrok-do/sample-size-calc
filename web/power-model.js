@@ -1,3 +1,4 @@
+import { studyPlan } from './dag-study.js?v=dev';
 import { nodeTerms, termKey, termText as oneTermText, parseAnalysis, analysisTerms, nonlinearIn } from './dag-functions.js?v=dev';
 // UI compatibility hints only. The C++ engine independently validates and selects the actual analysis.
 import { validateGraph, topologicalOrder } from './dag-model.js?v=dev';
@@ -8,13 +9,13 @@ export { DEFAULT_POWER, parsePowerSettings };
 const fail = (message) => { throw new Error(message); };
 function ancestors(graph, id) {
   const found = new Set([id]), queue = [id];
-  for (let i = 0; i < queue.length; i++) for (const edge of graph.edges)
+  for (let i = 0; i < queue.length; i++) for (const edge of [...graph.edges, ...graph.nodes.flatMap((n) => (n.lags ?? []).map((l) => ({ source: l.source, target: n.id })))])
     if (edge.target === queue[i] && !found.has(edge.source)) { found.add(edge.source); queue.push(edge.source); }
   return found;
 }
 function descendants(graph, id) {
   const found = new Set([id]), queue = [id];
-  for (let i = 0; i < queue.length; i++) for (const edge of graph.edges)
+  for (let i = 0; i < queue.length; i++) for (const edge of [...graph.edges, ...graph.nodes.flatMap((n) => (n.lags ?? []).map((l) => ({ source: l.source, target: n.id })))])
     if (edge.source === queue[i] && !found.has(edge.target)) { found.add(edge.target); queue.push(edge.target); }
   return found;
 }
@@ -156,6 +157,8 @@ function defaultPlan(graph, estimand) {
 }
 export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
   const spec = parseAnalysis(rawAnalysis);
+  if (graph.study) { validateGraph(graph); validateEstimand(graph, estimand); return { ...studyPlan(graph, estimand, spec), calibrationEdges: calibrationEdges(graph, estimand) }; }
+  if (['mmrm', 'lmm', 'trajectory'].includes(spec.method)) fail('A trajectory analysis requires study structure.');
   for (const id of Object.keys(spec.models ?? {})) if (!graph.nodes.some((n) => n.id === id)) fail('An analysis override refers to a missing variable.');
   let p = defaultPlan(graph, estimand);
   const a = graph.nodes.find((n) => n.id === estimand.exposure), y = graph.nodes.find((n) => n.id === estimand.outcome);

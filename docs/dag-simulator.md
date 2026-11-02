@@ -485,8 +485,7 @@ settings, calibrated graphs, verified effects, analysis and engine metadata,
 results and diagnostics. It can be reimported as a design. Reproduction uses
 the same engine version, seed and settings; floating-point library differences
 may produce small differences between native and WebAssembly builds.
-Clustering, longitudinal processes and additional estimators require explicit
-extensions; none are inferred from variable labels.
+Structured studies are explicitly selected through the study specification below; no grouping or repeated measurements are inferred from variable labels.
 
 Method references: [R survival Cox documentation](https://stat.ethz.ch/R-manual/R-devel/library/survival/html/coxph.html),
 [R survival methods](https://cran.r-project.org/web/packages/survival/vignettes/methods.pdf),
@@ -526,3 +525,146 @@ survival observation handling, power curves and saved-report reproduction.
 
 ![The power analysis panel with simulated power by sample size](dag-power-panel.jpg)
 
+
+## Subjects, visits and clusters
+
+Open **Study structure** and select **Subjects, visits and clusters**. Specify one
+or more strictly increasing visit times. A single time supports a clustered
+cross-sectional design. Times may be irregular, but the schedule is shared by
+subjects. The optional **Subjects per cluster** field is either one cluster size
+or a repeating size pattern such as `8, 12, 16`. Without clusters, sample size
+counts subjects. With clusters, it counts independent clusters; reports also show
+total subjects and scheduled measurement rows. Size patterns are fixed and not
+informative about outcomes. Crossed groups and informative/random cluster sizes
+are not implemented.
+
+Every variable now has **Measured at**:
+
+- **Once per subject**: generated once and retained across that subject's visits.
+- **Once per cluster**: generated once and retained across all members and visits.
+- **At every visit**: generated from its conditional distribution at each visit.
+- **Visit time**: a deterministic value from the schedule. This is a continuous
+  Normal root in the saved schema, but its distribution parameters are not used.
+
+Arrows may go from coarser to finer levels, or within a level. A subject-level
+variable cannot depend on a visit-level variable without a separately defined
+aggregation. Existing nonlinear response terms and interactions work with time,
+so a treatment-by-time term can specify a changing treatment effect. Variable
+names still impose no scientific role. The compact graph labels each scope;
+**Expand the DAG across visits** displays the unrolled variables, shared
+ancestors, and dashed lagged relationships. Same-visit arrows must remain acyclic.
+Lagged arrows can connect a variable to itself at an earlier visit. The
+cross-sectional path/adjustment display is hidden for structured studies.
+
+For a visit-level variable, **Subject intercept SD**, **Subject slope SD**,
+**Intercept–slope correlation**, and **Cluster intercept SD** add Gaussian random
+effects on its conditional predictor scale. Slopes use time since the first
+scheduled visit. Different variables have independent built-in random effects;
+to generate shared dependence across outcomes, draw a subject- or cluster-level
+variable and connect it to both outcomes. Built-in latent random effects are
+never supplied to an analysis as measured covariates.
+
+For Normal and log-normal errors, **Residual correlation per time unit** is
+`rho` in `[0, 1)`, giving correlation `rho^abs(t_j - t_k)`. Normal innovations
+are generated recursively using the actual time gaps. This is a continuous-time
+exponential correlation, distinct from lagged outcome effects. For log-normal
+variables it acts on log errors. Repeated Bernoulli, Poisson, Gamma and Uniform
+variables can use shared predictor-scale random effects; arbitrary observed-scale
+ICC values are not automatically imposed. Survival variables are supported at
+subject or cluster level for data generation, but recurrent-event processes and
+structured survival estimators are not implemented.
+
+An explicit lag `{source, lag, coefficient, initial}` adds a previous visit's
+value to the conditional predictor. `lag` counts visits, not time units. The
+`initial` value is used whenever the source visit precedes the schedule. The
+same structural equation and family apply at every visit; time nodes and their
+nonlinear functions can change its conditional mean. Subjects/visits/cluster
+membership and lag settings survive JSON export/import, renaming and Undo.
+
+### Observation process
+
+The first visit is observed. Subsequent missing-visit probabilities follow
+
+`logit P(missing) = intercept + historyCoefficient * last observed history value
+ + currentCoefficient * current latent history value
+ + treatmentCoefficient * treatment value`.
+
+**Monotone dropout** makes all later visits missing after the first missed visit.
+**Intermittent missing visits** allows observation to resume. The same visit mask
+applies to all visit-level variables. Zero history/current coefficients allow
+noninformative missingness within treatment arm. A history coefficient can
+represent observed-history-dependent missingness; a current-value coefficient
+permits MNAR sensitivity scenarios. Underlying values continue to evolve after a
+missed visit, including through lagged relationships.
+
+Long-format output contains zero-based `subject_id`, `cluster_id`, `visit_index`,
+and `visit_time`. A repeated variable `Y` has latent/generated `Y`, binary
+`Y_observed`, and `Y_recorded`, which is null/blank when unobserved. Summary
+statistics describe generated values. Analyses use only rows with the outcome's
+observation indicator equal to one, never its unobserved values. The `analyze`
+API validates identifier order, scope consistency and observation indicators.
+
+### Trajectory estimands and planned analyses
+
+The repeated target is a weighted contrast of marginal visit means,
+`sum_j w_j {E[Y_j under do(A=active)] - E[Y_j under do(A=reference)]}`.
+Supported choices are selected visit, equal-weight average over all scheduled
+visits, change from first to last, difference in linear trend, and custom
+weights. The linear-trend weights are `(t_j - mean(t)) / sum_k (t_k - mean(t))^2`:
+this defines a projection contrast even if the trajectory is nonlinear. An
+average excluding baseline is a custom contrast with baseline weight zero.
+Binary outcomes use marginal risk-difference contrasts, not conditional odds
+ratios. Population evaluation uses the same contrast and paired interventions,
+with Monte Carlo uncertainty calculated across independent subjects or clusters.
+Subjects receive equal weight in the target, including with unequal clusters.
+
+Structured power currently requires a binary exposure randomized independently
+at subject or cluster level (a binary root at that level). The generating graph
+may contain time-varying variables, mediators and feedback through lags. The
+power estimator targets the total effect of the baseline assignment. Confounded
+baseline exposure, longitudinal treatment regimes, mediation estimands, crossed
+random effects and joint trajectory tests require further estimators and are
+not silently substituted by a cross-sectional analysis.
+
+| Planned estimator | Scope and assumptions |
+| --- | --- |
+| MMRM | Continuous repeated outcome, independent subjects, up to 12 visits, complete data or monotone dropout. Fits arm-by-visit means and a common unstructured covariance using the existing MMRM fitter. The t reference uses last-visit sample count minus two; it is not Kenward–Roger. |
+| Linear mixed model | Continuous repeated outcome, independent subjects. Separate arm-by-visit means for 2–6 visits, or arm-specific linear trends for 2–12 visits. Subject random intercept, optional correlated random slope, independent residual errors; REML and Satterthwaite inference with the existing fallback when needed. Allows intermittent missing visits. |
+| Trajectory means | Continuous, binary or count outcomes, independent subjects or nested clusters. Arm-by-visit available-case means and a CR1 sandwich at the highest independent unit, with units-minus-two t degrees of freedom. Validity relies on enough independent units and noninformative missingness within arm and visit. |
+
+The automatic choice is MMRM for continuous visit-level outcomes with independent
+subjects, more than one visit and no intermittent missingness; otherwise it is
+trajectory means. The planned model can differ from the generator. The LMM's
+time model and random slope are independently selected. Likelihood analyses
+rely on their mean/covariance assumptions and ignorable missingness; available
+case means can be biased under history-dependent dropout. Bias, coverage,
+failures and null rejection remain visible in the results. Convergence failures
+remain in the power denominator as non-rejections.
+
+Sample-size rows represent independent subjects or clusters, never measurement
+rows. Replicate RNG streams are independent of thread scheduling. Each study is
+limited to 50,000 scheduled measurement rows. Population simulations process
+bounded batches. The existing effect calibration changes an eligible linear
+arrow; some contrasts, especially a pure slope contrast with an additive
+intercept arrow, are insensitive to that parameter. Such calibration reports
+unreachability rather than changing the target. Edit the treatment-by-time term
+and use the graph-implied alternative for that case.
+
+### Power and parametric assumptions
+
+The generating scenario specifies the distributions, response functions,
+random effects, dependence and observation mechanism. The power calculation is
+the rejection probability under that scenario. A semiparametric or robust
+estimator does not make the power calculation independent of those assumptions.
+No true generating variances are used in fitted standard errors. Monte Carlo
+intervals quantify simulation error conditional on the scenario, not uncertainty
+about the scenario. Compare plausible generating scenarios independently of the
+planned analysis; this version does not integrate an elicited prior over
+unknown generating parameters or implement empirical resampling from pilot data.
+
+Three editable examples cover continuous repeated outcomes, unequal-cluster
+repeated outcomes, and repeated binary outcomes. `web/tests/study.test.mjs`
+checks analytic covariance at irregular times, independent complete-data
+contrast/variance calculations, LMM trend estimates, cluster influence-function
+variance, missing-outcome exclusion, calibration and null effects, unit counts,
+thread reproducibility and simulated coverage/null rejection.

@@ -51,11 +51,24 @@ struct Node {
   int censor_index = -1;
   std::uint64_t stream = 0;
   std::vector<Term> terms;
+  std::string scope = "subject";
+  double subjectSD = 0, slopeSD = 0, slopeCorrelation = 0, clusterSD = 0, residualCorrelation = 0;
+  struct Lag { int source = 0, lag = 1; double coefficient = 0, initial = 0; };
+  std::vector<Lag> lags;
+};
+struct Study {
+  bool enabled = false;
+  Vec times;
+  std::vector<int> clusterSizes;
+  std::string missing = "none";
+  int history = -1, treatment = -1;
+  double missingIntercept = -3, historyCoefficient = 0, currentCoefficient = 0, treatmentCoefficient = 0;
 };
 struct Graph {
   J json;
   std::vector<Node> nodes;
   std::vector<int> order;
+  Study study;
   int index(const std::string &id) const;
 };
 Graph parse_graph(const J &value);
@@ -67,6 +80,9 @@ std::vector<Term> analysis_terms(const Graph &graph, const std::vector<Term> &te
 struct Data {
   int n = 0;
   std::vector<Vec> values, times, events;
+  int units = 0, subjects = 0;
+  std::vector<int> subject, cluster, visit;
+  std::vector<Vec> observed;
 };
 Data simulate(const Graph &graph, int n, std::uint64_t seed,
               const std::map<int, double> &interventions = {},

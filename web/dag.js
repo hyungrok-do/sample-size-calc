@@ -1,9 +1,13 @@
+import { DEFAULT_POWER } from './power-settings.js?v=dev';
+import { mountStudy, nodeStudyFields, mountTimeline } from './dag-study-editor.js?v=dev';
+import { scopeOf, sizeUnit } from './dag-study.js?v=dev';
 import { reconcileAnalysis } from './dag-functions.js?v=dev';
 import { mountFunctions } from './dag-function-editor.js?v=dev';
 import { addEdge, removeEdge, removeNode, makeNode, exampleGraph, emptyGraph, renameNode, validateGraph,
   equation, dataCsv, topologicalOrder, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
 import { mountPower } from './dag-power.js?v=dev';
+import { mountWorkflow } from './dag-workflow.js?v=dev';
 import { calibrationEdges, powerCompatibility } from './power-model.js?v=dev';
 import { sketch, findPaths, classifyPath, pathText } from './dag-view.js?v=dev';
 import { Engine } from './engine.js?v=dev';
@@ -18,6 +22,7 @@ const PREVIEW_N = 2000;  // observations drawn to sketch each variable's distrib
 const short = (x) => String(Number(x.toPrecision(3))).replace('-', '−');
 // What a node's box says about its distribution: a root's values, or the scale its incoming arrows act on.
 function summary(graph, node) {
+  if (graph.study && scopeOf(node) === 'time') return `Visit times · ${graph.study.times.join(', ')}`;
   const i = node.intercept, e = Math.exp(i), family = DISTRIBUTIONS[node.family].label;
   if (graph.edges.some((edge) => edge.target === node.id)) {
     const rest = { gaussian: `SD ${short(node.sd)}`, uniform: `width ${short(node.width)}`, lognormal: 'log scale', gamma: 'log mean',
@@ -84,13 +89,14 @@ function download(content, type, name) {
 
 export function mountDag(root) {
   const $ = (id) => root.querySelector(`#${id}`);
+  const workflow = mountWorkflow(root);
   let graph = emptyGraph(), selected = null, connectFrom = null, result = null, worker = null;
   let estimand = null, powerEditor, powerSettings = null;
   // pending: the design before target edits that have not yet become an undo step
   let history = [], future = [], pending = null, storageNote = '';
   // a sample from the current graph, drawn in the boxes; `key` is the model it came from (positions aside)
   const preview = { columns: null, key: '', token: 0, engine: null, timer: 0 };
-  const modelKey = () => JSON.stringify([graph.nodes.map(({ x, y, ...rest }) => rest), graph.edges]);
+  const modelKey = () => JSON.stringify([graph.nodes.map(({ x, y, ...rest }) => rest), graph.edges, graph.study]);
   let menu = null;
   try {
     const saved = localStorage.getItem(STORE);
@@ -205,7 +211,7 @@ export function mountDag(root) {
         transform: `translate(${node.x} ${node.y})`, tabindex: 0, role: 'button',
         'aria-label': `${node.id}, ${node.label}, ${kindNames[node.kind]}. Enter to edit, arrow keys to move, C to compare it, O to make it the outcome.` },
       svg('rect', { class: 'dag-box', width: W, height: H, rx: 12 }),
-      svg('text', { x: 14, y: 22, class: 'dag-node-role' }, node.kind.toUpperCase()
+      svg('text', { x: 14, y: 22, class: 'dag-node-role' }, node.kind.toUpperCase() + (graph.study ? ` · ${scopeOf(node).toUpperCase()}` : '')
         + (node.kind === 'survival' && node.censoring.mode !== 'none'
           ? ` · ${node.censoring.mode === 'variable' ? 'censored by ' + node.censoring.variable : 'cutoff ' + short(node.censoring.time)}` : '')),
       svg('text', { x: 14, y: 45, class: 'dag-node-title' }, `${node.id} · ${node.label.length > 16 ? node.label.slice(0, 15) + '…' : node.label}`),
@@ -301,6 +307,7 @@ export function mountDag(root) {
   // The paths between the compared variable and the outcome, and whether the planned analysis leaves each open.
   function paths() {
     const box = $('dag-paths');
+    if (graph.study) { box.replaceChildren(); return; }
     const a = estimand?.exposure, y = estimand?.outcome;
     const mark = (keys) => { for (const g of canvas.querySelectorAll('.dag-edge')) g.classList.toggle('path', keys.includes(g.dataset.edge)); };
     if (!a || !y || !graph.nodes.some((n) => n.id === a) || !graph.nodes.some((n) => n.id === y)) { box.replaceChildren(); return; }
@@ -388,7 +395,7 @@ export function mountDag(root) {
       if (!graph.nodes.length) { preview.columns = null; preview.engine = null; draw(); return; }
       const instance = new Engine(); preview.engine = instance;
       try {
-        const data = await instance.dag({ op: 'simulate', graph, options: { n: PREVIEW_N, seed: 1 } });
+        const data = await instance.dag({ op: 'simulate', graph, options: { n: graph.study ? Math.max(1, Math.floor(PREVIEW_N / (graph.study.times.length * Math.max(1, ...(graph.study.clusterSizes ?? []))))) : PREVIEW_N, seed: 1 } });
         if (token !== preview.token) return;
         preview.columns = data.columns; preview.key = key;
       } catch (error) {
@@ -409,7 +416,7 @@ export function mountDag(root) {
     const box = $('dag-inspector'); box.replaceChildren();
     if (!node) { box.append(el('p', { class: 'muted small' }, 'Add a variable, then choose its type and distribution here.')); return; }
     box.append(el('div', { class: 'dag-inspector-heading' }, el('h3', {}, node.id),
-      el('span', { class: 'small muted' }, kindNames[node.kind])),
+      el('span', { class: 'small muted' }, kindNames[node.kind] + (graph.study ? ` · ${scopeOf(node)}` : ''))),
     el('div', { class: 'dag-roles', role: 'group', 'aria-label': 'Role in the power analysis' },
       el('button', { id: 'dag-role-exposure', type: 'button', 'aria-pressed': String(estimand?.exposure === node.id), onclick: () => assignRole('exposure', node.id) }, 'Compared'),
       el('button', { id: 'dag-role-outcome', type: 'button', 'aria-pressed': String(estimand?.outcome === node.id), onclick: () => assignRole('outcome', node.id) }, 'Outcome')));
@@ -453,7 +460,8 @@ export function mountDag(root) {
     kind.addEventListener('change', () => families(family.value));
     family.addEventListener('change', params); censorMode.addEventListener('change', observationFields);
     families(node.family);
-    form.append(parameters, observation, el('button', { type: 'submit', class: 'primary' }, 'Apply'));
+    const studyFields = nodeStudyFields(graph, node);
+    form.append(studyFields.element, parameters, observation, el('button', { type: 'submit', class: 'primary' }, 'Apply'));
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       try {
@@ -463,7 +471,7 @@ export function mountDag(root) {
           if (!(p > 0 && p < 1)) throw new Error('Success probability must be strictly between 0 and 1.');
           baseline = Math.log(p) - Math.log1p(-p);
         }
-        const changed = { ...node, label: label.value.trim(), kind: kind.value, family: family.value,
+        const changed = { ...node, ...studyFields.read(), label: label.value.trim(), kind: kind.value, family: family.value,
           intercept: baseline,
           censoring: kind.value === 'survival' ? { mode: censorMode.value,
             time: censorMode.value === 'administrative' ? inputNumber(censorTime, 'Administrative cutoff') : 20,
@@ -537,12 +545,16 @@ export function mountDag(root) {
   function buttons() { $('dag-undo').disabled = !history.length; $('dag-redo').disabled = !future.length; }
   function render() {
     draw(); inspector(); buttons();
+    mountTimeline($('dag-timeline'), graph);
+    mountStudy($('dag-study'), graph, (next) => apply(next, 'Study structure updated.'), (message) => status(message, true));
+    $('dag-n').previousElementSibling.textContent = graph.study ? `Number of ${sizeUnit(graph)}` : 'Observations';
     powerEditor?.refresh(estimand, powerSettings);
+    workflow.update(graph);
     if (preview.key !== modelKey()) schedulePreview();
     const { order, byId } = validateGraph(graph);
     $('dag-equations').replaceChildren(...order.map((id) => el('li', {}, el('code', {}, equation(graph, byId.get(id))))));
     $('dag-order').textContent = order.length
-      ? `Generation order: ${order.join(' → ')}. Exogenous draws are independent across variables and rows.`
+      ? graph.study ? `Within-visit generation order: ${order.join(' → ')}. Variables retain their cluster or subject values across visits; lagged links use earlier visits.` : `Generation order: ${order.join(' → ')}. Exogenous draws are independent across variables and rows.`
       : 'Add variables to define the conditional distributions and generation order.';
   }
   function showResult() {
@@ -551,7 +563,8 @@ export function mountDag(root) {
         el('tbody', {}, rows.map((row) => el('tr', {}, row.map((v) => el('td', {}, v)))))));
     const survivalRows = result.survival.map((s) => [s.id, String(s.events), String(s.censored), `${(100 * s.censored / result.n).toFixed(1)}%`]);
     $('dag-results').replaceChildren(
-      el('p', { class: 'dag-result-heading' }, `N = ${result.n} · seed ${result.seed}`),
+      el('p', { class: 'dag-result-heading' }, graph.study ? `${result.units} ${result.sizeUnit} · ${result.subjects} subjects · ${result.n} measurement rows · seed ${result.seed}` : `N = ${result.n} · seed ${result.seed}`),
+      ...(graph.study ? [el('p', { class: 'small muted' }, 'Summaries describe the generated values, including unobserved outcomes. In CSV, *_recorded is blank when missing and *_observed identifies observed measurements.')] : []),
       table(['Variable', 'Mean', 'SD', 'Minimum', 'Maximum'], result.summaries.map((s) =>
         [s.id, number(s.mean), number(s.sd), number(s.min), number(s.max)]), 'Variable summaries'),
       ...(survivalRows.length ? [table(['Survival variable', 'Events', 'Censored', 'Censored %'], survivalRows, 'Survival observation summaries'),
@@ -584,7 +597,14 @@ export function mountDag(root) {
   }
   $('dag-undo').addEventListener('click', () => timeTravel(history, future));
   $('dag-redo').addEventListener('click', () => timeTravel(future, history));
-  $('dag-example-load').addEventListener('click', () => apply(exampleGraph($('dag-example').value), 'Example loaded. All numbers are editable example assumptions.'));
+  function loadExample(name) {
+    const next = exampleGraph(name);
+    apply(next, 'Example loaded. All numbers are editable example assumptions.', { estimand: null,
+      power: next.study ? { ...DEFAULT_POWER, sampleSizes: next.study.clusterSizes.length ? [12, 24, 48] : [50, 100, 200] } : graph.study ? null : powerSettings });
+    $('dag-example').value = name;
+  }
+  $('dag-example-load').addEventListener('click', () => loadExample($('dag-example').value));
+  for (const button of root.querySelectorAll('[data-template]')) button.addEventListener('click', () => loadExample(button.dataset.template));
   $('dag-export').addEventListener('click', () => download(JSON.stringify(exportDesign(graph, estimand, powerSettings), null, 2) + '\n', 'application/json', 'simulation-design.json'));
   $('dag-import').addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
@@ -619,6 +639,8 @@ export function mountDag(root) {
   });
   powerEditor = mountPower($('dag-power'), {
     getGraph: () => graph,
+    onRefresh: () => workflow.refresh(),
+    onRun: () => { if (root.dataset.view !== 'all') workflow.go('power'); },
     onTarget(value, mode) {
       const before = JSON.stringify(exportDesign(graph, estimand, powerSettings));
       if (JSON.stringify(value) !== JSON.stringify(estimand)) {

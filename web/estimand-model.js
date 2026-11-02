@@ -1,3 +1,4 @@
+import { contrastWeights } from './dag-study.js?v=dev';
 import { DISTRIBUTIONS, parseGraph } from './dag-model.js?v=dev';
 import { parsePowerSettings } from './power-settings.js?v=dev';
 
@@ -22,6 +23,7 @@ export function availableMeasures(graph, kind, outcome) {
   const node = graph.nodes.find((n) => n.id === outcome);
   if (kind === 'custom') return ['custom'];
   if (!node) return [];
+  if (graph.study && kind === 'marginal') return node.kind === 'binary' ? ['risk_difference'] : node.kind === 'survival' ? [] : ['mean_difference'];
   if (kind === 'joint') return ['overall_effect', 'nonlinearity'];
   if (kind === 'coefficient') return ['coefficient', ...(logLinks.includes(node.family) ? ['exponentiated_coefficient'] : [])];
   return Object.entries(MEASURES).filter(([, spec]) => spec.kinds?.includes(node.kind)).map(([key]) => key);
@@ -64,16 +66,19 @@ export function validateEstimand(graph, value) {
     if (number === null && label === 'Planning alternative') continue;
     if (!finite(number)) fail(`${label} must be a finite number.`);
     if (spec.positive && number <= 0) fail(`${label} must be positive on a ratio scale.`);
-    if ((spec.bounded || value.kind === 'marginal' && outcome?.kind === 'binary' && value.measure === 'mean_difference') && (number < -1 || number > 1)) fail(`${label} must lie between −1 and 1.`);
+    if ((spec.bounded || value.kind === 'marginal' && outcome?.kind === 'binary' && value.measure === 'mean_difference') && !graph.study && (number < -1 || number > 1)) fail(`${label} must lie between −1 and 1.`);
     if (value.measure === 'rmst_difference' && Math.abs(number) > value.horizon) fail(`${label} cannot exceed the RMST horizon in magnitude.`);
   }
   if (value.alternative !== null && value.alternative === value.nullValue) fail('The planning alternative must differ from the null value.');
+  if (graph.study && value.kind === 'marginal') contrastWeights(graph, value);
   return value;
 }
 
 export function copyEstimand(value) {
-  return Object.fromEntries(['version', 'kind', 'population', 'definition', 'outcome', 'exposure', 'measure',
+  const out = Object.fromEntries(['version', 'kind', 'population', 'definition', 'outcome', 'exposure', 'measure',
     'reference', 'active', 'horizon', 'nullValue', 'alternative'].map((key) => [key, value[key]]));
+  if (value.repeated) out.repeated = { contrast: value.repeated.contrast ?? 'final', ...(value.repeated.visit != null ? { visit: value.repeated.visit } : {}), ...(value.repeated.weights ? { weights: [...value.repeated.weights] } : {}) };
+  return out;
 }
 export function renameEstimand(value, from, to) {
   return value ? { ...value, outcome: value.outcome === from ? to : value.outcome,
@@ -94,7 +99,7 @@ export function describeEstimand(graph, value) {
     const node = graph.nodes.find((n) => n.id === y);
     const coefficient = graph.edges.find((e) => e.source === a && e.target === y).coefficient;
     const ratio = value.measure === 'exponentiated_coefficient';
-    formula = ratio ? `θ = exp(β_${a}→${y}); current DGP value = ${Math.exp(coefficient)}`
+    formula = ratio ? `θ = exp(β_${a}→${y}). Current DGP value = ${Math.exp(coefficient)}`
       : `θ = β_${a}→${y} on the ${DISTRIBUTIONS[node.family].link} scale; current DGP value = ${coefficient}`;
     note = 'This is a conditional structural coefficient, rather than a marginal total effect. With ordinary products, it applies when the other interacting parents equal zero. Additional response terms can also contribute to effects and derivatives; this coefficient alone is not the full effect. The analysis must target this coefficient.';
   } else {
@@ -108,6 +113,7 @@ export function describeEstimand(graph, value) {
     note = 'This is a marginal total-effect contrast under interventions in the specified DGP, averaged over its population distribution. Mediators follow their generating models in each arm; they are not held fixed or automatically adjusted for.';
     if (MEASURES[value.measure].horizon) note += ' The target concerns latent event times; censoring affects the analysis, not this estimand.';
   }
+  if (graph.study && value.kind === 'marginal') formula = `θ = Σ wⱼ {E[${y}ⱼ under do(${a} = ${hi})] − E[${y}ⱼ under do(${a} = ${lo})]}, w = [${contrastWeights(graph, value).map((x) => Number(x.toPrecision(4))).join(', ')}]`;
   return { formula, note, population: value.population, hypothesis: `H₀: θ = ${value.nullValue}`,
     alternative: value.alternative === null ? 'Planning alternative: use the effect implied by the graph as drawn.'
       : `Planning alternative: θ = ${value.alternative}. ${value.kind === 'custom' ? 'An executable estimator and test are required for power.' : 'Power calibrates the run DGP to this target and verifies its implied effect.'}` };
