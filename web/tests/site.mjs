@@ -428,6 +428,8 @@ try {
   await page.selectOption('#estimand-measure', 'rmst_difference');
   await page.fill('#estimand-horizon', '28');
   assert.match(await page.textContent('#power-estimand'), /min\(T, 28\)/);
+  // The repeated-study reload above restores the design with disclosures closed.
+  if (!await page.isVisible('#dag-simulate')) await page.click('#dag-sim > summary');
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');
   assert.match(await page.textContent('#dag-results'), /Censored %/);
