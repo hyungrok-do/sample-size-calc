@@ -69,16 +69,50 @@
     </details>
   </section>
   <details id="dag-study" class="dag-card dag-study" data-dag-step="study" open></details>
-  <div class="dag-section-heading" data-dag-step="model" hidden><p class="dag-eyebrow">02 / Model</p><h3 id="dag-model-step-title" tabindex="-1">What generates your data?</h3><p>Select a variable to edit its distribution. An arrow describes how one variable affects another.</p></div>
+  <div class="dag-section-heading" data-dag-step="model" hidden><p class="dag-eyebrow">02 / Model</p><h3 id="dag-model-step-title" tabindex="-1">What generates your data?</h3><p>Add variables, drag from a box’s + to draw an arrow, and select a box to edit its distribution. Plates show how often each variable is measured: once per cluster, once per subject or at every visit.</p></div>
   <div class="dag-toolbar" data-dag-step="model" hidden>
-    <div class="dag-toolbar-group"><button id="dag-add" type="button" class="primary">+ Add variable</button><button id="dag-tidy" type="button">Tidy layout</button></div>
-    <span class="small muted">Click a box to edit · drag to move · use + to connect</span>
+    <div class="dag-toolbar-group" role="group" aria-label="Add a variable">
+      <span class="dag-toolbar-label">Add</span>
+      <button id="dag-add" type="button" class="dag-chip continuous" data-add-kind="continuous" title="Click to add, or drag onto the canvas">+ Continuous</button>
+      <button type="button" class="dag-chip binary" data-add-kind="binary" title="Click to add, or drag onto the canvas">+ Binary</button>
+      <button type="button" class="dag-chip count" data-add-kind="count" title="Click to add, or drag onto the canvas">+ Count</button>
+      <button type="button" class="dag-chip survival" data-add-kind="survival" title="Click to add, or drag onto the canvas">+ Event time</button>
+    </div>
+    <div class="dag-toolbar-group" role="group" aria-label="Study levels">
+      <span class="dag-toolbar-label">Levels</span>
+      <button id="dag-level-clusters" type="button" class="dag-toggle" aria-pressed="false" title="Randomize or sample groups of subjects (clinics, schools)">Clusters</button>
+      <button id="dag-level-visits" type="button" class="dag-toggle" aria-pressed="false" title="Measure subjects at several visits">Repeated visits</button>
+    </div>
+    <div class="dag-toolbar-group"><button id="dag-tidy" type="button">Tidy layout</button></div>
   </div>
   <div class="dag-workbench" data-dag-step="model" hidden>
     <div class="dag-canvas-column">
       <div class="dag-canvas-heading"><h3>Data generating process</h3><span id="dag-node-count"></span></div>
-      <div class="dag-scroll"><svg id="dag-canvas" viewBox="0 -16 1100 580" role="group" aria-label="Editable distribution DAG"></svg></div>
-      <p class="dag-canvas-help">Click an arrow’s number to change its effect. On a selected box, C sets the compared variable and O sets the outcome. Esc cancels a connection.</p>
+      <div class="dag-scroll">
+        <svg id="dag-canvas" viewBox="0 -16 1100 580" role="group" aria-label="Editable distribution DAG"></svg>
+        <div id="dag-issues" class="dag-issues" aria-live="polite" hidden></div>
+        <div class="dag-zoom" role="group" aria-label="Zoom">
+          <button id="dag-zoom-out" type="button" aria-label="Zoom out" title="Zoom out (−)">−</button>
+          <button id="dag-zoom-fit" type="button" title="Show the whole graph (F)">Fit</button>
+          <button id="dag-zoom-in" type="button" aria-label="Zoom in" title="Zoom in (+)">+</button>
+          <button id="dag-help-toggle" type="button" aria-expanded="false" aria-controls="dag-shortcuts" aria-label="Canvas shortcuts" title="Shortcuts (?)">?</button>
+        </div>
+        <div id="dag-shortcuts" class="dag-shortcuts" hidden>
+          <h4>On the canvas</h4>
+          <dl>
+            <dt>Draw an arrow</dt><dd>Drag from a box’s + to another box, or click + then the box</dd>
+            <dt>Change an effect</dt><dd>Click the arrow’s number</dd>
+            <dt>Change a level</dt><dd>Drag a box into another plate, or right-click it</dd>
+            <dt>Add a variable</dt><dd>Drag a type from Add, or double-click empty canvas</dd>
+            <dt>Pan · zoom</dt><dd>Drag the background · Ctrl/⌘ + scroll, + and −, F to fit</dd>
+            <dt>Compared · outcome</dt><dd>C · O on a selected box</dd>
+            <dt>Delete</dt><dd>Delete or Backspace on a selected box or arrow</dd>
+            <dt>Undo · redo</dt><dd>Ctrl/⌘ + Z · Ctrl/⌘ + Shift + Z</dd>
+            <dt>Cancel</dt><dd>Escape</dd>
+          </dl>
+        </div>
+      </div>
+      <p class="dag-canvas-help">Drag from + to draw an arrow · click an arrow’s number to change its effect · C and O set the compared variable and the outcome · Ctrl/⌘ + scroll zooms · press ? for all shortcuts.</p>
       <details id="dag-timeline" class="dag-timeline" hidden></details>
       <div id="dag-paths" class="dag-paths" aria-live="polite"></div>
       <details class="dag-model" aria-labelledby="dag-model-title">

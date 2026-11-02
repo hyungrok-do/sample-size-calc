@@ -1,5 +1,6 @@
 import { validateStudy, parseStudy, updateStudyReferences } from './dag-study.js?v=dev';
 import { parseFunction, termText, termKey } from './dag-functions.js?v=dev';
+import { CANVAS_LIMIT } from './dag-canvas.js?v=dev';
 // Executable distribution DAG. Variables have types and distributions, without prescribed scientific roles.
 // Parent effects and interactions are explicit terms on the child's conditional distribution scale. No eval.
 export const DAG_VERSION = 1;
@@ -55,7 +56,7 @@ export function validateGraph(graph) {
     if (!finite(node.intercept)) fail(`${node.label}: enter a finite intercept.`);
     for (const param of DISTRIBUTIONS[node.family].parameters)
       if (!finite(node[param]) || node[param] <= 0) fail(`${node.label}: ${param} must be positive and finite.`);
-    if (!finite(node.x) || !finite(node.y) || node.x < 0 || node.x > 920 || node.y < 0 || node.y > 440)
+    if (!finite(node.x) || !finite(node.y) || node.x < 0 || node.x > CANVAS_LIMIT.x || node.y < 0 || node.y > CANVAS_LIMIT.y)
       fail(`${node.label}: invalid canvas position.`);
     if (!Array.isArray(node.interactions) || node.interactions.length > MAX_NODES * MAX_NODES) fail(`${node.label}: invalid interaction list.`);
     if (node.kind === 'survival') {

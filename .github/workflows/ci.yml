@@ -116,7 +116,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           web/assemble.sh "$RUNNER_TEMP/site" "ci-${GITHUB_SHA::7}"
-          cd web && npm run test:site -- "$RUNNER_TEMP/site"
+          mkdir -p "$RUNNER_TEMP/screenshots"
+          cd web && SCREENSHOTS="$RUNNER_TEMP/screenshots" npm run test:site -- "$RUNNER_TEMP/site"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: dag-canvas-screenshots
+          path: ${{ runner.temp }}/screenshots/
+          retention-days: 14
+          if-no-files-found: ignore
 
   browsers:
     name: Web page in ${{ matrix.browser }}

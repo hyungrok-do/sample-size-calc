@@ -10,16 +10,25 @@ selecting generic variables for it.
 
 ## Workflow
 
-1. Start with an empty canvas and click **Add variable**, or load an example.
+1. Start with an empty canvas and add variables with the **+ Continuous**,
+   **+ Binary**, **+ Count** and **+ Event time** chips (click one, or drag it
+   onto the canvas where the variable should go; double-clicking the empty
+   canvas adds a continuous variable), or load an example. New variables are
+   placed where they overlap nothing.
 2. Select the variable and edit its identifier, label, type, distribution and
-   parameters. Apply the settings. Renaming updates arrows, interactions and
-   censoring references.
-3. Connect variables with a variable's plus port on the canvas, or with
-   **Add** under *New arrow into …* in the selected variable's settings, which
-   offers only parents that keep the graph acyclic. An arrow adds a parent term
-   to the child's conditional predictor. Select the child to edit coefficients
-   or add interactions between two parents. **Tidy layout** arranges the graph
-   left to right in generation order.
+   parameters. Changes apply as you make them (the **Apply** button remains).
+   Renaming updates arrows, interactions and censoring references.
+3. Connect variables by dragging from a box's plus port onto another box, or
+   by clicking the port and then the other box, or with **Add** under *New
+   arrow into …* in the selected variable's settings, which offers only parents
+   that keep the graph acyclic. While an arrow is being drawn, boxes it could
+   reach are outlined and the others are dimmed, with the reason (a cycle, an
+   existing arrow, a finer level affecting a coarser one) shown on hover and in
+   the status line. An arrow adds a parent term to the child's conditional
+   predictor. Click an arrow to select it (Delete removes it, or use its ×),
+   select the child to edit coefficients or add interactions between two
+   parents. **Tidy layout** arranges the graph left to right in generation
+   order, keeping each study level together.
 4. Read the graph and the conditional equations below it. A box shows its
    variable's values if it has no parents (for example `Normal · mean 0, SD 1`),
    otherwise the scale its incoming coefficients act on (`Bernoulli · log-odds`,
@@ -55,6 +64,20 @@ selecting generic variables for it.
 
 Drag nodes or move them with keyboard arrow keys. All model editing is also
 available through the variable settings. The canvas scrolls on small screens.
+
+The canvas pans when its background is dragged and zooms with the − / + / fit
+buttons in its corner, Ctrl/⌘ + mouse wheel or a trackpad pinch. Shortcuts:
+Ctrl/⌘ + Z undoes and Ctrl/⌘ + Shift + Z (or Ctrl + Y) redoes anywhere outside a
+text field; on the canvas F fits the graph, + and − zoom, ? lists the
+shortcuts, Delete removes the selected box or arrow, C and O set the compared
+variable and the outcome, and Escape cancels an arrow being drawn. A banner
+over the canvas lists what needs attention: no comparison chosen yet, a
+question the planned analysis cannot answer, open non-causal paths (whose
+arrows are drawn in orange) and variables with no arrows. When a comparison is
+set, each other box carries its inferred role relative to it (confounder,
+mediator, collider, instrument or prognostic). Saved positions may lie
+anywhere within 3600 × 2400 canvas units; versions of the page before this
+limit accept only 920 × 440.
 
 ## Distributions
 
@@ -501,7 +524,12 @@ reproducibility, JSON/CSV interchange and input rejection. Estimand checks cover
 total versus conditional targets, ratio/difference nulls, survival horizons,
 comparison levels, custom targets, renaming and saved-design round trips.
 
-The site tests exercise the separate page, cycle checks, editing, simulation,
+`web/tests/canvas.test.mjs` checks the canvas geometry and editing helpers:
+nested plates and shared-effect placement, moving variables between levels,
+turning levels on and off, layered layout, free placement, which arrows a
+drag may draw (matching the model's own checks), inferred roles and zoom
+arithmetic. The site tests exercise the separate page, cycle checks, drag-to-connect and the undo shortcut,
+the nested plates of a clustered repeated design, editing, simulation,
 CSV/JSON downloads, survival and censoring, offline use and return to the
 calculator. Both pages and their assets are versioned and cached; each page
 retains its own Content Security Policy. The DAG page uses the same C++/WebAssembly engine loader, thread fallback and
@@ -537,6 +565,21 @@ counts subjects. With clusters, it counts independent clusters; reports also sho
 total subjects and scheduled measurement rows. Size patterns are fixed and not
 informative about outcomes. Crossed groups and informative/random cluster sizes
 are not implemented.
+
+The same structure can be built on the canvas. The **Clusters** and **Visits**
+toggles above it add or remove the level (starting from visits at 0, 3, 6 and
+12 and clusters of 10 subjects). Each level is drawn as a nested plate,
+outermost first: *Every cluster*, *Every subject*, *Every visit*. A plate's
+label shows the cluster sizes or the visit times; click it to edit them in
+place. Dragging a box into another plate changes where it is measured (also
+offered on its right-click menu), and an empty visit plate appears beside the
+others as a drop target when nothing is measured at every visit yet. Shared
+effects are drawn as circles on the edge of their plate with arrows into the
+variable they act on: *u₀* (subject intercept) and *u₁* (subject slope) on the
+visit plate, *v* (cluster intercept) on the subject plate; clicking one opens
+its setting. Lagged relationships are dashed arrows labelled with the lag and
+coefficient, a loop for a variable's own past. Turning a level off moves its
+variables to the subject level and clears settings that only apply there.
 
 Every variable now has **Measured at**:
 

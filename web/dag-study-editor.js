@@ -45,12 +45,13 @@ export function mountStudy(root, graph, onChange, onError) {
   root.replaceChildren(el('summary', {}, 'Study structure', el('span', { class: 'small muted' }, graph.study ? ` · ${graph.study.times.length} visits · size counts ${sizeUnit(graph)}` : ' · independent observations')), form);
 }
 
-export function nodeStudyFields(graph, node) {
+// onEdit: called when a lag row is added or removed, so the variable's settings apply at once
+export function nodeStudyFields(graph, node, onEdit = () => {}) {
   if (!graph.study) return { element: el('div'), read: () => ({}) };
   const scope = choice('dag-node-scope', [['subject', 'Once per subject'], ['cluster', 'Once per cluster'], ['visit', 'At every visit'], ['time', 'Visit time (from schedule)']], scopeOf(node));
   const labels = ['Subject intercept SD', 'Subject slope SD', 'Intercept–slope correlation', 'Cluster intercept SD', 'Residual correlation per time unit'];
   const inputs = repeatedKeys.map((k) => number(`repeat-${k}`, node.repeated?.[k] ?? 0));
-  const repeated = el('details', { class: 'dag-dependence' }, el('summary', {}, 'Shared effects and correlation'), el('p', { class: 'small muted' }, 'Random effects act on the variable’s predictor scale. Slopes use time since the first visit. Residual correlation is available for Normal and log-normal errors.'),
+  const repeated = el('details', { id: 'dag-node-effects', class: 'dag-dependence' }, el('summary', {}, 'Shared effects and correlation'), el('p', { class: 'small muted' }, 'Random effects act on the variable’s predictor scale. Slopes use time since the first visit. Residual correlation is available for Normal and log-normal errors.'),
     el('div', { class: 'dag-grid' }, inputs.map((input, i) => field(labels[i], input))));
   const lags = el('div'), rows = [];
   function addLag(raw = { source: node.id, lag: 1, coefficient: .3, initial: 0 }) {
@@ -58,12 +59,12 @@ export function nodeStudyFields(graph, node) {
       coefficient = number(`lag-coef-${rows.length}`, raw.coefficient), initial = number(`lag-initial-${rows.length}`, raw.initial ?? 0);
     const row = { source, lag, coefficient, initial, deleted: false };
     const element = el('div', { class: 'dag-grid' }, field('Previous variable', source), field('Visits back', lag), field('Lag coefficient', coefficient), field('Value before first visit', initial),
-      el('button', { type: 'button', onclick: () => { row.deleted = true; element.remove(); } }, 'Remove lag'));
+      el('button', { type: 'button', onclick: () => { row.deleted = true; element.remove(); onEdit(); } }, 'Remove lag'));
     rows.push(row); lags.append(element);
   }
   for (const l of node.lags ?? []) addLag(l);
-  const temporal = el('details', {}, el('summary', {}, 'Lagged relationships'), el('p', { class: 'small muted' }, 'Earlier visits may affect later visits. These are separate from shared subject effects.'), lags,
-    el('button', { type: 'button', onclick: () => addLag() }, 'Add lag'));
+  const temporal = el('details', { id: 'dag-node-lags' }, el('summary', {}, 'Lagged relationships'), el('p', { class: 'small muted' }, 'Earlier visits may affect later visits. These are separate from shared subject effects.'), lags,
+    el('button', { type: 'button', onclick: () => { addLag(); onEdit(); } }, 'Add lag'));
   const visibility = () => { repeated.hidden = temporal.hidden = scope.value !== 'visit'; };
   scope.addEventListener('change', visibility); visibility();
   return { element: el('div', { class: 'dag-node-study' }, field('Measured at', scope), repeated, temporal), read: () => ({ scope: scope.value,

@@ -137,7 +137,77 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-legend-effect::before { content: ''; display: inline-block; width: 18px; height: 3px; border-radius: 2px; background: var(--accent); vertical-align: middle; margin: 0 6px 2px 12px; }
 .dag-scroll { position: relative; overflow: auto; border: 1px solid var(--line); border-radius: 10px;
   background-color: var(--bg); background-image: radial-gradient(var(--line) .8px, transparent .8px); background-size: 20px 20px; }
-#dag-canvas { display: block; width: 100%; min-width: 620px; min-height: 320px; max-height: 520px; aspect-ratio: 1100 / 580; touch-action: none; }
+#dag-canvas { display: block; width: 100%; min-width: 620px; min-height: 320px; max-height: 620px; aspect-ratio: 1100 / 580; touch-action: none; cursor: grab; }
+#dag-canvas.panning { cursor: grabbing; }
+#dag-canvas.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.dag-markers path, #dag-canvas marker path { fill: var(--field-line); }
+#dag-arrow-effect path { fill: var(--accent); }
+#dag-arrow-bias path { fill: var(--path); }
+#dag-arrow-lag path { fill: var(--muted); }
+/* plates: the study's levels, nested */
+.dag-plate-box { fill: color-mix(in srgb, var(--accent) 3%, var(--surface)); stroke: var(--field-line); stroke-width: 1.5; }
+.dag-plate.subject .dag-plate-box { fill: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
+.dag-plate.visit .dag-plate-box { fill: color-mix(in srgb, #268059 8%, var(--surface)); stroke: #268059; stroke-opacity: .55; }
+.dag-plate.cluster .dag-plate-box { stroke-dasharray: 10 5; }
+.dag-plate.empty .dag-plate-box { stroke-dasharray: 5 5; }
+.dag-plate.drop .dag-plate-box { stroke: var(--accent); stroke-width: 3; fill: var(--accent-soft); }
+.dag-plate text { pointer-events: none; }
+.dag-plate-label text { font-size: 13px; font-weight: 650; fill: var(--ink-2); }
+.dag-plate-label.editable { cursor: text; }
+.dag-plate-label.editable text { pointer-events: auto; text-decoration: underline dotted; text-underline-offset: 3px; }
+.dag-plate-label:focus { outline: none; }
+.dag-plate-label:focus-visible text { fill: var(--accent); }
+.dag-plate-count { font-size: 11px; fill: var(--muted); letter-spacing: .03em; }
+.dag-plate-hint { font-size: 13px; fill: var(--muted); }
+/* lagged links and random effects */
+.dag-lag { cursor: pointer; }
+.dag-lag path { fill: none; stroke: var(--muted); stroke-width: 1.8; stroke-dasharray: 6 4; }
+.dag-lag rect { fill: var(--surface); stroke: var(--muted); stroke-width: 1; }
+.dag-lag text { font-size: 11px; fill: var(--ink-2); }
+.dag-lag:hover path, .dag-lag:focus-visible path { stroke: var(--ink); }
+.dag-lag:focus, .dag-random:focus { outline: none; }
+.dag-random { cursor: pointer; }
+.dag-random path { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.dag-random circle { fill: var(--surface); stroke: var(--ink-2); stroke-width: 1.5; }
+.dag-random text { font: italic 13px Georgia, serif; fill: var(--ink); }
+.dag-random:hover circle, .dag-random:focus-visible circle { stroke: var(--accent); stroke-width: 2.5; }
+.dag-rubber { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 6 4; pointer-events: none; }
+.dag-overlay { pointer-events: none; }
+/* boxes while an arrow is being drawn */
+.dag-node .dag-stripe { fill: var(--field-line); }
+.dag-node.binary .dag-stripe { fill: var(--accent); }
+.dag-node.count .dag-stripe { fill: #a66013; }
+.dag-node.survival .dag-stripe { fill: #268059; }
+.dag-node.target-ok .dag-box { stroke: var(--accent); stroke-dasharray: 5 3; }
+.dag-node.target-bad { opacity: .45; cursor: not-allowed; }
+.dag-node.isolated .dag-box { stroke-dasharray: 4 3; }
+.dag-node.dragging { opacity: .85; }
+.dag-node-inferred rect { fill: var(--surface-2); stroke: var(--line); }
+.dag-node .dag-node-inferred text { font-size: 10.5px; fill: var(--ink-2); font-weight: 600; }
+.dag-node-inferred.confounder rect { fill: var(--error-soft); stroke: var(--error); }
+.dag-node .dag-node-inferred.confounder text { fill: var(--error); }
+.dag-node-inferred.mediator rect { fill: var(--accent-soft); stroke: var(--accent); }
+.dag-node .dag-node-inferred.mediator text { fill: var(--accent); }
+/* over the canvas: what needs attention, zoom, shortcuts */
+.dag-issues { position: absolute; top: 10px; left: 10px; right: 170px; display: grid; gap: 6px; pointer-events: none; }
+.dag-issues[hidden] { display: none; }
+.dag-issue { margin: 0; width: fit-content; max-width: 100%; padding: 6px 10px; border-radius: 8px; font-size: 12.5px; line-height: 1.4; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 1px 3px rgb(0 0 0 / .08); }
+.dag-issue.warn { border-color: var(--path); background: color-mix(in srgb, var(--path) 10%, var(--surface)); }
+.dag-zoom { position: absolute; top: 10px; right: 10px; display: flex; gap: 4px; }
+.dag-zoom button { min-width: 32px; height: 30px; padding: 0 8px; background: var(--surface); border-color: var(--line); font-size: 14px; box-shadow: 0 1px 3px rgb(0 0 0 / .08); }
+.dag-shortcuts { position: absolute; top: 48px; right: 10px; z-index: 3; width: min(420px, calc(100% - 20px)); padding: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 4px 16px rgb(0 0 0 / .12); font-size: 13px; }
+.dag-shortcuts[hidden] { display: none; }
+.dag-shortcuts h4 { margin: 0 0 8px; font-size: 13px; }
+.dag-shortcuts dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; }
+.dag-shortcuts dt { font-weight: 600; color: var(--ink-2); }
+.dag-shortcuts dd { margin: 0; color: var(--ink-2); }
+.dag-toolbar-label { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-right: 2px; }
+.dag-chip { font-size: 13px; padding: 5px 11px; border-radius: 16px; border-color: var(--line); cursor: grab; touch-action: none; }
+.dag-chip::first-letter { color: var(--accent); font-weight: 700; }
+.dag-toggle { font-size: 13px; padding: 5px 11px; border-radius: 16px; border-color: var(--line); }
+.dag-toggle[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.dag-legend-bias::before { content: ''; display: inline-block; width: 18px; height: 0; border-top: 3px dashed var(--path); vertical-align: middle; margin: 0 6px 2px 12px; }
+.dag-autosave { margin: 8px 0 4px; }
 .dag-node { cursor: grab; user-select: none; }
 .dag-empty { fill: var(--muted); font-size: 20px; }
 .dag-node:active { cursor: grabbing; }
@@ -155,14 +225,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-port circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
 .dag-port text { fill: var(--accent); font-size: 15px; }
 .dag-edge { cursor: pointer; }
-.dag-edge path { stroke: var(--field-line); stroke-width: 2; fill: none; }
-.dag-edge.selected path { stroke: var(--ink-2); stroke-width: 2.5; }
-.dag-edge.effect path { stroke: var(--accent); stroke-width: 3; }
+.dag-edge path { fill: none; }
+.dag-edge .dag-edge-hit { stroke: transparent; stroke-width: 16; }
+.dag-edge .dag-edge-line { stroke: var(--field-line); stroke-width: 2; }
+.dag-edge:hover .dag-edge-line { stroke: var(--ink-2); }
+.dag-edge.selected .dag-edge-line { stroke: var(--ink-2); stroke-width: 2.5; }
+.dag-edge.effect .dag-edge-line { stroke: var(--accent); stroke-width: 3; }
+.dag-edge.bias .dag-edge-line { stroke: var(--path); stroke-width: 2.5; stroke-dasharray: 7 4; }
+.dag-edge.chosen .dag-edge-line { stroke: var(--ink); stroke-width: 3.5; }
+.dag-edge:focus { outline: none; }
+.dag-edge:focus-visible .dag-edge-label rect { stroke: var(--accent); stroke-width: 2; }
+.dag-edge-remove { cursor: pointer; }
+.dag-edge-remove circle { fill: var(--error-soft); stroke: var(--error); stroke-width: 1.5; }
+.dag-edge .dag-edge-remove text { fill: var(--error); stroke: none; font-size: 15px; font-weight: 700; }
 .dag-edge.effect text { fill: var(--accent); font-weight: 600; }
 .dag-edge .dag-edge-label { cursor: text; }
 .dag-edge-label rect { fill: var(--bg); opacity: .9; }
 .dag-edge-label text { text-decoration: underline dotted; text-underline-offset: 3px; }
-.dag-edge.path path { stroke: var(--path); stroke-width: 4; }
+.dag-edge.path .dag-edge-line { stroke: var(--path); stroke-width: 4; stroke-dasharray: none; }
 .dag-spark line { stroke: var(--line); }
 .dag-spark .bars { fill: var(--accent); opacity: .55; }
 .dag-spark .curve { fill: none; stroke: var(--accent); stroke-width: 1.5; }
