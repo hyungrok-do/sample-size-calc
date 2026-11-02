@@ -943,7 +943,7 @@ export function mountDag(root) {
       return;
     }
     const typing = event.target.closest?.('input, select, textarea, [contenteditable]');
-    if (typing || event.ctrlKey || event.metaKey || event.altKey || !event.target.closest?.('.dag-scroll')) return;
+    if (typing || event.ctrlKey || event.metaKey || event.altKey || !event.target.closest?.('.dag-scroll')?.contains(canvas)) return;
     if (event.key === 'f' || event.key === 'F') { event.preventDefault(); fit(); }
     else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(1.25); }
     else if (event.key === '-' || event.key === '_') { event.preventDefault(); zoom(1 / 1.25); }

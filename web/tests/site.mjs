@@ -16,7 +16,7 @@ import { policy, watchViolations } from './csp.mjs';
 const site = resolve(process.argv[2] ?? '.');
 // SCREENSHOTS=<folder>: also save pictures of the DAG canvas there (CI uploads them for review)
 const shots = process.env.SCREENSHOTS;
-const shoot = async (page, name) => { if (shots) await page.locator('.dag-scroll').screenshot({ path: join(shots, `${name}.png`) }); };
+const shoot = async (page, name) => { if (shots) await page.locator('.dag-scroll:has(#dag-canvas)').screenshot({ path: join(shots, `${name}.png`) }); };
 assert.ok(existsSync(join(site, 'index.html')), 'usage: node tests/site.mjs <site dir made by web/assemble.sh>');
 const text = (file) => readFile(join(site, file), 'utf8');
 
