@@ -31,18 +31,20 @@
     </div>
     <div class="dag-toolbar-group">
       <label for="dag-example">Example</label>
-      <select id="dag-example"><option value="empty">Empty canvas</option><option value="mediation">Continuous mediation</option><option value="binary">Binary outcome</option><option value="survival">Survival with censoring</option><option value="nonlinear-dose">Nonlinear dose response</option><option value="nonlinear-confounding">Nonlinear confounding</option><option value="heterogeneous-null">Zero average effect, heterogeneous effects</option></select>
+      <select id="dag-example"><option value="empty">Empty canvas</option><option value="repeated">Repeated continuous outcome</option><option value="clustered-repeated">Clustered repeated outcome</option><option value="repeated-binary">Repeated binary outcome</option><option value="mediation">Continuous mediation</option><option value="binary">Binary outcome</option><option value="survival">Survival with censoring</option><option value="nonlinear-dose">Nonlinear dose response</option><option value="nonlinear-confounding">Nonlinear confounding</option><option value="heterogeneous-null">Zero average effect, heterogeneous effects</option></select>
       <button id="dag-example-load" type="button">Load</button>
       <button id="dag-export" type="button">Export</button>
       <label class="dag-file-button" for="dag-import">Import</label>
       <input id="dag-import" class="sr-only" type="file" accept=".json,application/json" aria-label="Import a model or power report JSON file">
     </div>
   </div>
+  <details id="dag-study" class="dag-card dag-study"></details>
   <div class="dag-workbench">
     <div class="dag-canvas-column">
       <div class="dag-canvas-heading"><h3>Data generating process</h3><span id="dag-node-count"></span></div>
       <div class="dag-scroll"><svg id="dag-canvas" viewBox="0 -16 1100 580" role="group" aria-label="Editable distribution DAG"></svg></div>
-      <p class="dag-canvas-help">Boxes sketch 2,000 simulated draws. Click an arrow’s number to change it · right-click a box, or press C or O on it, to make it the compared variable or the outcome · a + port draws an arrow · Esc cancels.</p>
+      <p class="dag-canvas-help">Boxes sketch generated values from a small simulated dataset. Click an arrow’s number to change it · right-click a box, or press C or O on it, to make it the compared variable or the outcome · a + port draws an arrow · Esc cancels.</p>
+      <details id="dag-timeline" class="dag-timeline" hidden></details>
       <div id="dag-paths" class="dag-paths" aria-live="polite"></div>
       <div class="dag-model" aria-labelledby="dag-model-title">
         <h4 id="dag-model-title">Equations</h4>
@@ -73,7 +75,8 @@
       <li>Continuous: Normal, Uniform, Log-normal, Gamma. Binary: Bernoulli. Count: Poisson. Survival time: Weibull or Exponential with proportional hazards.</li>
       <li>An arrow adds the parent, times its coefficient, to the child’s predictor on the scale shown in its equation; interactions add products of two parents.</li>
       <li>Survival variables are latent event times. A cutoff or another variable as the censoring time adds observed-time and event columns; shared parents make censoring dependent.</li>
-      <li>Exogenous draws are independent across variables and rows; dependence comes only from the graph.</li>
+      <li>Independent-observation designs generate independent rows. Structured designs retain subject and cluster variables across visits, with explicit shared effects, residual correlation and lagged relationships.</li>
+      <li>Power is conditional on the chosen generating distributions, response functions, dependence and observation process. Monte Carlo intervals describe simulation error, not uncertainty about these assumptions.</li>
       <li>Power simulates whole studies from the graph and analyzes each with the method the panel shows. An effect to detect recalibrates one arrow for the run; the drawn graph is kept.</li>
       <li>Models stay in this browser and can be exported as JSON; datasets download as CSV.</li>
     </ul>

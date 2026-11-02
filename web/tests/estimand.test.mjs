@@ -29,7 +29,7 @@ test('conditional coefficients require an existing arrow and distinguish coeffic
   assert.throws(() => validateEstimand(graph, { ...coefficient, measure: 'exponentiated_coefficient', nullValue: 1 }), /compatible/);
   const survival = exampleGraph('survival');
   const hazardRatio = target({ kind: 'coefficient', outcome: 'T', measure: 'exponentiated_coefficient', nullValue: 1 });
-  assert.match(describeEstimand(survival, hazardRatio).formula, /current DGP value = 0.7/);
+  assert.match(describeEstimand(survival, hazardRatio).formula, /current DGP value = 0.7/i);
 });
 
 test('binary contrasts validate ratio and difference scales', () => {

@@ -1,3 +1,4 @@
+import { sizeUnit, scopeOf } from './dag-study.js?v=dev';
 import { BASES, parseAnalysis } from './dag-functions.js?v=dev';
 // The power-analysis panel: what to detect (comparison, outcome, measure), the design, and the results, in one form.
 // Its target is kept as an estimand object (estimand-model.js), which the C++ engine validates and analyzes.
@@ -59,7 +60,7 @@ const levelsFit = (node, a, b) => Number.isFinite(a) && Number.isFinite(b) && a 
 // A ready-to-run target for a graph: a binary variable that affects others, compared on a variable it affects.
 export function defaultTarget(graph) {
   if (graph.nodes.length < 2) return null;
-  const binary = graph.nodes.filter((n) => n.kind === 'binary');
+  const binary = graph.nodes.filter((n) => n.kind === 'binary' && (!graph.study || ['subject', 'cluster'].includes(scopeOf(n))));
   const exposure = binary.find((n) => !hasParents(graph, n.id) && hasChildren(graph, n.id))
     ?? binary.find((n) => hasChildren(graph, n.id)) ?? binary[0] ?? graph.nodes[0];
   const affected = below(graph, exposure.id), last = [...graph.nodes].reverse();
@@ -90,16 +91,16 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     if ($('power-progress')) $('power-progress').textContent = '';
   }
   function display(answer) {
-    const header = ['Total N', 'Power', '95% MC interval', 'Failed', ...(answer.nullScenario ? ['Null rejection'] : [])];
+    const header = [answer.graph.study ? `Number of ${answer.sizeUnit}` : 'Total N', ...(answer.graph.study ? ['Subjects', 'Measurement rows'] : []), 'Power', '95% MC interval', 'Failed', ...(answer.nullScenario ? ['Null rejection'] : [])];
     const rows = answer.results.map((row) => el('tr', { class: row.n === answer.firstTestedN ? 'reached' : null },
-      ...[row.n, row.alternative.valid ? pct(row.alternative.probability) : 'No valid analyses',
+      ...[row.n, ...(answer.graph.study ? [row.subjects, row.measurementRows] : []), row.alternative.valid ? pct(row.alternative.probability) : 'No valid analyses',
         `${pct(row.alternative.interval[0])}–${pct(row.alternative.interval[1])}`,
         `${row.alternative.failures} / ${row.alternative.repetitions}`,
         ...(row.null ? [row.null.valid ? pct(row.null.probability) : 'No valid analyses'] : [])]
         .map((value) => el('td', {}, String(value)))));
     const first = answer.results.find((row) => row.n === answer.firstTestedN);
     const nodes = [el('p', { class: 'dag-power-recommendation' }, first
-      ? `N = ${first.n} is the first tested size with power ≥ ${pct(answer.power.targetPower)} (estimated ${pct(first.alternative.probability)}). Sizes between the tested values were not simulated.`
+      ? `${answer.graph.study ? answer.sizeUnit : 'N'} = ${first.n} is the first tested size with power ≥ ${pct(answer.power.targetPower)} (estimated ${pct(first.alternative.probability)}). Sizes between the tested values were not simulated.`
       : answer.alternative.truth.estimate === answer.estimand.nullValue
         ? 'The true effect equals the null value, so no sample size gives more than the false-positive rate.'
         : `No tested sample size reached ${pct(answer.power.targetPower)} power. Try larger sizes.`),
@@ -113,6 +114,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     facts.push(el('li', {}, `${answer.power.repetitions} studies per size · ${answer.power.side} test at α = ${answer.power.alpha} · intervals show simulation error only. ${answer.denominator}`));
     facts.push(el('li', { id: 'power-engine' }, `C++/WebAssembly · ${answer.engine.threads} thread${answer.engine.threads === 1 ? '' : 's'} · ${answer.engine.rng}`));
     nodes.push(el('ul', { class: 'dag-power-facts small muted' }, facts));
+    if (answer.assumptions && !answer.graph.study) nodes.push(el('p', { class: 'dag-power-note' }, answer.assumptions));
     // the analysis's own notes read as notes; anything else the run found, as a warning
     const notes = answer.analysis.notes ?? [];
     for (const note of notes) nodes.push(el('p', { class: 'dag-power-note' }, note));
@@ -147,7 +149,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       return;
     }
     const nodeList = graph.nodes.map((n) => [n.id, `${n.id} · ${n.label}`]);
-    const kind = select('estimand-kind', [['marginal', 'Group / dose contrast'], ['coefficient', 'Regression coefficient'], ['joint', 'Overall effect / nonlinearity']], start.kind);
+    const kind = select('estimand-kind', graph.study ? [['marginal', 'Trajectory contrast']] : [['marginal', 'Group / dose contrast'], ['coefficient', 'Regression coefficient'], ['joint', 'Overall effect / nonlinearity']], start.kind);
     const exposure = el('select', { id: 'estimand-exposure' }), outcome = el('select', { id: 'estimand-outcome' });
     const measure = el('select', { id: 'estimand-measure' });
     const horizon = numeric('estimand-horizon', start.horizon, { min: 0 });
@@ -166,7 +168,17 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     const nullCheck = el('input', { id: 'power-null-check', type: 'checkbox', checked: settings.checkNull });
     const nullMode = select('power-null-mode', [['no_effect', 'Remove all exposure effects'], ['average_effect', 'Calibrate the contrast; retain other effects']], settings.nullMode);
     const currentAnalysis = settings.analysis;
-    const analysisMethod = select('analysis-method', [['auto', 'Automatic'], ['gformula', 'Parametric g-computation'], ['aipw', 'AIPW'], ['tmle', 'TMLE (binary outcome)']], currentAnalysis.method);
+    const analysisMethod = select('analysis-method', graph.study ? [['auto', 'Automatic'], ['mmrm', 'MMRM'], ['lmm', 'Linear mixed model'], ['trajectory', 'Trajectory means · robust inference']] : [['auto', 'Automatic'], ['gformula', 'Parametric g-computation'], ['aipw', 'AIPW'], ['tmle', 'TMLE (binary outcome)']], currentAnalysis.method);
+    if (!analysisMethod.value) analysisMethod.value = 'auto';
+    const trajectory = select('estimand-trajectory', [['final', 'Selected visit'], ['average', 'Average across scheduled visits'], ['change', 'Change from first to last visit'], ['slope', 'Difference in linear trend'], ['custom', 'Custom visit weights']], start.repeated?.contrast ?? 'final');
+    const visit = select('estimand-visit', (graph.study?.times ?? []).map((t, i) => [String(i), `Time ${t}`]), String(start.repeated?.visit ?? (graph.study?.times.length ?? 1) - 1));
+    const weights = el('input', { id: 'estimand-weights', value: (start.repeated?.weights ?? graph.study?.times.map(() => 0) ?? []).join(', ') });
+    const visitField = field('Visit to compare', visit), weightsField = field('Weights in visit order', weights);
+    const trajectoryPanel = el('div', { class: 'dag-grid dag-trajectory-grid', hidden: !graph.study }, field('Trajectory target', trajectory), visitField, weightsField);
+    const contrastFields = () => { visitField.hidden = trajectory.value !== 'final'; weightsField.hidden = trajectory.value !== 'custom'; };
+    trajectory.addEventListener('change', contrastFields); contrastFields();
+    const timeBasis = select('analysis-time-basis', [['categorical', 'Separate mean at every visit'], ['linear', 'Linear time trend']], currentAnalysis.timeBasis ?? 'categorical');
+    const randomSlope = el('input', { id: 'analysis-random-slope', type: 'checkbox', checked: currentAnalysis.randomSlope });
     const analysisBasis = select('analysis-basis', [...BASES, ...(currentAnalysis.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.basis);
     const propensityBasis = select('analysis-propensity', [['same', 'Use the analysis basis'], ...BASES, ...(currentAnalysis.propensity?.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.propensity?.basis ?? 'same');
     const folds = numeric('analysis-folds', currentAnalysis.folds, { min: 1, max: 10, step: 1 });
@@ -189,6 +201,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     const knotsField = field('Analysis spline knots', knots, 'Fixed knots in the original predictor units; includes linear terms.'),
       propensityKnotsField = field('Propensity spline knots', propensityKnots);
     function analysisFields() {
+      if (graph.study) { timeBasis.disabled = randomSlope.disabled = analysisMethod.value !== 'lmm'; return; }
       knotsField.hidden = analysisBasis.value !== 'spline'; propensityKnotsField.hidden = propensityBasis.value !== 'spline';
       folds.disabled = !['auto', 'aipw', 'tmle'].includes(analysisMethod.value);
       if (folds.disabled) folds.value = 1;
@@ -198,6 +211,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     }
     const parseKnots = (input) => input.value.trim().split(/[\s,]+/).filter(Boolean).map(Number);
     const readAnalysis = () => {
+      if (graph.study) return parseAnalysis({ method: analysisMethod.value, basis: 'match', folds: 1, timeBasis: timeBasis.value, randomSlope: randomSlope.checked });
       const config = { ...(analysisBasis.value === 'custom' ? currentAnalysis : {}), method: analysisMethod.value,
         basis: analysisBasis.value, folds: Number(folds.value), interactions: interactions.checked,
         ...(analysisBasis.value === 'spline' ? { knots: parseKnots(knots) } : {}) };
@@ -216,9 +230,12 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       el('div', { class: 'dag-grid' }, field('Propensity terms (AIPW / TMLE)', propensityBasis), propensityKnotsField),
       el('label', {}, propensityInteractions, 'Include pairwise propensity interactions'),
       el('details', {}, el('summary', {}, 'Override individual models'), overrideRows));
+    if (graph.study) analysisPanel.replaceChildren(el('summary', {}, 'Planned trajectory analysis'),
+      el('p', { class: 'small muted' }, 'The analysis is specified independently of the generating graph. MMRM uses an unstructured covariance. LMM uses the time and random-effect choices below. Trajectory means use robust inference at the subject or cluster level.'),
+      el('div', { class: 'dag-grid dag-trajectory-grid' }, field('Estimator', analysisMethod), field('LMM time model', timeBasis)), el('label', {}, randomSlope, 'LMM subject random slope (in addition to intercept)'));
     for (const input of [analysisMethod, analysisBasis, propensityBasis]) input.addEventListener('change', analysisFields);
     const horizonField = field('Time horizon', horizon), levelsFields = [field('Active level', active), field('Reference level', reference)];
-    const sizesField = field('Total sample sizes', sizes);
+    const sizesField = field(graph.study ? `Number of ${sizeUnit(graph)}` : 'Total sample sizes', sizes);
     sizesField.classList.add('dag-wide');
     const calibration = el('div', { class: 'dag-grid' }, field('Arrow set to the effect to detect', edge), field('Lowest value', lower), field('Highest value', upper));
     const formula = el('p', { id: 'power-estimand', class: 'dag-power-formula' }), method = el('p', { id: 'power-method' });
@@ -227,7 +244,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       el('p', { class: 'dag-group' }, 'What to detect'),
       el('div', { class: 'dag-grid' }, field('Effect', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure),
         horizonField, field('Effect to detect', alternative)),
-      analysisPanel,
+      trajectoryPanel, analysisPanel,
       el('p', { class: 'dag-group' }, 'Design'),
       el('div', { class: 'dag-grid' }, sizesField, field('Studies per size', repetitions), field('Significance level α', alpha),
         field('Test', side), field('Target power', targetPower)),
@@ -274,7 +291,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     function measureChanged() { nullValue.value = MEASURES[measure.value]?.nullValue ?? 0; alternative.value = ''; }
     const target = () => ({ version: 1, kind: kind.value, population: POPULATION, definition: '', exposure: exposure.value,
       outcome: outcome.value, measure: measure.value, reference: num(reference), active: num(active),
-      horizon: MEASURES[measure.value]?.horizon ? num(horizon) : null, nullValue: num(nullValue), alternative: num(alternative, true) });
+      horizon: MEASURES[measure.value]?.horizon ? num(horizon) : null, nullValue: num(nullValue), alternative: num(alternative, true),
+      ...(graph.study ? { repeated: { contrast: trajectory.value, ...(trajectory.value === 'final' ? { visit: Number(visit.value) } : {}), ...(trajectory.value === 'custom' ? { weights: weights.value.trim().split(/[\s,]+/).filter(Boolean).map(Number) } : {}) } } : {}) });
     const readSettings = () => parsePowerSettings({ sampleSizes: sizes.value, repetitions: num(repetitions), alpha: num(alpha), side: side.value,
       seed: num(seed), targetPower: num(targetPower), populationSize: num(population), calibrationEdge: edge.value,
       calibrationLower: num(lower), calibrationUpper: num(upper), checkNull: nullCheck.checked, nullMode: nullMode.value, analysis: readAnalysis() });
@@ -297,7 +315,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       ready = !problem;
       method.className = problem ? 'error' : '';
       method.textContent = problem ?? `Analysis: ${plan.label}.`;
-      formula.textContent = problem ? '' : describeEstimand(graph, value).formula + (value.kind === 'joint' ? '' : `; H₀: θ = ${value.nullValue}.`);
+      formula.textContent = problem ? '' : describeEstimand(graph, value).formula + (value.kind === 'joint' ? '' : `. H₀: θ = ${value.nullValue}.`);
       formula.hidden = Boolean(problem);
       notes.replaceChildren(...(problem ? [] : plan.notes).map((text) => el('li', {}, text)));
       notes.hidden = !notes.children.length;

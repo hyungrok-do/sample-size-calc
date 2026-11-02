@@ -77,8 +77,10 @@ function parseBasis(raw = {}) {
 }
 export function parseAnalysis(raw = {}) {
   const out = { ...parseBasis(raw), method: raw.method ?? 'auto', folds: raw.folds ?? 1 };
-  if (!['auto', 'gformula', 'aipw', 'tmle'].includes(out.method)) fail('Choose automatic analysis, g-computation, AIPW or binary-outcome TMLE.');
+  if (!['auto', 'gformula', 'aipw', 'tmle', 'mmrm', 'lmm', 'trajectory'].includes(out.method)) fail('Choose automatic analysis, g-computation, AIPW or binary-outcome TMLE.');
   if (!Number.isInteger(out.folds) || out.folds < 1 || out.folds > 10) fail('Use 1–10 cross-fitting folds.');
+  if (raw.timeBasis != null) { if (!['categorical', 'linear'].includes(raw.timeBasis)) fail('Choose categorical or linear analysis time.'); out.timeBasis = raw.timeBasis; }
+  if (raw.randomSlope != null) { if (typeof raw.randomSlope !== 'boolean') fail('Random slope must be true or false.'); out.randomSlope = raw.randomSlope; }
   if (raw.propensity) out.propensity = parseBasis(raw.propensity);
   if (raw.models) {
     if (typeof raw.models !== 'object' || Array.isArray(raw.models) || Object.keys(raw.models).length > 40) fail('Invalid analysis model overrides.');

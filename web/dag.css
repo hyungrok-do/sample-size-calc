@@ -219,3 +219,18 @@ footer { max-width: 1400px; margin: 0 auto; padding: 0 24px 28px; color: var(--m
 #dag-function-form { display: grid; gap: 8px; margin-top: 10px; }
 #dag-curve-preview svg { display: block; width: 100%; height: auto; }
 #power-analysis-models > .dag-grid { margin-top: 10px; }
+
+.dag-study { margin-bottom: 1rem; }
+.dag-study summary { cursor: pointer; font-weight: 600; }
+.dag-study form { margin-top: 1rem; }
+.dag-study .dag-grid, .dag-trajectory-grid { grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); }
+.dag-node-study { padding-block: .6rem; border-block: 1px solid var(--border, #d5dce5); margin-bottom: .8rem; }
+.dag-node-study .dag-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dag-node-study details { margin-block: .7rem; }
+
+.dag-timeline { margin-block: .8rem; }
+.dag-timeline summary { cursor: pointer; font-weight: 600; }
+.dag-timeline svg text { fill: var(--ink); font: 13px system-ui; }
+.timeline-links path { stroke: var(--field-line); stroke-width: 1.3; fill: none; }
+#timeline-arrow path { fill: var(--field-line); }
+.timeline-boxes rect { fill: var(--surface); stroke: var(--accent); }

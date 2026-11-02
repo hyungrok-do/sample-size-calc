@@ -1,4 +1,5 @@
 #include "model.hpp"
+#include "study.hpp"
 #include "sim/random.hpp"
 #include <algorithm>
 #include <cmath>
@@ -177,6 +178,11 @@ Graph parse_graph(const J &raw) {
       if (!ids.insert(node.id + suffix).second)
         fail("A derived survival column conflicts with a variable ID.");
   }
+  if(raw.get("study").is_null()) for(const auto &v:nodes.elements()) {
+    if((v.find("scope") && v.get("scope").as_string()!="subject") || v.get("lags").size()) fail("Enable study structure before setting repeated or cluster variables.");
+    for(const auto &kv:v.get("repeated").items()) if(number(v.get("repeated"),kv.first)!=0) fail("Repeated effects require study structure.");
+  }
+  parse_study(g);
   return g;
 }
 static double poisson(double mean, sim::Rng &rng) {
@@ -195,9 +201,44 @@ static double poisson(double mean, sim::Rng &rng) {
   }
   return total;
 }
+double draw_value(const Node &node, double eta, sim::Rng &rng, double normal) {
+  if(!std::isfinite(eta)) throw Error("generation_error", "A conditional predictor overflowed.");
+  double value;
+      if (node.family == "gaussian")
+        value = eta + node.sd * (std::isnan(normal) ? rng.normal() : normal);
+      else if (node.family == "uniform")
+        value = eta + node.width * (rng.uniform() - .5);
+      else if (node.family == "lognormal")
+        value = std::exp(eta + node.sd * (std::isnan(normal) ? rng.normal() : normal));
+      else if (node.family == "gamma")
+        value = rng.gamma(node.shape) / node.shape * std::exp(eta);
+      else if (node.family == "bernoulli")
+        value = rng.uniform() < (eta >= 0 ? 1 / (1 + std::exp(-eta))
+                                          : std::exp(eta) / (1 + std::exp(eta)))
+                    ? 1
+                    : 0;
+      else if (node.family == "poisson") {
+        const double mean = std::exp(eta);
+        if (!std::isfinite(mean) || !(mean > 0) || mean > 1000)
+          throw Error("generation_error",
+                      node.label + ": the Poisson rate must be in (0, 1000].");
+        value = poisson(mean, rng);
+      } else
+        value = std::exp(std::log(node.scale) +
+                         (std::log(rng.exponential()) - eta) / node.shape);
+      if (!std::isfinite(value) ||
+          ((node.family == "lognormal" || node.family == "gamma" ||
+            node.kind == "survival") &&
+           value <= 0))
+        throw Error("generation_error",
+                    node.label + ": a simulated value is outside the supported "
+                                 "numerical range.");
+  return value;
+}
 Data simulate(const Graph &g, int n, std::uint64_t seed,
               const std::map<int, double> &interventions, bool observe,
               const Token *token) {
+  if (g.study.enabled) return simulate_study(g,n,seed,interventions,observe,token);
   if (g.nodes.empty())
     fail("Add at least one variable before simulating data.");
   if (n < 1 || n > 50000)
@@ -239,36 +280,7 @@ Data simulate(const Graph &g, int n, std::uint64_t seed,
       if (!std::isfinite(eta))
         throw Error("generation_error",
                     node.label + ": a conditional predictor overflowed.");
-      double value;
-      if (node.family == "gaussian")
-        value = eta + node.sd * rng.normal();
-      else if (node.family == "uniform")
-        value = eta + node.width * (rng.uniform() - .5);
-      else if (node.family == "lognormal")
-        value = std::exp(eta + node.sd * rng.normal());
-      else if (node.family == "gamma")
-        value = rng.gamma(node.shape) / node.shape * std::exp(eta);
-      else if (node.family == "bernoulli")
-        value = rng.uniform() < (eta >= 0 ? 1 / (1 + std::exp(-eta))
-                                          : std::exp(eta) / (1 + std::exp(eta)))
-                    ? 1
-                    : 0;
-      else if (node.family == "poisson") {
-        const double mean = std::exp(eta);
-        if (!std::isfinite(mean) || !(mean > 0) || mean > 1000)
-          throw Error("generation_error",
-                      node.label + ": the Poisson rate must be in (0, 1000].");
-        value = poisson(mean, rng);
-      } else
-        value = std::exp(std::log(node.scale) +
-                         (std::log(rng.exponential()) - eta) / node.shape);
-      if (!std::isfinite(value) ||
-          ((node.family == "lognormal" || node.family == "gamma" ||
-            node.kind == "survival") &&
-           value <= 0))
-        throw Error("generation_error",
-                    node.label + ": a simulated value is outside the supported "
-                                 "numerical range.");
+      const double value = draw_value(node, eta, rng);
       column[i] = value;
     }
   }
@@ -333,9 +345,22 @@ J data_json(const Graph &g, const Data &data, std::uint64_t seed,
                             {"events", count},
                             {"censored", data.n - count}}));
     }
+  if(g.study.enabled) {
+    auto ids=[&](const char *name,const std::vector<int> &x) { Vec v(x.begin(),x.end()); columns.set(name,array(v)); };
+    ids("subject_id",data.subject); ids("cluster_id",data.cluster); ids("visit_index",data.visit);
+    Vec time; for(int v:data.visit) time.push_back(g.study.times[v]); columns.set("visit_time",array(time));
+    for(int j=0;j<static_cast<int>(g.nodes.size());++j) if(g.nodes[j].scope=="visit") {
+      columns.set(g.nodes[j].id+"_observed",array(data.observed[j]));
+      J recorded=J::array(); for(int r=0;r<data.n;++r) recorded.push(data.observed[j][r] ? J(data.values[j][r]) : J());
+      columns.set(g.nodes[j].id+"_recorded",recorded);
+    }
+  }
   for (int j : g.order)
     order.push(g.nodes[j].id);
   return object({{"n", data.n},
+                 {"units",g.study.enabled ? J(data.units) : J(data.n)},
+                 {"subjects",g.study.enabled ? J(data.subjects) : J(data.n)},
+                 {"sizeUnit",g.study.enabled && !g.study.clusterSizes.empty() ? "clusters" : "subjects"},
                  {"seed", static_cast<unsigned long long>(seed)},
                  {"columns", columns},
                  {"summaries", summaries},
@@ -374,27 +399,26 @@ Data read_data(const Graph &g, const J &value) {
       d.events.emplace_back();
     }
   }
+  if(g.study.enabled) read_study_data(g,value,d);
   return d;
 }
 std::vector<bool> ancestors(const Graph &g, int node) {
-  std::vector<bool> found(g.nodes.size());
-  found[node] = true;
-  for (auto it = g.order.rbegin(); it != g.order.rend(); ++it)
-    if (found[*it])
-      for (const auto &t : g.nodes[*it].terms) {
-        found[t.left] = true;
-        if (t.right >= 0)
-          found[t.right] = true;
-      }
+  std::vector<bool> found(g.nodes.size()); found[node]=true; bool changed=true;
+  while(changed) { changed=false; for(int j=0;j<static_cast<int>(g.nodes.size());++j) if(found[j]) {
+    auto add=[&](int i) { if(i>=0 && !found[i]) { found[i]=true; changed=true; } };
+    for(const auto &t:g.nodes[j].terms) { add(t.left); add(t.right); }
+    for(const auto &l:g.nodes[j].lags) add(l.source);
+  } }
   return found;
 }
 std::vector<bool> descendants(const Graph &g, int node) {
-  std::vector<bool> found(g.nodes.size());
-  found[node] = true;
-  for (int j : g.order)
-    for (const auto &t : g.nodes[j].terms)
-      if (found[t.left] || (t.right >= 0 && found[t.right]))
-        found[j] = true;
+  std::vector<bool> found(g.nodes.size()); found[node]=true; bool changed=true;
+  while(changed) { changed=false; for(int j=0;j<static_cast<int>(g.nodes.size());++j) if(!found[j]) {
+    bool yes=false;
+    for(const auto &t:g.nodes[j].terms) yes |= found[t.left] || (t.right>=0 && found[t.right]);
+    for(const auto &l:g.nodes[j].lags) yes |= found[l.source];
+    if(yes) { found[j]=true; changed=true; }
+  } }
   return found;
 }
 std::vector<int> calibration_edges(const Graph &g, const J &e) {
@@ -457,6 +481,12 @@ J null_graph(const Graph &g, const J &e) {
         functions.push(term);
       }
       node.set("functions", functions);
+    }
+    if(node.find("lags")) {
+      J lags=J::array(); for(J lag:node.get("lags").elements()) {
+        if(before[g.index(node.get("id").as_string())] && lag.get("source").as_string()==a) lag.set("coefficient",0);
+        lags.push(lag);
+      } node.set("lags",lags);
     }
     nodes.push(node);
   }
