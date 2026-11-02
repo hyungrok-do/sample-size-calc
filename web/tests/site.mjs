@@ -492,6 +492,9 @@ try {
   await page.selectOption('#estimand-exposure', 'A');
   await page.selectOption('#estimand-outcome', 'T');
   await page.selectOption('#estimand-measure', 'rmst_difference');
+  assert.equal(await page.inputValue('#power-sizes'), '100, 200, 400', 'the scenario supplies its own size grid');
+  await page.fill('#power-sizes', '120, 240');
+  await page.fill('#power-repetitions', '20');
   await page.fill('#estimand-horizon', '28');
   assert.match(await page.textContent('#power-estimand'), /min\(T, 28\)/);
   // The repeated-study reload above restores the design with disclosures closed.
@@ -507,10 +510,12 @@ try {
   assert.equal(await page.locator('#dag-canvas .dag-node').count(), 4);
   assert.equal(await page.inputValue('#estimand-measure'), 'rmst_difference');
   assert.equal(await page.inputValue('#estimand-horizon'), '28');
+  assert.equal(await page.inputValue('#power-sizes'), '120, 240');
+  assert.equal(await page.inputValue('#power-repetitions'), '20');
   await page.click('#power-run');
   await page.waitForSelector('#power-table');
   assert.match(await page.textContent('#power-method'), /RMST/);
-  assert.equal(await page.locator('#power-table tbody tr').count(), 2, 'the cached worker calculates power offline');
+  assert.deepEqual(await page.locator('#power-table tbody tr td:first-child').allTextContents(), ['120', '240'], 'the cached worker calculates the saved size grid offline');
   await page.click('#dag-sim > summary');
   await page.click('#dag-simulate');
   await page.waitForSelector('#dag-results table');
