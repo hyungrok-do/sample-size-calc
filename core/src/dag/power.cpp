@@ -461,6 +461,7 @@ void configure_targeted(const Graph &g, const J &e, Plan &p) {
 }
 Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
   const J spec = parse_analysis(raw);
+  for(const auto &kv:spec.get("models").items()) g.index(kv.first);
   if(g.study.enabled) {
     validate_estimand(g,e);
     const auto p0=study_plan(g,e,spec);
@@ -475,7 +476,6 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
     return p;
   }
   if(spec.get("method").as_string()=="mmrm" || spec.get("method").as_string()=="lmm" || spec.get("method").as_string()=="trajectory") fail("A trajectory analysis requires study structure.");
-  for(const auto &kv:spec.get("models").items()) g.index(kv.first);
   Plan p = default_plan(g,e);
   const auto method=spec.get("method").as_string(), kind=e.get("kind").as_string();
   const auto &a=g.nodes[p.exposure], &y=g.nodes[p.outcome];

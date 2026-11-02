@@ -114,6 +114,9 @@ test('TMLE rejects post-treatment adjustment, time-varying treatment and unrelat
   const bad={method:'tmle',basis:'custom',terms:[{left:'Time'}]};
   assert.throws(()=>compilePowerPlan(graph,estimand,bad),/before treatment/);
   assert.throws(()=>native({op:'plan',graph,estimand,analysis:bad}),/before treatment/);
+  const missing={method:'tmle',models:{Typo:{basis:'linear'}}};
+  assert.throws(()=>compilePowerPlan(graph,estimand,missing),/missing variable/);
+  assert.throws(()=>native({op:'plan',graph,estimand,analysis:missing}),/requires an existing variable: Typo/);
   const g=structuredClone(graph); g.nodes.find((n)=>n.id==='A').scope='visit';
   assert.throws(()=>native({op:'plan',graph:g,estimand,analysis:{method:'tmle'}}),/baseline/);
   const survival=scenarioDesign('survival'); assert.throws(()=>native({op:'plan',graph:survival.graph,estimand:survival.estimand,analysis:{method:'tmle'}}),/nonsurvival/);
