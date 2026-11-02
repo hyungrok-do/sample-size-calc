@@ -204,7 +204,7 @@ try {
 
   // An independent tab: no calculator scripts or engine, with the same offline/versioning guarantees.
   await page.getByRole('link', { name: 'DAG simulator', exact: true }).click();
-  await page.waitForSelector('#dag-study-title');
+  await page.waitForSelector('#dag[data-view="study"]');
   const desktopViewport = page.viewportSize();
   await page.setViewportSize({ width: 390, height: 844 });
   const fitsViewport = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'the guided layout fits a narrow viewport');
