@@ -1,4 +1,4 @@
-import { studyPlan } from './dag-study.js?v=dev';
+import { studyPlan, scopeOf, contrastWeights } from './dag-study.js?v=dev';
 import { nodeTerms, termKey, termText as oneTermText, parseAnalysis, analysisTerms, nonlinearIn } from './dag-functions.js?v=dev';
 // UI compatibility hints only. The C++ engine independently validates and selects the actual analysis.
 import { validateGraph, topologicalOrder } from './dag-model.js?v=dev';
@@ -52,7 +52,7 @@ function aipwPlan(graph, estimand, exposure, outcome, notes) {
     if (censored(node(id))) addNote(notes, latentNote(id));
     chosen.add(id);
   }
-  for (const t of nodeTerms(graph, outcome)) if (!t.right && !affected.has(t.left) && !censored(node(t.left))) chosen.add(t.left);
+  for (const t of nodeTerms(graph, outcome)) if (!t.right && !affected.has(t.left) && !censored(node(t.left)) && (!graph.study || ['subject', 'cluster'].includes(scopeOf(node(t.left))))) chosen.add(t.left);
   const terms = graph.nodes.filter((n) => chosen.has(n.id)).map((n) => ({ left: n.id }));
   for (const raw of [...nodeTerms(graph, exposure), ...nodeTerms(graph, outcome)]) {
     let t = { ...raw };
@@ -155,9 +155,45 @@ function defaultPlan(graph, estimand) {
     formula: estimand.kind === 'coefficient' ? `${method === 'ols_log' ? `log(${outcome.id})` : outcome.id} ~ ${termText(terms)}`
       : `${outcome.id}: ${exposure.id} = ${estimand.active} versus ${estimand.reference}` };
 }
+function configureTargeted(graph, e, p, spec) {
+  const a = graph.nodes.find((n) => n.id === e.exposure), y = graph.nodes.find((n) => n.id === e.outcome);
+  p.terms = analysisTerms(graph, p.terms, spec, y.id);
+  p.propensityTerms = analysisTerms(graph, p.propensityTerms, spec, a.id, true);
+  const affected = descendants(graph, a.id);
+  for (const t of [...p.terms, ...p.propensityTerms]) for (const id of [t.left, t.right].filter(Boolean)) {
+    if (affected.has(id)) fail('AIPW/TMLE adjustment cannot include the exposure or its descendants.');
+    if (graph.study && !['subject', 'cluster'].includes(scopeOf(graph.nodes.find((n) => n.id === id)))) fail('Trajectory TMLE adjustments must be measured before treatment at subject or cluster level.');
+  }
+  if (p.method === 'tmle') {
+    const binary = y.kind === 'binary';
+    if (binary && spec.outcomeBounds) fail('Binary outcome bounds are determined by the requested contrast.');
+    if (binary) {
+      const w = graph.study ? contrastWeights(graph, e) : [1];
+      p.outcomeBounds = [w.reduce((s, v) => s + Math.min(0, v), 0), w.reduce((s, v) => s + Math.max(0, v), 0)];
+    } else if (spec.outcomeBounds) p.outcomeBounds = spec.outcomeBounds;
+    p.outcomeModel = binary && !graph.study ? 'bernoulli' : 'gaussian';
+    addNote(p.notes, p.outcomeBounds ? 'TMLE uses a logistic fluctuation within known outcome-summary bounds. Initial scaled predictions are clipped to [0.000001, 0.999999]; observed outcomes outside the prespecified bounds fail the analysis.' : 'TMLE uses a least-squares initial regression and an identity-link fluctuation for an unbounded outcome mean. It does not constrain predictions to a probability range.');
+    addNote(p.notes, 'TMLE is a semiparametric estimator, but these nuisance regressions use the chosen finite-dimensional bases. Cross-fitting is available; a Super Learner library is not implemented. Power still depends on the simulated data-generating model.');
+  }
+  if (spec.propensityBound > 0) addNote(p.notes, 'Propensity truncation is enabled. The reported truncation count and largest inverse weight show its use; truncation can introduce bias and does not repair lack of overlap.');
+  addNote(p.notes, 'Influence-function Wald inference is asymptotic. Rare outcomes, weak overlap and few independent units can give poor coverage. Inspect null rejection, coverage and failed fits.');
+  p.label = `${p.method === 'tmle' ? 'TMLE' : 'Doubly robust AIPW'}${graph.study ? ' of the complete trajectory contrast' : ` Wald test of the marginal ${measureScale(e, y)}`}` + (spec.folds > 1 ? ` with ${spec.folds}-fold cross-fitting` : '');
+  p.formula = `Propensity ${a.id} ~ ${termText(p.propensityTerms)} (logistic); arm-specific outcome ${y.id} ~ ${termText(p.terms)} (${p.outcomeModel})`;
+  return p;
+}
 export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
   const spec = parseAnalysis(rawAnalysis);
-  if (graph.study) { validateGraph(graph); validateEstimand(graph, estimand); return { ...studyPlan(graph, estimand, spec), calibrationEdges: calibrationEdges(graph, estimand) }; }
+  if (graph.study) {
+    validateGraph(graph); validateEstimand(graph, estimand);
+    let p = { ...studyPlan(graph, estimand, spec), calibrationEdges: calibrationEdges(graph, estimand) };
+    if (p.method === 'tmle') {
+      const a = graph.nodes.find((n) => n.id === estimand.exposure), y = graph.nodes.find((n) => n.id === estimand.outcome);
+      if (descendants(graph, y.id).has(a.id)) fail('The outcome cannot be upstream of treatment for TMLE.');
+      p = { ...p, ...aipwPlan(graph, estimand, a, y, p.notes), method: 'tmle', folds: spec.folds };
+      configureTargeted(graph, estimand, p, spec);
+    }
+    return p;
+  }
   if (['mmrm', 'lmm', 'trajectory'].includes(spec.method)) fail('A trajectory analysis requires study structure.');
   for (const id of Object.keys(spec.models ?? {})) if (!graph.nodes.some((n) => n.id === id)) fail('An analysis override refers to a missing variable.');
   let p = defaultPlan(graph, estimand);
@@ -167,20 +203,12 @@ export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
   if (['aipw', 'tmle'].includes(spec.method)) {
     if (a.kind !== 'binary' || y.kind === 'survival' || descendants(graph, y.id).has(a.id))
       fail('AIPW/TMLE require a binary exposure, a nonsurvival outcome, and an outcome downstream or unrelated to exposure.');
-    if (spec.method === 'tmle' && y.kind !== 'binary') fail('This TMLE implementation supports binary outcomes.');
     p = { ...p, ...aipwPlan(graph, estimand, a, y, p.notes), method: spec.method };
   }
   p.analysis = spec; p.folds = spec.folds;
-  if (p.folds > 1 && !['aipw', 'tmle'].includes(p.method)) fail('Cross-fitting is available for AIPW and binary-outcome TMLE. Select one of those methods.');
-  p.terms = analysisTerms(graph, p.terms, spec, y.id);
-  if (['aipw', 'tmle'].includes(p.method)) {
-    p.propensityTerms = analysisTerms(graph, p.propensityTerms, spec, a.id, true);
-    const affected = descendants(graph, a.id);
-    if ([...p.terms, ...p.propensityTerms].some((t) => affected.has(t.left) || t.right && affected.has(t.right))) fail('AIPW/TMLE adjustment cannot include the exposure or its descendants.');
-    p.label = `${p.method === 'tmle' ? 'Binary-outcome TMLE' : 'Doubly robust AIPW'} Wald test of the marginal ${measureScale(estimand, y)}, adjusting for ${termText(p.terms)}` + (p.folds > 1 ? ` with ${p.folds}-fold cross-fitting` : '');
-    const model = { gaussian: 'linear regression', bernoulli: 'logistic regression', poisson: 'Poisson log-link regression', gamma: 'Gamma log-link regression' }[p.outcomeModel];
-    p.formula = `${y.id}: ${a.id} = ${estimand.active} versus ${estimand.reference}; propensity ${a.id} ~ ${termText(p.propensityTerms)} (logistic); outcome ${y.id} ~ ${termText(p.terms)} within each arm (${model})`;
-  }
+  if (p.folds > 1 && !['aipw', 'tmle'].includes(p.method)) fail('Cross-fitting is available for AIPW and TMLE. Select one of those methods.');
+  if (['aipw', 'tmle'].includes(p.method)) configureTargeted(graph, estimand, p, spec);
+  else p.terms = analysisTerms(graph, p.terms, spec, y.id);
   if (p.method === 'gformula') {
     p.models = p.models.map((c) => ({ node: c.node, terms: analysisTerms(graph, c.terms, spec, c.node) }));
     for (const c of p.models) {

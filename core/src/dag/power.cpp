@@ -111,6 +111,8 @@ void validate_estimand(const Graph &g, const J &e) {
 struct Plan {
   std::string method, label, formula, testScale, family, outcomeModel;
   int exposure = 0, outcome = 0, targetIndex = -1, folds = 1;
+  bool bounded = false;
+  double lower = 0, upper = 1;
   std::vector<int> tested;
   J specification;
   // For AIPW, `terms` are the outcome model's and `propensity` the exposure
@@ -189,7 +191,8 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
     if (t.right >= 0 || affected[t.left])
       continue;
     const auto &node = g.nodes[t.left];
-    if (!(node.kind == "survival" && node.censor != "none"))
+    if (!(node.kind == "survival" && node.censor != "none") &&
+        (!g.study.enabled || node.scope=="subject" || node.scope=="cluster"))
       chosen[t.left] = true;
   }
   for (int v = 0; v < count; ++v)
@@ -418,6 +421,44 @@ Plan default_plan(const Graph &g, const J &e) {
   }
   return p;
 }
+// Configure the point-treatment targeted estimator. Repeated outcomes are
+// first reduced to the prespecified subject-level contrast, not treated as
+// independent rows and not conditioned on post-treatment visit variables.
+void configure_targeted(const Graph &g, const J &e, Plan &p) {
+  const auto &spec=p.specification;
+  p.folds=integer(spec,"folds",1,10,1);
+  p.terms=analysis_terms(g,p.terms,spec,p.outcome);
+  p.propensity=analysis_terms(g,p.propensity,spec,p.exposure,true);
+  const auto affected=descendants(g,p.exposure);
+  for(const auto *terms:{&p.terms,&p.propensity}) for(const auto &t:*terms)
+    for(int v:{t.left,t.right}) if(v>=0) {
+      if(affected[v]) fail("AIPW/TMLE adjustment cannot include the exposure or its descendants.");
+      if(g.study.enabled && g.nodes[v].scope!="subject" && g.nodes[v].scope!="cluster")
+        fail("Trajectory TMLE adjustments must be measured before treatment at subject or cluster level.");
+    }
+  if(p.method=="tmle") {
+    const bool binary=g.nodes[p.outcome].kind=="binary";
+    p.bounded=binary || spec.find("outcomeBounds");
+    if(binary && spec.find("outcomeBounds")) fail("Binary outcome bounds are determined by the requested contrast.");
+    if(binary && g.study.enabled) {
+      p.lower=p.upper=0;
+      for(double w:study_weights(g,e)) { p.lower+=std::min(0.0,w); p.upper+=std::max(0.0,w); }
+    } else if(spec.find("outcomeBounds")) {
+      p.lower=spec.get("outcomeBounds").at(0).as_number(); p.upper=spec.get("outcomeBounds").at(1).as_number();
+    }
+    // A Gaussian initial model also permits signed trajectory summaries. For
+    // bounded continuous summaries it is rescaled and clipped before the
+    // logistic fluctuation, without clipping observed responses.
+    p.outcomeModel=binary && !g.study.enabled ? "bernoulli" : "gaussian";
+    note(p,p.bounded ? "TMLE uses a logistic fluctuation within known outcome-summary bounds. Initial scaled predictions are clipped to [0.000001, 0.999999]; observed outcomes outside the prespecified bounds fail the analysis." : "TMLE uses a least-squares initial regression and an identity-link fluctuation for an unbounded outcome mean. It does not constrain predictions to a probability range.");
+    note(p,"TMLE is a semiparametric estimator, but these nuisance regressions use the chosen finite-dimensional bases. Cross-fitting is available; a Super Learner library is not implemented. Power still depends on the simulated data-generating model.");
+  }
+  if(spec.get("propensityBound").as_number()>0) note(p,"Propensity truncation is enabled. The reported truncation count and largest inverse weight show its use; truncation can introduce bias and does not repair lack of overlap.");
+  note(p,"Influence-function Wald inference is asymptotic. Rare outcomes, weak overlap and few independent units can give poor coverage. Inspect null rejection, coverage and failed fits.");
+  p.label=(p.method=="tmle" ? "TMLE" : "Doubly robust AIPW")+std::string(g.study.enabled ? " of the complete trajectory contrast" : " Wald test of the marginal ")+ (g.study.enabled ? "" : measure_scale(e,g.nodes[p.outcome]))+
+    (p.folds>1 ? " with "+std::to_string(p.folds)+"-fold cross-fitting" : "");
+  p.formula="Propensity "+g.nodes[p.exposure].id+" ~ "+term_text(g,p.propensity)+" (logistic); arm-specific outcome "+g.nodes[p.outcome].id+" ~ "+term_text(g,p.terms)+" ("+p.outcomeModel+")";
+}
 Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
   const J spec = parse_analysis(raw);
   if(g.study.enabled) {
@@ -427,6 +468,10 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
     p.exposure=g.index(e.get("exposure").as_string()); p.outcome=g.index(e.get("outcome").as_string());
     p.family=g.nodes[p.outcome].family; p.testScale="identity"; p.specification=spec; p.edges=calibration_edges(g,e);
     for(const auto &n:p0.get("notes").elements()) p.notes.push_back(n.as_string());
+    if(p.method=="tmle") {
+      if(descendants(g,p.outcome)[p.exposure]) fail("The outcome cannot be upstream of treatment for TMLE.");
+      plan_aipw(g,e,p); p.method="tmle"; configure_targeted(g,e,p);
+    }
     return p;
   }
   if(spec.get("method").as_string()=="mmrm" || spec.get("method").as_string()=="lmm" || spec.get("method").as_string()=="trajectory") fail("A trajectory analysis requires study structure.");
@@ -439,28 +484,15 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
   if(method=="aipw" || method=="tmle") {
     if(a.kind!="binary" || y.kind=="survival" || descendants(g,p.outcome)[p.exposure])
       fail("AIPW/TMLE require a binary exposure, a nonsurvival outcome, and an outcome downstream or unrelated to exposure.");
-    if(method=="tmle" && y.kind!="binary") fail("This TMLE implementation supports binary outcomes.");
     plan_aipw(g,e,p);
     p.method=method;
   }
   p.specification=spec;
   p.folds=integer(spec,"folds",1,10,1);
   if(p.folds>1 && p.method!="aipw" && p.method!="tmle")
-    fail("Cross-fitting is available for AIPW and binary-outcome TMLE. Select one of those methods.");
-  p.terms=analysis_terms(g,p.terms,spec,p.outcome);
-  if(p.method=="aipw" || p.method=="tmle") {
-    p.propensity=analysis_terms(g,p.propensity,spec,p.exposure,true);
-    const auto affected=descendants(g,p.exposure);
-    for(const auto *terms:{&p.terms,&p.propensity}) for(const auto &t:*terms)
-      if(affected[t.left] || (t.right>=0 && affected[t.right]))
-        fail("AIPW/TMLE adjustment cannot include the exposure or its descendants.");
-    p.label=(p.method=="tmle" ? "Binary-outcome TMLE" : "Doubly robust AIPW") +
-      std::string(" Wald test of the marginal ") + measure_scale(e,y) + ", adjusting for " + term_text(g,p.terms) +
-      (p.folds>1 ? " with " + std::to_string(p.folds) + "-fold cross-fitting" : "");
-    const std::string model=p.outcomeModel=="gaussian" ? "linear regression" : p.outcomeModel=="bernoulli" ? "logistic regression" : p.outcomeModel=="poisson" ? "Poisson log-link regression" : "Gamma log-link regression";
-    p.formula=y.id+": "+a.id+" = "+e.get("active").to_text()+" versus "+e.get("reference").to_text()+
-      "; propensity "+a.id+" ~ "+term_text(g,p.propensity)+" (logistic); outcome "+y.id+" ~ "+term_text(g,p.terms)+" within each arm ("+model+")";
-  }
+    fail("Cross-fitting is available for AIPW and TMLE. Select one of those methods.");
+  if(p.method=="aipw" || p.method=="tmle") configure_targeted(g,e,p);
+  else p.terms=analysis_terms(g,p.terms,spec,p.outcome);
   if(p.method=="gformula") {
     for(auto &c:p.chain) {
       c.terms=analysis_terms(g,c.terms,spec,c.node);
@@ -499,6 +531,7 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
 }
 struct Analysis {
   double estimate = 0, testEstimate = 0, se = 0, df = INFINITY, statistic = 0, jointP = -1;
+  J diagnostics;
 };
 J terms_json(const Graph &g, const std::vector<Term> &list) {
   J terms = J::array();
@@ -524,6 +557,7 @@ J plan_json(const Graph &g, const Plan &p) {
   if (p.method == "aipw" || p.method == "tmle") {
     out.set("propensityTerms", terms_json(g, p.propensity));
     out.set("outcomeModel", p.outcomeModel);
+    if(p.bounded) out.set("outcomeBounds",array({p.lower,p.upper}));
   }
   if (p.method == "gformula") {
     J models = J::array();
@@ -542,103 +576,143 @@ J plan_json(const Graph &g, const Plan &p) {
   if(!p.tested.empty()) out.set("testedIndices",tested);
   return out;
 }
-// AIPW (augmented inverse probability weighting): Robins, Rotnitzky & Zhao
-// (1994); Bang & Robins (2005). The standard error is the empirical SD of the
-// estimated influence function over sqrt(n); ratios use the delta method on
-// the log scale. Propensities are not truncated: near-violations of positivity
-// show as larger standard errors, and fitted probabilities of exactly 0 or 1
-// fail the study.
+// Point-treatment AIPW / TMLE. Nuisance fits exclude held-out independent
+// units. TMLE solves both arm-specific efficient-score equations and uses the
+// substitution estimate. The same EIF is summed within independent clusters.
 Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
-  const int n = d.n;
-  const double active = e.get("active").as_number();
-  Vec z(n);
-  for (int i = 0; i < n; ++i)
-    z[i] = d.values[p.exposure][i] == active ? 1 : 0;
+  const int n=d.n;
+  const bool clustered=!d.cluster.empty();
+  Vec z(n), y=d.values[p.outcome];
   std::vector<int> rows[2];
-  for (int i = 0; i < n; ++i)
+  for(int i=0;i<n;++i) {
+    z[i]=d.values[p.exposure][i]==e.get("active").as_number() ? 1 : 0;
     rows[static_cast<int>(z[i])].push_back(i);
-  if (rows[0].size() < 2 || rows[1].size() < 2)
-    throw Error("empty_arm", "An analysis arm has fewer than two observations.");
-  const auto pm = model_matrix(d, p.propensity, true);
-  const auto om = model_matrix(d, p.terms, true);
-  const auto &y = d.values[p.outcome];
+    if(p.bounded) {
+      if(y[i]<p.lower-1e-12 || y[i]>p.upper+1e-12)
+        throw Error("outcome_bounds","An observed outcome summary is outside its prespecified bounds.");
+      y[i]=(y[i]-p.lower)/(p.upper-p.lower);
+    }
+  }
+  if(rows[0].size()<2 || rows[1].size()<2) throw Error("empty_arm","An analysis arm has fewer than two observations.");
+  const auto pm=model_matrix(d,p.propensity,true), om=model_matrix(d,p.terms,true);
+  const int units=clustered ? d.units : n;
+  if(units<=2 || (p.folds>1 && units<p.folds)) throw Error("few_units","Too few independent units for this analysis or fold count.");
+  std::vector<int> unitArm(units,-1), unitFold(units), fold(n);
+  for(int i=0;i<n;++i) {
+    const int u=clustered ? d.cluster[i] : i, a=static_cast<int>(z[i]);
+    if(unitArm[u]==-1) unitArm[u]=a; else if(unitArm[u]!=a) unitArm[u]=2;
+  }
+  int ranks[3]={0,0,0};
+  for(int u=0;u<units;++u) unitFold[u]=ranks[unitArm[u]]++%p.folds;
+  for(int i=0;i<n;++i) fold[i]=unitFold[clustered ? d.cluster[i] : i];
   Vec pi(n), m0(n), m1(n);
-  std::vector<int> fold(n);
-  for(int arm=0;arm<2;++arm) for(std::size_t j=0;j<rows[arm].size();++j)
-    fold[rows[arm][j]]=static_cast<int>(j)%p.folds;
   for(int k=0;k<p.folds;++k) {
     std::vector<int> train, arms[2];
     for(int i=0;i<n;++i) if(p.folds==1 || fold[i]!=k) {
       train.push_back(i); arms[static_cast<int>(z[i])].push_back(i);
     }
     const auto prob=fitted_means(pm,z,train,"bernoulli"),
-               q0=fitted_means(om,y,arms[0],p.outcomeModel),
-               q1=fitted_means(om,y,arms[1],p.outcomeModel);
-    for(int i=0;i<n;++i) if(p.folds==1 || fold[i]==k) {
-      pi[i]=prob[i]; m0[i]=q0[i]; m1[i]=q1[i];
-    }
+               q0=fitted_means(om,y,arms[0],p.outcomeModel), q1=fitted_means(om,y,arms[1],p.outcomeModel);
+    for(int i=0;i<n;++i) if(p.folds==1 || fold[i]==k) { pi[i]=prob[i]; m0[i]=q0[i]; m1[i]=q1[i]; }
+  }
+  const double bound=p.specification.get("propensityBound").as_number();
+  int truncated=0, clipped=0;
+  double minProp=1,maxProp=0,maxWeight=0,maxScore=0;
+  for(int i=0;i<n;++i) {
+    minProp=std::min(minProp,pi[i]); maxProp=std::max(maxProp,pi[i]);
+    const double raw=pi[i]; pi[i]=std::clamp(pi[i],bound,1-bound); truncated+=raw!=pi[i];
+    if(!(pi[i]>0 && pi[i]<1)) throw Error("positivity","A fitted propensity equals 0 or 1. Inspect overlap or explicitly set a propensity bound.");
+    maxWeight=std::max(maxWeight,std::max(1/pi[i],1/(1-pi[i])));
   }
   if(p.method=="tmle") {
     const auto expit=[](double x) { return x>=0 ? 1/(1+std::exp(-x)) : std::exp(x)/(1+std::exp(x)); };
     for(int arm=0;arm<2;++arm) {
       auto &q=arm ? m1 : m0;
-      Vec offsets(n), h(n);
+      Vec offsets(n),h(n);
       for(int i=0;i<n;++i) {
-        const double prob=arm ? pi[i] : 1-pi[i];
-        if(!(prob>0 && prob<1 && q[i]>0 && q[i]<1))
-          throw Error("positivity","TMLE needs interior nuisance probabilities.");
-        h[i]=1/prob; offsets[i]=std::log(q[i])-std::log1p(-q[i]);
+        h[i]=1/(arm ? pi[i] : 1-pi[i]);
+        if(p.bounded) {
+          const double raw=q[i]; q[i]=std::clamp(q[i],1e-6,1-1e-6); clipped+=raw!=q[i];
+          offsets[i]=std::log(q[i])-std::log1p(-q[i]);
+        }
       }
-      const auto score=[&](double eps) {
-        double score=0;
-        for(int i:rows[arm]) score+=h[i]*(y[i]-expit(offsets[i]+eps*h[i]));
-        return score;
-      };
-      double lo=-1,hi=1;
-      for(int j=0;j<50 && score(lo)<0;++j) lo*=2;
-      for(int j=0;j<50 && score(hi)>0;++j) hi*=2;
-      if(score(lo)<0 || score(hi)>0) throw Error("nonconvergence","The TMLE targeting step did not bracket a solution.");
-      for(int j=0;j<80;++j) { const double mid=(lo+hi)/2; if(score(mid)>0) lo=mid; else hi=mid; }
-      const double eps=(lo+hi)/2;
-      for(int i=0;i<n;++i) q[i]=expit(offsets[i]+eps*h[i]);
+      if(p.bounded) {
+        const auto score=[&](double eps) {
+          double value=0; for(int i:rows[arm]) value+=h[i]*(y[i]-expit(offsets[i]+eps*h[i])); return value;
+        };
+        double lo=-1,hi=1;
+        for(int j=0;j<50 && score(lo)<0;++j) lo*=2;
+        for(int j=0;j<50 && score(hi)>0;++j) hi*=2;
+        if(score(lo)<0 || score(hi)>0) throw Error("nonconvergence","The TMLE targeting step did not bracket a solution.");
+        for(int j=0;j<80;++j) { const double mid=(lo+hi)/2; if(score(mid)>0) lo=mid; else hi=mid; }
+        for(int i=0;i<n;++i) q[i]=expit(offsets[i]+(lo+hi)/2*h[i]);
+      } else {
+        double score=0,information=0;
+        for(int i:rows[arm]) { score+=h[i]*(y[i]-q[i]); information+=h[i]*h[i]; }
+        const double epsilon=score/information;
+        for(int i=0;i<n;++i) q[i]+=epsilon*h[i];
+      }
+      double score=0; for(int i:rows[arm]) score+=h[i]*(y[i]-q[i]);
+      maxScore=std::max(maxScore,std::fabs(score)/n);
     }
   }
-  Vec phi0(n), phi1(n);
-  for (int i = 0; i < n; ++i) {
-    if (!(pi[i] > 0 && pi[i] < 1))
-      throw Error("positivity", "A fitted propensity equals 0 or 1; the "
-                                "arms do not overlap in this study.");
-    phi1[i] = m1[i] + z[i] * (y[i] - m1[i]) / pi[i];
-    phi0[i] = m0[i] + (1 - z[i]) * (y[i] - m0[i]) / (1 - pi[i]);
+  if(p.bounded) for(int i=0;i<n;++i) {
+    m0[i]=p.lower+(p.upper-p.lower)*m0[i]; m1[i]=p.lower+(p.upper-p.lower)*m1[i];
   }
-  const double psi0 = moments(p.method=="tmle" ? m0 : phi0).mean,
-               psi1 = moments(p.method=="tmle" ? m1 : phi1).mean;
-  const auto measure = e.get("measure").as_string();
-  Vec influence(n);
+  y=d.values[p.outcome];
+  Vec phi0(n),phi1(n),influence(n);
+  for(int i=0;i<n;++i) {
+    phi1[i]=m1[i]+z[i]*(y[i]-m1[i])/pi[i];
+    phi0[i]=m0[i]+(1-z[i])*(y[i]-m0[i])/(1-pi[i]);
+  }
+  const double psi0=moments(p.method=="tmle" ? m0 : phi0).mean,
+               psi1=moments(p.method=="tmle" ? m1 : phi1).mean;
+  const auto measure=e.get("measure").as_string();
   Analysis out;
-  if (!positive(measure)) {
-    for (int i = 0; i < n; ++i)
-      influence[i] = phi1[i] - phi0[i];
-    out.estimate = out.testEstimate = psi1 - psi0;
+  if(!positive(measure)) {
+    out.estimate=out.testEstimate=psi1-psi0;
+    for(int i=0;i<n;++i) influence[i]=phi1[i]-phi0[i]-out.estimate;
   } else {
-    const bool rr = measure == "risk_ratio";
-    if (!(psi0 > 0 && psi1 > 0) || (!rr && !(psi0 < 1 && psi1 < 1)))
-      throw Error("boundary_response",
-                  "An AIPW arm mean lies outside the range of a probability.");
-    const double d0 = rr ? psi0 : psi0 * (1 - psi0),
-                 d1 = rr ? psi1 : psi1 * (1 - psi1);
-    for (int i = 0; i < n; ++i)
-      influence[i] = (phi1[i] - psi1) / d1 - (phi0[i] - psi0) / d0;
-    out.estimate = rr ? psi1 / psi0 : (psi1 / (1 - psi1)) / (psi0 / (1 - psi0));
-    out.testEstimate = std::log(out.estimate);
+    const bool rr=measure=="risk_ratio";
+    if(!(psi0>0 && psi1>0) || (!rr && !(psi0<1 && psi1<1)))
+      throw Error("boundary_response","An estimated arm mean is outside the probability range for this ratio.");
+    const double d0=rr ? psi0 : psi0*(1-psi0), d1=rr ? psi1 : psi1*(1-psi1);
+    for(int i=0;i<n;++i) influence[i]=(phi1[i]-psi1)/d1-(phi0[i]-psi0)/d0;
+    out.estimate=rr ? psi1/psi0 : (psi1/(1-psi1))/(psi0/(1-psi0)); out.testEstimate=std::log(out.estimate);
   }
-  out.se = std::sqrt(moments(influence).variance / n);
+  if(clustered) {
+    Vec sums(units);
+    for(int i=0;i<n;++i) sums[d.cluster[i]]+=influence[i]/n;
+    double variance=0; for(double v:sums) variance+=v*v;
+    out.se=std::sqrt(variance*units/(units-1.0)); out.df=units-2;
+  } else out.se=std::sqrt(moments(influence).variance/n);
+  out.diagnostics=object({{"minPropensity",minProp},{"maxPropensity",maxProp},{"propensityTruncated",truncated},
+    {"maxInverseWeight",maxWeight},{"initialPredictionsClipped",clipped},{"targetingScore",maxScore},
+    {"independentUnits",units},{"subjects",n},{"referenceMean",psi0},{"activeMean",psi1}});
+  return out;
+}
+Data complete_summary(const Graph &g, const J &e, const Data &d, const Plan &p) {
+  const auto w=study_weights(g,e); const int visits=static_cast<int>(w.size());
+  Data out; out.n=out.subjects=d.subjects; out.units=d.units;
+  out.values.resize(g.nodes.size(),Vec(out.n)); out.cluster.resize(out.n);
+  for(int i=0;i<out.n;++i) {
+    const int first=i*visits; out.cluster[i]=d.cluster[first];
+    for(int j=0;j<static_cast<int>(g.nodes.size());++j)
+      if(g.nodes[j].scope=="subject" || g.nodes[j].scope=="cluster") out.values[j][i]=d.values[j][first];
+    double value=0;
+    for(int v=0;v<visits;++v) if(w[v]!=0) {
+      if(!d.observed[p.outcome][first+v]) throw Error("missing_outcome","Trajectory TMLE requires every outcome contributing to the summary to be observed.");
+      value+=w[v]*d.values[p.outcome][first+v];
+    }
+    out.values[p.outcome][i]=value;
+  }
   return out;
 }
 Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
   Analysis out;
   const auto measure = e.get("measure").as_string();
-  if(g.study.enabled) {
+  if(g.study.enabled && p.method=="tmle") out=analyze_aipw(e,complete_summary(g,e,d,p),p);
+  else if(g.study.enabled) {
     const auto f=analyze_study(g,e,d,p.specification);
     out.estimate=out.testEstimate=f.coefficient; out.se=f.se; out.df=f.df;
   }
@@ -769,7 +843,7 @@ J analysis_json(const Analysis &a) {
                  {"testEstimate", a.jointP >= 0 ? J() : J(a.testEstimate)},
                  {"se", a.jointP >= 0 ? J() : J(a.se)},
                  {"df", std::isfinite(a.df) ? J(a.df) : J()},
-                 {"statistic", a.statistic}});
+                 {"statistic", a.statistic},{"diagnostics",a.diagnostics}});
 }
 J population(const Graph &g, const J &e, int n, std::uint64_t seed,
              const Token *token) {
@@ -1177,7 +1251,8 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
           parse_graph((scenario ? nullScenario : alternative).get("graph"));
       sim::Accumulator accumulator;
       std::map<std::string, int> reasons;
-      int coverageCount=0;
+      int coverageCount=0, truncatedCount=0, clippedCount=0;
+      double largestWeight=0;
       const bool scalar=e.get("kind").as_string()!="joint";
       const double truth=(scenario ? nullScenario : alternative).get("truth").get("estimate").as_number();
       // Batches keep progress responsive and aggregation in replicate order,
@@ -1188,6 +1263,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
         std::vector<sim::Outcome> outcomes(count);
         std::vector<std::string> failures(count);
         std::vector<int> covered(count);
+        std::vector<J> diagnostics(count);
         parallel_for(
             count, threads,
             [&](std::size_t i) {
@@ -1203,7 +1279,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                 out.reject = (fit.jointP>=0 ? fit.jointP : p_value(fit.statistic, fit.df, s.side)) < s.alpha;
                 out.estimate = fit.estimate;
                 out.se = fit.se;
-                out.df = fit.df;
+                out.df = fit.df; diagnostics[i]=fit.diagnostics;
                 if(scalar) {
                   const double center=positive(e.get("measure").as_string()) ? std::log(truth) : truth;
                   const double critical=std::isfinite(fit.df) ? stats::qt(1-s.alpha/2,fit.df) : stats::qnorm(1-s.alpha/2);
@@ -1220,6 +1296,9 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
         for (int i = 0; i < count; ++i) {
           accumulator.add(outcomes[i]);
           coverageCount+=covered[i];
+          truncatedCount+=static_cast<int>(diagnostics[i].get("propensityTruncated").as_number());
+          clippedCount+=static_cast<int>(diagnostics[i].get("initialPredictionsClipped").as_number());
+          largestWeight=std::max(largestWeight,diagnostics[i].get("maxInverseWeight").as_number());
           if (!failures[i].empty())
             ++reasons[failures[i]];
         }
@@ -1252,6 +1331,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                {"estimateSD", scalar ? J(summary.sd_estimate) : J()},
                {"meanSE", scalar ? J(summary.mean_se) : J()},
                {"failureReasons", failures},
+               {"targetedDiagnostics",(plan.method=="tmle" || plan.method=="aipw") ? object({{"maxInverseWeight",largestWeight},{"propensityTruncated",truncatedCount},{"initialPredictionsClipped",clippedCount}}) : J()},
                 {"bias",scalar && summary.reps>summary.failures ? J(summary.mean_estimate-truth) : J()},
                 {"coverage",scalar && summary.reps>summary.failures ? J(static_cast<double>(coverageCount)/(summary.reps-summary.failures)) : J()},
                 {"coverageValid",summary.reps-summary.failures}}));

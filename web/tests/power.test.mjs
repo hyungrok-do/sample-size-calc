@@ -44,7 +44,7 @@ test('a confounded comparison uses AIPW, adjusting for its parents and not for m
   assert.deepEqual(plan.terms, [{ left: 'X' }]);
   assert.deepEqual(plan.propensityTerms, [{ left: 'X' }]);
   assert.match(plan.label, /AIPW/);
-  assert.match(plan.formula, /propensity A ~ X \(logistic\); outcome Y ~ X within each arm/);
+  assert.match(plan.formula, /Propensity A ~ X \(logistic\); arm-specific outcome Y ~ X/);
   const engine = native({ op: 'plan', graph, estimand: target() });
   for (const key of ['method', 'label', 'formula', 'testScale', 'outcomeModel']) assert.equal(engine[key], plan[key]);
   assert.deepEqual(engine.terms, plan.terms);

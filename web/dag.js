@@ -1,9 +1,10 @@
+import { SCENARIOS, scenarioDesign } from './dag-scenarios.js?v=dev';
 import { DEFAULT_POWER } from './power-settings.js?v=dev';
 import { mountStudy, nodeStudyFields, mountTimeline } from './dag-study-editor.js?v=dev';
 import { scopeOf, sizeUnit } from './dag-study.js?v=dev';
 import { reconcileAnalysis } from './dag-functions.js?v=dev';
 import { mountFunctions } from './dag-function-editor.js?v=dev';
-import { addEdge, removeEdge, removeNode, makeNode, exampleGraph, emptyGraph, renameNode, validateGraph,
+import { addEdge, removeEdge, removeNode, makeNode, emptyGraph, renameNode, validateGraph,
   equation, dataCsv, topologicalOrder, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
 import { mountPower } from './dag-power.js?v=dev';
@@ -598,11 +599,26 @@ export function mountDag(root) {
   $('dag-undo').addEventListener('click', () => timeTravel(history, future));
   $('dag-redo').addEventListener('click', () => timeTravel(future, history));
   function loadExample(name) {
-    const next = exampleGraph(name);
-    apply(next, 'Example loaded. All numbers are editable example assumptions.', { estimand: null,
-      power: next.study ? { ...DEFAULT_POWER, sampleSizes: next.study.clusterSizes.length ? [12, 24, 48] : [50, 100, 200] } : graph.study ? null : powerSettings });
+    const next = scenarioDesign(name);
+    apply(next.graph, 'Scenario loaded with its question and analysis. All values are editable example assumptions.', { estimand: next.estimand, power: next.power });
+    $('dag-scenario-category').value = 'all'; renderScenarioOptions(name);
     $('dag-example').value = name;
   }
+  const category = $('dag-scenario-category');
+  for (const value of [...new Set(SCENARIOS.map((s) => s.category))]) category.append(new Option(value, value));
+  function describeScenario() {
+    const s = SCENARIOS.find((s) => s.id === $('dag-example').value);
+    $('dag-scenario-description').textContent = s ? `${s.description} ${s.assumption}` : '';
+  }
+  function renderScenarioOptions(selected = $('dag-example').value) {
+    const choices = SCENARIOS.filter((s) => category.value === 'all' || s.category === category.value);
+    $('dag-example').replaceChildren(...choices.map((s) => new Option(s.label, s.id)));
+    if (choices.some((s) => s.id === selected)) $('dag-example').value = selected;
+    describeScenario();
+  }
+  category.addEventListener('change', () => renderScenarioOptions());
+  $('dag-example').addEventListener('change', describeScenario);
+  renderScenarioOptions('trial');
   $('dag-example-load').addEventListener('click', () => loadExample($('dag-example').value));
   for (const button of root.querySelectorAll('[data-template]')) button.addEventListener('click', () => loadExample(button.dataset.template));
   $('dag-export').addEventListener('click', () => download(JSON.stringify(exportDesign(graph, estimand, powerSettings), null, 2) + '\n', 'application/json', 'simulation-design.json'));

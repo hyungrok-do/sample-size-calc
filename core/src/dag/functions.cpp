@@ -127,6 +127,16 @@ J parse_analysis(const J &raw) {
   out.set("method",method);
   const int folds = integer(out,"folds",1,10,1);
   out.set("folds",folds);
+  const double bound = out.find("propensityBound") ? number(out,"propensityBound") : 0;
+  if (!(bound>=0 && bound<.5)) fail("The propensity bound must be in [0, 0.5).");
+  out.set("propensityBound",bound);
+  if (out.find("outcomeBounds")) {
+    const auto &b=out.get("outcomeBounds");
+    if (!b.is_array() || b.size()!=2 || !b.at(0).is_number() || !b.at(1).is_number() ||
+        !std::isfinite(b.at(0).as_number()) || !std::isfinite(b.at(1).as_number()) ||
+        !(b.at(0).as_number()<b.at(1).as_number()))
+      fail("Supply finite, increasing prespecified outcome bounds.");
+  }
   if (out.find("propensity")) out.set("propensity",basis(out.get("propensity")));
   if (out.find("models")) {
     if (!out.get("models").is_object() || out.get("models").size()>40) fail("Invalid analysis model overrides.");

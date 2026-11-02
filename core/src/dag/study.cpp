@@ -228,8 +228,8 @@ J study_plan(const Graph &g, const J &e, const J &spec) {
   const auto &exposure=g.nodes[a], &outcome=g.nodes[y];
   if(e.get("kind").as_string()!="marginal" || (e.get("measure").as_string()!="mean_difference" && e.get("measure").as_string()!="risk_difference"))
     fail("Structured studies currently estimate marginal mean/risk contrasts across visits.");
-  if(exposure.kind!="binary" || level(exposure)>1 || !exposure.terms.empty())
-    fail("Structured power currently requires a randomized binary subject- or cluster-level exposure. Longitudinal confounding needs a separate estimator.");
+  if(exposure.kind!="binary" || level(exposure)>1)
+    fail("Structured power requires a binary baseline subject- or cluster-level exposure. Time-varying treatment needs a separate longitudinal estimator.");
   if(outcome.kind=="survival" || outcome.scope=="time") fail("Select a nonsurvival measured outcome for a repeated contrast.");
   if(e.get("active").as_number()==e.get("reference").as_number()) fail("Comparison levels must differ.");
   const auto weights=study_weights(g,e);
@@ -237,22 +237,25 @@ J study_plan(const Graph &g, const J &e, const J &spec) {
   const bool grouped=!g.study.clusterSizes.empty(), continuous=outcome.kind=="continuous";
   const int visits=static_cast<int>(g.study.times.size());
   if(method.empty() || method=="auto") method=!grouped && continuous && outcome.scope=="visit" && visits>1 && g.study.missing!="intermittent" ? "mmrm" : "trajectory";
-  if(method!="mmrm" && method!="lmm" && method!="trajectory") fail("Choose MMRM, linear mixed model or trajectory means for a structured study.");
-  if(method!="trajectory" && (grouped || !continuous || outcome.scope!="visit")) fail("Mixed-model trajectory analyses currently require continuous outcomes and independent subjects. Use trajectory means for clustered or discrete outcomes.");
+  if(method!="tmle" && !exposure.terms.empty()) fail("For baseline confounding, select TMLE with complete outcomes. Other structured analyses require randomized exposure.");
+  if(method=="tmle" && g.study.missing!="none") fail("Trajectory TMLE requires complete outcomes. Dropout and intermittent missingness need a longitudinal missing-data estimator; this TMLE does not provide one.");
+  if(method!="mmrm" && method!="lmm" && method!="trajectory" && method!="tmle") fail("Choose MMRM, linear mixed model or trajectory means for a structured study.");
+  if((method=="mmrm" || method=="lmm") && (grouped || !continuous || outcome.scope!="visit")) fail("Mixed-model trajectory analyses currently require continuous outcomes and independent subjects. Use trajectory means for clustered or discrete outcomes.");
   if(method=="mmrm" && g.study.missing=="intermittent") fail("This MMRM fitter supports monotone dropout. Use LMM or trajectory means for intermittent missing visits.");
   const std::string timeBasis=spec.find("timeBasis") ? spec.get("timeBasis").as_string() : "categorical";
   if(timeBasis!="categorical" && timeBasis!="linear") fail("Choose categorical or linear time in the planned LMM.");
   if(spec.find("randomSlope") && !spec.get("randomSlope").is_bool()) fail("The random-slope analysis setting must be true or false.");
   if(method=="lmm" && (visits<2 || (timeBasis=="categorical" && 2*visits>sim::lmm::PMAX))) fail("The LMM supports 2–6 categorical visits or 2–12 visits with linear time.");
-  if(integer(spec,"folds",1,10,1)!=1) fail("These structured estimators do not use cross-fitting.");
+  if(method!="tmle" && integer(spec,"folds",1,10,1)!=1) fail("These structured estimators do not use cross-fitting.");
   J notes=J::array();
   notes.push("Power is conditional on the generating distributions, response functions, dependence and observation process. Monte Carlo intervals measure simulation error, not uncertainty in those assumptions.");
   notes.push(grouped ? "Sample size counts independent clusters. Effects average over subjects; unequal cluster sizes follow the saved repeating size pattern." : "Sample size counts independent subjects; visits are repeated observations of those subjects.");
+  if(method=="tmle") notes.push("TMLE targets the subject-weighted mean of the complete outcome summary under baseline treatment. It adjusts only for baseline covariates. Folds and influence-function inference preserve independent subjects or entire clusters. It is not longitudinal TMLE for time-varying treatment or dropout.");
   if(method=="mmrm") notes.push("MMRM fits separate arm-by-visit means and a common unstructured covariance. The t reference uses last-visit sample size minus two, not Kenward–Roger degrees of freedom.");
   if(method=="lmm") notes.push("LMM estimates its random-intercept/slope covariance and residual variance by REML, with Satterthwaite inference. Its covariance assumptions are independent of the generating model.");
   if(method=="trajectory") notes.push("Trajectory means use arm-by-visit averages and a CR1 sandwich clustered at the highest independent unit, with units minus two degrees of freedom. This is an approximation for few independent units.");
   if(g.study.missing!="none") notes.push(method=="trajectory" ? "Available-visit means require noninformative missingness within arm and visit. History-dependent dropout can bias this analysis; inspect simulated bias and null rejection." : "Likelihood analyses rely on the planned mean/covariance model and ignorable missingness. Selection on an unobserved current outcome can bias them.");
-  if(spec.get("basis").as_string()!="match" || spec.find("propensity") || spec.find("models")) fail("Structured analyses use their trajectory settings, not cross-sectional nuisance-model terms.");
+  if(method!="tmle" && (spec.get("basis").as_string()!="match" || spec.find("propensity") || spec.find("models"))) fail("Structured analyses use their trajectory settings, not cross-sectional nuisance-model terms.");
   return object({{"method",method},{"label",method=="mmrm" ? "MMRM contrast of arm-by-visit means" : method=="lmm" ? "Linear mixed-model trajectory contrast" : "Trajectory means with cluster-robust inference"},
     {"formula",outcome.id+" ~ arm × "+(method=="lmm" && timeBasis=="linear" ? "time" : "visit")},
     {"notes",notes},{"weights",array(weights)},{"timeBasis",timeBasis}});

@@ -78,17 +78,20 @@ export function contrastWeights(graph, estimand) {
 export function studyPlan(graph, e, spec) {
   const a = graph.nodes.find((n) => n.id === e.exposure), y = graph.nodes.find((n) => n.id === e.outcome);
   if (e.kind !== 'marginal' || !['mean_difference', 'risk_difference'].includes(e.measure)) fail('Structured studies currently estimate marginal mean/risk contrasts across visits.');
-  if (a.kind !== 'binary' || !['subject', 'cluster'].includes(scopeOf(a)) || graph.edges.some((edge) => edge.target === a.id)) fail('Structured power currently requires a randomized binary subject- or cluster-level exposure. Longitudinal confounding needs a separate estimator.');
+  if (a.kind !== 'binary' || !['subject', 'cluster'].includes(scopeOf(a))) fail('Structured power requires a binary baseline subject- or cluster-level exposure. Time-varying treatment needs a separate longitudinal estimator.');
   if (y.kind === 'survival' || scopeOf(y) === 'time') fail('Select a nonsurvival measured outcome for a repeated contrast.');
   const grouped = Boolean(graph.study.clusterSizes?.length), T = graph.study.times.length, continuous = y.kind === 'continuous';
   const method = spec.method === 'auto' ? !grouped && continuous && scopeOf(y) === 'visit' && T > 1 && graph.study.observation?.mode !== 'intermittent' ? 'mmrm' : 'trajectory' : spec.method;
-  if (!['mmrm', 'lmm', 'trajectory'].includes(method)) fail('Choose MMRM, linear mixed model or trajectory means for a structured study.');
-  if (method !== 'trajectory' && (grouped || !continuous || scopeOf(y) !== 'visit')) fail('Mixed-model trajectory analyses require continuous outcomes and independent subjects. Use trajectory means for clustered or discrete outcomes.');
+  if (method !== 'tmle' && graph.edges.some((edge) => edge.target === a.id)) fail('For baseline confounding, select TMLE with complete outcomes. Other structured analyses require randomized exposure.');
+  if (method === 'tmle' && graph.study.observation?.mode && graph.study.observation.mode !== 'none') fail('Trajectory TMLE requires complete outcomes. Dropout and intermittent missingness need a longitudinal missing-data estimator; this TMLE does not provide one.');
+  if (!['mmrm', 'lmm', 'trajectory', 'tmle'].includes(method)) fail('Choose MMRM, linear mixed model or trajectory means for a structured study.');
+  if (['mmrm', 'lmm'].includes(method) && (grouped || !continuous || scopeOf(y) !== 'visit')) fail('Mixed-model trajectory analyses require continuous outcomes and independent subjects. Use trajectory means for clustered or discrete outcomes.');
   if (method === 'mmrm' && graph.study.observation?.mode === 'intermittent') fail('This MMRM fitter supports monotone dropout. Use LMM or trajectory means for intermittent missing visits.');
   if (method === 'lmm' && (T < 2 || (spec.timeBasis ?? 'categorical') === 'categorical' && T > 6)) fail('The LMM supports 2–6 categorical visits or 2–12 visits with linear time.');
-  if (spec.folds !== 1 || spec.basis !== 'match' || spec.propensity || spec.models) fail('Structured analyses use their trajectory settings, not cross-sectional nuisance-model terms.');
+  if (method !== 'tmle' && (spec.folds !== 1 || spec.basis !== 'match' || spec.propensity || spec.models)) fail('Structured analyses use their trajectory settings, not cross-sectional nuisance-model terms.');
   const notes = ['Power is conditional on the generating distributions, response functions, dependence and observation process. Monte Carlo intervals measure simulation error, not uncertainty in those assumptions.',
     grouped ? 'Sample size counts independent clusters. Effects average over subjects; unequal cluster sizes follow the saved repeating size pattern.' : 'Sample size counts independent subjects; visits are repeated observations of those subjects.'];
+  if (method === 'tmle') notes.push('TMLE targets the subject-weighted mean of the complete outcome summary under baseline treatment. It adjusts only for baseline covariates. Folds and influence-function inference preserve independent subjects or entire clusters. It is not longitudinal TMLE for time-varying treatment or dropout.');
   if (method === 'mmrm') notes.push('MMRM fits arm-by-visit means and a common unstructured covariance; t inference uses last-visit sample size minus two, not Kenward–Roger degrees of freedom.');
   if (method === 'lmm') notes.push('LMM estimates covariance by REML with Satterthwaite inference. The planned time model and random effects are separate from the generator.');
   if (method === 'trajectory') notes.push('Trajectory means use a CR1 sandwich at the highest independent unit with units minus two degrees of freedom; inference is approximate with few units.');

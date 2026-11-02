@@ -293,12 +293,12 @@ g-formula, so continuous, count and event-time interventions run too.
 
 ### Independently specifying the planned analysis
 
-Open **Planned analysis models** to choose the estimator and regression terms
+In **Question**, choose the estimator and open **Analysis details and assumptions** for regression terms
 independently of the generating graph. Existing designs default to the
 original automatic estimator with matching terms and no cross-fitting.
 Selecting g-computation also allows adjusted analyses of randomized binary
 comparisons. AIPW and TMLE require a binary exposure and nonsurvival outcome;
-this TMLE implementation is restricted to binary outcomes. Incompatible
+TMLE supports binary, continuous and count means and complete repeated-outcome summaries. Incompatible
 selections produce an explicit explanation before running.
 
 Term presets are matching generating terms, linear main effects, linear plus
@@ -331,11 +331,11 @@ node is overridden. Numerical coefficients are always estimated anew from
 each study; the analysis does not receive generating coefficients.
 
 AIPW/TMLE support 2–10 folds (`folds:1` disables splitting). Folds are assigned
-deterministically within exposure arms. Each study refits its propensity and
+deterministically within exposure arms. Structured TMLE holds out whole independent subjects or clusters, stratifying constant-treatment clusters by arm. Mixed-arm clusters form a separate stratum. Each study refits its propensity and
 arm-specific outcome models using training folds only and predicts on held-out
 rows. Centering/scaling uses the full covariate matrix, an invertible linear
 reparameterization that does not change these unpenalized regression fits.
-There is no automatic propensity truncation. Failed or separated fits remain
+`propensityBound` defaults to zero (no truncation); a value in [0, 0.5) explicitly clips predictions to [b, 1−b] and reports its use. Truncation may add bias and does not repair lack of overlap. Failed or separated fits remain
 explicit failures. Cross-fitting does not guarantee valid inference with
 poor overlap, small samples, or misspecified nuisance models.
 
@@ -618,18 +618,18 @@ ratios. Population evaluation uses the same contrast and paired interventions,
 with Monte Carlo uncertainty calculated across independent subjects or clusters.
 Subjects receive equal weight in the target, including with unequal clusters.
 
-Structured power currently requires a binary exposure randomized independently
-at subject or cluster level (a binary root at that level). The generating graph
-may contain time-varying variables, mediators and feedback through lags. The
-power estimator targets the total effect of the baseline assignment. Confounded
-baseline exposure, longitudinal treatment regimes, mediation estimands, crossed
-random effects and joint trajectory tests require further estimators and are
-not silently substituted by a cross-sectional analysis.
+Structured power requires a binary baseline subject- or cluster-level exposure.
+MMRM, LMM and trajectory means require randomized assignment. Complete-summary
+TMLE also permits measured baseline confounding. The graph may contain visit
+variables, mediators and lags, but the target is the total effect of baseline
+assignment. Time-varying treatment, dynamic regimes, mediation-specific effects,
+crossed random effects and joint trajectory tests need further estimators.
 
 | Planned estimator | Scope and assumptions |
 | --- | --- |
 | MMRM | Continuous repeated outcome, independent subjects, up to 12 visits, complete data or monotone dropout. Fits arm-by-visit means and a common unstructured covariance using the existing MMRM fitter. The t reference uses last-visit sample count minus two; it is not Kenward–Roger. |
 | Linear mixed model | Continuous repeated outcome, independent subjects. Separate arm-by-visit means for 2–6 visits, or arm-specific linear trends for 2–12 visits. Subject random intercept, optional correlated random slope, independent residual errors; REML and Satterthwaite inference with the existing fallback when needed. Allows intermittent missing visits. |
+| Complete-summary TMLE | Continuous, binary or count outcomes, with complete contributing visits and baseline binary treatment. Subject-weighted effect, baseline adjustment, whole-unit cross-fitting and a cluster influence-function variance. No missing-data or time-varying treatment adjustment. |
 | Trajectory means | Continuous, binary or count outcomes, independent subjects or nested clusters. Arm-by-visit available-case means and a CR1 sandwich at the highest independent unit, with units-minus-two t degrees of freedom. Validity relies on enough independent units and noninformative missingness within arm and visit. |
 
 The automatic choice is MMRM for continuous visit-level outcomes with independent
@@ -662,9 +662,67 @@ about the scenario. Compare plausible generating scenarios independently of the
 planned analysis; this version does not integrate an elicited prior over
 unknown generating parameters or implement empirical resampling from pilot data.
 
-Three editable examples cover continuous repeated outcomes, unequal-cluster
-repeated outcomes, and repeated binary outcomes. `web/tests/study.test.mjs`
+The Study catalog has 28 categorized scenarios, including six TMLE examples and stress tests for rare events, weak overlap, few clusters, skewed outcomes and missingness. Every scenario loads a graph, question and power settings together. The coverage table distinguishes estimator support from sensitivity scenarios and unsupported designs. `web/tests/study.test.mjs`
 checks analytic covariance at irregular times, independent complete-data
 contrast/variance calculations, LMM trend estimates, cluster influence-function
 variance, missing-outcome exclusion, calibration and null effects, unit counts,
 thread reproducibility and simulated coverage/null rejection.
+
+### Continuous and complete-summary TMLE
+
+Unbounded continuous/count TMLE fits arm-specific least-squares initial
+regressions, then an identity fluctuation `Q*_a = Q_a + epsilon_a / g_a`.
+Its least-squares score gives
+`epsilon_a = sum I(A=a)(Y-Q_a)/g_a / sum I(A=a)/g_a^2`.
+This version does not constrain predictions to be positive. Binary outcomes
+use the logistic fluctuation described above. For continuous outcomes,
+`outcomeBounds: [lower, upper]` selects logistic targeting after rescaling.
+Bounds must be prespecified, not taken from observed sample extrema.
+Initial scaled predictions are clipped to [0.000001, 0.999999]; observed
+outcomes are never clipped, and outcomes outside the bounds fail the fit.
+
+Both versions solve `sum I(A=a)(Y-Q*_a)/g_a = 0` and use the substitution
+estimate `psi = mean(Q*_1 - Q*_0)`. The efficient influence function is
+`D_i = Q*_1 - Q*_0 - psi + A(Y-Q*_1)/g - (1-A)(Y-Q*_0)/(1-g)`.
+Independent-row standard errors use its sample variance divided by N.
+
+For complete repeated data let `U_i = sum_v w_v Y_iv`. TMLE is applied to
+`(W_i, A_i, U_i)`, where W contains only pre-treatment baseline variables.
+Binary-summary bounds are the sum of negative weights and the sum of positive
+weights. User-specified continuous bounds apply to the entire summary, not
+individual visits. For G independent units and N subjects, the variance is
+`G/(G−1) × sum_g [sum_{i in g} D_i/N]^2`, with a `G−2` t reference.
+This is a subject-weighted effect, including when cluster sizes differ, and is
+approximate with few units. No subject or cluster crosses a cross-fitting fold.
+
+A graph with dropout or intermittent missingness is rejected for TMLE.
+Externally supplied missing contributing outcomes also fail. The estimator
+never reads latent missing outcomes and does not perform complete-case
+selection, imputation, censoring adjustment or longitudinal targeting.
+MNAR examples deliberately show sensitivity to unobserved selection.
+
+Diagnostics report pre-truncation propensity extrema, the number truncated,
+largest inverse weight, initial predictions clipped, arm means, independent
+units and the maximum absolute targeting score divided by subjects (on the
+scaled outcome when bounded). Power aggregates these counts and maxima over
+successful fits and reports failed fits separately in the common denominator.
+
+TMLE is semiparametric, but this implementation uses the selected regression
+bases, not Super Learner or automatic machine-learning selection. Identification
+requires consistency, measured confounding adjustment and adequate overlap;
+asymptotic inference has additional nuisance-estimation and sample-size
+requirements. Power remains conditional on the generating scenario.
+
+References: Gruber and van der Laan (2012),
+[tmle: An R Package for Targeted Maximum Likelihood Estimation](https://www.jstatsoft.org/article/view/v051i13);
+Gruber and van der Laan (2010),
+[TMLE for a bounded continuous outcome](https://pmc.ncbi.nlm.nih.gov/articles/PMC3126669/).
+For the distinct sequential longitudinal estimator that is **not** implemented,
+see Lendle et al. (2017),
+[ltmle](https://www.jstatsoft.org/article/view/v081i01).
+
+`web/tests/tmle.test.mjs` compares estimates, scores and standard errors against
+independent stratified references and cluster-held-out fits; verifies derived
+bounds, missing-outcome and unsupported-estimator guards; checks simulation
+bias/coverage with nuisance misspecification, rare-event failure denominators,
+thread determinism and every scenario's C++ execution.
