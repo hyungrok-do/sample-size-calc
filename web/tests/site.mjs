@@ -14,6 +14,9 @@ import { chromium, firefox, webkit } from 'playwright';
 import { policy, watchViolations } from './csp.mjs';
 
 const site = resolve(process.argv[2] ?? '.');
+// SCREENSHOTS=<folder>: also save pictures of the DAG canvas there (CI uploads them for review)
+const shots = process.env.SCREENSHOTS;
+const shoot = async (page, name) => { if (shots) await page.locator('.dag-scroll').screenshot({ path: join(shots, `${name}.png`) }); };
 assert.ok(existsSync(join(site, 'index.html')), 'usage: node tests/site.mjs <site dir made by web/assemble.sh>');
 const text = (file) => readFile(join(site, file), 'utf8');
 
@@ -253,6 +256,7 @@ try {
   // the graph marks the power analysis's variables and the arrows that carry its effect
   assert.match(await page.textContent('#dag-canvas'), /Compared[\s\S]*Outcome|Outcome[\s\S]*Compared/);
   assert.equal(await page.locator('#dag-canvas .dag-edge.effect').count(), 3, 'A → M, M → Y and A → Y carry the total effect');
+  await shoot(page, 'dag-canvas-mediation');
   assert.match(await page.textContent('#dag-paths'), /A → M → Y\s*causal · open/);
   assert.match(await page.textContent('#dag-paths'), /A → M ← X → Y\s*non-causal · blocked at collider M/);
   // a coefficient is changed where it is drawn, and roles are set on the graph (keyboard, menu, variable settings)
@@ -298,6 +302,17 @@ try {
   assert.match(await page.textContent('#dag-status'), /cycle/);
   assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
   await page.keyboard.press('Escape');
+  // an arrow dragged from a box's port onto another box; Ctrl+Z takes it back
+  await page.locator('#dag-canvas .dag-node', { hasText: 'X · ' }).scrollIntoViewIfNeeded();
+  const portBox = await page.getByRole('button', { name: 'Start an arrow from X', exact: true }).boundingBox();
+  const targetBox = await page.locator('#dag-canvas .dag-node', { hasText: 'A · ' }).locator('.dag-box').boundingBox();
+  await page.mouse.move(portBox.x + portBox.width / 2, portBox.y + portBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+  await page.mouse.up();
+  assert.equal(await page.locator('#dag-canvas [data-edge="X>A"]').count(), 1, await page.textContent('#dag-status'));
+  await page.keyboard.press('Control+z');
+  assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
   await page.selectOption('#dag-node-select', 'Y');
   await page.getByRole('button', { name: 'Add interaction', exact: true }).click();
   assert.match(await page.textContent('#dag-equations'), /0.2 × X × M/);
@@ -458,6 +473,12 @@ try {
   assert.deepEqual(await page.locator('#power-table tbody tr:first-child td').allTextContents().then((v) => v.slice(0, 3)), ['12', '144', '576']);
   assert.match(await page.textContent('#power-table thead'), /Number of clusters/);
   assert.match(await page.textContent('#power-method'), /cluster-robust/);
+  // the study's levels are drawn as nested plates, with the shared effects on the outcome as circles
+  assert.deepEqual(await page.locator('#dag-canvas .dag-plate').evaluateAll((g) => g.map((p) => p.dataset.plate)), ['cluster', 'subject', 'visit']);
+  assert.equal(await page.getAttribute('#dag-level-clusters', 'aria-pressed'), 'true');
+  assert.equal(await page.locator('#dag-canvas .dag-random').count(), 3, 'subject intercept, subject slope and cluster effects');
+  await page.check('#dag-show-all');
+  await shoot(page, 'dag-canvas-clustered-repeated');
   // Scenarios load the question, estimator and independent-unit sizes together.
   await page.selectOption('#dag-scenario-category', 'TMLE');
   assert.equal(await page.locator('#dag-example option').count(), 6);

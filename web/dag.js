@@ -1,11 +1,13 @@
 import { SCENARIOS, scenarioDesign } from './dag-scenarios.js?v=dev';
 import { DEFAULT_POWER } from './power-settings.js?v=dev';
 import { mountStudy, nodeStudyFields, mountTimeline } from './dag-study-editor.js?v=dev';
-import { scopeOf, sizeUnit } from './dag-study.js?v=dev';
+import { scopeOf, sizeUnit, parseStudy } from './dag-study.js?v=dev';
 import { reconcileAnalysis } from './dag-functions.js?v=dev';
 import { mountFunctions } from './dag-function-editor.js?v=dev';
 import { addEdge, removeEdge, removeNode, makeNode, emptyGraph, renameNode, validateGraph,
-  equation, dataCsv, topologicalOrder, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
+  equation, dataCsv, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
+import { NODE_W, NODE_H, CANVAS_LIMIT, ASPECT, plateLayout, plateAt, changeScope, setStructure, edgePath, loopPath, layout,
+  freeSpot, connectTargets, inferRoles, contentBounds, fitView, zoomView, viewBox } from './dag-canvas.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
 import { mountPower } from './dag-power.js?v=dev';
 import { mountWorkflow } from './dag-workflow.js?v=dev';
@@ -18,7 +20,6 @@ const STORE = 'ssc-dag-v1';
 const number = (x) => x === null ? '—' : Number.isInteger(x) ? String(x) : x.toFixed(3);
 const kindNames = { continuous: 'Continuous', binary: 'Binary', count: 'Count', survival: 'Survival time' };
 const parameterLabels = { sd: 'Standard deviation', width: 'Uniform width', shape: 'Shape', scale: 'Baseline time scale' };
-const W = 180, H = 104;  // node box; positions run 0–920 × 0–440 in a 1100 × 564 drawing
 const PREVIEW_N = 2000;  // observations drawn to sketch each variable's distribution
 const short = (x) => String(Number(x.toPrecision(3))).replace('-', '−');
 // What a node's box says about its distribution: a root's values, or the scale its incoming arrows act on.
@@ -34,22 +35,10 @@ function summary(graph, node) {
     lognormal: `median ${short(e)}`, gamma: `mean ${short(e)}, shape ${short(node.shape)}`, bernoulli: `P(1) = ${short(1 / (1 + Math.exp(-i)))}`,
     poisson: `mean ${short(e)}`, weibull: `k ${short(node.shape)}, scale ${short(node.scale)}`, exponential: `scale ${short(node.scale)}` }[node.family]}`;
 }
-// Columns by generation depth, left to right; within a column, near the parents.
-function tidy(graph) {
-  const depth = new Map(), y = new Map();
-  for (const id of topologicalOrder(graph))
-    depth.set(id, Math.max(0, ...graph.edges.filter((e) => e.target === id).map((e) => depth.get(e.source) + 1)));
-  const columns = Math.max(...depth.values()) + 1, dx = columns > 1 ? Math.min(280, 920 / (columns - 1)) : 0;
-  const x0 = (920 - dx * (columns - 1)) / 2;
-  for (let c = 0; c < columns; c++) {
-    const parentsY = (id) => { const ys = graph.edges.filter((e) => e.target === id).map((e) => y.get(e.source)); return ys.length ? ys.reduce((a, b) => a + b) / ys.length : 0; };
-    const column = graph.nodes.filter((n) => depth.get(n.id) === c).sort((a, b) => c ? parentsY(a.id) - parentsY(b.id) : a.y - b.y);
-    const dy = column.length > 1 ? Math.min(150, 440 / (column.length - 1)) : 0, y0 = (440 - dy * (column.length - 1)) / 2;
-    column.forEach((n, k) => y.set(n.id, Math.round(y0 + k * dy)));
-  }
-  return { ...graph, nodes: graph.nodes.map((n) => ({ ...n, x: Math.round(x0 + depth.get(n.id) * dx), y: y.get(n.id) })) };
-}
-
+// What the canvas says about a variable's inferred role for the comparison
+const roleHelp = { confounder: 'Affects both the compared variable and the outcome: adjust for it', mediator: 'On a path from the compared variable to the outcome',
+  collider: 'Affected by both the compared variable and the outcome: do not adjust for it', instrument: 'Affects the outcome only through the compared variable',
+  prognostic: 'Affects the outcome only: adjusting for it can add precision' };
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -99,6 +88,9 @@ export function mountDag(root) {
   const preview = { columns: null, key: '', token: 0, engine: null, timer: 0 };
   const modelKey = () => JSON.stringify([graph.nodes.map(({ x, y, ...rest }) => rest), graph.edges, graph.study]);
   let menu = null;
+  // the canvas: what part of the drawing is in view, the selected arrow, the plates and random effects last drawn,
+  // the open non-causal paths' arrows, a rubber-band arrow being drawn, and what is being dragged
+  let view = null, selectedEdge = null, drawn = { plates: [], effects: [] }, biased = new Set(), pointer = null, gesture = null;
   try {
     const saved = localStorage.getItem(STORE);
     if (saved) { const design = parseDesign(saved); graph = design.graph; estimand = design.estimand; powerSettings = design.power ?? null; }
@@ -128,6 +120,7 @@ export function mountDag(root) {
     while (history.length > 50) history.shift();
     future = []; pending = null;
   }
+  // planning.remembered: the undo step was already taken (a drag that also moved a variable to another level)
   function apply(next, message, planning = {}) {
     try {
       validateGraph(next);
@@ -138,145 +131,315 @@ export function mountDag(root) {
         try { validateEstimand(next, nextEstimand); }
         catch { nextEstimand = null; note = ' The power analysis no longer fit the graph and was reset.'; }
       }
-      remember(); graph = next; estimand = nextEstimand;
+      if (!planning.remembered) remember();
+      graph = next; estimand = nextEstimand;
       if ('power' in planning) powerSettings = planning.power;
       if (planning.renameFrom && powerSettings?.calibrationEdge) {
         powerSettings = { ...powerSettings, calibrationEdge: powerSettings.calibrationEdge.split('>').map((id) => id === planning.renameFrom ? planning.renameTo : id).join('>') };
       }
       if (powerSettings?.analysis) powerSettings = { ...powerSettings, analysis: reconcileAnalysis(powerSettings.analysis, graph, planning.renameFrom, planning.renameTo) };
       if (!graph.nodes.some((n) => n.id === selected)) selected = graph.nodes.at(-1)?.id;
+      if (selectedEdge && !graph.edges.some((e) => `${e.source}>${e.target}` === selectedEdge)) selectedEdge = null;
       connectFrom = null;
-      clearResult(); persist(); render();
+      clearResult(); persist();
+      if (planning.fit) view = null;
+      render();
       status((message ?? 'Model updated. Simulate again to see its data.') + note);
       return true;
     } catch (error) { status(error.message, true); return false; }
   }
+  const nodeElement = (id) => [...canvas.querySelectorAll('.dag-node')].find((g) => g.dataset.node === id);
+  const edgeElement = (key) => canvas.querySelector(`[data-edge="${key}"]`);
   function updateSelection(id) {
     selected = id;
     draw(); inspector();
   }
+  function selectEdge(key) {
+    selectedEdge = key; selected = key.split('>')[1];
+    draw(); inspector();
+    edgeElement(key)?.focus();
+  }
   function connectTo(id) {
     if (!connectFrom) {
-      connectFrom = id; draw();
-      status(`Arrow from ${id}: choose the destination node, or press Escape to cancel.`);
+      connectFrom = id; selectedEdge = null; draw();
+      status(`Arrow from ${id}: click or drag to the variable it affects. Escape cancels.`);
     } else {
+      const source = connectFrom;
+      const check = connectTargets(graph, source).get(id);
+      if (check && !check.ok) { status(check.reason, true); return; }
       try {
-        const source = connectFrom;
-        if (apply(addEdge(graph, source, id), `Added ${source} → ${id}. Edit its coefficient in the destination node.`)) updateSelection(id);
+        if (apply(addEdge(graph, source, id), `Added ${source} → ${id}. Click its number to change the effect.`)) selectEdge(`${source}>${id}`);
       } catch (error) { status(error.message, true); }
     }
   }
+  function cancelConnect(message = 'Arrow connection cancelled.') {
+    if (!connectFrom && gesture?.type !== 'connect') return;
+    connectFrom = null; gesture = null; draw(); status(message);
+  }
+  function deleteSelection(target) {
+    const edgeKey = target?.closest?.('.dag-edge')?.dataset.edge ?? (target?.closest?.('.dag-node') ? null : selectedEdge);
+    if (edgeKey) {
+      const [source, edgeTarget] = edgeKey.split('>');
+      apply(removeEdge(graph, source, edgeTarget), `Removed ${source} → ${edgeTarget} and any interactions using it. Undo restores it.`);
+      return;
+    }
+    const id = target?.closest?.('.dag-node')?.dataset.node ?? selected;
+    if (id) apply(removeNode(graph, id), `${id} and its arrows removed. Undo restores them.`);
+  }
+  // The visible part of the drawing.  Fitting shows every variable and plate; the view otherwise stays where the
+  // person left it.
+  function fit() { view = fitView(contentBounds(graph, drawn.plates, drawn.effects)); canvas.setAttribute('viewBox', viewBox(view)); }
+  function zoom(factor, at) { view = zoomView(view, factor, at); canvas.setAttribute('viewBox', viewBox(view)); }
+  function reveal(id) {
+    const n = graph.nodes.find((v) => v.id === id);
+    if (!n || !view) return;
+    const h = view.w * ASPECT;
+    if (n.x < view.x || n.y < view.y || n.x + NODE_W > view.x + view.w || n.y + NODE_H > view.y + h) {
+      view = { ...view, x: n.x + NODE_W / 2 - view.w / 2, y: n.y + NODE_H / 2 - h / 2 };
+      canvas.setAttribute('viewBox', viewBox(view));
+    }
+  }
+  function addVariable(kind, at) {
+    if (graph.nodes.length >= MAX_NODES) { status(`Use at most ${MAX_NODES} variables.`, true); return; }
+    const prefix = { continuous: 'X', binary: 'B', count: 'N', survival: 'T' }[kind];
+    let k = 1, id = `${prefix}${k}`;
+    while (graph.nodes.some((n) => n.id === id)) id = `${prefix}${++k}`;
+    const centre = at ?? (view ? { x: view.x + view.w / 2 - NODE_W / 2, y: view.y + view.w * ASPECT / 2 - NODE_H / 2 } : { x: 40, y: 40 });
+    const spot = at ? { x: Math.max(0, Math.round(at.x)), y: Math.max(0, Math.round(at.y)) } : freeSpot(graph, centre);
+    let node = { ...makeNode(id, kind, spot.x, spot.y), label: { continuous: 'Variable', binary: 'Binary variable', count: 'Count', survival: 'Event time' }[kind] };
+    let level = '';
+    if (graph.study) {
+      level = plateAt(drawn.plates, { x: spot.x + NODE_W / 2, y: spot.y + NODE_H / 2 }) ?? 'subject';
+      if (kind === 'survival' && level === 'visit') level = 'subject';
+      node = { ...node, scope: level, repeated: { subjectSD: 0, slopeSD: 0, slopeCorrelation: 0, clusterSD: 0, residualCorrelation: 0 }, lags: [] };
+    }
+    if (apply({ ...graph, nodes: [...graph.nodes, node] }, `Added ${id}${level ? `, measured once per ${level}` : ''}. Choose its distribution on the right; drag its + to connect it.`)) {
+      updateSelection(id); reveal(id);
+    }
+  }
   function draw() {
+    const W = NODE_W, H = NODE_H;
+    drawn = plateLayout(graph);
+    const found = analysisPaths();
+    biased = found?.open ?? new Set();
+    if (!view) fit();
+    canvas.setAttribute('viewBox', viewBox(view));
     const marker = (id) => svg('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 13, markerHeight: 13,
       orient: 'auto-start-reverse', markerUnits: 'userSpaceOnUse' }, svg('path', { d: 'M 0 0 L 10 5 L 0 10 z' }));
-    const defs = svg('defs', {}, marker('dag-arrow'), marker('dag-arrow-effect'));
-    const lines = svg('g', { class: 'dag-arrows' });
+    const defs = svg('defs', {}, marker('dag-arrow'), marker('dag-arrow-effect'), marker('dag-arrow-lag'), marker('dag-arrow-bias'));
     const map = new Map(graph.nodes.map((n) => [n.id, n]));
     // the arrows that carry the effect the power analysis tests
     const effect = new Set((estimand ? calibrationEdges(graph, estimand) : []).map((e) => `${e.source}>${e.target}`));
+    const connecting = gesture?.type === 'connect' ? gesture.source : connectFrom;
+    const targets = connecting ? connectTargets(graph, connecting) : null;
+    const roles = estimand ? inferRoles(graph, estimand.exposure, estimand.outcome) : new Map();
+    // Plates: the study's levels as nested boxes.  A box dragged into a plate is measured at that level; a plate's
+    // label edits the visit schedule or the cluster sizes.
+    const plates = svg('g', { class: 'dag-plates' });
+    for (const p of drawn.plates) {
+      const editable = p.level !== 'subject';
+      const label = svg('g', { class: `dag-plate-label${editable ? ' editable' : ''}`, ...(editable ? { role: 'button', tabindex: 0,
+        'aria-label': p.level === 'visit' ? `Visit times ${graph.study.times.join(', ')}. Enter to edit.` : `Subjects per cluster ${graph.study.clusterSizes.join(', ')}. Enter to edit.` } : {}) },
+      svg('text', { x: p.x + 16, y: p.y + 21 }, p.label));
+      if (editable) {
+        const edit = () => editPlate(p.level, label);
+        label.addEventListener('click', (e) => { e.stopPropagation(); edit(); });
+        label.addEventListener('pointerdown', (e) => e.stopPropagation());
+        label.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); edit(); } });
+      }
+      plates.append(svg('g', { class: `dag-plate ${p.level}${p.empty ? ' empty' : ''}`, 'data-plate': p.level },
+        svg('rect', { class: 'dag-plate-box', x: p.x, y: p.y, width: p.w, height: p.h, rx: 16 }),
+        label, svg('text', { class: 'dag-plate-count', x: p.x + p.w - 14, y: p.y + p.h - 10, 'text-anchor': 'end' }, p.multiplicity),
+        ...(p.empty ? [svg('text', { class: 'dag-plate-hint', x: p.x + p.w / 2, y: p.y + p.h / 2 + 14, 'text-anchor': 'middle' },
+          p.level === 'visit' ? 'Drag a variable here to measure it at every visit' : 'Drag a variable here')] : [])));
+    }
+    const lines = svg('g', { class: 'dag-arrows' });
     for (const edge of graph.edges) {
-      const source = map.get(edge.source), target = map.get(edge.target);
-      const dx = target.x - source.x, dy = target.y - source.y;
-      const vertical = Math.abs(dy) > Math.abs(dx) * 0.6;
-      const x1 = source.x + (vertical ? W / 2 : dx >= 0 ? W : 0);
-      const y1 = source.y + (vertical ? dy >= 0 ? H : 0 : H / 2);
-      const x2 = target.x + (vertical ? W / 2 : dx >= 0 ? 0 : W);
-      const y2 = target.y + (vertical ? dy >= 0 ? 0 : H : H / 2);
-      const bend = Math.max(30, Math.abs(vertical ? y2 - y1 : x2 - x1) * 0.4);
-      const [c1, c2] = vertical ? [[x1, y1 + Math.sign(dy) * bend], [x2, y2 - Math.sign(dy) * bend]]
-        : [[x1 + Math.sign(dx) * bend, y1], [x2 - Math.sign(dx) * bend, y2]];
-      const d = `M ${x1} ${y1} C ${c1[0]} ${c1[1]}, ${c2[0]} ${c2[1]}, ${x2} ${y2}`;
-      const mid = [0, 1].map((k) => ([x1, y1][k] + 3 * c1[k] + 3 * c2[k] + [x2, y2][k]) / 8);  // the curve at t = 1/2
-      const key = `${edge.source}>${edge.target}`, number = short(edge.coefficient), width = 8.5 * number.length + 10;
-      const group = svg('g', { class: `dag-edge${edge.target === selected ? ' selected' : ''}${effect.has(key) ? ' effect' : ''}`,
+      const key = `${edge.source}>${edge.target}`, { d, mid } = edgePath(map.get(edge.source), map.get(edge.target));
+      const number = short(edge.coefficient), width = 8.5 * number.length + 10;
+      const isSelected = key === selectedEdge, kind = effect.has(key) ? 'effect' : biased.has(key) ? 'bias' : '';
+      const group = svg('g', { class: `dag-edge${edge.target === selected && !selectedEdge ? ' selected' : ''}${isSelected ? ' chosen' : ''}${kind ? ` ${kind}` : ''}`,
         'data-edge': key, role: 'button', tabindex: 0,
-        'aria-label': `${edge.source} to ${edge.target}, coefficient ${edge.coefficient}. Enter or click the number to change it.` },
-      svg('path', { d, 'marker-end': `url(#dag-arrow${effect.has(key) ? '-effect' : ''})` }),
+        'aria-label': `${edge.source} to ${edge.target}, coefficient ${edge.coefficient}. Enter or click the number to change it; Delete removes the arrow.` },
+      svg('path', { class: 'dag-edge-hit', d }),
+      svg('path', { class: 'dag-edge-line', d, 'marker-end': `url(#dag-arrow${kind ? `-${kind}` : ''})` }),
       // the number sits on a backing so it reads over the curve and a click anywhere on it edits it
       svg('g', { class: 'dag-edge-label' },
         svg('rect', { x: mid[0] - width / 2, y: mid[1] - 22, width, height: 19, rx: 4 }),
         svg('text', { x: mid[0], y: mid[1] - 8, 'text-anchor': 'middle' }, number)));
+      if (isSelected) {
+        const remove = svg('g', { class: 'dag-edge-remove', role: 'button', tabindex: 0, 'aria-label': `Remove the arrow ${edge.source} to ${edge.target}` },
+          svg('circle', { cx: mid[0] + width / 2 + 13, cy: mid[1] - 12.5, r: 10 }), svg('text', { x: mid[0] + width / 2 + 13, y: mid[1] - 8, 'text-anchor': 'middle' }, '×'));
+        const go = (e) => { e.stopPropagation(); e.preventDefault(); deleteSelection(group); };
+        remove.addEventListener('click', go);
+        remove.addEventListener('pointerdown', (e) => e.stopPropagation());
+        remove.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') go(e); });
+        group.append(remove);
+      }
+      group.addEventListener('pointerdown', (e) => e.stopPropagation());
       group.addEventListener('click', (e) => {
+        if (e.target.closest('.dag-edge-remove')) return;
         const label = e.target.closest('.dag-edge-label');
         if (label) editCoefficient(edge, label);
-        else updateSelection(edge.target);
+        else selectEdge(key);
       });
       group.addEventListener('keydown', (e) => {
+        if (e.target !== group) return;
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); editCoefficient(edge, group.querySelector('.dag-edge-label')); }
+        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(group); }
       });
+      group.addEventListener('focus', () => { if (selectedEdge !== key) { selectedEdge = key; group.classList.add('chosen'); } });
       lines.append(group);
+    }
+    // Lagged relationships (a variable at an earlier visit): dashed, beside any same-visit arrow, a loop for the
+    // variable's own past.  Their settings are on the child.
+    const lags = svg('g', { class: 'dag-lags' });
+    if (graph.study) for (const node of graph.nodes) for (const l of node.lags ?? []) {
+      const source = map.get(l.source);
+      if (!source) continue;
+      const same = graph.edges.some((e) => e.source === l.source && e.target === node.id);
+      const { d, mid } = l.source === node.id ? loopPath(node) : edgePath(source, node, same ? 46 : 0);
+      const text = `lag ${l.lag} · ${short(l.coefficient)}`, width = 6.4 * text.length + 12;
+      const group = svg('g', { class: 'dag-lag', role: 'button', tabindex: 0,
+        'aria-label': `${l.source} ${l.lag} visit${l.lag === 1 ? '' : 's'} earlier affects ${node.id}, coefficient ${l.coefficient}. Enter to edit.` },
+      svg('path', { d, 'marker-end': 'url(#dag-arrow-lag)' }),
+      svg('rect', { x: mid[0] - width / 2, y: mid[1] - 10, width, height: 18, rx: 9 }),
+      svg('text', { x: mid[0], y: mid[1] + 3, 'text-anchor': 'middle' }, text));
+      const open = () => openSection(node.id, 'dag-node-lags');
+      group.addEventListener('pointerdown', (e) => e.stopPropagation());
+      group.addEventListener('click', open);
+      group.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+      lags.append(group);
+    }
+    // Shared random effects as small latent circles on the plate they vary over.
+    const effects = svg('g', { class: 'dag-effects' });
+    for (const re of drawn.effects) {
+      const target = map.get(re.node);
+      const group = svg('g', { class: `dag-random ${re.level}`, role: 'button', tabindex: 0, 'aria-label': `${re.text}. Enter to edit.` },
+        svg('title', {}, re.text),
+        svg('path', { d: `M ${re.cx} ${re.cy + 14} L ${target.x + W / 2 + (re.cx - target.x - W / 2) * 0.35} ${target.y - 2}`, 'marker-end': 'url(#dag-arrow-lag)' }),
+        svg('circle', { cx: re.cx, cy: re.cy, r: 14 }),
+        svg('text', { x: re.cx, y: re.cy + 4.5, 'text-anchor': 'middle' }, re.symbol));
+      const open = () => openSection(re.node, 'dag-node-effects', `repeat-${re.key}`);
+      group.addEventListener('pointerdown', (e) => e.stopPropagation());
+      group.addEventListener('click', open);
+      group.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+      effects.append(group);
     }
     const nodes = svg('g', {});
     for (const node of graph.nodes) {
-      const group = svg('g', { class: `dag-node ${node.kind}${node.id === selected ? ' selected' : ''}${node.id === connectFrom ? ' connecting' : ''}`,
-        transform: `translate(${node.x} ${node.y})`, tabindex: 0, role: 'button',
-        'aria-label': `${node.id}, ${node.label}, ${kindNames[node.kind]}. Enter to edit, arrow keys to move, C to compare it, O to make it the outcome.` },
+      const target = targets?.get(node.id);
+      const r = node.repeated ?? {};
+      const group = svg('g', { class: `dag-node ${node.kind}${node.id === selected ? ' selected' : ''}${node.id === connecting ? ' connecting' : ''}`
+        + `${target && node.id !== connecting ? target.ok ? ' target-ok' : ' target-bad' : ''}`
+        + `${!graph.edges.some((e) => e.source === node.id || e.target === node.id) && graph.nodes.length > 1 ? ' isolated' : ''}`,
+        'data-node': node.id, transform: `translate(${node.x} ${node.y})`, tabindex: 0, role: 'button',
+        'aria-label': `${node.id}, ${node.label}, ${kindNames[node.kind]}${graph.study ? `, measured ${{ cluster: 'once per cluster', subject: 'once per subject', visit: 'at every visit', time: 'as the visit time' }[scopeOf(node)]}` : ''}. Enter to edit, arrow keys to move, C to compare it, O to make it the outcome, Delete to remove it.` },
+      ...(target && !target.ok && node.id !== connecting ? [svg('title', {}, target.reason)] : []),
       svg('rect', { class: 'dag-box', width: W, height: H, rx: 12 }),
-      svg('text', { x: 14, y: 22, class: 'dag-node-role' }, node.kind.toUpperCase() + (graph.study ? ` · ${scopeOf(node).toUpperCase()}` : '')
+      svg('rect', { class: 'dag-stripe', width: 6, height: H - 24, x: 0, y: 12, rx: 3 }),
+      svg('text', { x: 14, y: 22, class: 'dag-node-role' }, node.kind.toUpperCase()
         + (node.kind === 'survival' && node.censoring.mode !== 'none'
-          ? ` · ${node.censoring.mode === 'variable' ? 'censored by ' + node.censoring.variable : 'cutoff ' + short(node.censoring.time)}` : '')),
+          ? ` · ${node.censoring.mode === 'variable' ? 'censored by ' + node.censoring.variable : 'cutoff ' + short(node.censoring.time)}` : '')
+        + (r.residualCorrelation ? ` · ρ ${short(r.residualCorrelation)}/t` : '')),
       svg('text', { x: 14, y: 45, class: 'dag-node-title' }, `${node.id} · ${node.label.length > 16 ? node.label.slice(0, 15) + '…' : node.label}`),
       svg('text', { x: 14, y: 66, class: 'dag-node-family' }, summary(graph, node)));
       const role = estimand?.exposure === node.id ? (estimand.kind === 'coefficient' ? 'Predictor' : 'Compared')
         : estimand?.outcome === node.id ? 'Outcome' : null;
       const values = preview.columns?.[node.id];
-      const drawn = values && sketch(node.kind, values, values && (node.kind === 'binary' || node.kind === 'survival') ? 92 : W - 28, 22);
-      if (drawn) group.append(svg('g', { class: `dag-spark${preview.key === modelKey() ? '' : ' stale'}`, transform: `translate(14 ${H - 30})` },
-        svg('title', {}, drawn.title), svg('line', { x1: 0, x2: W - 28, y1: 22.5, y2: 22.5 }),
-        ...(drawn.bars ? [svg('path', { class: 'bars', d: drawn.bars })] : []),
-        ...(drawn.line ? [svg('path', { class: 'curve', d: drawn.line })] : []),
-        ...(drawn.label ? [svg('text', { x: 100, y: 17 }, drawn.label)] : [])));
+      const sketched = values && sketch(node.kind, values, values && (node.kind === 'binary' || node.kind === 'survival') ? 92 : W - 28, 22);
+      if (sketched) group.append(svg('g', { class: `dag-spark${preview.key === modelKey() ? '' : ' stale'}`, transform: `translate(14 ${H - 30})` },
+        svg('title', {}, sketched.title), svg('line', { x1: 0, x2: W - 28, y1: 22.5, y2: 22.5 }),
+        ...(sketched.bars ? [svg('path', { class: 'bars', d: sketched.bars })] : []),
+        ...(sketched.line ? [svg('path', { class: 'curve', d: sketched.line })] : []),
+        ...(sketched.label ? [svg('text', { x: 100, y: 17 }, sketched.label)] : [])));
       if (role) group.append(svg('g', { class: 'dag-node-tag' }, svg('rect', { x: 10, y: -11, width: 70, height: 20, rx: 10 }),
         svg('text', { x: 45, y: 3, 'text-anchor': 'middle' }, role)));
+      const inferred = roles.get(node.id);
+      if (inferred) {
+        const width = 7 * inferred.length + 16;
+        group.append(svg('g', { class: `dag-node-inferred ${inferred}` }, svg('title', {}, roleHelp[inferred]),
+          svg('rect', { x: W - width - 8, y: -10, width, height: 18, rx: 9 }), svg('text', { x: W - 8 - width / 2, y: 3, 'text-anchor': 'middle' }, inferred)));
+      }
       const port = svg('g', { class: 'dag-port', role: 'button', tabindex: 0, 'aria-label': `Start an arrow from ${node.id}` },
-        svg('circle', { cx: W, cy: H / 2, r: 10 }), svg('text', { x: W, y: H / 2 + 4, 'text-anchor': 'middle' }, '+'));
-      port.addEventListener('pointerdown', (e) => e.stopPropagation());
-      port.addEventListener('pointerup', (e) => e.stopPropagation());
-      port.addEventListener('click', (e) => { e.stopPropagation(); connectTo(node.id); });
+        svg('title', {}, `Drag to another variable to draw an arrow from ${node.id}`),
+        svg('circle', { cx: W, cy: H / 2, r: 11 }), svg('text', { x: W, y: H / 2 + 5, 'text-anchor': 'middle' }, '+'));
+      port.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        if (e.button !== 0) return;
+        gesture = { type: 'connect', source: node.id, start: point(e), moved: false };
+      });
+      // released on the port itself: a click (which starts click-to-connect) or a drag that came back (cancelled)
+      port.addEventListener('pointerup', (e) => {
+        e.stopPropagation();
+        if (gesture?.type !== 'connect') return;
+        if (gesture.moved) { gesture = { suppressClick: true }; pointer = null; draw(); status('Arrow cancelled: release over another variable to connect them.'); }
+        else gesture = null;
+      });
+      port.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (gesture?.suppressClick) { gesture = null; return; }
+        connectTo(node.id);
+      });
       port.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); connectTo(node.id); }
       });
       group.append(port);
       let drag = null;
       group.addEventListener('pointerdown', (event) => {
+        event.stopPropagation();
         if (event.button !== 0 || connectFrom) return;
         const p = point(event);
-        drag = { start: p, x: node.x, y: node.y, moved: false };
+        drag = { start: p, x: node.x, y: node.y, moved: false, plates: drawn.plates };
         group.setPointerCapture(event.pointerId);
       });
       group.addEventListener('pointermove', (event) => {
         if (!drag) return;
         const p = point(event), dx = p.x - drag.start.x, dy = p.y - drag.start.y;
         if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-        if (!drag.moved) { remember(); drag.moved = true; }
-        node.x = Math.max(0, Math.min(1100 - W, Math.round(drag.x + dx)));
-        node.y = Math.max(0, Math.min(440, Math.round(drag.y + dy)));
+        if (!drag.moved) { remember(); drag.moved = true; group.classList.add('dragging'); }
+        node.x = Math.max(0, Math.min(CANVAS_LIMIT.x, Math.round(drag.x + dx)));
+        node.y = Math.max(0, Math.min(CANVAS_LIMIT.y, Math.round(drag.y + dy)));
         group.setAttribute('transform', `translate(${node.x} ${node.y})`);
+        if (graph.study) {
+          const level = plateAt(drag.plates, { x: node.x + W / 2, y: node.y + H / 2 });
+          for (const g of canvas.querySelectorAll('.dag-plate')) g.classList.toggle('drop', g.dataset.plate === level && level !== levelName(node));
+        }
       });
       const finish = () => {
-        const moved = drag?.moved;
+        const moved = drag?.moved, plates = drag?.plates;
         drag = null;
-        if (moved) { persist(); draw(); buttons(); }
-        return moved;
+        if (!moved) return false;
+        selected = node.id; selectedEdge = null;  // the box just moved is the one being worked on
+        const level = graph.study ? plateAt(plates, { x: node.x + W / 2, y: node.y + H / 2 }) : null;
+        if (level && level !== levelName(node) && scopeOf(node) !== 'time') {
+          const word = { cluster: 'once per cluster', subject: 'once per subject', visit: 'at every visit' }[level];
+          if (!apply(changeScope(graph, node.id, level), `${node.id} is now measured ${word}. Undo restores it.`, { remembered: true })) { persist(); updateSelection(node.id); }
+        } else { persist(); updateSelection(node.id); }
+        buttons();
+        return true;
       };
       group.addEventListener('pointercancel', finish);
       group.addEventListener('pointerup', (event) => {
+        if (gesture?.type === 'connect') return;  // an arrow dragged onto this box: the canvas connects it
         if (finish()) { event.stopPropagation(); return; }
         if (connectFrom) connectTo(node.id);
-        else updateSelection(node.id);
+        else { selectedEdge = null; updateSelection(node.id); }
       });
+      group.addEventListener('dblclick', (event) => { event.stopPropagation(); updateSelection(node.id); $('dag-node-label')?.focus(); });
       group.addEventListener('contextmenu', (event) => { event.preventDefault(); openMenu(node, event.clientX, event.clientY); });
       group.addEventListener('keydown', (event) => {
         if (event.target !== group) return;
         const role = { c: 'exposure', o: 'outcome' }[event.key.toLowerCase()];
         if (role && !event.ctrlKey && !event.metaKey && !event.altKey) {
           event.preventDefault(); assignRole(role, node.id);
-          [...canvas.querySelectorAll('.dag-node')].find((g) => g.getAttribute('aria-label').startsWith(`${node.id},`))?.focus();
+          nodeElement(node.id)?.focus();
           return;
         }
         if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
           event.preventDefault(); const box = group.getBoundingClientRect(); openMenu(node, box.left + 20, box.bottom - 10); return;
         }
+        if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); deleteSelection(group); return; }
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           if (connectFrom) connectTo(node.id); else { updateSelection(node.id); $('dag-node-label').focus(); }
@@ -284,46 +447,65 @@ export function mountDag(root) {
         const delta = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[event.key];
         if (delta) {
           event.preventDefault(); remember();
-          node.x = Math.max(0, Math.min(1100 - W, node.x + delta[0]));
-          node.y = Math.max(0, Math.min(440, node.y + delta[1]));
+          node.x = Math.max(0, Math.min(CANVAS_LIMIT.x, node.x + delta[0]));
+          node.y = Math.max(0, Math.min(CANVAS_LIMIT.y, node.y + delta[1]));
           persist(); draw(); buttons();
-          [...canvas.querySelectorAll('.dag-node')].find((g) => g.getAttribute('aria-label').startsWith(`${node.id},`))?.focus();
+          nodeElement(node.id)?.focus();
         }
       });
       nodes.append(group);
     }
-    if (!graph.nodes.length) nodes.append(svg('text', { x: 550, y: 260, 'text-anchor': 'middle', class: 'dag-empty' }, 'Add a variable to begin'));
+    // the arrow being drawn, from the source's port to the pointer
+    const overlay = svg('g', { class: 'dag-overlay' });
+    if (connecting && pointer && map.has(connecting)) {
+      const s = map.get(connecting);
+      overlay.append(svg('path', { class: 'dag-rubber', d: `M ${s.x + W} ${s.y + H / 2} L ${pointer.x} ${pointer.y}`, 'marker-end': 'url(#dag-arrow)' }));
+    }
+    if (!graph.nodes.length) nodes.append(svg('text', { x: view.x + view.w / 2, y: view.y + view.w * ASPECT / 2, 'text-anchor': 'middle', class: 'dag-empty' },
+      'Add a variable above, or double-click here'));
     canvas.replaceChildren(svg('title', {}, 'Data generating process'),
-      svg('desc', {}, 'Select a node to edit. Drag nodes or use arrow keys to move. Use plus ports, or Add arrow in the variable settings, to connect nodes.'), defs, lines, nodes);
+      svg('desc', {}, 'Select a box to edit it. Drag boxes to move them, or into a plate to change how often they are measured. Drag from a box’s plus port to another box to draw an arrow.'),
+      defs, plates, effects, lines, lags, nodes, overlay);
     $('dag-node-count').replaceChildren(`${graph.nodes.length} variable${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} arrow${graph.edges.length === 1 ? '' : 's'}`,
-      ...(effect.size ? [el('span', { class: 'dag-legend-effect' }, 'tested effect')] : []));
+      ...(effect.size ? [el('span', { class: 'dag-legend-effect' }, 'tested effect')] : []),
+      ...(biased.size ? [el('span', { class: 'dag-legend-bias' }, 'open non-causal path')] : []));
     $('dag-node-select').replaceChildren(...graph.nodes.map((n) => el('option', { value: n.id }, `${n.id} · ${n.label}`)));
     $('dag-node-select').value = selected ?? '';
     $('dag-node-select').disabled = !graph.nodes.length;
     $('dag-tidy').disabled = graph.nodes.length < 2;
+    $('dag-level-clusters').setAttribute('aria-pressed', String(Boolean(graph.study?.clusterSizes?.length)));
+    $('dag-level-visits').setAttribute('aria-pressed', String((graph.study?.times?.length ?? 0) > 1));
     for (const [role, id] of [['exposure', 'dag-role-exposure'], ['outcome', 'dag-role-outcome']])
       $(id)?.setAttribute('aria-pressed', String(estimand?.[role] === selected));
-    paths();
+    paths(found);
   }
+  const levelName = (node) => ({ cluster: 'cluster', subject: 'subject', visit: 'visit', time: 'visit' })[scopeOf(node)];
   // The paths between the compared variable and the outcome, and whether the planned analysis leaves each open.
-  function paths() {
-    const box = $('dag-paths');
-    if (graph.study) { box.replaceChildren(); return; }
+  // Also returns the arrows on open non-causal paths, which the canvas marks.
+  function analysisPaths() {
     const a = estimand?.exposure, y = estimand?.outcome;
-    const mark = (keys) => { for (const g of canvas.querySelectorAll('.dag-edge')) g.classList.toggle('path', keys.includes(g.dataset.edge)); };
-    if (!a || !y || !graph.nodes.some((n) => n.id === a) || !graph.nodes.some((n) => n.id === y)) { box.replaceChildren(); return; }
+    if (graph.study || !a || !y || !graph.nodes.some((n) => n.id === a) || !graph.nodes.some((n) => n.id === y)) return null;
     const plan = powerCompatibility(graph, estimand, powerSettings?.analysis);
     // the g-formula redraws the variables it refits (mediators and the outcome), so only the others are held fixed
     const terms = !plan.supported ? [] : plan.method === 'gformula' ? plan.models.flatMap((m) => m.terms) : plan.terms;
     const redrawn = new Set([a, ...(plan.models ?? []).map((m) => m.node)]);
     const adjusted = new Set(terms.flatMap((t) => [t.left, t.right]).filter((v) => v && !redrawn.has(v)));
     const { paths: list, truncated } = findPaths(graph, a, y);
-    const rows = list.map((path) => {
-      const c = classifyPath(graph, path, adjusted);
+    const rows = list.map((path) => ({ path, c: classifyPath(graph, path, adjusted),
+      keys: path.map((s) => s.forward ? `${s.from}>${s.to}` : `${s.to}>${s.from}`) }));
+    const open = new Set(rows.filter(({ c }) => c.open && c.kind !== 'causal').flatMap(({ keys }) => keys));
+    return { a, y, adjusted, rows, truncated, open, plan };
+  }
+  function paths(found = analysisPaths()) {
+    const box = $('dag-paths');
+    issues(found);
+    if (!found) { box.replaceChildren(); return; }
+    const { a, y, adjusted, rows, truncated } = found;
+    const mark = (keys) => { for (const g of canvas.querySelectorAll('.dag-edge')) g.classList.toggle('path', keys.includes(g.dataset.edge)); };
+    const items = rows.map(({ path, c, keys }) => {
       const what = c.kind === 'causal' ? 'causal' : c.kind === 'backdoor' ? 'back-door' : 'non-causal';
       const why = c.open ? (c.kind === 'causal' ? 'open: carries effect' : 'open: biases the estimate')
         : c.collider ? `blocked at collider ${c.by}` : `blocked: ${c.by} is adjusted for`;
-      const keys = path.map((s) => s.forward ? `${s.from}>${s.to}` : `${s.to}>${s.from}`);
       const row = el('li', { class: `${c.kind}${c.open ? ' open' : ''}`, tabindex: 0 },
         el('span', { class: 'dag-path-text' }, pathText(path)), el('span', { class: 'dag-path-kind' }, `${what} · ${why}`));
       const show = (on) => mark(on ? keys : []);
@@ -331,12 +513,30 @@ export function mountDag(root) {
       row.addEventListener('focus', () => show(true)); row.addEventListener('blur', () => show(false));
       return { row, c };
     });
-    const biased = rows.filter(({ c }) => c.open && c.kind !== 'causal').length;
+    const count = items.filter(({ c }) => c.open && c.kind !== 'causal').length;
     const heading = `Paths from ${a} to ${y}` + (adjusted.size ? ` · analysis adjusts for ${[...adjusted].join(', ')}` : '');
     box.replaceChildren(el('h4', {}, heading),
-      rows.length ? el('ul', {}, rows.map(({ row }) => row)) : el('p', { class: 'small muted' }, `No path connects ${a} and ${y}: the effect is zero.`),
-      ...(truncated ? [el('p', { class: 'small muted' }, `The first ${list.length} paths are shown.`)] : []),
-      ...(biased ? [el('p', { class: 'small error' }, `${biased} open non-causal path${biased === 1 ? '' : 's'}: the estimate would mix confounding into the effect.`)] : []));
+      items.length ? el('ul', {}, items.map(({ row }) => row)) : el('p', { class: 'small muted' }, `No path connects ${a} and ${y}: the effect is zero.`),
+      ...(truncated ? [el('p', { class: 'small muted' }, `The first ${rows.length} paths are shown.`)] : []),
+      ...(count ? [el('p', { class: 'small error' }, `${count} open non-causal path${count === 1 ? '' : 's'}: the estimate would mix confounding into the effect.`)] : []));
+  }
+  // What needs attention, shown over the canvas: no comparison chosen yet, a question the planned analysis cannot
+  // answer, open non-causal paths.
+  function issues(found) {
+    const list = [];
+    if (graph.nodes.length >= 2 && (!estimand?.exposure || !estimand?.outcome))
+      list.push(['info', 'Choose the comparison: select a box and press C for the compared variable, O for the outcome (or right-click it).']);
+    else if (estimand) {
+      const plan = found?.plan ?? powerCompatibility(graph, estimand, powerSettings?.analysis);
+      if (!plan.supported) list.push(['warn', plan.reason]);
+      const open = found ? found.rows.filter(({ c }) => c.open && c.kind !== 'causal').length : 0;
+      if (open) list.push(['warn', `${open} open non-causal path${open === 1 ? '' : 's'} from ${found.a} to ${found.y} (orange): the estimate would mix in confounding. See the paths below the canvas.`]);
+    }
+    const isolated = graph.nodes.length > 1 ? graph.nodes.filter((n) => !graph.edges.some((e) => e.source === n.id || e.target === n.id)
+      && !(n.lags ?? []).length && scopeOf(n) !== 'time') : [];
+    if (isolated.length && list.length < 2) list.push(['info', `${isolated.map((n) => n.id).join(', ')} ${isolated.length === 1 ? 'has' : 'have'} no arrows: generated independently of everything else.`]);
+    $('dag-issues').replaceChildren(...list.map(([kind, text]) => el('p', { class: `dag-issue ${kind}` }, text)));
+    $('dag-issues').hidden = !list.length;
   }
   function assignRole(role, id) {
     if (!powerEditor?.assign(role, id)) status('The power analysis needs at least two variables.', true);
@@ -346,11 +546,14 @@ export function mountDag(root) {
   function openMenu(node, x, y) {
     closeMenu();
     const item = (text, action) => el('button', { type: 'button', role: 'menuitem', onclick: () => { closeMenu(); action(); } }, text);
+    const level = (scope, text) => graph.study && scopeOf(node) !== 'time' && scopeOf(node) !== scope && (scope !== 'cluster' || graph.study.clusterSizes?.length)
+      ? [item(text, () => apply(changeScope(graph, node.id, scope), `${node.id} is now measured ${text.toLowerCase().replace('measure ', '')}. Undo restores it.`))] : [];
     menu = el('div', { class: 'dag-menu', role: 'menu', 'aria-label': `${node.id} actions` },
       item('Compare this variable', () => assignRole('exposure', node.id)),
       item('Use as the outcome', () => assignRole('outcome', node.id)),
       item('Edit', () => { updateSelection(node.id); $('dag-node-label').focus(); }),
       item('Draw an arrow from it', () => connectTo(node.id)),
+      ...level('cluster', 'Measure once per cluster'), ...level('subject', 'Measure once per subject'), ...level('visit', 'Measure at every visit'),
       item('Delete', () => apply(removeNode(graph, node.id), `${node.id} and its arrows removed. Undo restores them.`)));
     document.body.append(menu);
     menu.style.left = `${Math.min(x, innerWidth - menu.offsetWidth - 8) + scrollX}px`;
@@ -362,23 +565,20 @@ export function mountDag(root) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus(); }
     });
   }
-  // A coefficient changed where it is drawn: a small field over the arrow's number.
-  function editCoefficient(edge, label) {
-    const host = canvas.parentElement, at = label.getBoundingClientRect(), base = host.getBoundingClientRect();
-    const input = el('input', { type: 'number', step: 'any', value: edge.coefficient, class: 'dag-inline',
-      'aria-label': `Coefficient of ${edge.source} → ${edge.target}` });
+  // A small field over something drawn on the canvas (an arrow's number, a plate's label), saved on Enter or when
+  // it loses focus, cancelled by Escape.
+  function inlineEdit(anchor, { value, label, width = 72, type = 'number', onSave, refocus }) {
+    const host = canvas.parentElement, at = anchor.getBoundingClientRect(), base = host.getBoundingClientRect();
+    const input = el('input', { type, ...(type === 'number' ? { step: 'any' } : {}), value, class: 'dag-inline', 'aria-label': label });
+    input.style.width = `${width}px`;
     host.append(input);
-    input.style.left = `${at.left - base.left + host.scrollLeft + at.width / 2 - 36}px`;
+    input.style.left = `${at.left - base.left + host.scrollLeft + Math.max(0, at.width / 2 - width / 2)}px`;
     input.style.top = `${at.top - base.top + host.scrollTop - 6}px`;
     let done = false;
     const finish = (save) => {
       if (done) return; done = true; input.remove();
-      if (save && input.value.trim() !== '' && Number(input.value) !== edge.coefficient) {
-        try { apply({ ...graph, edges: graph.edges.map((e) => e === edge ? { ...e, coefficient: inputNumber(input, 'Arrow coefficient') } : e) },
-          `${edge.source} → ${edge.target} set to ${input.value}.`); }
-        catch (error) { status(error.message, true); }
-      }
-      canvas.querySelector(`[data-edge="${edge.source}>${edge.target}"]`)?.focus();
+      if (save && input.value.trim() !== '' && input.value !== String(value)) onSave(input.value);
+      refocus?.()?.focus();
     };
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); finish(true); }
@@ -386,6 +586,36 @@ export function mountDag(root) {
     });
     input.addEventListener('blur', () => finish(true));
     input.focus(); input.select();
+  }
+  // A coefficient changed where it is drawn: a small field over the arrow's number.
+  function editCoefficient(edge, label) {
+    inlineEdit(label, { value: edge.coefficient, label: `Coefficient of ${edge.source} → ${edge.target}`,
+      refocus: () => edgeElement(`${edge.source}>${edge.target}`),
+      onSave(text) {
+        try { apply({ ...graph, edges: graph.edges.map((e) => e === edge ? { ...e, coefficient: inputNumber({ value: text }, 'Arrow coefficient') } : e) },
+          `${edge.source} → ${edge.target} set to ${text}.`); }
+        catch (error) { status(error.message, true); }
+      } });
+  }
+  // The visit schedule or the cluster sizes, edited on the plate's label.
+  function editPlate(level, label) {
+    const key = level === 'visit' ? 'times' : 'clusterSizes', current = graph.study[key].join(', ');
+    inlineEdit(label, { value: current, type: 'text', width: 180,
+      label: level === 'visit' ? 'Visit times, separated by commas' : 'Subjects per cluster: one size, or a repeating pattern',
+      refocus: () => canvas.querySelector(`.dag-plate.${level} .dag-plate-label`),
+      onSave(text) {
+        const values = text.trim().split(/[\s,]+/).filter(Boolean).map(Number);
+        try {
+          const study = parseStudy({ ...graph.study, [key]: values });
+          apply({ ...graph, study }, level === 'visit' ? `Visits at ${study.times.join(', ')}.` : `Subjects per cluster: ${study.clusterSizes.join(', ')}.`);
+        } catch (error) { status(error.message, true); }
+      } });
+  }
+  // Selects a variable and opens one part of its settings (its random effects or lags), focusing a field there.
+  function openSection(id, section, focus) {
+    selectedEdge = null; updateSelection(id);
+    const details = $(section);
+    if (details) { details.hidden = false; details.open = true; (focus ? $(focus) : details.querySelector('summary'))?.focus(); details.scrollIntoView?.({ block: 'nearest' }); }
   }
   // Draws a fresh sample from the model for the boxes, a moment after the last change.
   function schedulePreview() {
@@ -461,10 +691,15 @@ export function mountDag(root) {
     kind.addEventListener('change', () => families(family.value));
     family.addEventListener('change', params); censorMode.addEventListener('change', observationFields);
     families(node.family);
-    const studyFields = nodeStudyFields(graph, node);
-    form.append(studyFields.element, parameters, observation, el('button', { type: 'submit', class: 'primary' }, 'Apply'));
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
+    const studyFields = nodeStudyFields(graph, node, () => setTimeout(() => save(true)));
+    form.append(studyFields.element, parameters, observation, el('p', { class: 'small muted dag-autosave' }, 'Changes apply as you make them.'),
+      el('button', { type: 'submit', class: 'secondary' }, 'Apply'));
+    // Every change applies at once (after focus has moved, so the field the person went to keeps the focus).
+    form.addEventListener('change', (event) => { if (event.target.closest('.dag-field, .dag-grid, details')) setTimeout(() => save(true)); });
+    form.addEventListener('submit', (event) => { event.preventDefault(); save(false); });
+    function save(auto) {
+      if (!form.isConnected) return;
+      const focus = auto ? document.activeElement?.id : null;
       try {
         let baseline = inputNumber(intercept, 'Intercept');
         if (family.value === 'bernoulli' && !(node.family === 'bernoulli' && probability.value === shownProbability)) {
@@ -479,9 +714,13 @@ export function mountDag(root) {
             variable: censorMode.value === 'variable' ? censorVariable.value : '' } : { mode: 'none', time: 20, variable: '' } };
         for (const key of DISTRIBUTIONS[family.value].parameters) changed[key] = inputNumber(inputs[key], parameterLabels[key]);
         const next = renameNode({ ...graph, nodes: graph.nodes.map((n) => n.id === selected ? changed : n) }, node.id, id.value.trim());
-        if (apply(next, undefined, { renameFrom: node.id, renameTo: id.value.trim() })) updateSelection(id.value.trim());
+        if (JSON.stringify(next) === JSON.stringify(graph)) return;
+        if (apply(next, `${id.value.trim()} updated.`, { renameFrom: node.id, renameTo: id.value.trim() })) {
+          updateSelection(id.value.trim());
+          if (focus) $(focus)?.focus();
+        }
       } catch (error) { status(error.message, true); }
-    });
+    }
     box.append(form);
     const edges = graph.edges.filter((e) => e.target === node.id);
     box.append(el('h4', {}, 'Incoming arrows'), el('p', { class: 'small muted' }, `Coefficients on the ${DISTRIBUTIONS[node.family].link} scale.`));
@@ -547,7 +786,7 @@ export function mountDag(root) {
   function render() {
     draw(); inspector(); buttons();
     mountTimeline($('dag-timeline'), graph);
-    mountStudy($('dag-study'), graph, (next) => apply(next, 'Study structure updated.'), (message) => status(message, true));
+    mountStudy($('dag-study'), graph, (next) => apply(next, 'Study structure updated.', { fit: true }), (message) => status(message, true));
     $('dag-n').previousElementSibling.textContent = graph.study ? `Number of ${sizeUnit(graph)}` : 'Observations';
     powerEditor?.refresh(estimand, powerSettings);
     workflow.update(graph);
@@ -572,35 +811,166 @@ export function mountDag(root) {
         el('p', { class: 'small muted' }, 'T is the latent event time, T_time the observed follow-up, T_event 1 for an event and 0 if censored.')] : []));
     $('dag-download-csv').disabled = false;
   }
-  $('dag-add').addEventListener('click', () => {
-    if (graph.nodes.length >= MAX_NODES) { status(`Use at most ${MAX_NODES} variables.`, true); return; }
-    let id = 'V1', k = 1;
-    while (graph.nodes.some((n) => n.id === id)) id = `V${++k}`;
-    const count = graph.nodes.length;
-    const node = makeNode(id, 'continuous', 30 + (count % 4) * 260, 30 + (Math.floor(count / 4) % 3) * 150);
-    node.label = 'Variable';
-    if (apply({ ...graph, nodes: [...graph.nodes, node] }, `Added ${id}. Choose its type and distribution in the inspector.`)) updateSelection(id);
-  });
+  // Adding a variable: click a type to place it in view, or drag the type onto the canvas (into a plate, to
+  // measure it at that level).  Double-clicking empty canvas adds a continuous variable there.
+  for (const button of root.querySelectorAll('[data-add-kind]')) {
+    let press = null;
+    button.addEventListener('pointerdown', (e) => { if (e.button === 0) { press = { x: e.clientX, y: e.clientY, moved: false }; button.setPointerCapture(e.pointerId); } });
+    button.addEventListener('pointermove', (e) => {
+      if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 6) { press.moved = true; canvas.classList.add('dropping'); }
+    });
+    button.addEventListener('pointerup', (e) => {
+      const moved = press?.moved; press = null; canvas.classList.remove('dropping');
+      if (!moved) return;
+      const box = canvas.getBoundingClientRect();
+      if (e.clientX >= box.left && e.clientX <= box.right && e.clientY >= box.top && e.clientY <= box.bottom) {
+        const p = point(e);
+        addVariable(button.dataset.addKind, { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 });
+      }
+      button.dataset.dragged = '1';
+    });
+    button.addEventListener('pointercancel', () => { press = null; canvas.classList.remove('dropping'); });
+    button.addEventListener('click', () => {
+      if (button.dataset.dragged) { delete button.dataset.dragged; return; }
+      addVariable(button.dataset.addKind);
+    });
+  }
   $('dag-tidy').addEventListener('click', () => {
-    remember(); graph = tidy(graph); persist(); draw(); buttons();
-    status('Arranged left to right in generation order.');
+    remember(); graph = layout(graph); persist(); view = null; draw(); buttons();
+    status(graph.study ? 'Arranged by level (clusters, subjects, visits), then generation order. Undo restores the old layout.'
+      : 'Arranged left to right in generation order. Undo restores the old layout.');
   });
-  $('dag-node-select').addEventListener('change', (e) => updateSelection(e.target.value));
+  // The study's levels, switched on the canvas: each adds or removes a plate.
+  function toggleLevel(which) {
+    const clusters = Boolean(graph.study?.clusterSizes?.length), visits = (graph.study?.times?.length ?? 0) > 1;
+    const next = setStructure(graph, { clusters: which === 'clusters' ? !clusters : clusters, visits: which === 'visits' ? !visits : visits });
+    const on = which === 'clusters' ? !clusters : !visits;
+    const message = which === 'clusters'
+      ? on ? 'Clusters added: the sample size now counts clusters. Drag a variable into the cluster plate to measure it once per cluster; click the plate’s label to set subjects per cluster.'
+        : 'Clusters removed. Cluster-level variables are now measured once per subject.'
+      : on ? 'Repeated visits added. Drag the outcome into the visit plate to measure it at every visit; click the plate’s label to set the visit times.'
+        : 'Repeated visits removed. Visit-level variables are now measured once per subject.';
+    if (apply(next, message, { fit: true })) {
+      const layered = JSON.stringify(graph.nodes.map((n) => [n.x, n.y]));
+      // the new plates need room: lay the graph out again when the plates would overlap other boxes
+      const { plates } = plateLayout(graph);
+      const crowded = plates.some((p) => graph.nodes.some((n) => !p.members.includes(n.id) && p.level !== 'cluster'
+        && (p.level === 'visit' ? true : scopeOf(n) === 'cluster') && n.x + NODE_W > p.x && n.x < p.x + p.w && n.y + NODE_H > p.y && n.y < p.y + p.h));
+      if (crowded) { graph = layout(graph); persist(); view = null; draw(); }
+      if (JSON.stringify(graph.nodes.map((n) => [n.x, n.y])) !== layered) status(`${message} The boxes were rearranged to make room.`);
+    }
+  }
+  $('dag-level-clusters').addEventListener('click', () => toggleLevel('clusters'));
+  $('dag-level-visits').addEventListener('click', () => toggleLevel('visits'));
+  $('dag-zoom-in').addEventListener('click', () => zoom(1.25));
+  $('dag-zoom-out').addEventListener('click', () => zoom(1 / 1.25));
+  $('dag-zoom-fit').addEventListener('click', fit);
+  $('dag-help-toggle').addEventListener('click', () => {
+    const open = $('dag-shortcuts').hidden;
+    $('dag-shortcuts').hidden = !open; $('dag-help-toggle').setAttribute('aria-expanded', String(open));
+  });
+  // The canvas background: drag to pan, Ctrl/⌘ + wheel (or a pinch) to zoom, double-click to add a variable, click
+  // to clear the arrow selection or cancel an arrow being drawn.
+  // Only the empty canvas (and the plates' backgrounds) pans. The pointer is captured once a pan has really begun, so
+  // a plain click on an arrow, a number or a plate label still reaches it.
+  const handles = '.dag-node, .dag-edge, .dag-lag, .dag-random, .dag-plate-label, .dag-port';
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || gesture || e.target.closest?.(handles)) return;
+    gesture = { type: 'pan', x: e.clientX, y: e.clientY, view: { ...view }, moved: false, pointerId: e.pointerId };
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (connectFrom || gesture?.type === 'connect') {
+      pointer = point(e);
+      if (gesture?.type === 'connect' && !gesture.moved && Math.hypot(pointer.x - gesture.start.x, pointer.y - gesture.start.y) > 6) {
+        gesture.moved = true; status(`Arrow from ${gesture.source}: release over the variable it affects.`); draw();
+      }
+      const rubber = canvas.querySelector('.dag-rubber'), s = graph.nodes.find((n) => n.id === (gesture?.source ?? connectFrom));
+      if (rubber && s) rubber.setAttribute('d', `M ${s.x + NODE_W} ${s.y + NODE_H / 2} L ${pointer.x} ${pointer.y}`);
+      else if (s && (connectFrom || gesture.moved)) draw();
+      return;
+    }
+    if (gesture?.type !== 'pan') return;
+    const scale = 1 / (canvas.getScreenCTM()?.a || 1), dx = e.clientX - gesture.x, dy = e.clientY - gesture.y;
+    if (!gesture.moved && Math.hypot(dx, dy) < 4) return;
+    if (!gesture.moved) { try { canvas.setPointerCapture(gesture.pointerId); } catch { /* the pointer is gone */ } }
+    gesture.moved = true; canvas.classList.add('panning');
+    view = { ...view, x: gesture.view.x - dx * scale, y: gesture.view.y - dy * scale };
+    canvas.setAttribute('viewBox', viewBox(view));
+  });
+  const endGesture = (e) => {
+    const g = gesture;
+    if (!g) return;
+    canvas.classList.remove('panning');
+    if (g.type === 'connect') {
+      pointer = null;
+      if (!g.moved) { gesture = null; return; }  // a click on the port: its click handler starts click-to-connect
+      gesture = { suppressClick: true };
+      const under = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('.dag-node');
+      const target = under?.dataset.node;
+      if (target && target !== g.source) { connectFrom = g.source; connectTo(target); if (connectFrom) { connectFrom = null; draw(); } }
+      else { draw(); status('Arrow cancelled: release over another variable to connect them.'); }
+      setTimeout(() => { if (gesture?.suppressClick) gesture = null; });
+      return;
+    }
+    gesture = null;
+    if (g.type === 'pan' && !g.moved && e.type === 'pointerup') {
+      if (connectFrom) cancelConnect();
+      else if (selectedEdge) { selectedEdge = null; draw(); }
+    }
+  };
+  canvas.addEventListener('pointerup', endGesture);
+  // an arrow dragged off the canvas and released there is cancelled
+  document.addEventListener('pointerup', (e) => { if (gesture?.type === 'connect' && !canvas.contains(e.target)) { gesture = null; pointer = null; draw(); } });
+  canvas.addEventListener('pointercancel', endGesture);
+  canvas.addEventListener('pointerleave', () => { if (connectFrom && !gesture) { pointer = null; canvas.querySelector('.dag-rubber')?.remove(); } });
+  canvas.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.dag-node, .dag-edge, .dag-lag, .dag-random, .dag-plate-label')) return;
+    const p = point(e);
+    addVariable('continuous', { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 });
+  });
+  canvas.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    zoom(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025)), point(e));
+  }, { passive: false });
+  $('dag-node-select').addEventListener('change', (e) => { selectedEdge = null; updateSelection(e.target.value); });
+  // Shortcuts: undo and redo anywhere outside a text field; on the canvas, F fits, + and − zoom, ? lists them.
   root.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { closeMenu(); connectFrom = null; draw(); status('Arrow connection cancelled.'); }
+    if (event.key === 'Escape') {
+      closeMenu();
+      if (connectFrom || gesture?.type === 'connect') cancelConnect();
+      if (!$('dag-shortcuts').hidden) { $('dag-shortcuts').hidden = true; $('dag-help-toggle').setAttribute('aria-expanded', 'false'); }
+      return;
+    }
+    const typing = event.target.closest?.('input, select, textarea, [contenteditable]');
+    if (typing || event.ctrlKey || event.metaKey || event.altKey || !event.target.closest?.('.dag-scroll')) return;
+    if (event.key === 'f' || event.key === 'F') { event.preventDefault(); fit(); }
+    else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(1.25); }
+    else if (event.key === '-' || event.key === '_') { event.preventDefault(); zoom(1 / 1.25); }
+    else if (event.key === '?') { event.preventDefault(); $('dag-help-toggle').click(); }
+  });
+  // Undo and redo also work when focus has left the page's controls (after a deleted box, focus falls to the body).
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && event.target === document.body && (connectFrom || gesture?.type === 'connect')) { cancelConnect(); return; }
+    const mod = event.ctrlKey || event.metaKey, key = event.key.toLowerCase();
+    if (!mod || event.altKey || (key !== 'z' && key !== 'y') || !root.isConnected) return;
+    if (event.target !== document.body && !root.contains(event.target)) return;
+    if (event.target.closest?.('input, select, textarea, [contenteditable]')) return;
+    event.preventDefault();
+    $(key === 'y' || event.shiftKey ? 'dag-redo' : 'dag-undo').click();
   });
   function timeTravel(from, to) {
     if (!from.length) return;
     to.push(JSON.stringify(exportDesign(graph, estimand, powerSettings)));
     const design = parseDesign(from.pop()); graph = design.graph; estimand = design.estimand; powerSettings = design.power ?? null; pending = null;
     selected = graph.nodes.some((n) => n.id === selected) ? selected : graph.nodes.at(-1)?.id;
-    connectFrom = null; clearResult(); persist(); render(); status('Model restored.');
+    connectFrom = null; selectedEdge = null; clearResult(); persist(); render(); status('Model restored.');
   }
   $('dag-undo').addEventListener('click', () => timeTravel(history, future));
   $('dag-redo').addEventListener('click', () => timeTravel(future, history));
   function loadExample(name) {
     const next = scenarioDesign(name);
-    apply(next.graph, 'Scenario loaded with its question and analysis. All values are editable example assumptions.', { estimand: next.estimand, power: next.power });
+    apply(next.graph, 'Scenario loaded with its question and analysis. All values are editable example assumptions.', { estimand: next.estimand, power: next.power, fit: true });
     $('dag-scenario-category').value = 'all'; renderScenarioOptions(name);
     $('dag-example').value = name;
   }
@@ -628,7 +998,7 @@ export function mountDag(root) {
     try {
       if (file.size > 5e6) throw new Error('Use a model or power report JSON file smaller than 5 MB.');
       const design = parseDesign(await file.text());
-      apply(design.graph, 'Simulation design imported.', { estimand: design.estimand, power: design.power ?? null });
+      apply(design.graph, 'Simulation design imported.', { estimand: design.estimand, power: design.power ?? null, fit: true });
     } catch (error) { status(`Could not import model: ${error.message}`, true); }
     event.target.value = '';
   });
@@ -674,7 +1044,7 @@ export function mountDag(root) {
       const before = JSON.stringify(exportDesign(graph, estimand, powerSettings));
       if (JSON.stringify(settings) !== JSON.stringify(powerSettings)) {
         if (mode !== 'auto') pending ??= before;
-        powerSettings = settings; persist(); paths();
+        powerSettings = settings; persist(); draw();
       }
       if (mode === 'commit' && pending !== null) {
         if (pending !== JSON.stringify(exportDesign(graph, estimand, powerSettings))) {
@@ -690,4 +1060,3 @@ export function mountDag(root) {
     ? 'Design restored from this browser.'
     : 'Add a variable or load an example to start.'));
 }
-
