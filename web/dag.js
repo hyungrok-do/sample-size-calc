@@ -884,9 +884,15 @@ export function mountDag(root) {
       if (gesture?.type === 'connect' && !gesture.moved && Math.hypot(pointer.x - gesture.start.x, pointer.y - gesture.start.y) > 6) {
         gesture.moved = true; status(`Arrow from ${gesture.source}: release over the variable it affects.`); draw();
       }
-      const rubber = canvas.querySelector('.dag-rubber'), s = graph.nodes.find((n) => n.id === (gesture?.source ?? connectFrom));
-      if (rubber && s) rubber.setAttribute('d', `M ${s.x + NODE_W} ${s.y + NODE_H / 2} L ${pointer.x} ${pointer.y}`);
-      else if (s && (connectFrom || gesture.moved)) draw();
+      // only the rubber band moves: redrawing the boxes under the pointer would replace the one about to be clicked
+      const s = graph.nodes.find((n) => n.id === (gesture?.source ?? connectFrom));
+      if (!s || !(connectFrom || gesture.moved)) return;
+      let rubber = canvas.querySelector('.dag-rubber');
+      if (!rubber) {
+        rubber = svg('path', { class: 'dag-rubber', 'marker-end': 'url(#dag-arrow)' });
+        canvas.querySelector('.dag-overlay')?.append(rubber);
+      }
+      rubber.setAttribute('d', `M ${s.x + NODE_W} ${s.y + NODE_H / 2} L ${pointer.x} ${pointer.y}`);
       return;
     }
     if (gesture?.type !== 'pan') return;
