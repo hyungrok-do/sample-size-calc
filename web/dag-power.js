@@ -158,6 +158,10 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       diagnostics.push(el('li', {}, `N=${row.n}, ${name}: ${item.valid} valid.` + (answer.estimand.kind === 'joint' ? '' : ` Mean estimate ${fmt(item.meanEstimate)}; bias ${fmt(item.bias)}; SD ${fmt(item.estimateSD)}; mean SE ${fmt(item.meanSE)}; ${pct(1 - answer.power.alpha)} CI coverage ${item.coverage == null ? '—' : pct(item.coverage)} among valid fits.`)
         + (item.failures ? ` Failures: ${Object.entries(item.failureReasons).map(([reason, count]) => `${reason.replaceAll('_', ' ')} ${count}`).join(', ')}.` : '')));
     }
+    for (const row of answer.results) for (const name of ['alternative', 'null']) {
+      const d = row[name]?.targetedDiagnostics;
+      if (d) diagnostics.push(el('li', {}, `N=${row.n}, ${name}, successful targeted fits: largest inverse weight ${fmt(d.maxInverseWeight)}; ${d.propensityTruncated} subject propensities truncated; ${d.initialPredictionsClipped} initial outcome predictions clipped across replicates.`));
+    }
     if (answer.nullScenario) diagnostics.push(el('li', {}, `${answer.nullScenario.exactNull ? 'Null scenario' : 'Reference scenario'}: ${answer.nullScenario.construction} Its effect: ${fmt(answer.nullScenario.truth.estimate)}.`));
     nodes.push(el('details', {}, el('summary', {}, 'Diagnostics'), el('ul', {}, diagnostics)));
     $('power-results').replaceChildren(...nodes); $('power-json').disabled = false; $('power-csv').disabled = false;
@@ -200,7 +204,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     const nullCheck = el('input', { id: 'power-null-check', type: 'checkbox', checked: settings.checkNull });
     const nullMode = select('power-null-mode', [['no_effect', 'Remove all exposure effects'], ['average_effect', 'Calibrate the contrast; retain other effects']], settings.nullMode);
     const currentAnalysis = settings.analysis;
-    const analysisMethod = select('analysis-method', graph.study ? [['auto', 'Automatic'], ['mmrm', 'MMRM'], ['lmm', 'Linear mixed model'], ['trajectory', 'Trajectory means · robust inference']] : [['auto', 'Automatic'], ['gformula', 'Parametric g-computation'], ['aipw', 'AIPW'], ['tmle', 'TMLE (binary outcome)']], currentAnalysis.method);
+    const analysisMethod = select('analysis-method', graph.study ? [['auto', 'Automatic'], ['mmrm', 'MMRM'], ['lmm', 'Linear mixed model'], ['trajectory', 'Trajectory means · robust inference'], ['tmle', 'TMLE · complete outcomes']] : [['auto', 'Automatic'], ['gformula', 'Parametric g-computation'], ['aipw', 'AIPW'], ['tmle', 'TMLE · binary / continuous / count']], currentAnalysis.method);
     if (!analysisMethod.value) analysisMethod.value = 'auto';
     const trajectory = select('estimand-trajectory', [['final', 'Selected visit'], ['average', 'Average across scheduled visits'], ['change', 'Change from first to last visit'], ['slope', 'Difference in linear trend'], ['custom', 'Custom visit weights']], start.repeated?.contrast ?? 'final');
     const visit = select('estimand-visit', (graph.study?.times ?? []).map((t, i) => [String(i), `Time ${t}`]), String(start.repeated?.visit ?? (graph.study?.times.length ?? 1) - 1));
@@ -214,6 +218,10 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     const analysisBasis = select('analysis-basis', [...BASES, ...(currentAnalysis.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.basis);
     const propensityBasis = select('analysis-propensity', [['same', 'Use the analysis basis'], ...BASES, ...(currentAnalysis.propensity?.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.propensity?.basis ?? 'same');
     const folds = numeric('analysis-folds', currentAnalysis.folds, { min: 1, max: 10, step: 1 });
+    const propensityBound = numeric('analysis-propensity-bound', currentAnalysis.propensityBound ?? 0, { min: 0, max: .499, step: .01 });
+    const outcomeBounds = el('input', { id: 'analysis-outcome-bounds', type: 'text', value: (currentAnalysis.outcomeBounds ?? []).join(', '), placeholder: 'Unbounded, or e.g. 0, 100' });
+    const targetedOptions = el('div', { class: 'dag-grid' }, field('Propensity bound (0 = none)', propensityBound, 'Explicitly limit treatment probabilities to [b, 1−b]. This may add bias; inspect diagnostics.'),
+      field('Known outcome-summary bounds (TMLE)', outcomeBounds, 'Optional lower, upper bounds for a continuous summary. Binary bounds are automatic. Values outside the bounds fail the fit.'));
     const knots = el('input', { id: 'analysis-knots', type: 'text', value: (currentAnalysis.knots ?? [-1, 0, 1]).join(', ') });
     const propensityKnots = el('input', { id: 'analysis-propensity-knots', type: 'text', value: (currentAnalysis.propensity?.knots ?? [-1, 0, 1]).join(', ') });
     const interactions = el('input', { id: 'analysis-interactions', type: 'checkbox', checked: currentAnalysis.interactions });
@@ -233,7 +241,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     const knotsField = field('Analysis spline knots', knots, 'Fixed knots in the original predictor units; includes linear terms.'),
       propensityKnotsField = field('Propensity spline knots', propensityKnots);
     function analysisFields() {
-      if (graph.study) { timeBasis.disabled = randomSlope.disabled = analysisMethod.value !== 'lmm'; return; }
+      if (graph.study) { timeBasis.disabled = randomSlope.disabled = analysisMethod.value !== 'lmm'; nuisancePanel.hidden = analysisMethod.value !== 'tmle'; trajectoryAnalysis.hidden = analysisMethod.value === 'tmle'; }
+      targetedOptions.hidden = !['aipw', 'tmle'].includes(analysisMethod.value);
       knotsField.hidden = analysisBasis.value !== 'spline'; propensityKnotsField.hidden = propensityBasis.value !== 'spline';
       folds.disabled = !['auto', 'aipw', 'tmle'].includes(analysisMethod.value);
       if (folds.disabled) folds.value = 1;
@@ -243,10 +252,13 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     }
     const parseKnots = (input) => input.value.trim().split(/[\s,]+/).filter(Boolean).map(Number);
     const readAnalysis = () => {
-      if (graph.study) return parseAnalysis({ method: analysisMethod.value, basis: 'match', folds: 1, timeBasis: timeBasis.value, randomSlope: randomSlope.checked });
+      if (graph.study && analysisMethod.value !== 'tmle') return parseAnalysis({ method: analysisMethod.value, basis: 'match', folds: 1, timeBasis: timeBasis.value, randomSlope: randomSlope.checked });
       const config = { ...(analysisBasis.value === 'custom' ? currentAnalysis : {}), method: analysisMethod.value,
         basis: analysisBasis.value, folds: Number(folds.value), interactions: interactions.checked,
         ...(analysisBasis.value === 'spline' ? { knots: parseKnots(knots) } : {}) };
+      delete config.models; delete config.propensity; delete config.outcomeBounds;
+      if (['aipw', 'tmle'].includes(analysisMethod.value)) config.propensityBound = Number(propensityBound.value);
+      if (analysisMethod.value === 'tmle' && outcomeBounds.value.trim()) config.outcomeBounds = parseKnots(outcomeBounds);
       if (propensityBasis.value !== 'same') config.propensity = { ...(propensityBasis.value === 'custom' ? currentAnalysis.propensity : {}), basis: propensityBasis.value,
         interactions: propensityInteractions.checked, ...(propensityBasis.value === 'spline' ? { knots: parseKnots(propensityKnots) } : {}) };
       const models = Object.fromEntries([...overrides].filter(([, v]) => v.choice.value !== 'default').map(([id, v]) => [id,
@@ -255,16 +267,17 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       if (Object.keys(models).length) config.models = models;
       return parseAnalysis(config);
     };
-    const analysisPanel = el('details', { id: 'power-analysis-models' }, el('summary', {}, 'Planned analysis models'),
-      el('p', { class: 'small muted' }, 'These settings change the fitted analysis, independently of the generating graph. Cross-fitting applies to AIPW and binary-outcome TMLE.'),
+    const nuisancePanel = el('div', {},
+      el('p', { class: 'small muted' }, 'These settings change the fitted analysis, independently of the generating graph. Cross-fitting applies to AIPW and TMLE. For repeated data, adjustments use baseline covariates and folds keep entire subjects or clusters together. TMLE uses the selected regression bases; no Super Learner is fitted.'),
       el('div', { class: 'dag-grid' }, field('Outcome / mediator terms', analysisBasis), field('Cross-fitting folds (1 = none)', folds), knotsField),
       el('label', {}, interactions, 'Include pairwise interactions with linear, quadratic or spline terms'),
       el('div', { class: 'dag-grid' }, field('Propensity terms (AIPW / TMLE)', propensityBasis), propensityKnotsField),
       el('label', {}, propensityInteractions, 'Include pairwise propensity interactions'),
-      el('details', {}, el('summary', {}, 'Override individual models'), overrideRows));
-    if (graph.study) analysisPanel.replaceChildren(el('summary', {}, 'Analysis details and assumptions'),
-      el('p', { class: 'small muted' }, 'The analysis is specified independently of the generating graph. MMRM uses an unstructured covariance. LMM uses the time and random-effect choices below. Trajectory means use robust inference at the subject or cluster level.'),
+      el('details', {}, el('summary', {}, 'Override individual models'), overrideRows), targetedOptions);
+    const trajectoryAnalysis = el('div', { hidden: !graph.study },
+      el('p', { class: 'small muted' }, 'MMRM uses an unstructured covariance. LMM uses the time and random-effect choices below. Trajectory means use robust inference at the subject or cluster level.'),
       el('div', { class: 'dag-grid dag-trajectory-grid' }, field('LMM time model', timeBasis)), el('label', {}, randomSlope, 'LMM subject random slope (in addition to intercept)'));
+    const analysisPanel = el('details', { id: 'power-analysis-models' }, el('summary', {}, 'Analysis details and assumptions'), nuisancePanel, trajectoryAnalysis);
     for (const input of [analysisMethod, analysisBasis, propensityBasis]) input.addEventListener('change', analysisFields);
     const horizonField = field('Time horizon', horizon), levelsFields = [field('Active level', active), field('Reference level', reference)];
     const sizesField = field(graph.study ? `Number of ${sizeUnit(graph)}` : 'Total sample sizes', sizes, 'Separate the sizes to test with commas. These are totals across both groups.');

@@ -48,10 +48,25 @@
     </div>
     <p class="small muted">Starting points replace the current design. Undo restores it. All values are example assumptions.</p>
     <div class="dag-toolbar-group">
-      <label for="dag-example">More starting points</label>
-      <select id="dag-example"><option value="empty">Empty canvas</option><option value="trial">Two-group continuous outcome</option><option value="repeated">Repeated continuous outcome</option><option value="clustered-repeated">Clustered repeated outcome</option><option value="repeated-binary">Repeated binary outcome</option><option value="mediation">Continuous mediation</option><option value="binary">Binary outcome</option><option value="survival">Survival with censoring</option><option value="nonlinear-dose">Nonlinear dose response</option><option value="nonlinear-confounding">Nonlinear confounding</option><option value="heterogeneous-null">Zero average effect, heterogeneous effects</option></select>
+      <label for="dag-scenario-category">Explore scenarios</label>
+      <select id="dag-scenario-category"><option value="all">All scenarios</option></select>
+      <label class="sr-only" for="dag-example">Scenario</label>
+      <select id="dag-example"></select>
       <button id="dag-example-load" type="button">Load</button>
     </div>
+    <p id="dag-scenario-description" class="dag-scenario-description" aria-live="polite"></p>
+    <details class="dag-coverage"><summary>What is covered — and what still needs a different estimator?</summary>
+      <p>Data generation is more flexible than the available analyses. A simulated dataset alone does not establish valid power.</p>
+      <div class="dag-coverage-scroll"><table><thead><tr><th>Study or question</th><th>Available analysis</th><th>Limits to check</th></tr></thead><tbody>
+      <tr><td>Independent continuous, binary or count outcomes</td><td>Regression, g-computation, AIPW and TMLE</td><td>TMLE requires binary treatment. Flexible regression bases, no Super Learner.</td></tr>
+      <tr><td>Complete repeated or clustered outcomes</td><td>MMRM, LMM, robust trajectory means; baseline-treatment TMLE</td><td>TMLE targets a prespecified subject summary; cluster folds and inference preserve dependence.</td></tr>
+      <tr><td>Missing visits</td><td>MMRM for monotone dropout; LMM for intermittent visits</td><td>Model and missing-at-random assumptions matter. TMLE with dropout is not implemented.</td></tr>
+      <tr><td>Rare events, weak overlap, few clusters</td><td>Editable stress-test scenarios and diagnostics</td><td>No guarantee of calibrated inference. Compare failure rates, bias, null rejection and coverage.</td></tr>
+      <tr><td>Single-event survival and censoring</td><td>Cox, Weibull, survival probability and RMST analyses</td><td>No survival TMLE, competing risks or recurrent-event estimator.</td></tr>
+      <tr><td>Changing treatment, dynamic rules, crossover or adaptive trials</td><td>No dedicated DAG power estimator yet</td><td>Require design-specific estimators and error-control rules; not covered by baseline-treatment TMLE.</td></tr>
+      </tbody></table></div>
+      <p class="small muted">Power remains conditional on the generating distributions, effect sizes, dependence and observation process. TMLE changes the estimator; it does not remove those simulation assumptions.</p>
+    </details>
   </section>
   <details id="dag-study" class="dag-card dag-study" data-dag-step="study" open></details>
   <div class="dag-section-heading" data-dag-step="model" hidden><p class="dag-eyebrow">02 / Model</p><h3 id="dag-model-step-title" tabindex="-1">What generates your data?</h3><p>Select a variable to edit its distribution. An arrow describes how one variable affects another.</p></div>

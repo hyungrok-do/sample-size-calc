@@ -77,8 +77,14 @@ function parseBasis(raw = {}) {
 }
 export function parseAnalysis(raw = {}) {
   const out = { ...parseBasis(raw), method: raw.method ?? 'auto', folds: raw.folds ?? 1 };
-  if (!['auto', 'gformula', 'aipw', 'tmle', 'mmrm', 'lmm', 'trajectory'].includes(out.method)) fail('Choose automatic analysis, g-computation, AIPW or binary-outcome TMLE.');
+  if (!['auto', 'gformula', 'aipw', 'tmle', 'mmrm', 'lmm', 'trajectory'].includes(out.method)) fail('Choose automatic analysis, g-computation, AIPW or TMLE.');
   if (!Number.isInteger(out.folds) || out.folds < 1 || out.folds > 10) fail('Use 1–10 cross-fitting folds.');
+  out.propensityBound = raw.propensityBound ?? 0;
+  if (!Number.isFinite(out.propensityBound) || out.propensityBound < 0 || out.propensityBound >= .5) fail('The propensity bound must be in [0, 0.5).');
+  if (raw.outcomeBounds != null) {
+    if (!Array.isArray(raw.outcomeBounds) || raw.outcomeBounds.length !== 2 || !raw.outcomeBounds.every(Number.isFinite) || raw.outcomeBounds[0] >= raw.outcomeBounds[1]) fail('Supply finite, increasing prespecified outcome bounds.');
+    out.outcomeBounds = [...raw.outcomeBounds];
+  }
   if (raw.timeBasis != null) { if (!['categorical', 'linear'].includes(raw.timeBasis)) fail('Choose categorical or linear analysis time.'); out.timeBasis = raw.timeBasis; }
   if (raw.randomSlope != null) { if (typeof raw.randomSlope !== 'boolean') fail('Random slope must be true or false.'); out.randomSlope = raw.randomSlope; }
   if (raw.propensity) out.propensity = parseBasis(raw.propensity);
