@@ -208,7 +208,7 @@ function reach(graph, from, forward, skip = null) {
   }
   return found;
 }
-// Whether each variable can take a new arrow from `source`, and why not: itself, already its child, an ancestor
+// Whether each variable can take a new arrow out of the variable named source, and why not: itself, already its child, an ancestor
 // (a cycle), visit time (set by the schedule) or a coarser level than the source.
 export function connectTargets(graph, source) {
   const from = graph.nodes.find((n) => n.id === source), above = reach(graph, source, false);
