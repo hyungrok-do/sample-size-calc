@@ -51,7 +51,7 @@ function powerPlot(answer) {
   for (const p of [0, .25, .5, .75, 1]) plot.append(svg('line', { x1: 60, y1: y(p), x2: 640, y2: y(p), class: 'power-plot-grid' }),
     svg('text', { x: 48, y: y(p) + 4, 'text-anchor': 'end' }, `${p * 100}%`));
   plot.append(svg('line', { x1: 60, y1: y(answer.power.targetPower), x2: 640, y2: y(answer.power.targetPower), class: 'power-plot-target' }),
-    svg('text', { x: 640, y: y(answer.power.targetPower) - 9, 'text-anchor': 'end', class: 'power-plot-target-label' }, `Target ${pct(answer.power.targetPower)}`));
+    svg('text', { x: 640, y: 18, 'text-anchor': 'end', class: 'power-plot-target-label' }, `Dashed line: target ${pct(answer.power.targetPower)}`));
   rows.forEach((row, i) => {
     const px = x(row.n), a = row.alternative, lo = y(a.interval[0]), hi = y(a.interval[1]);
     plot.append(svg('path', { d: `M ${px} ${lo} V ${hi} M ${px - 5} ${lo} H ${px + 5} M ${px - 5} ${hi} H ${px + 5}`, class: 'power-plot-interval' }),
