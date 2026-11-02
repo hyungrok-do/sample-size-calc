@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hyungrok-do.github.io/sample-size-calc/study-intake.schema.json",
+  "title": "Study intake (draft, schemaVersion 1)",
+  "description": "Shape of the study intake an agent fills before compiling a power simulation. Design-dependent requirements are checked by the sufficiency rules in docs/study-intake.md; this schema enforces structure, types, ranges and the main design conditionals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "study", "design", "variables", "effect"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "study": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question"],
+      "properties": {
+        "title": {"type": "string", "maxLength": 200},
+        "question": {"type": "string", "minLength": 1, "maxLength": 3000},
+        "population": {"type": "string", "maxLength": 500}
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind"],
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "kind": {"enum": ["pilot", "prior_trial", "registry", "ehr", "literature", "expert"]},
+          "description": {"type": "string", "maxLength": 500},
+          "n": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "design": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["parallel_rct", "cluster_rct", "longitudinal_rct", "cluster_longitudinal_rct", "stepped_wedge", "crossover", "observational"]},
+        "solveFor": {"enum": ["sample_size", "power", "detectable_effect"], "default": "sample_size"},
+        "randomizationLevel": {"enum": ["subject", "cluster"]},
+        "allocation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ratio": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 2, "maxItems": 2, "default": [1, 1]},
+            "scheme": {"enum": ["simple", "fixed"], "default": "simple"}
+          }
+        }
+      }
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cluster": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "label": {"type": "string", "maxLength": 80},
+            "size": {
+              "oneOf": [
+                {"type": "object", "additionalProperties": false, "required": ["fixed"], "properties": {"fixed": {"type": "integer", "minimum": 1, "maximum": 1000}}},
+                {"type": "object", "additionalProperties": false, "required": ["pattern"], "properties": {"pattern": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 1000}, "minItems": 1, "maxItems": 100}}},
+                {"type": "object", "additionalProperties": false, "required": ["mean"], "properties": {"mean": {"type": "number", "minimum": 1, "maximum": 1000}, "cv": {"type": "number", "minimum": 0, "maximum": 2}}}
+              ]
+            },
+            "count": {"$ref": "#/$defs/sizeList"}
+          }
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "label": {"type": "string", "maxLength": 80},
+            "count": {"$ref": "#/$defs/sizeList"}
+          }
+        },
+        "attrition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {"enum": ["none", "dropout", "intermittent", "missing_outcome"]},
+            "rate": {"type": "number", "minimum": 0, "exclusiveMaximum": 0.9},
+            "dependsOn": {"enum": ["nothing", "treatment", "observed_history", "current_value"], "default": "nothing"},
+            "strength": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "allOf": [
+            {"if": {"properties": {"mode": {"not": {"const": "none"}}}}, "then": {"required": ["rate"]}},
+            {"if": {"required": ["dependsOn"], "properties": {"dependsOn": {"not": {"const": "nothing"}}}}, "then": {"required": ["strength"]}}
+          ]
+        }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unit": {"enum": ["days", "weeks", "months", "years"]},
+        "times": {"type": "array", "items": {"type": "number"}, "minItems": 1, "maxItems": 12},
+        "baselineBeforeTreatment": {"type": "boolean"},
+        "periods": {"type": "integer", "minimum": 2, "maximum": 20},
+        "followUp": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "icc": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+        "iccScale": {"enum": ["observed", "latent"]},
+        "withinSubject": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "structure": {"enum": ["random_intercept", "random_intercept_slope", "exponential", "intercept_plus_exponential"], "default": "random_intercept"},
+            "correlation": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+            "slopeSD": {"type": "number", "minimum": 0},
+            "interceptSlopeCorrelation": {"type": "number", "exclusiveMinimum": -1, "exclusiveMaximum": 1}
+          }
+        },
+        "clusterAutocorrelation": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}
+      }
+    },
+    "variables": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 40,
+      "items": {"$ref": "#/$defs/variable"}
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "strength"],
+        "properties": {
+          "from": {"$ref": "#/$defs/id"},
+          "to": {"$ref": "#/$defs/id"},
+          "strength": {
+            "oneOf": [
+              {"enum": ["weak", "moderate", "strong"]},
+              {"type": "object", "additionalProperties": false, "required": ["oddsRatio"], "properties": {"oddsRatio": {"$ref": "#/$defs/ratio"}, "per": {"$ref": "#/$defs/per"}}},
+              {"type": "object", "additionalProperties": false, "required": ["rateRatio"], "properties": {"rateRatio": {"$ref": "#/$defs/ratio"}, "per": {"$ref": "#/$defs/per"}}},
+              {"type": "object", "additionalProperties": false, "required": ["hazardRatio"], "properties": {"hazardRatio": {"$ref": "#/$defs/ratio"}, "per": {"$ref": "#/$defs/per"}}},
+              {"type": "object", "additionalProperties": false, "required": ["difference"], "properties": {"difference": {"type": "number"}, "per": {"$ref": "#/$defs/per"}}},
+              {"type": "object", "additionalProperties": false, "required": ["standardized"], "properties": {"standardized": {"type": "number", "minimum": -3, "maximum": 3}}}
+            ]
+          }
+        }
+      }
+    },
+    "lags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["variable", "lag", "strength"],
+        "properties": {
+          "variable": {"$ref": "#/$defs/id"},
+          "lag": {"type": "integer", "minimum": 1, "maximum": 12},
+          "strength": {"type": "number", "minimum": -1, "maximum": 1, "description": "Standardized effect of the previous value on the current one."}
+        }
+      }
+    },
+    "modifiers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["by"],
+        "properties": {
+          "by": {"description": "A variable id, or \"time\" for an effect that changes over visits.", "type": "string"},
+          "ratioOfEffects": {"$ref": "#/$defs/ratio"},
+          "differenceOfEffects": {"type": "number"}
+        }
+      }
+    },
+    "effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["compare", "outcome", "measure"],
+      "properties": {
+        "compare": {"$ref": "#/$defs/id"},
+        "outcome": {"$ref": "#/$defs/id"},
+        "measure": {"enum": ["mean_difference", "risk_difference", "risk_ratio", "odds_ratio", "hazard_ratio", "survival_difference", "rmst_difference"]},
+        "value": {"oneOf": [{"type": "number"}, {"type": "array", "items": {"type": "number"}, "minItems": 1, "maxItems": 10}]},
+        "direction": {"enum": ["increase", "decrease", "either"]},
+        "timing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "contrast": {"enum": ["final", "visit", "average", "change", "slope", "custom"]},
+            "visit": {"type": "integer", "minimum": 0, "maximum": 11},
+            "weights": {"type": "array", "items": {"type": "number"}, "minItems": 1, "maxItems": 12},
+            "shape": {"enum": ["immediate", "linear", "final_only"]},
+            "horizon": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "allOf": [
+            {"if": {"required": ["contrast"], "properties": {"contrast": {"const": "visit"}}}, "then": {"required": ["visit"]}},
+            {"if": {"required": ["contrast"], "properties": {"contrast": {"const": "custom"}}}, "then": {"required": ["weights"]}}
+          ]
+        },
+        "justification": {"type": "string", "maxLength": 1000}
+      },
+      "allOf": [
+        {"if": {"properties": {"measure": {"enum": ["survival_difference", "rmst_difference"]}}}, "then": {"required": ["timing"], "properties": {"timing": {"required": ["horizon"]}}}}
+      ]
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "estimator": {"enum": ["auto", "welch", "two_proportion", "logrank", "cox", "regression", "mmrm", "lmm", "trajectory_means", "glmm", "aipw", "tmle", "gformula"], "default": "auto"},
+        "adjustFor": {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true}
+      }
+    },
+    "power": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 0.5, "default": 0.05},
+        "sides": {"enum": ["two-sided", "one-sided"], "default": "two-sided"},
+        "target": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "default": 0.8},
+        "sampleSizes": {"$ref": "#/$defs/sizeList"},
+        "repetitions": {"type": "integer", "minimum": 10, "maximum": 10000, "default": 1000},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295, "default": 2026}
+      }
+    },
+    "assumed": {"type": "array", "items": {"type": "string", "pattern": "^(/[^/]+)+$"}, "uniqueItems": true},
+    "notes": {"type": "string", "maxLength": 3000}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"design": {"properties": {"type": {"enum": ["cluster_rct", "cluster_longitudinal_rct", "stepped_wedge"]}}}}},
+      "then": {
+        "required": ["units", "correlation"],
+        "properties": {
+          "units": {"required": ["cluster"], "properties": {"cluster": {"required": ["size"]}}},
+          "correlation": {"required": ["icc"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"design": {"properties": {"type": {"enum": ["longitudinal_rct", "cluster_longitudinal_rct"]}}}}},
+      "then": {
+        "required": ["schedule", "correlation"],
+        "properties": {
+          "schedule": {"required": ["times", "baselineBeforeTreatment"], "properties": {"times": {"minItems": 2}}},
+          "correlation": {"required": ["withinSubject"], "properties": {"withinSubject": {"required": ["correlation"]}}},
+          "effect": {"required": ["timing"], "properties": {"timing": {"required": ["contrast", "shape"]}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"design": {"properties": {"type": {"enum": ["stepped_wedge", "crossover"]}}}}},
+      "then": {"required": ["schedule"], "properties": {"schedule": {"required": ["periods"]}}}
+    },
+    {
+      "if": {"properties": {"design": {"properties": {"solveFor": {"enum": ["sample_size", "power"]}}}}},
+      "then": {"properties": {"effect": {"required": ["value"]}}}
+    },
+    {
+      "if": {"properties": {"design": {"required": ["solveFor"], "properties": {"solveFor": {"const": "power"}}}}},
+      "then": {"required": ["power"], "properties": {"power": {"required": ["sampleSizes"]}}}
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$"},
+    "ratio": {"type": "number", "exclusiveMinimum": 0},
+    "per": {"type": "number", "exclusiveMinimum": 0, "default": 1},
+    "sizeList": {"type": "array", "items": {"type": "integer", "minimum": 2, "maximum": 50000}, "minItems": 1, "maxItems": 10, "uniqueItems": true},
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "type", "level", "distribution"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "label": {"type": "string", "maxLength": 80},
+        "role": {"enum": ["treatment", "exposure", "outcome", "covariate", "confounder", "mediator", "effect_modifier", "censoring"]},
+        "type": {"enum": ["continuous", "binary", "count", "time_to_event"]},
+        "level": {"enum": ["cluster", "subject", "visit"]},
+        "distribution": {"type": "object"},
+        "source": {"$ref": "#/$defs/id"}
+      },
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "continuous"}}}, "then": {"properties": {"distribution": {"additionalProperties": false, "required": ["mean", "sd"], "properties": {"mean": {"type": "number"}, "sd": {"type": "number", "exclusiveMinimum": 0}, "shape": {"enum": ["symmetric", "right_skewed", "positive_skewed"]}}}}}},
+        {"if": {"properties": {"type": {"const": "binary"}}}, "then": {"properties": {"distribution": {"additionalProperties": false, "required": ["prevalence"], "properties": {"prevalence": {"type": "number", "minimum": 0.001, "maximum": 0.999}}}}}},
+        {"if": {"properties": {"type": {"const": "count"}}}, "then": {"properties": {"distribution": {"additionalProperties": false, "required": ["mean"], "properties": {"mean": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000}}}}}},
+        {"if": {"properties": {"type": {"const": "time_to_event"}}}, "then": {"properties": {"distribution": {
+          "additionalProperties": false,
+          "properties": {
+            "median": {"type": "number", "exclusiveMinimum": 0},
+            "survivalAt": {"type": "object", "additionalProperties": false, "required": ["time", "probability"], "properties": {"time": {"type": "number", "exclusiveMinimum": 0}, "probability": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}}},
+            "hazardShape": {"enum": ["constant", "increasing", "decreasing"], "default": "constant"},
+            "loss": {"type": "number", "minimum": 0, "exclusiveMaximum": 1}
+          },
+          "oneOf": [{"required": ["median"]}, {"required": ["survivalAt"]}]
+        }}}}
+      ]
+    }
+  }
+}
