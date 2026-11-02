@@ -164,6 +164,8 @@ export function exampleGraph(name = 'mediation') {
   const a = { ...makeNode('A', 'binary', 30, 300), label: 'Treatment' };
   const m = { ...makeNode('M', 'continuous', 430, 300), label: 'Mediator' };
   const y = { ...makeNode('Y', name === 'binary' ? 'binary' : 'continuous', 830, 60), label: 'Outcome' };
+  if (name === 'trial') return { version: DAG_VERSION, nodes: [{ ...a, x: 240, y: 180 }, { ...y, x: 680, y: 180 }],
+    edges: [{ source: 'A', target: 'Y', coefficient: .5 }] };
   if (['repeated', 'clustered-repeated', 'repeated-binary'].includes(name)) {
     const time = { ...makeNode('Time', 'continuous', 400, 300), label: 'Visit time', scope: 'time' };
     a.scope = name === 'clustered-repeated' ? 'cluster' : 'subject'; x.scope = 'subject';

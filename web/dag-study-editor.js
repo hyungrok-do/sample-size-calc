@@ -50,7 +50,7 @@ export function nodeStudyFields(graph, node) {
   const scope = choice('dag-node-scope', [['subject', 'Once per subject'], ['cluster', 'Once per cluster'], ['visit', 'At every visit'], ['time', 'Visit time (from schedule)']], scopeOf(node));
   const labels = ['Subject intercept SD', 'Subject slope SD', 'Intercept–slope correlation', 'Cluster intercept SD', 'Residual correlation per time unit'];
   const inputs = repeatedKeys.map((k) => number(`repeat-${k}`, node.repeated?.[k] ?? 0));
-  const repeated = el('div', {}, el('p', { class: 'small muted' }, 'Random effects act on the variable’s predictor scale. Slopes use time since the first visit. Residual correlation is available for Normal and log-normal errors.'),
+  const repeated = el('details', { class: 'dag-dependence' }, el('summary', {}, 'Shared effects and correlation'), el('p', { class: 'small muted' }, 'Random effects act on the variable’s predictor scale. Slopes use time since the first visit. Residual correlation is available for Normal and log-normal errors.'),
     el('div', { class: 'dag-grid' }, inputs.map((input, i) => field(labels[i], input))));
   const lags = el('div'), rows = [];
   function addLag(raw = { source: node.id, lag: 1, coefficient: .3, initial: 0 }) {

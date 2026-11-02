@@ -7,6 +7,7 @@ import { addEdge, removeEdge, removeNode, makeNode, exampleGraph, emptyGraph, re
   equation, dataCsv, topologicalOrder, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
 import { mountPower } from './dag-power.js?v=dev';
+import { mountWorkflow } from './dag-workflow.js?v=dev';
 import { calibrationEdges, powerCompatibility } from './power-model.js?v=dev';
 import { sketch, findPaths, classifyPath, pathText } from './dag-view.js?v=dev';
 import { Engine } from './engine.js?v=dev';
@@ -88,6 +89,7 @@ function download(content, type, name) {
 
 export function mountDag(root) {
   const $ = (id) => root.querySelector(`#${id}`);
+  const workflow = mountWorkflow(root);
   let graph = emptyGraph(), selected = null, connectFrom = null, result = null, worker = null;
   let estimand = null, powerEditor, powerSettings = null;
   // pending: the design before target edits that have not yet become an undo step
@@ -547,6 +549,7 @@ export function mountDag(root) {
     mountStudy($('dag-study'), graph, (next) => apply(next, 'Study structure updated.'), (message) => status(message, true));
     $('dag-n').previousElementSibling.textContent = graph.study ? `Number of ${sizeUnit(graph)}` : 'Observations';
     powerEditor?.refresh(estimand, powerSettings);
+    workflow.update(graph);
     if (preview.key !== modelKey()) schedulePreview();
     const { order, byId } = validateGraph(graph);
     $('dag-equations').replaceChildren(...order.map((id) => el('li', {}, el('code', {}, equation(graph, byId.get(id))))));
@@ -594,11 +597,14 @@ export function mountDag(root) {
   }
   $('dag-undo').addEventListener('click', () => timeTravel(history, future));
   $('dag-redo').addEventListener('click', () => timeTravel(future, history));
-  $('dag-example-load').addEventListener('click', () => {
-    const next = exampleGraph($('dag-example').value);
+  function loadExample(name) {
+    const next = exampleGraph(name);
     apply(next, 'Example loaded. All numbers are editable example assumptions.', { estimand: null,
       power: next.study ? { ...DEFAULT_POWER, sampleSizes: next.study.clusterSizes.length ? [12, 24, 48] : [50, 100, 200] } : graph.study ? null : powerSettings });
-  });
+    $('dag-example').value = name;
+  }
+  $('dag-example-load').addEventListener('click', () => loadExample($('dag-example').value));
+  for (const button of root.querySelectorAll('[data-template]')) button.addEventListener('click', () => loadExample(button.dataset.template));
   $('dag-export').addEventListener('click', () => download(JSON.stringify(exportDesign(graph, estimand, powerSettings), null, 2) + '\n', 'application/json', 'simulation-design.json'));
   $('dag-import').addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
@@ -633,6 +639,8 @@ export function mountDag(root) {
   });
   powerEditor = mountPower($('dag-power'), {
     getGraph: () => graph,
+    onRefresh: () => workflow.refresh(),
+    onRun: () => { if (root.dataset.view !== 'all') workflow.go('power'); },
     onTarget(value, mode) {
       const before = JSON.stringify(exportDesign(graph, estimand, powerSettings));
       if (JSON.stringify(value) !== JSON.stringify(estimand)) {

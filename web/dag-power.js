@@ -5,6 +5,7 @@ import { BASES, parseAnalysis } from './dag-functions.js?v=dev';
 import { DEFAULT_POWER, parsePowerSettings, powerCompatibility } from './power-model.js?v=dev';
 import { MEASURES, availableMeasures, validateEstimand, describeEstimand, copyEstimand } from './estimand-model.js?v=dev';
 import { Engine } from './engine.js?v=dev';
+import { questionSummary } from './dag-workflow.js?v=dev';
 
 const POPULATION = 'Population represented by the data generating process';
 const SHORT = { mean_difference: 'Mean difference', risk_difference: 'Risk difference', risk_ratio: 'Risk ratio', odds_ratio: 'Odds ratio',
@@ -32,6 +33,35 @@ const select = (id, list, value) => options(el('select', { id }), list, value);
 const numeric = (id, value, attrs = {}) => el('input', { id, type: 'number', step: 'any', value: value ?? '', ...attrs });
 const fmt = (value) => value == null || !Number.isFinite(value) ? '—' : Number(value.toPrecision(5)).toString();
 const pct = (value) => `${(100 * value).toFixed(1)}%`;
+
+// Map engine results to the display. No power calculation or interpolation is performed here.
+function powerPlot(answer) {
+  const rows = answer.results.filter((row) => row.alternative.valid > 0);
+  if (!rows.length) return [];
+  const svg = (tag, attrs, ...children) => {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    node.append(...children); return node;
+  };
+  const min = Math.min(...rows.map((r) => r.n)), max = Math.max(...rows.map((r) => r.n));
+  const x = (n) => min === max ? 350 : 60 + (n - min) / (max - min) * 580, y = (p) => 225 - p * 190;
+  const plot = svg('svg', { id: 'power-plot', viewBox: '0 0 700 285', role: 'img', 'aria-labelledby': 'power-plot-title power-plot-desc' },
+    svg('title', { id: 'power-plot-title' }, 'Estimated power at each tested sample size'),
+    svg('desc', { id: 'power-plot-desc' }, 'Dots show simulated power, bars show 95% Monte Carlo intervals, and the dashed line shows target power. Exact values are in the table below.'));
+  for (const p of [0, .25, .5, .75, 1]) plot.append(svg('line', { x1: 60, y1: y(p), x2: 640, y2: y(p), class: 'power-plot-grid' }),
+    svg('text', { x: 48, y: y(p) + 4, 'text-anchor': 'end' }, `${p * 100}%`));
+  plot.append(svg('line', { x1: 60, y1: y(answer.power.targetPower), x2: 640, y2: y(answer.power.targetPower), class: 'power-plot-target' }),
+    svg('text', { x: 640, y: y(answer.power.targetPower) - 9, 'text-anchor': 'end', class: 'power-plot-target-label' }, `Target ${pct(answer.power.targetPower)}`));
+  rows.forEach((row, i) => {
+    const px = x(row.n), a = row.alternative, lo = y(a.interval[0]), hi = y(a.interval[1]);
+    plot.append(svg('path', { d: `M ${px} ${lo} V ${hi} M ${px - 5} ${lo} H ${px + 5} M ${px - 5} ${hi} H ${px + 5}`, class: 'power-plot-interval' }),
+      svg('circle', { cx: px, cy: y(a.probability), r: 5, class: 'power-plot-dot' }, svg('title', {}, `${row.n}: ${pct(a.probability)} power, ${pct(a.interval[0])} to ${pct(a.interval[1])}`)));
+    // Dense grids retain their exact sizes in the table and hover text.
+    if (rows.length <= 8 || i === 0 || i === rows.length - 1) plot.append(svg('text', { x: px, y: 247, 'text-anchor': 'middle' }, String(row.n)));
+  });
+  plot.append(svg('text', { x: 350, y: 275, 'text-anchor': 'middle' }, answer.graph.study ? `Number of ${answer.sizeUnit}` : 'Total independent observations'));
+  return [el('div', { class: 'power-plot-wrap' }, plot), el('p', { class: 'small muted' }, 'Dots: estimated power · bars: 95% Monte Carlo intervals. Only the displayed sample sizes were simulated.')];
+}
 function download(value, mime, filename) {
   const url = URL.createObjectURL(new Blob([value], { type: mime })), link = el('a', { href: url, download: filename });
   document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -75,7 +105,7 @@ export function defaultTarget(graph) {
   try { validateEstimand(graph, target); return target; } catch { return null; }
 }
 
-export function mountPower(root, { getGraph, onTarget, onSettings }) {
+export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = () => {}, onRun = () => {} }) {
   let worker = null, generation = 0, result = null, ready = false, assign = () => false;
   const $ = (id) => root.querySelector(`#${id}`);
   const idle = 'Each simulated study draws data from the graph, fits the analysis above and applies its test.';
@@ -104,7 +134,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       : answer.alternative.truth.estimate === answer.estimand.nullValue
         ? 'The true effect equals the null value, so no sample size gives more than the false-positive rate.'
         : `No tested sample size reached ${pct(answer.power.targetPower)} power. Try larger sizes.`),
-    el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
+    ...powerPlot(answer), el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
       el('table', { id: 'power-table' }, el('thead', {}, el('tr', {}, header.map((title) => el('th', { scope: 'col' }, title)))), el('tbody', {}, rows)))];
     const truth = answer.alternative.truth, facts = [];
     facts.push(el('li', { id: 'power-truth' }, answer.estimand.kind === 'joint' ? `Generating predictor-block coefficients: ${truth.coefficients?.map(fmt).join(', ') || 'none'}. The hypothesis concerns the specified regression basis.` : truth.exact ? `True effect in the graph: ${fmt(truth.estimate)} (model coefficient).`
@@ -145,7 +175,9 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     if (!start) {
       ready = false; assign = () => false;
       root.replaceChildren(el('div', { class: 'dag-card-heading' }, el('h3', {}, 'Power analysis')),
-        el('p', { id: 'power-method', class: 'muted' }, 'Add at least two variables and an arrow to compare groups and calculate power.'));
+        el('p', { id: 'power-method', class: 'muted' }, 'Add at least two variables and an arrow to compare groups and calculate power.'),
+        el('button', { type: 'button', 'data-goto': 'model' }, 'Go to Model →'));
+      onRefresh();
       return;
     }
     const nodeList = graph.nodes.map((n) => [n.id, `${n.id} · ${n.label}`]);
@@ -225,43 +257,55 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     };
     const analysisPanel = el('details', { id: 'power-analysis-models' }, el('summary', {}, 'Planned analysis models'),
       el('p', { class: 'small muted' }, 'These settings change the fitted analysis, independently of the generating graph. Cross-fitting applies to AIPW and binary-outcome TMLE.'),
-      el('div', { class: 'dag-grid' }, field('Estimator', analysisMethod), field('Outcome / mediator terms', analysisBasis), field('Cross-fitting folds (1 = none)', folds), knotsField),
+      el('div', { class: 'dag-grid' }, field('Outcome / mediator terms', analysisBasis), field('Cross-fitting folds (1 = none)', folds), knotsField),
       el('label', {}, interactions, 'Include pairwise interactions with linear, quadratic or spline terms'),
       el('div', { class: 'dag-grid' }, field('Propensity terms (AIPW / TMLE)', propensityBasis), propensityKnotsField),
       el('label', {}, propensityInteractions, 'Include pairwise propensity interactions'),
       el('details', {}, el('summary', {}, 'Override individual models'), overrideRows));
-    if (graph.study) analysisPanel.replaceChildren(el('summary', {}, 'Planned trajectory analysis'),
+    if (graph.study) analysisPanel.replaceChildren(el('summary', {}, 'Analysis details and assumptions'),
       el('p', { class: 'small muted' }, 'The analysis is specified independently of the generating graph. MMRM uses an unstructured covariance. LMM uses the time and random-effect choices below. Trajectory means use robust inference at the subject or cluster level.'),
-      el('div', { class: 'dag-grid dag-trajectory-grid' }, field('Estimator', analysisMethod), field('LMM time model', timeBasis)), el('label', {}, randomSlope, 'LMM subject random slope (in addition to intercept)'));
+      el('div', { class: 'dag-grid dag-trajectory-grid' }, field('LMM time model', timeBasis)), el('label', {}, randomSlope, 'LMM subject random slope (in addition to intercept)'));
     for (const input of [analysisMethod, analysisBasis, propensityBasis]) input.addEventListener('change', analysisFields);
     const horizonField = field('Time horizon', horizon), levelsFields = [field('Active level', active), field('Reference level', reference)];
-    const sizesField = field(graph.study ? `Number of ${sizeUnit(graph)}` : 'Total sample sizes', sizes);
+    const sizesField = field(graph.study ? `Number of ${sizeUnit(graph)}` : 'Total sample sizes', sizes, 'Separate the sizes to test with commas. These are totals across both groups.');
     sizesField.classList.add('dag-wide');
     const calibration = el('div', { class: 'dag-grid' }, field('Arrow set to the effect to detect', edge), field('Lowest value', lower), field('Highest value', upper));
     const formula = el('p', { id: 'power-estimand', class: 'dag-power-formula' }), method = el('p', { id: 'power-method' });
     const notes = el('ul', { id: 'power-notes', class: 'dag-power-notes', hidden: true });
-    const form = el('form', { id: 'power-form', novalidate: true },
-      el('p', { class: 'dag-group' }, 'What to detect'),
-      el('div', { class: 'dag-grid' }, field('Effect', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure),
-        horizonField, field('Effect to detect', alternative)),
-      trajectoryPanel, analysisPanel,
-      el('p', { class: 'dag-group' }, 'Design'),
-      el('div', { class: 'dag-grid' }, sizesField, field('Studies per size', repetitions), field('Significance level α', alpha),
-        field('Test', side), field('Target power', targetPower)),
-      el('details', { id: 'power-more' }, el('summary', {}, 'More settings'),
-        el('div', { class: 'dag-grid' }, ...levelsFields, field('Null value', nullValue), field('Random seed', seed),
-          field('Population draws for the true effect', population)),
+    const question = el('p', { id: 'power-question-summary', class: 'dag-question-summary' });
+    const review = el('p', { id: 'power-review-question' }), reviewMethod = el('p', { id: 'power-review-method', class: 'small' }),
+      reviewEffect = el('p', { id: 'power-review-effect', class: 'small' });
+    const heading = (step, id, title, help) => el('div', { class: 'dag-section-heading' }, el('p', { class: 'dag-eyebrow' }, step),
+      el('h3', { id, tabindex: -1 }, title), el('p', {}, help));
+    const questionPane = el('section', { 'data-dag-step': 'question' },
+      heading('03 / Question', 'dag-question-title', 'What do you want to detect?', 'Choose the outcome, comparison and analysis for every simulated study.'), question,
+      el('div', { class: 'dag-grid dag-question-grid' }, field('Type of question', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure)),
+      el('div', { class: 'dag-grid dag-question-grid' }, ...levelsFields, horizonField,
+        field('Effect to detect', alternative, 'Leave blank to use the effect implied by your model.')),
+      trajectoryPanel,
+      el('div', { class: 'dag-analysis-choice' }, field('Analysis method', analysisMethod), method), analysisPanel,
+      el('details', { class: 'dag-question-details' }, el('summary', {}, 'Formal target and assumptions'),
+        field('Null value', nullValue), formula, notes));
+    const powerPane = el('section', { 'data-dag-step': 'power' },
+      heading('04 / Power', 'dag-power-title', 'How many do you need?', 'Test a range of sample sizes, then compare their power with your target.'),
+      el('div', { class: 'dag-run-review' }, el('span', { class: 'dag-eyebrow' }, 'Your comparison'), review, reviewEffect, reviewMethod,
+        el('button', { type: 'button', 'data-goto': 'question' }, 'Edit question')),
+      el('div', { class: 'dag-grid dag-design-grid' }, sizesField,
+        field('Target power', targetPower, '0.80 means an 80% chance of detecting the specified effect.'),
+        field('Simulated studies per size', repetitions, 'More studies reduce Monte Carlo error and take longer.'),
+        field('Significance level α', alpha), field('Test', side)),
+      el('details', { id: 'power-more' }, el('summary', {}, 'Simulation settings and null checks'),
+        el('div', { class: 'dag-grid' }, field('Random seed', seed), field('Population draws for the true effect', population)),
         calibration, field('Reference / null construction', nullMode),
         el('label', { class: 'dag-power-check', for: 'power-null-check' }, nullCheck, 'Also simulate the null scenario (type I error check)')),
-      el('div', { class: 'dag-power-summary' }, method, formula, notes),
+      el('p', { class: 'small muted' }, 'Power is conditional on your generating model, dependence and missingness assumptions. Monte Carlo intervals measure simulation error, not uncertainty about those assumptions.'),
       el('div', { class: 'dag-actions' }, el('button', { id: 'power-run', type: 'submit', class: 'primary' }, 'Calculate power'),
         el('button', { id: 'power-stop', type: 'button', hidden: true }, 'Stop'),
         el('button', { id: 'power-json', type: 'button', disabled: true }, 'Download report'),
         el('button', { id: 'power-csv', type: 'button', disabled: true }, 'Download CSV'),
         el('span', { id: 'power-progress', role: 'status', 'aria-live': 'polite', class: 'small muted' })));
-    root.replaceChildren(el('div', { class: 'dag-card-heading' }, el('h3', {}, 'Power analysis'),
-      el('span', { class: 'small muted' }, 'Repeated simulated studies from the graph above')),
-    el('div', { class: 'dag-power-layout' }, form, el('div', { id: 'power-results', class: 'dag-power-results', 'aria-live': 'polite' })));
+    const form = el('form', { id: 'power-form', novalidate: true }, questionPane, powerPane);
+    root.replaceChildren(form, el('div', { id: 'power-results', class: 'dag-power-results', 'data-dag-step': 'power', 'aria-live': 'polite' }));
 
     const num = (input, optional = false) => input.value.trim() === '' ? (optional ? null : NaN) : Number(input.value);
     const node = (id) => graph.nodes.find((n) => n.id === id);
@@ -315,6 +359,11 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
       ready = !problem;
       method.className = problem ? 'error' : '';
       method.textContent = problem ?? `Analysis: ${plan.label}.`;
+      question.textContent = review.textContent = questionSummary(graph, value);
+      reviewEffect.textContent = value.kind === 'joint' ? 'Effect to detect: the predictor block specified in your model.'
+        : `Effect to detect: ${value.alternative == null ? 'as implied by your model' : value.alternative}. Null value: ${value.nullValue}.`;
+      reviewMethod.textContent = method.textContent;
+      reviewMethod.className = problem ? 'error' : 'small';
       formula.textContent = problem ? '' : describeEstimand(graph, value).formula + (value.kind === 'joint' ? '' : `. H₀: θ = ${value.nullValue}.`);
       formula.hidden = Boolean(problem);
       notes.replaceChildren(...(problem ? [] : plan.notes).map((text) => el('li', {}, text)));
@@ -342,6 +391,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     form.addEventListener('submit', async (event) => {
       event.preventDefault(); invalidate(); sync('commit');
       if (!ready) return;
+      onRun();
       try {
         const graph = getGraph(), estimand = copyEstimand(target()), configuration = readSettings();
         const token = generation, instance = new Engine();
@@ -361,6 +411,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings }) {
     $('power-csv').addEventListener('click', () => { if (result) download(csv(result), 'text/csv', 'power.csv'); });
     choices({ exposure: start.exposure, outcome: start.outcome, measure: start.measure });
     invalidate(); sync('auto');
+    onRefresh();
   }
   return { refresh, stop, assign: (role, id) => assign(role, id) };
 }
