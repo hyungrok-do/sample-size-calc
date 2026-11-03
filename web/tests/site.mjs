@@ -226,6 +226,11 @@ try {
   await fitsViewport();
   assert.equal(await page.isVisible('#power-run'), true, 'power is on the same panel as the graph');
   assert.match(await page.textContent('#power-question-summary'), /Outcome.*Treatment.*1 versus 0.*mean difference/);
+  // the estimand card names the target, its formula, hypotheses and what the analysis estimates
+  const estimandCard = await page.textContent('#estimand-card');
+  for (const part of [/Average treatment effect \(ATE\) on the mean of Outcome/, /if everyone had Treatment \(A\) = 1/, /E\[Y under do\(A = 1\)\]/, /H₀: θ = 0; H₁: θ ≠ 0/, /Welch/])
+    assert.match(estimandCard, part);
+  await page.waitForFunction(() => /θ = 0\.5 under the graph as drawn/.test(document.querySelector('#estimand-card')?.textContent ?? ''));
   // the effect the model implies is shown before anything runs
   await page.waitForFunction(() => /mean difference 0\.5/.test(document.querySelector('#estimand-implied')?.textContent ?? ''));
   assert.equal(await page.getAttribute('#estimand-alternative', 'placeholder'), 'As drawn (0.5)');
@@ -374,9 +379,9 @@ try {
   assert.match(await page.textContent('#power-method'), /TMLE.*Super Learner/);
   await page.selectOption('#dag-node-select', 'Y');
   assert.match(await page.textContent('#dag-unknown summary'), /Unknown form: f\(X1, X2\)/);
-  assert.match(await page.textContent('#dag-unknown-redraw'), /now #6/);
+  assert.match(await page.textContent('#dag-unknown-redraw'), /now #5/);
   await page.click('#dag-unknown-redraw');
-  await page.waitForFunction(() => /now #7/.test(document.querySelector('#dag-unknown-redraw')?.textContent ?? ''));
+  await page.waitForFunction(() => /now #6/.test(document.querySelector('#dag-unknown-redraw')?.textContent ?? ''));
   await page.click('#dag-undo');
   // Clear empties the canvas in one step, and one undo brings the model back
   await page.click('#dag-clear');

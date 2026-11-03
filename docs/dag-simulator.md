@@ -366,6 +366,17 @@ and coefficient nulls default to zero. A numerical planning alternative calibrat
 DGP before power simulation. Changing the effect measure clears an alternative
 entered on the old scale. Leaving it blank uses the graph as drawn.
 
+An estimand card at the top of the Question section states the target in plain
+terms: what is compared (for example the average treatment effect of setting
+the exposure to 1 versus 0 for everyone), the population it averages over, the
+value θ has under the graph as drawn (computed in the background from the full
+model, unmeasured variables and unknown-form relationships included) or the
+planning alternative that replaces it, the formula, H₀ and H₁ with the chosen
+side, and how the selected analysis estimates θ. Conditional targets are named
+as such, joint tests as having no single effect, and the card points to the
+notes when unmeasured variables, unknown forms or censoring limit what the
+analysis can recover. `explainEstimand` in `estimand-model.js` builds the rows.
+
 The target is kept with the design, included in JSON export and undo/redo,
 and restored on reopening the design. Changing it does not invalidate generated
 raw data, because the DGP itself is unchanged.

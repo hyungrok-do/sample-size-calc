@@ -136,3 +136,79 @@ export function parseDesign(input) {
   return { graph, estimand, ...(raw.power == null ? {} : { power: parsePowerSettings(raw.power) }) };
 }
 
+
+// What the power analysis targets, in plain words, for the card above the question: the target's name, what it
+// means, over whom it averages, its formula, the hypotheses, and what the planned analysis estimates. `plan` is the
+// compiled analysis plan (or null) and `side` the test's direction.
+export function explainEstimand(graph, value, plan = null, side = 'two-sided') {
+  validateEstimand(graph, value);
+  const node = (id) => graph.nodes.find((n) => n.id === id);
+  const a = node(value.exposure), y = node(value.outcome);
+  const name = (n) => n.label && n.label !== n.id ? `${n.label} (${n.id})` : n.id;
+  const A = name(a), Y = name(y);
+  // "X1", "X1 and X2", "X1, X2 and X3", with labels
+  const list = (ids) => { const names = ids.map((id) => name(node(id) ?? { id })); return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`; };
+  const relation = side === 'greater' ? '>' : side === 'less' ? '<' : '≠';
+  const rows = [];
+  if (value.kind === 'marginal') {
+    const treatment = a.kind === 'binary' && value.reference === 0 && value.active === 1;
+    const lead = treatment ? 'Average treatment effect (ATE)' : `Average causal effect of setting ${A} to ${value.active} versus ${value.reference}`;
+    let what = `the mean of ${Y}`, words = `how much the average ${Y}`;
+    if (graph.study) {
+      const r = value.repeated ?? { contrast: 'final' }, times = graph.study.times;
+      const at = r.contrast === 'change' ? `the change in ${Y} from time ${times[0]} to ${times.at(-1)}` : r.contrast === 'slope' ? `the time trend of ${Y}`
+        : r.contrast === 'average' ? `${Y} averaged over the visits` : r.contrast === 'custom' ? `a weighted combination of ${Y} over the visits`
+          : `${Y} at time ${times[r.visit ?? times.length - 1]}`;
+      what = `the mean of ${at}`; words = `how much the average of ${at}`;
+    }
+    const m = value.measure, h = value.horizon;
+    const target = {
+      mean_difference: y.kind === 'binary' ? `${lead} on the risk of ${Y} (risk difference)` : `${lead} on ${what}`,
+      risk_difference: `${lead} on the risk of ${Y} (risk difference)`,
+      risk_ratio: `Causal risk ratio of ${Y}`,
+      odds_ratio: `Marginal causal odds ratio of ${Y}`,
+      survival_difference: `${lead} on the probability of being free of ${Y} at time ${h}`,
+      rmst_difference: `${lead} on the restricted mean ${Y} time up to ${h}`,
+    }[m];
+    const verb = {
+      mean_difference: y.kind === 'binary' ? `how much the share of the population with ${Y} = 1 would differ` : `${words} would differ`,
+      risk_difference: `how much the share of the population with ${Y} = 1 would differ`,
+      risk_ratio: `how many times larger the share with ${Y} = 1 would be`,
+      odds_ratio: `how many times larger the odds of ${Y} = 1 would be`,
+      survival_difference: `how much the share still free of the event at time ${h} would differ`,
+      rmst_difference: `how much the average event-free time up to ${h} would differ`,
+    }[m];
+    rows.push(['Target', target],
+      ['In words', `${verb[0].toUpperCase()}${verb.slice(1)} if everyone had ${A} = ${value.active} rather than everyone ${A} = ${value.reference}. The variables ${A} affects change with it; everything else keeps the distribution the graph gives it.`],
+      ['Population', graph.study ? `Every subject the graph describes, each counted once${graph.study.clusterSizes?.length ? ', across clusters' : ''}; not a subgroup.` : 'Everyone the graph describes, at the distributions it generates; not a subgroup.']);
+  } else if (value.kind === 'coefficient') {
+    const ratio = value.measure === 'exponentiated_coefficient';
+    const others = graph.edges.filter((e) => e.target === y.id && e.source !== a.id).map((e) => e.source);
+    const scale = DISTRIBUTIONS[y.family].link;
+    rows.push(['Target', `${ratio ? 'Exponentiated regression coefficient' : 'Regression coefficient'} of ${A} in the model for ${Y}: a conditional effect, not a population average`],
+      ['In words', `The change in the ${scale} of ${Y} per unit of ${A}${ratio ? ', as a ratio' : ''}${others.length ? `, holding ${list(others)} fixed` : ''}. It equals the average effect only when the model for ${Y} is linear in ${A} with no interactions or curved terms involving it.`],
+      ['Population', others.length ? `People with the same ${list(others)}: the effect is conditional on them.` : 'Everyone the graph describes.']);
+  } else {
+    const which = value.measure === 'nonlinearity' ? `the terms that bend the effect of ${A}` : value.measure === 'interaction' ? `the terms in which ${A} multiplies another variable` : `all terms involving ${A}`;
+    rows.push(['Target', `No single effect: a test of whether ${which} in the model for ${Y} are all zero`],
+      ['In words', value.measure === 'interaction' ? `Whether the effect of ${A} on ${Y} depends on another variable (effect modification).`
+        : value.measure === 'nonlinearity' ? `Whether the effect of ${A} on ${Y} is curved rather than a straight line.` : `Whether ${A} is related to ${Y} at all, once the other variables in the model are accounted for.`],
+      ['Population', 'Conditional on the other variables in the model.']);
+  }
+  const d = describeEstimand(graph, value);
+  rows.push(['Formula', d.formula]);
+  rows.push(['Hypotheses', value.kind === 'joint' ? 'H₀: all of those coefficients are 0; H₁: at least one is not.' : `H₀: θ = ${value.nullValue}; H₁: θ ${relation} ${value.nullValue}.`]);
+  if (plan?.supported !== false && plan?.label) {
+    const used = [...new Set([...(plan.terms ?? []), ...(plan.propensityTerms ?? [])].flatMap((t) => [t.left, ...(t.right ? [t.right] : [])]))].filter((id) => id !== a.id);
+    const how = ['welch', 'risk_score', 'risk_wald', 'risk_ratio', 'odds_ratio', 'km_survival', 'km_rmst'].includes(plan.method)
+      ? `It compares the two groups directly, which estimates θ when ${A} is assigned at random (nothing in the graph causes it).`
+      : ['aipw', 'tmle'].includes(plan.method) ? `It adjusts for ${used.length ? list(used) : 'nothing measured'} and estimates θ if ${used.length === 1 ? 'it blocks' : 'they block'} every back-door path from ${A} to ${Y}${plan.learner === 'superlearner' ? '; its nuisance models are learned, not assumed' : ' and one of its models is right'}.`
+        : plan.method === 'gformula' ? `It refits the model${(plan.models?.length ?? 1) > 1 ? 's' : ''} for ${list((plan.models ?? []).map((x) => x.node)) || Y} and averages its predictions with ${A} set to each level; it estimates θ if those models are right.`
+          : ['mmrm', 'lmm', 'trajectory'].includes(plan.method) ? `It compares the randomized groups' outcomes over the visits, which estimates θ.`
+            : value.kind === 'marginal' ? '' : `It fits the model ${plan.formula ?? ''}.`;
+    const caution = (plan.notes ?? []).some((n) => /unmeasured|unknown form that the planned|lies upstream|No arrow path|censors .* depends on/.test(n))
+      ? ' The notes below say what it cannot account for; the bias and coverage in the results show the cost.' : '';
+    rows.push(['Analysis', `${plan.label}. ${how}${caution}`.trim()]);
+  }
+  return rows;
+}

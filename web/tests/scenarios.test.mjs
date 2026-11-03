@@ -5,7 +5,7 @@ import { SCENARIOS, scenarioDesign } from '../dag-scenarios.js';
 import { compilePowerPlan, measuredTerms } from '../power-model.js';
 import { parseGraph, validateGraph, equation, makeNode, removeEdge, removeNode, renameNode } from '../dag-model.js';
 import { nodeTerms, parseAnalysis } from '../dag-functions.js';
-import { validateEstimand } from '../estimand-model.js';
+import { validateEstimand, explainEstimand } from '../estimand-model.js';
 
 test('every scenario loads as a valid design, and its analysis plan matches the engine', () => {
   for (const s of SCENARIOS) {
@@ -90,4 +90,29 @@ test('a relationship of unknown form is kept, renamed and removed with its paren
   // an effect of unknown form has no coefficient
   const h = scenarioDesign('unknown-heterogeneity');
   assert.throws(() => validateEstimand(h.graph, { ...h.estimand, kind: 'coefficient', measure: 'coefficient', horizon: null }), /unknown form, so no coefficient describes it/);
+});
+
+test('the estimand card says what is targeted, over whom, and whether the analysis estimates it', () => {
+  const rows = (id, change = {}, analysis) => {
+    const d = scenarioDesign(id), e = { ...d.estimand, ...change };
+    return Object.fromEntries(explainEstimand(d.graph, e, compilePowerPlan(d.graph, e, analysis ?? d.power.analysis), d.power.side));
+  };
+  const trial = rows('trial');
+  assert.match(trial.Target, /^Average treatment effect \(ATE\) on the mean of Outcome \(Y\)$/);
+  assert.match(trial['In words'], /if everyone had Treatment \(A\) = 1 rather than everyone Treatment \(A\) = 0/);
+  assert.match(trial.Population, /not a subgroup/);
+  assert.match(trial.Formula, /E\[Y under do\(A = 1\)\] − E\[Y under do\(A = 0\)\]/);
+  assert.equal(trial.Hypotheses, 'H₀: θ = 0; H₁: θ ≠ 0.');
+  assert.match(trial.Analysis, /Welch.*assigned at random/);
+  // one-sided non-inferiority, a risk ratio, adjustment, unmeasured confounding, a coefficient and a joint test
+  assert.equal(rows('noninferiority').Hypotheses, 'H₀: θ = -0.3; H₁: θ > -0.3.');
+  assert.match(rows('binary', { measure: 'risk_ratio', nullValue: 1 }).Target, /Causal risk ratio of Outcome/);
+  assert.match(rows('unmeasured-confounding').Analysis, /adjusts for Age \(X\) and estimates θ if it blocks.*notes below say what it cannot account for/);
+  assert.match(rows('unknown-confounding').Analysis, /learned, not assumed/);
+  const coefficient = rows('ancova');
+  assert.match(coefficient.Target, /conditional effect, not a population average/);
+  assert.match(coefficient['In words'], /holding Baseline score \(B\) fixed/);
+  assert.match(rows('effect-modification').Target, /^No single effect: a test of whether the terms in which Treatment \(A\) multiplies another variable/);
+  // a repeated design names the visit contrast
+  assert.match(rows('repeated').Target, /at time 12/);
 });

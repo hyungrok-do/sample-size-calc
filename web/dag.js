@@ -854,14 +854,22 @@ export function mountDag(root) {
     const parentIds = graph.edges.filter((e) => e.target === node.id).map((e) => e.source);
     if (parentIds.length && !(graph.study && scopeOf(node) === 'time')) {
       const u = node.unknown;
-      const checks = parentIds.map((pid) => el('input', { type: 'checkbox', value: pid, id: `dag-unknown-${pid}`, checked: Boolean(u?.inputs.includes(pid)) }));
+      // a new relationship gets a shape number no other variable uses, so two variables never share a shape
+      const freshSeed = 1 + Math.max(0, ...graph.nodes.map((n) => n.unknown?.seed ?? 0));
+      const checks = parentIds.map((pid) => el('input', { type: 'checkbox', value: pid, id: `dag-unknown-input-${pid}`, checked: Boolean(u?.inputs.includes(pid)) }));
       const size = numeric('dag-unknown-size', u?.size ?? 0.5, { min: 0 }), smoothness = numeric('dag-unknown-smoothness', u?.smoothness ?? 2, { min: 0 });
-      const saveUnknown = (seed = u?.seed ?? 0) => {
+      const saveUnknown = (seed = u?.seed ?? freshSeed) => {
+        if (!unknownBox.isConnected) return;
+        const focus = document.activeElement?.id;
         try {
-          const inputs = checks.filter((c) => c.checked).map((c) => c.value), { unknown: _, ...rest } = node;
-          const changed = inputs.length ? { ...rest, unknown: { inputs, size: inputNumber(size, 'Size'), smoothness: inputNumber(smoothness, 'Smoothness'), seed } } : rest;
-          apply({ ...graph, nodes: graph.nodes.map((n) => n.id === node.id ? changed : n) },
-            inputs.length ? `${node.id} depends on ${inputs.join(', ')} through a relationship of unknown form; no analysis is told its shape.` : `${node.id} has no relationship of unknown form.`);
+          const inputs = checks.filter((c) => c.checked).map((c) => c.value);
+          if (!inputs.length && !u) return;  // no parent chosen yet: keep what was typed
+          const value = inputs.length ? { inputs, size: inputNumber(size, 'Size'), smoothness: inputNumber(smoothness, 'Smoothness'), seed } : null;
+          if (JSON.stringify(value) === JSON.stringify(u ?? null)) return;
+          const { unknown: _, ...rest } = node;
+          if (apply({ ...graph, nodes: graph.nodes.map((n) => n.id === node.id ? (value ? { ...rest, unknown: value } : rest) : n) },
+            value ? `${node.id} depends on ${inputs.join(', ')} through a relationship of unknown form; no analysis is told its shape.` : `${node.id} has no relationship of unknown form.`)
+            && focus) $(focus)?.focus();
         } catch (error) { status(error.message, true); }
       };
       const unknownBox = el('details', { id: 'dag-unknown', class: 'dag-unknown', open: Boolean(u) },
@@ -870,8 +878,14 @@ export function mountDag(root) {
         el('div', { class: 'dag-check-row', role: 'group', 'aria-label': 'Parents in the relationship of unknown form' },
           ...checks.map((c) => el('label', { for: c.id }, c, ` ${c.value}`))),
         el('div', { class: 'dag-pair' }, field('Size (SD)', size), field('Smoothness', smoothness)),
-        ...(u ? [el('button', { type: 'button', class: 'secondary', id: 'dag-unknown-redraw', onclick: () => saveUnknown((u.seed ?? 0) + 1) }, `Draw another shape (now #${(u.seed ?? 0) + 1})`)] : []));
-      unknownBox.addEventListener('change', (event) => { if (event.target.matches('input')) saveUnknown(); });
+        ...(u ? [el('button', { type: 'button', class: 'secondary', id: 'dag-unknown-redraw', onclick: () => saveUnknown(freshSeed) }, `Draw another shape (now #${u.seed ?? 0})`)] : []));
+      // A ticked parent saves at once; a typed size or smoothness on Enter or when the focus leaves the section, so a
+      // click on a checkbox or the button inside it is never lost to the settings being rebuilt under it.
+      unknownBox.addEventListener('change', (event) => { if (event.target.type === 'checkbox') setTimeout(() => saveUnknown()); });
+      unknownBox.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && event.target.matches('input:not([type="checkbox"])')) { event.preventDefault(); saveUnknown(); }
+      });
+      unknownBox.addEventListener('focusout', (event) => { if (!unknownBox.contains(event.relatedTarget)) setTimeout(() => saveUnknown()); });
       box.append(unknownBox);
     }
     mountFunctions(box, { graph, node, onChange: (next) => apply(next), onError: (message) => status(message, true) });

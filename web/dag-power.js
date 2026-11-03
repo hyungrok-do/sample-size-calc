@@ -3,7 +3,7 @@ import { BASES, parseAnalysis } from './dag-functions.js?v=dev';
 // The power-analysis panel: what to detect (comparison, outcome, measure), the design, and the results, in one form.
 // Its target is kept as an estimand object (estimand-model.js), which the C++ engine validates and analyzes.
 import { DEFAULT_POWER, parsePowerSettings, powerCompatibility } from './power-model.js?v=dev';
-import { MEASURES, availableMeasures, validateEstimand, describeEstimand, copyEstimand } from './estimand-model.js?v=dev';
+import { MEASURES, availableMeasures, validateEstimand, describeEstimand, copyEstimand, explainEstimand } from './estimand-model.js?v=dev';
 import { Engine } from './engine.js?v=dev';
 import { questionSummary } from './dag-workflow.js?v=dev';
 import { estimateSize, nextSizes, rowChecks, effectText, summaryText } from './dag-results.js?v=dev';
@@ -123,6 +123,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
   const hint = { timer: 0, token: 0, key: '', text: '', number: '' };
   function implied(graph, value, show) {
     clearTimeout(hint.timer);
+    // a newer question discards any answer still in flight
+    const token = ++hint.token;
     const name = (SHORT[value.measure] ?? value.measure).toLowerCase(), digits = (x) => Number(x.toPrecision(3)).toString();
     if (value.kind === 'joint') return show('');
     if (value.kind === 'coefficient') {
@@ -134,7 +136,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
     if (key === hint.key) return show(hint.text, hint.number);
     show('', '');
     hint.timer = setTimeout(async () => {
-      const token = ++hint.token, instance = borrow();
+      const instance = borrow();
       try {
         const truth = await instance.dag({ op: 'population', graph, estimand: { ...value, alternative: null }, options: { n: graph.study ? 400 : 5000, seed: 1 } });
         if (token !== hint.token) return;
@@ -142,7 +144,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
         hint.key = key; hint.number = Number.isFinite(truth.estimate) ? `${approximate ? '≈ ' : ''}${digits(truth.estimate)}` : '';
         hint.text = hint.number ? `${name} ${hint.number}` : '';
         show(hint.text, hint.number);
-      } catch { if (token === hint.token) show('', ''); }
+      } catch { if (token === hint.token) show('', '', true); }
       finally { give(instance); }
     }, 400);
   }
@@ -321,18 +323,18 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
       choice.addEventListener('change', visibility); visibility();
       return el('div', { class: 'dag-grid' }, field(`Model for ${n.id}`, choice), k, inter);
     });
-    const learnerField = field('AIPW / TMLE nuisance models', learner, 'The Super Learner weighs a mean, GLMs, additive splines, boosted trees and kernel ridge regression by 5-fold cross-validation; it uses the variables of the terms below, not their form. Automatic analysis chooses it, with TMLE and 3-fold cross-fitting, when a treatment or outcome model has a relationship of unknown form.');
+    const learnerField = field('AIPW / TMLE nuisance models', learner, 'The Super Learner weighs a mean, GLMs, additive splines, boosted trees and kernel ridge regression by 5-fold cross-validation; it uses the variables of the terms below, not their form. For independent subjects, automatic analysis chooses it, with TMLE and 3-fold cross-fitting, when a treatment or outcome model has a relationship of unknown form.');
     const knotsField = field('Analysis spline knots', knots, 'Fixed knots in the original predictor units; includes linear terms.'),
       propensityKnotsField = field('Propensity spline knots', propensityKnots);
     function analysisFields() {
       if (graph.study) { timeBasis.disabled = randomSlope.disabled = analysisMethod.value !== 'lmm'; nuisancePanel.hidden = analysisMethod.value !== 'tmle'; trajectoryAnalysis.hidden = analysisMethod.value === 'tmle'; }
+      if (kind.value !== 'marginal') { analysisMethod.value = 'auto'; folds.value = 1; }
       targetedOptions.hidden = !['aipw', 'tmle'].includes(analysisMethod.value);
       learnerField.hidden = !['aipw', 'tmle'].includes(analysisMethod.value);
       if (learnerField.hidden) learner.value = 'glm';
       knotsField.hidden = analysisBasis.value !== 'spline'; propensityKnotsField.hidden = propensityBasis.value !== 'spline';
       folds.disabled = !['auto', 'aipw', 'tmle'].includes(analysisMethod.value);
       if (folds.disabled) folds.value = 1;
-      if (kind.value !== 'marginal') { analysisMethod.value = 'auto'; folds.value = 1; }
       analysisMethod.disabled = kind.value !== 'marginal';
       nullMode.disabled = kind.value !== 'marginal';
     }
@@ -342,7 +344,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
       const config = { ...(analysisBasis.value === 'custom' ? currentAnalysis : {}), method: analysisMethod.value,
         basis: analysisBasis.value, folds: Number(folds.value), interactions: interactions.checked,
         ...(analysisBasis.value === 'spline' ? { knots: parseKnots(knots) } : {}) };
-      delete config.models; delete config.propensity; delete config.outcomeBounds;
+      delete config.models; delete config.propensity; delete config.outcomeBounds; delete config.learner;
       if (['aipw', 'tmle'].includes(analysisMethod.value)) config.propensityBound = Number(propensityBound.value);
       if (['aipw', 'tmle'].includes(analysisMethod.value) && learner.value === 'superlearner') config.learner = 'superlearner';
       if (analysisMethod.value === 'tmle' && outcomeBounds.value.trim()) config.outcomeBounds = parseKnots(outcomeBounds);
@@ -377,8 +379,16 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
     const impliedText = el('span', { id: 'estimand-implied' });
     const adjustNote = el('p', { id: 'analysis-adjust-note', class: 'dag-adjust-note small', hidden: true });
     const question = el('p', { id: 'power-question-summary', class: 'dag-question-summary' });
+    // what is being estimated and tested, spelled out; its value under the model arrives from the background engine
+    const card = el('dl', { id: 'estimand-card', class: 'dag-estimand' });
+    let cardRows = [], cardValue = '';
+    const renderCard = () => {
+      const rows = cardRows.length ? [...cardRows.slice(0, 3), ['In your model', cardValue], ...cardRows.slice(3)] : [];
+      card.hidden = !rows.length;
+      card.replaceChildren(...rows.filter(([, text]) => text).flatMap(([term, text]) => [el('dt', {}, term), el('dd', {}, text)]));
+    };
     const questionPane = el('section', { class: 'dag-power-section', 'aria-labelledby': 'dag-question-title' },
-      el('h3', { id: 'dag-question-title' }, 'Question'), question,
+      el('h3', { id: 'dag-question-title' }, 'Question'), question, card,
       el('div', { class: 'dag-grid dag-question-grid' }, field('Type of question', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure)),
       el('div', { class: 'dag-grid dag-question-grid' }, ...levelsFields, horizonField,
         el('div', { class: 'dag-field' }, el('label', { for: 'estimand-alternative' }, 'Effect to detect'), alternative,
@@ -409,7 +419,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
     function choices(keep = {}) {
       if (['coefficient', 'joint'].includes(kind.value)) {
         options(outcome, nodeList.filter(([id]) => hasParents(graph, id)), keep.outcome ?? outcome.value);
-        options(exposure, graph.edges.filter((e) => e.target === outcome.value).map((e) => [e.source, `${e.source} · ${node(e.source).label}`]), keep.exposure ?? exposure.value);
+        options(exposure, graph.edges.filter((e) => e.target === outcome.value && !node(outcome.value)?.unknown?.inputs.includes(e.source))
+          .map((e) => [e.source, `${e.source} · ${node(e.source).label}`]), keep.exposure ?? exposure.value);
       } else {
         options(exposure, nodeList, keep.exposure ?? exposure.value);
         options(outcome, nodeList, keep.outcome ?? outcome.value);
@@ -457,9 +468,18 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
       method.className = problem ? 'error' : '';
       method.textContent = problem ?? `Analysis: ${plan.label}.`;
       question.textContent = questionSummary(graph, value);
-      if (!problem) implied(graph, value, (text, number) => {
+      try { cardRows = problem && !plan ? [] : explainEstimand(graph, value, plan?.supported ? plan : null, side.value); } catch { cardRows = []; }
+      const planned = value.alternative;
+      const modelValue = (number, failed = false) => value.kind === 'joint' ? '' : planned != null
+        ? `θ = ${planned}: you set the effect to detect, and the run recalibrates ${edge.value ? `the ${edge.value.replace('>', ' → ')} arrow` : 'an arrow on the causal path'} so the model has it.`
+        : number ? `θ ${number.startsWith('≈') ? number : `= ${number}`} under the graph as drawn${value.kind !== 'marginal' ? '' : graph.nodes.some((n) => n.measured === false || n.unknown)
+          ? ' (simulated from the full model, including what is unmeasured or of unknown form)' : ' (simulated from the model)'}.`
+        : failed ? 'θ could not be computed in the background; a power run reports it as the true effect in the graph.' : 'Computing θ from the graph…';
+      cardValue = problem ? '' : modelValue(''); renderCard();
+      if (!problem) implied(graph, value, (text, number, failed) => {
         impliedText.textContent = text ? `: ${text}` : '';
         alternative.placeholder = number ? `As drawn (${number})` : 'As drawn';
+        cardValue = modelValue(number, failed); renderCard();
       });
       else { impliedText.textContent = ''; alternative.placeholder = 'As drawn'; }
       // an unadjusted test leaves out the outcome's other causes; say so where the analysis is chosen
@@ -480,8 +500,10 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
     // group difference when the variable cannot take part in it
     assign = (role, id) => {
       const other = role === 'exposure' ? 'outcome' : 'exposure', current = { exposure: exposure.value, outcome: outcome.value };
-      if (['coefficient', 'joint'].includes(kind.value) && (role === 'outcome' ? !hasParents(graph, id)
-        : !graph.edges.some((e) => e.source === id && e.target === outcome.value))) kind.value = 'marginal';
+      // nor when the effect has an unknown form, which no coefficient describes
+      const unknownIn = (y, a) => Boolean(node(y)?.unknown?.inputs.includes(a));
+      if (['coefficient', 'joint'].includes(kind.value) && (role === 'outcome' ? !hasParents(graph, id) || unknownIn(id, exposure.value)
+        : !graph.edges.some((e) => e.source === id && e.target === outcome.value) || unknownIn(outcome.value, id))) kind.value = 'marginal';
       const was = measure.value;
       choices({ [role]: id, [other]: current[other] === id ? current[role] : current[other] });
       if (measure.value !== was) measureChanged();

@@ -292,7 +292,9 @@ Graph parse_graph(const J &raw) {
       }
       constexpr int FEATURES = 64;
       const int dims = static_cast<int>(un.inputs.size());
-      sim::Rng rng(un.seed, node.stream ^ 0x756e6b6e6f776eULL, 0);
+      // The shape depends on its number only, so renaming the variable keeps
+      // it; the page gives each new relationship its own number.
+      sim::Rng rng(un.seed, 0x756e6b6e6f776eULL, 0);
       un.omega.resize(static_cast<std::size_t>(FEATURES) * dims);
       un.phase.resize(FEATURES); un.weight.resize(FEATURES);
       for (int m = 0; m < FEATURES; ++m) {
