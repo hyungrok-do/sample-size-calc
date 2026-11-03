@@ -112,41 +112,80 @@ TrendPower trend_parts(const Trend& t, double n, double alpha, Alt a) {
 
 double trend_power(const Trend& t, double n, double alpha, Alt a) { return trend_parts(t, n, alpha, a).power; }
 
-// The sizes, the scores' and proportions' means, the statistic's mean and variances, and the power, with the row's
-// numbers (each term listed for up to 6 groups).
-derive::Steps trend_steps(const Scenario& s, const Row& r) {
+// How the trend test's answer comes about, following what was solved for: the group sizes, the scores' and
+// proportions' means, the statistic's mean and variances and the power at n (each term listed for up to 6 groups);
+// solving for n, Nam's closed form for comparison and the power one size below.
+derive::Derivation trend_derivation(const Scenario& s, const Row& r) {
   using namespace derive;
   const Trend t = trend_setup(s);
   const Alt a = alt(s);
-  const double n = r.num("n"), alpha = r.num("alpha");
+  const double n = r.num("n"), alpha = r.num("alpha"), power = r.num("power"), target = s.get("power", NAN);
+  const bool solved = s.solve == "n", ratio = s.is("alloc", "ratio");
   const TrendPower q = trend_parts(t, n, alpha, a);
   const std::size_t k = q.ni.size();
   const bool few = k <= 6;
+  const std::string Nn = size(n, solved);
   std::string sizes, e_terms, v_terms;
   for (std::size_t i = 0; i < k; ++i) {
     const double dd = t.d[i] - t.d[0] - q.dbar;
-    sizes += (i ? ", " : "") + fint(q.ni[i]);
-    e_terms += (i ? " + " : "") + fint(q.ni[i]) + " × " + sub(dd) + " × " + num(t.p[i]);
-    v_terms += (i ? " + " : "") + fint(q.ni[i]) + " × " + sub(dd) + "²";
+    sizes += (i ? ", " : "") + dvi(q.ni[i]);
+    e_terms += (i ? " + " : "") + dvi(q.ni[i]) + " × " + dvs(dd) + " × " + gv(t.p[i]);
+    v_terms += (i ? " + " : "") + dvi(q.ni[i]) + " × " + dvs(dd) + "²";
   }
-  Steps out;
-  out.push_back({"Group sizes",
-                 s.is("alloc", "ratio") ? "nᵢ = ⌈n wᵢ⌉ for the relative sizes wᵢ, N = Σ nᵢ" : "nᵢ = n, N = k n",
-                 "n = " + fint(n) + ": " + sizes + ", N = " + fint(q.N)});
-  out.push_back({"Means", "d̄ = Σ nᵢ (dᵢ − d₁)/N with the scores dᵢ measured from the first, p̄ = Σ nᵢ pᵢ/N",
-                 "d̄ = " + num(q.dbar) + ", p̄ = " + num(q.pbar)});
-  out.push_back({"Mean of the trend statistic", "E(T) = Σ nᵢ (dᵢ − d₁ − d̄) pᵢ, T = Σ nᵢ (dᵢ − d̄) p̂ᵢ",
-                 (few ? e_terms : "Σ over the " + std::to_string(k) + " groups") + " = " + num(q.e)});
-  out.push_back({"Variances under H0 and H1",
-                 "V0 = p̄(1 − p̄) Σ nᵢ (dᵢ − d₁ − d̄)², V1 = Σ nᵢ (dᵢ − d₁ − d̄)² pᵢ(1 − pᵢ)",
-                 "V0 = " + num(q.pbar) + " × " + num(1 - q.pbar) + " × (" +
-                     (few ? v_terms : "Σ over the " + std::to_string(k) + " groups") + ") = " + num(q.v0) +
-                     ", V1 = " + num(q.v1)});
-  out.push_back(z_critical(alpha, a));
-  out.push_back(tails_power(a, "E(T)", "", "√V0", "√V1", q.e, 0, q.z, std::sqrt(q.v0), std::sqrt(q.v1), q.up, q.lo,
-                            r.num("power")));
-  if (s.solve == "n")
-    out.push_back(n_search([&](double x) { return trend_power(t, x, alpha, a); }, n, s("power"), 2, "n"));
+  const std::string unit = ratio ? "n, the size of a group of relative size 1," : "n per group";
+  Derivation out;
+  out.find = solved ? find_size(unit, target)
+                    : find_power("with n = " + Nn + (ratio ? " in a group of relative size 1" : " per group"));
+  if (solved) {
+    // Nam's closed form: the statistic's mean and variances per unit of n, with the relative sizes unrounded, beside
+    // the answer below
+    double W = 0, d1 = 0, p1 = 0;
+    for (std::size_t i = 0; i < k; ++i) {
+      W += t.w[i];
+      d1 += t.w[i] * (t.d[i] - t.d[0]);
+      p1 += t.w[i] * t.p[i];
+    }
+    d1 /= W;
+    p1 /= W;
+    double e1 = 0, v01 = 0, v11 = 0;
+    for (std::size_t i = 0; i < k; ++i) {
+      const double dd = t.d[i] - t.d[0] - d1;
+      e1 += t.w[i] * dd * t.p[i];
+      v01 += t.w[i] * dd * dd;
+      v11 += t.w[i] * dd * dd * t.p[i] * (1 - t.p[i]);
+    }
+    v01 *= p1 * (1 - p1);
+    const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(target);
+    out.steps.push_back(
+        {"Normal approximation",
+         std::string("n ≈ (z(") + level_symbol(a) +
+             ") √V0₁ + z(1 − β) √V1₁)² / E₁² (Nam), E₁, V0₁ and V1₁ the mean and variances below with nᵢ = " +
+             (ratio ? "wᵢ, unrounded" : "1") + ", for comparison; the steps below give the answer",
+         "E₁ = " + dv(e1) + ", V0₁ = " + dv(v01) + ", V1₁ = " + dv(v11) + ": (" + dv(za) + " × √" + dv(v01) + " + " +
+             dvs(zb) + " × √" + dv(v11) + ")² / " + dvs(e1) + "² = " +
+             dv(std::pow(za * std::sqrt(v01) + zb * std::sqrt(v11), 2) / (e1 * e1))});
+  }
+  out.steps.push_back({"Group sizes", ratio ? "nᵢ = ⌈n wᵢ⌉ for the relative sizes wᵢ, N = Σ nᵢ" : "nᵢ = n, N = k n",
+                       "n = " + Nn + ": " + sizes + ", N = " + dvi(q.N)});
+  out.steps.push_back({"Means", "d̄ = Σ nᵢ (dᵢ − d₁)/N with the scores dᵢ measured from the first, p̄ = Σ nᵢ pᵢ/N",
+                       "d̄ = " + dv(q.dbar) + ", p̄ = " + dv(q.pbar)});
+  out.steps.push_back({"Mean of the trend statistic", "E(T) = Σ nᵢ (dᵢ − d₁ − d̄) pᵢ, T = Σ nᵢ (dᵢ − d̄) p̂ᵢ",
+                       (few ? e_terms : "Σ over the " + dvi(k) + " groups") + " = " + dv(q.e)});
+  out.steps.push_back({"Variances under H0 and H1",
+                       "V0 = p̄(1 − p̄) Σ nᵢ (dᵢ − d₁ − d̄)², V1 = Σ nᵢ (dᵢ − d₁ − d̄)² pᵢ(1 − pᵢ)",
+                       "V0 = " + dv(q.pbar) + " × " + dv(1 - q.pbar) + " × (" +
+                           (few ? v_terms : "Σ over the " + dvi(k) + " groups") + ") = " + dv(q.v0) + ", V1 = " +
+                           dv(q.v1)});
+  out.steps.push_back(z_critical(alpha, a));
+  out.steps.push_back(tails_power(a, "E(T)", "", "√V0", "√V1", q.e, 0, q.z, std::sqrt(q.v0), std::sqrt(q.v1), q.up,
+                                  q.lo, power));
+  if (solved) {
+    out.steps.push_back(n_search([&](double x) { return trend_power(t, x, alpha, a); }, n, target, 2, "n"));
+    out.answer =
+        "n = " + dvi(n) + " (group sizes " + sizes + ", N = " + dvi(q.N) + "), with power " + dvp(power, target);
+  } else {
+    out.answer = "power = " + dvp(power);
+  }
   return out;
 }
 
@@ -251,7 +290,7 @@ Procedure trend() {
            text_of(r, "scores") + ") with a " + alt_words(alt(s)) + " Cochran–Armitage test at α = " +
            fnum(r.num("alpha")) + ".";
   };
-  p.derivation = trend_steps;
+  p.derivation = trend_derivation;
   p.definitions = {{"Scores", "Values assigned to the ordered groups (for example doses)."},
                    {"Group Sizes", "Subjects per group: n times the relative size, rounded up."}};
   p.references = {"Nam, J. (1987). A simple approximation for calculating sample sizes for detecting linear trend in "
@@ -333,50 +372,76 @@ double sw_power(int steps, int per_step, double m, const SwEffect& e, double icc
   return pnorm(d - z) + pnorm(-d - z);
 }
 
-derive::Steps sw_steps(const Scenario& s, const Row& r) {
+// How the stepped-wedge design's power comes about from Hussey & Hughes's variance, following what was solved for:
+// solving for the clusters per step or the subjects per cluster-period, the power at the number found and one fewer.
+derive::Derivation sw_derivation(const Scenario& s, const Row& r) {
   using namespace derive;
   const int steps = static_cast<int>(r.num("steps")), g = static_cast<int>(r.num("g"));
-  const double m = r.num("m"), icc = r.num("icc"), alpha = r.num("alpha");
+  const double m = r.num("m"), icc = r.num("icc"), alpha = r.num("alpha"), power = r.num("power");
   const SwEffect e = sw_effect(s);
   const SwDesign w = sw_design(steps, g, m, e.sigma2, icc);
   const double se = r.num("se"), z = stats::qnorm(half_alpha(alpha), false), lambda = std::fabs(e.delta) / se;
+  const bool for_g = s.solve == "g", for_m = s.solve == "m", binary = s.is("outcome", "binary");
+  const std::string G = size(g, for_g), Mm = size(m, for_m), S = gvi(steps);
   // in units of σ² where σ² would underflow (sw_effect), and SE = √Var(θ̂) × σ
   const std::string unit = e.unit == 1 ? "" : " in units of σ²";
-  const std::string se_text = e.unit == 1 ? sig(se) : "√" + sig(w.var) + " × " + num(e.unit) + " = " + sig(se);
-  Steps out;
-  if (s.is("outcome", "binary"))
-    out.push_back({"Effect and subject variance", "δ = P1 − P2, σ² = (P1(1 − P1) + P2(1 − P2))/2",
-                   "δ = " + num(s("p1")) + " − " + num(s("p2")) + " = " + num(e.delta) + ", σ² = (" + num(s("p1")) +
-                       " × " + num(1 - s("p1")) + " + " + num(s("p2")) + " × " + num(1 - s("p2")) + ")/2 = " +
-                       num(e.sigma2)});
-  out.push_back(
-      {"Design", "I = S g clusters, T = S + 1 periods",
-       "I = " + std::to_string(steps) + " × " + std::to_string(g) + " = " + fint(w.I) + ", T = " + fint(w.T)});
-  out.push_back({"Variance components", "τ² = ρ σ² between clusters, σₑ² = (1 − ρ) σ²/m for a cluster-period's mean",
-                 "τ² = " + num(icc) + " × " + num(e.sigma2) + " = " + sig(w.tau2) + ", σₑ² = " + num(1 - icc) + " × " +
-                     num(e.sigma2) + "/" + fint(m) + " = " + sig(w.s2) + unit});
-  out.push_back({"Treatment counts",
-                 "U = Σᵢⱼ Xᵢⱼ, W = Σⱼ (Σᵢ Xᵢⱼ)², V = Σᵢ (Σⱼ Xᵢⱼ)², Xᵢⱼ = 1 when cluster i is treated in period j",
-                 "U = " + fint(w.U) + ", W = " + fint(w.W) + ", V = " + fint(w.V)});
-  const std::string I = fint(w.I), T = fint(w.T), U = fint(w.U), W = fint(w.W), V = fint(w.V);
-  out.push_back({"Standard error of the effect",
-                 "SE = √Var(θ̂), Var(θ̂) = I σₑ² (σₑ² + T τ²)/((I U − W) σₑ² + (U² + I T U − T W − I V) τ²) (Hussey & "
-                 "Hughes)",
-                 "Var(θ̂) = " + I + " × " + sig(w.s2) + " × (" + sig(w.s2) + " + " + T + " × " + sig(w.tau2) + ")/((" +
-                     I + " × " + U + " − " + W + ") × " + sig(w.s2) + " + (" + U + "² + " + I + " × " + T + " × " + U +
-                     " − " + T + " × " + W + " − " + I + " × " + V + ") × " + sig(w.tau2) + ") = " + sig(w.var) + unit +
-                     ", SE = " + se_text});
-  out.push_back(z_critical(alpha, Alt::Two));
+  const std::string se_text = e.unit == 1 ? dsig(se) : "√" + dsig(w.var) + " × " + gv(e.unit) + " = " + dsig(se);
+  Derivation out;
+  if (for_g)
+    out.find = find_size("number of clusters g switching at each step", s("power"));
+  else if (for_m)
+    out.find = find_size("number of subjects m per cluster and period", s("power"));
+  else
+    out.find = find_power("with S = " + S + " steps, g = " + G + " clusters switching at each step and m = " + Mm +
+                          " subjects per cluster and period");
+  if (binary)
+    out.steps.push_back({"Effect and subject variance", "δ = P1 − P2, σ² = (P1(1 − P1) + P2(1 − P2))/2",
+                         "δ = " + gv(s("p1")) + " − " + gv(s("p2")) + " = " + dv(e.delta) + ", σ² = (" + gv(s("p1")) +
+                             " × " + dv(1 - s("p1")) + " + " + gv(s("p2")) + " × " + dv(1 - s("p2")) + ")/2 = " +
+                             dv(e.sigma2)});
+  else
+    out.steps.push_back({"Subject variance", "σ², the square of σ",
+                         e.unit == 1 ? gv(s("sigma")) + "² = " + dsig(e.sigma2)
+                                     : "σ² = " + dvi(1) + " in units of σ² (" + gv(s("sigma")) + "² underflows)"});
+  out.steps.push_back({"Design", "I = S g clusters, T = S + 1 periods",
+                       "I = " + S + " × " + G + " = " + dvi(w.I) + ", T = " + S + " + 1 = " + dvi(w.T)});
+  out.steps.push_back(
+      {"Variance components", "τ² = ρ σ² between clusters, σₑ² = (1 − ρ) σ²/m for a cluster-period's mean",
+       "τ² = " + gv(icc) + " × " + dsig(e.sigma2) + " = " + dsig(w.tau2) + ", σₑ² = " + dv(1 - icc) + " × " +
+           dsig(e.sigma2) + "/" + Mm + " = " + dsig(w.s2) + unit});
+  out.steps.push_back({"Treatment counts",
+                       "U = Σᵢⱼ Xᵢⱼ, W = Σⱼ (Σᵢ Xᵢⱼ)², V = Σᵢ (Σⱼ Xᵢⱼ)², Xᵢⱼ = 1 when cluster i is treated in period j",
+                       "U = " + dvi(w.U) + ", W = " + dvi(w.W) + ", V = " + dvi(w.V)});
+  const std::string I = dvi(w.I), T = dvi(w.T), U = dvi(w.U), W = dvi(w.W), V = dvi(w.V);
+  out.steps.push_back({"Standard error of the effect",
+                       "SE = √Var(θ̂), Var(θ̂) = I σₑ² (σₑ² + T τ²)/((I U − W) σₑ² + (U² + I T U − T W − I V) τ²) "
+                       "(Hussey & Hughes)",
+                       "Var(θ̂) = " + I + " × " + dsig(w.s2) + " × (" + dsig(w.s2) + " + " + T + " × " + dsig(w.tau2) +
+                           ")/((" + I + " × " + U + " − " + W + ") × " + dsig(w.s2) + " + (" + U + "² + " + I + " × " +
+                           T + " × " + U + " − " + T + " × " + W + " − " + I + " × " + V + ") × " + dsig(w.tau2) +
+                           ") = " + dsig(w.var) + unit + ", SE = " + se_text});
+  out.steps.push_back(z_critical(alpha, Alt::Two));
   const double up = stats::pnorm(lambda - z), lo = stats::pnorm(-lambda - z);
-  out.push_back({"Power", "Φ(λ − z) + Φ(−λ − z), λ = |δ|/SE",
-                 "λ = " + num(std::fabs(e.delta)) + "/" + sig(se) + " = " + num(lambda) + "; Φ(" + num(lambda) + " − " +
-                     num(z) + ") + Φ(" + num(-lambda) + " − " + num(z) + ") = " + prob(up) + " + " + prob(lo) + " = " +
-                     prob(r.num("power"))});
-  if (s.solve == "g")
-    out.push_back(n_search([&](double x) { return sw_power(steps, static_cast<int>(x), m, e, icc, alpha); }, g,
-                           s("power"), 1, "g"));
-  else if (s.solve == "m")
-    out.push_back(n_search([&](double x) { return sw_power(steps, g, x, e, icc, alpha); }, m, s("power"), 1, "m"));
+  // |δ| is the input itself only for a continuous effect that is not negative
+  const std::string D = !binary && e.delta >= 0 ? gv(e.delta) : dv(std::fabs(e.delta));
+  out.steps.push_back({"Power", "Φ(λ − z) + Φ(−λ − z), λ = |δ|/SE",
+                       "λ = " + D + "/" + dsig(se) + " = " + dv(lambda) + "; Φ(" + dv(lambda) + " − " + dv(z) +
+                           ") + Φ(" + dv(-lambda) + " − " + dv(z) + ") = " + dvp(up) + " + " + dvp(lo) + " = " +
+                           dvp(power)});
+  const std::string N = dvi(r.num("N"));
+  if (for_g) {
+    out.steps.push_back(n_search([&](double x) { return sw_power(steps, static_cast<int>(x), m, e, icc, alpha); }, g,
+                                 s("power"), 1, "g"));
+    out.answer = "g = " + dvi(g) + " clusters per step (I = " + I + " clusters, N = " + N +
+                 " observations), with power " + dvp(power, s("power"));
+  } else if (for_m) {
+    out.steps.push_back(
+        n_search([&](double x) { return sw_power(steps, g, x, e, icc, alpha); }, m, s("power"), 1, "m"));
+    out.answer = "m = " + dvi(m) + " subjects per cluster and period (N = " + N + " observations), with power " +
+                 dvp(power, s("power"));
+  } else {
+    out.answer = "power = " + dvp(power);
+  }
   return out;
 }
 
@@ -527,7 +592,7 @@ Procedure stepped_wedge() {
            fnum(r.num("delta")) + " with an intracluster correlation of " + fnum(r.num("icc")) +
            ", using a two-sided test at α = " + fnum(r.num("alpha")) + ".";
   };
-  p.derivation = sw_steps;
+  p.derivation = sw_derivation;
   p.definitions = {{"Steps", "Number of times a group of clusters switches from control to intervention."},
                    {"Periods", "Measurement periods: one baseline period plus one per step."},
                    {"ICC", "Correlation between two subjects in the same cluster (and period)."}};

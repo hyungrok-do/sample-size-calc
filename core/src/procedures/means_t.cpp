@@ -528,7 +528,7 @@ Procedure two_sample(bool welch) {
     const bool z = s.is("test", "z"), solved = s.solve == "n";
     const blocks::TwoN n{r.num("n1"), r.num("n2")};
     const double diff = r.num("delta"), alpha = s("alpha"), mu1 = r.num("mu1"), mu2 = r.num("mu2");
-    const std::string N1 = size(n.n1, group1_solved(s, solved)), N2 = size(n.n2, group2_solved(s, solved));
+    const std::string N1 = size(n.n1, group1_derived(s, solved)), N2 = size(n.n2, group2_derived(s, solved));
     Derivation out;
     // the standard error and degrees of freedom at the group sizes (given, or the ones found)
     double se, df;
@@ -556,7 +556,7 @@ Procedure two_sample(bool welch) {
     const double ncp = diff / se;
     if (s.solve == "mu1") {  // the target power gives λ, λ the difference, the difference μ1
       const double target = s("power");
-      out.find = find_effect("μ1", target, "with " + two_sizes(n, false));
+      out.find = find_effect("μ1", target, "with " + two_sizes(s, n, false));
       se_step();
       critical();
       out.steps.push_back(z ? z_ncp_needed(ncp, alpha, a, target) : t_ncp_needed(ncp, df, alpha, a, target));
@@ -587,7 +587,7 @@ Procedure two_sample(bool welch) {
                                  dv((za + zb) * (za + zb) * var / (diff * diff))});
       }
     } else {
-      out.find = find_power("with " + two_sizes(n, false));
+      out.find = find_power("with " + two_sizes(s, n, false));
     }
     se_step();
     out.steps.push_back({"Noncentrality", "λ = δ / SE", dvs(diff) + " / " + dv(se) + " = " + dv(ncp)});

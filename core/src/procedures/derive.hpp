@@ -151,13 +151,18 @@ inline std::string two_group_unknown(const Scenario& s) {
 inline std::string two_sizes(const blocks::TwoN& n, bool solved) {
   return "N1 = " + size(n.n1, solved) + ", N2 = " + size(n.n2, solved);
 }
-/// Whether each group's size was solved for: neither when solving for power or an effect, and when solving for the
-/// sizes, not a group the allocation holds fixed at a size typed in.
-inline bool group1_solved(const Scenario& s, bool solved) { return solved && !s.is("alloc", "n1"); }
-inline bool group2_solved(const Scenario& s, bool solved) { return solved && !s.is("alloc", "n2"); }
-/// Two group sizes as written under the scenario's allocation: a group held fixed stays given.
+/// Whether each group's size is derived under the scenario's allocation. Solving for the sizes, both are, but for a
+/// group held fixed at a size typed in; otherwise a size typed in is given, and one that follows from the inputs is
+/// derived: N2 = ⌈r × N1⌉ for a ratio, and both groups split from a total by a percentage.
+inline bool group1_derived(const Scenario& s, bool solved) {
+  return solved ? !s.is("alloc", "n1") : s.is("alloc", "pct");
+}
+inline bool group2_derived(const Scenario& s, bool solved) {
+  return solved ? !s.is("alloc", "n2") : s.is("alloc", "ratio") || s.is("alloc", "pct");
+}
+/// Two group sizes as written under the scenario's allocation, each marked as it arises.
 inline std::string two_sizes(const Scenario& s, const blocks::TwoN& n, bool solved) {
-  return "N1 = " + size(n.n1, group1_solved(s, solved)) + ", N2 = " + size(n.n2, group2_solved(s, solved));
+  return "N1 = " + size(n.n1, group1_derived(s, solved)) + ", N2 = " + size(n.n2, group2_derived(s, solved));
 }
 
 /// Solving for two group sizes under the scenario's allocation rule (see blocks::smaller_two_group): the power at

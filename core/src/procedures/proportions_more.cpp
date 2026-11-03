@@ -578,10 +578,15 @@ std::string score_formula(Scale sc, const std::string& b, const std::string& t, 
   return t + " = " + h1 + " − " + h2 + " − " + b + ", " + s0 + " = √(P̃1(1 − P̃1)/N1 + P̃2(1 − P̃2)/N2)" + est;
 }
 
-// The same with the numbers of the proportions h1 and h2, the restricted estimates as fm_score finds them (`single`:
-// as for an evaluation of its own) and the score c it gave.
+// The groups' sizes and proportions as written in a derivation, each marked given or derived.
+struct Shown {
+  std::string n1, n2, p1, p2;
+};
+
+// The same with the numbers of the proportions h1 and h2 (as `w` writes them, with the sizes), the restricted
+// estimates as fm_score finds them (`single`: as for an evaluation of its own) and the score c it gave.
 std::string score_numbers(const NiSpec& S, double h1, double h2, double n1, double n2, bool single, const Score& c,
-                          const std::string& t, const std::string& s0) {
+                          const std::string& t, const std::string& s0, const Shown& w) {
   using namespace derive;
   const double theta = n2 / n1;
   double pt1, pt2, q1, q2;
@@ -593,19 +598,19 @@ std::string score_numbers(const NiSpec& S, double h1, double h2, double n1, doub
     const Estimates e = rmle_diff(h1, h2, theta, S.bound, single);
     pt1 = e.pt1, pt2 = e.pt2, q1 = e.q1, q2 = e.q2;
   }
-  const std::string N1 = fint(n1), N2 = fint(n2), sd = sig(std::sqrt(c.var0));
-  const std::string est = "P̃1 = " + num(pt1) + ", P̃2 = " + num(pt2) + ": ";
-  const std::string v1 = num(pt1) + " × " + num(q1) + "/" + N1, v2 = num(pt2) + " × " + num(q2) + "/" + N2;
+  const std::string sd = dsig(std::sqrt(c.var0)), B = gv(S.bound);
+  const std::string est = "P̃1 = " + dv(pt1) + ", P̃2 = " + dv(pt2) + ": ";
+  const std::string v1 = dv(pt1) + " × " + dv(q1) + "/" + w.n1, v2 = dv(pt2) + " × " + dv(q2) + "/" + w.n2;
   if (S.scale == Scale::Ratio)
-    return est + t + " = " + num(h1) + " − " + num(S.bound) + " × " + num(h2) + " = " + num(c.num) + ", " + s0 +
-           " = √(" + v1 + " + " + num(S.bound) + "² × " + v2 + ") = " + sd;
+    return est + t + " = " + w.p1 + " − " + B + " × " + w.p2 + " = " + dv(c.num) + ", " + s0 + " = √(" + v1 + " + " +
+           B + "² × " + v2 + ") = " + sd;
   if (S.scale == Scale::Odds) {
     const double a = n1 * pt1 * q1, b = n2 * pt2 * q2;
-    return est + t + " = " + num(h1) + " − " + num(pt1) + " = " + num(c.num) + ", A = " + num(a) + ", B = " + num(b) +
-           ", " + s0 + " = √(" + num(a) + " × " + num(b) + "/" + num(a + b) + ")/" + N1 + " = " + sd;
+    return est + t + " = " + w.p1 + " − " + dv(pt1) + " = " + dv(c.num) + ", A = " + dv(a) + ", B = " + dv(b) + ", " +
+           s0 + " = √(" + dv(a) + " × " + dv(b) + "/" + dv(a + b) + ")/" + w.n1 + " = " + sd;
   }
-  return est + t + " = " + num(h1) + " − " + num(h2) + " − " + sub(S.bound) + " = " + num(c.num) + ", " + s0 + " = √(" +
-         v1 + " + " + v2 + ") = " + sd;
+  return est + t + " = " + w.p1 + " − " + w.p2 + " − " + gvs(S.bound) + " = " + dv(c.num) + ", " + s0 + " = √(" + v1 +
+         " + " + v2 + ") = " + sd;
 }
 
 // The SD under H1 of a score's numerator: √(g1² P1(1 − P1)/N1 + g2² P2(1 − P2)/N2), g1 and g2 how it moves with
@@ -618,15 +623,14 @@ std::string h1_formula(Scale sc, const std::string& b, const std::string& s1) {
   return s1 + " = √(P1(1 − P1)/N1 + P2(1 − P2)/N2)";
 }
 
-std::string h1_numbers(Scale sc, const Score& c, double n1, double n2, double p1, double p2, double sd) {
+std::string h1_numbers(Scale sc, const Score& c, double p1, double p2, double sd, const Shown& w) {
   using namespace derive;
-  const std::string v1 = num(p1) + " × " + num(1 - p1) + "/" + fint(n1),
-                    v2 = num(p2) + " × " + num(1 - p2) + "/" + fint(n2);
-  if (sc == Scale::Ratio) return "√(" + v1 + " + " + num(-c.g2) + "² × " + v2 + ") = " + sig(sd);
+  const std::string v1 = w.p1 + " × " + dv(1 - p1) + "/" + w.n1, v2 = w.p2 + " × " + dv(1 - p2) + "/" + w.n2;
+  if (sc == Scale::Ratio) return "√(" + v1 + " + " + gv(-c.g2) + "² × " + v2 + ") = " + dsig(sd);
   if (sc == Scale::Odds)
-    return "g1 = " + num(c.g1) + ", g2 = " + num(c.g2) + ": √(" + num(c.g1) + "² × " + v1 + " + " + sub(c.g2) + "² × " +
-           v2 + ") = " + sig(sd);
-  return "√(" + v1 + " + " + v2 + ") = " + sig(sd);
+    return "g1 = " + dv(c.g1) + ", g2 = " + dv(c.g2) + ": √(" + dv(c.g1) + "² × " + v1 + " + " + dvs(c.g2) + "² × " +
+           v2 + ") = " + dsig(sd);
+  return "√(" + v1 + " + " + v2 + ") = " + dsig(sd);
 }
 
 // The expected table of the enumeration: the counts N1 P1 and N2 P2, rounded.
@@ -645,7 +649,37 @@ double fm_power(const std::vector<NiSpec>& tests, double n1, double n2, double p
 
 const char* const FM_NORMAL_NOTE = ", the normal approximation (the samples are too large for exact enumeration)";
 
-derive::Steps ni_steps(const Scenario& s, const Row& r) {
+// Whether the actual effect on the comparison's scale was typed (D1, R1 or OR1 given on that scale), not derived
+// from the proportions.
+bool actual_typed(const Scenario& s, Scale sc) {
+  return (sc == Scale::Diff && s.is("es", "diff")) || (sc == Scale::Ratio && s.is("es", "ratio")) ||
+         (sc == Scale::Odds && s.is("es", "or"));
+}
+
+// The symbols of the actual effect on a scale.
+std::string actual_symbol(Scale sc) { return sc == Scale::Ratio ? "R1" : (sc == Scale::Odds ? "OR1" : "D1"); }
+
+// The sizes and proportions of a score-test derivation as written: the sizes as the allocation marks them, P1 typed
+// or derived.
+Shown score_shown(const Scenario& s, double n1, double n2, double p1, double p2) {
+  using namespace derive;
+  const auto [a, b] = group_sizes(s, {n1, n2});
+  return {a, b, mv(p1, p1_typed(s)), gv(p2)};
+}
+
+// The answer of a size or power solve of the score tests.
+std::string score_answer(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const blocks::TwoN n{r.num("n1"), r.num("n2")};
+  if (s.solve != "n") return "power = " + dvp(r.num("power")) + alpha_star(r);
+  return group_sizes_text(s, n) + " (N = " + dvi(n.total()) + "), with power " + dvp(r.num("power"), s("power")) +
+         alpha_star(r);
+}
+
+// How a one-sided score test's answer comes about, following what was solved for: solving for the sizes, the usual
+// closed form for comparison, the power at the sizes found and at the next smaller design; solving for power, the
+// power at the sizes given. Normal approximation or enumeration, as the row was computed.
+derive::Derivation ni_derivation(const Scenario& s, const Row& r) {
   using namespace derive;
   const Scale sc = scale_of(s);
   const char* bkey = sc == Scale::Ratio ? "r0" : (sc == Scale::Odds ? "or0" : "d0");
@@ -654,57 +688,101 @@ derive::Steps ni_steps(const Scenario& s, const Row& r) {
   const Alt side = S.upper ? Alt::Upper : Alt::Lower;
   const double n1 = r.num("n1"), n2 = r.num("n2"), p1 = r.num("p1"), p2 = r.num("p2"), target = s.get("power", NAN);
   const bool fell_back = has_note(r, FM_FELL_BACK), enumerated = s.is("method", "exact") && !fell_back;
-  Steps out;
-  p1_step(s, p1, p2, out);
+  const bool solved = s.solve == "n";
+  const blocks::TwoN n{n1, n2};
+  const Shown w = score_shown(s, n1, n2, p1, p2);
+  Derivation out;
+  out.find = solved ? find_size(sizes_unknown(s), target) : find_power("with " + group_sizes_text(s, n));
+  group_sizes_step(s, n, out.steps);
+  p1_step(s, p1, p2, out.steps);
+  const std::string& alloc = s.s("alloc");
+  if (solved && (alloc == "equal" || alloc == "ratio")) {
+    // the usual closed form with the variance at the true proportions (on the log scale for the odds ratio), beside
+    // the answer below
+    const bool ratio = alloc == "ratio";
+    const double k = ratio ? s("r") : 1.0, za = stats::qnorm(S.alpha, false), zb = stats::qnorm(target);
+    const std::string lead = std::string(ratio ? "N1" : "N1 = N2") + " ≈ (z(1 − α) + z(1 − β))² ";
+    const std::string per = ratio ? "/r" : "", R = ratio ? "/" + gv(k) : "", B = gv(S.bound);
+    const std::string zz = "(" + dv(za) + " + " + dvs(zb) + ")² × ";
+    const std::string tail = ", for comparison; the steps below give the answer";
+    if (sc == Scale::Odds) {
+      const double act = r.num("or1"), v = 1 / (p1 * (1 - p1)) + 1 / (k * p2 * (1 - p2));
+      const double gap = std::log(act) - std::log(S.bound);
+      out.steps.push_back(
+          {"Normal approximation",
+           lead + "(1/(P1(1 − P1)) + 1/(" + (ratio ? "r " : "") + "P2(1 − P2))) / (ln OR1 − ln OR0)²" + tail,
+           zz + "(1/(" + w.p1 + " × " + dv(1 - p1) + ") + 1/(" + (ratio ? gv(k) + " × " : "") + w.p2 + " × " +
+               dv(1 - p2) + ")) / (ln " + mv(act, actual_typed(s, sc)) + " − ln " + B + ")² = " +
+               dv((za + zb) * (za + zb) * v / (gap * gap))});
+    } else {
+      const bool rs = sc == Scale::Ratio;
+      const double v = p1 * (1 - p1) + (rs ? S.bound * S.bound : 1.0) * p2 * (1 - p2) / k;
+      const double eff = rs ? p1 - S.bound * p2 : p1 - p2 - S.bound;
+      out.steps.push_back(
+          {"Normal approximation",
+           lead + "(P1(1 − P1) + " + (rs ? "R0² " : "") + "P2(1 − P2)" + per + ") / (" +
+               (rs ? "P1 − R0 P2" : "P1 − P2 − D0") + ")²" + tail,
+           zz + "(" + w.p1 + " × " + dv(1 - p1) + " + " + (rs ? B + "² × " : "") + w.p2 + " × " + dv(1 - p2) + R +
+               ") / (" + (rs ? w.p1 + " − " + B + " × " + w.p2 : w.p1 + " − " + w.p2 + " − " + gvs(S.bound)) +
+               ")² = " + dv((za + zb) * (za + zb) * v / (eff * eff))});
+    }
+  }
   if (!enumerated) {
     const FmNormal q = fm_normal(S, n1, n2, p1, p2);
     const double s0 = std::sqrt(q.c.var0), s1 = std::sqrt(q.v1);
-    out.push_back({"Score under H0", score_formula(sc, b, "T", "σ0", "P1", "P2"),
-                   score_numbers(S, p1, p2, n1, n2, true, q.c, "T", "σ0")});
-    out.push_back({"SD under H1", h1_formula(sc, b, "σ1"), h1_numbers(sc, q.c, n1, n2, p1, p2, s1)});
-    out.push_back(z_critical(S.alpha, side));
+    out.steps.push_back({"Score under H0", score_formula(sc, b, "T", "σ0", "P1", "P2"),
+                         score_numbers(S, p1, p2, n1, n2, true, q.c, "T", "σ0", w)});
+    out.steps.push_back({"SD under H1", h1_formula(sc, b, "σ1"), h1_numbers(sc, q.c, p1, p2, s1, w)});
+    out.steps.push_back(z_critical(S.alpha, side));
     Step pw = tails_power(side, "T", "", "σ0", "σ1", q.c.num, 0, q.z, s0, s1, q.power, q.power, r.num("power"));
     if (fell_back) pw.formula += FM_NORMAL_NOTE;
-    out.push_back(pw);
-    if (s.solve == "n")
-      out.push_back(two_group_search(s, [&](double a1, double a2) { return fm_power_normal(S, a1, a2, p1, p2); },
-                                     {n1, n2}, target, 2));
+    out.steps.push_back(pw);
+    if (solved)
+      out.steps.push_back(two_group_step(
+          s, [&](double a1, double a2) { return fm_power_normal(S, a1, a2, p1, p2); }, n, r.num("power"), target, 2,
+          false));
+    out.answer = score_answer(s, r);
     return out;
   }
   // the exact power: the probability, under P1 and P2, of the tables whose score statistic rejects
   const int i1 = static_cast<int>(n1), i2 = static_cast<int>(n2), x1 = expected_count(n1, p1),
             x2 = expected_count(n2, p2);
   const double h1 = static_cast<double>(x1) / i1, h2 = static_cast<double>(x2) / i2;
-  out.push_back({"Score statistic",
-                 "Z = T/σ0 at a table's proportions, " + score_formula(sc, b, "T", "σ0", "p̂1", "p̂2") +
-                     " at the table, p̂1 = x1/N1, p̂2 = x2/N2",
-                 "at the expected counts x1 = " + std::to_string(x1) + ", x2 = " + std::to_string(x2) + ": " +
-                     score_numbers(S, h1, h2, n1, n2, false, fm_score(S, h1, h2, n1, n2), "T", "σ0") +
-                     ", Z = " + num(fm_z(S, h1, h2, n1, n2))});
-  out.push_back(z_critical(S.alpha, side));
+  const Shown table{w.n1, w.n2, dv(h1), dv(h2)};
+  out.steps.push_back({"Score statistic",
+                       "Z = T/σ0 at a table's proportions, " + score_formula(sc, b, "T", "σ0", "p̂1", "p̂2") +
+                           " at the table, p̂1 = x1/N1, p̂2 = x2/N2",
+                       "at the expected counts x1 = " + dvi(x1) + ", x2 = " + dvi(x2) + ": " +
+                           score_numbers(S, h1, h2, n1, n2, false, fm_score(S, h1, h2, n1, n2), "T", "σ0", table) +
+                           ", Z = " + dv(fm_z(S, h1, h2, n1, n2))});
+  out.steps.push_back(z_critical(S.alpha, side));
   if (r.has("actual_alpha")) {
     const double p10 = p1_at(sc, S.bound, p2), q10 = q1_at(sc, S.bound, p2);
-    out.push_back({"Actual alpha",
-                   std::string("α* = the same sum at H0's boundary, P1 = ") +
-                       (sc == Scale::Ratio  ? "R0 × P2"
-                        : sc == Scale::Odds ? "the proportion whose odds ratio to P2 is OR0"
-                                            : "P2 + D0"),
-                   "P1 = " + num(p10) + ": Σ over x1 = " + window_text(i1, p10, q10) + ", x2 = " + window_text(i2, p2) +
-                       " = " + prob(r.num("actual_alpha"))});
+    out.steps.push_back({"Actual alpha",
+                         std::string("α* = the same sum at H0's boundary, P1 = ") +
+                             (sc == Scale::Ratio  ? "R0 × P2"
+                              : sc == Scale::Odds ? "the proportion whose odds ratio to P2 is OR0"
+                                                  : "P2 + D0"),
+                         "P1 = " + dv(p10) + ": Σ over x1 = " + window_text(i1, p10, q10) + ", x2 = " +
+                             window_text(i2, p2) + " = " + dvp(r.num("actual_alpha"))});
   }
-  out.push_back(
+  out.steps.push_back(
       {"Power", table_sum("1", "2", S.upper ? "over the tables with Z > z" : "over the tables with Z < −z"),
-       "Σ over x1 = " + window_text(i1, p1) + ", x2 = " + window_text(i2, p2) + " = " + prob(r.num("power"))});
-  if (s.solve == "n") {
+       "Σ over x1 = " + window_text(i1, p1) + ", x2 = " + window_text(i2, p2) + " = " + dvp(r.num("power"))});
+  if (solved) {
     RunContext ctx;
-    out.push_back(two_group_step(
-        s, [&](double a1, double a2) { return fm_power({S}, a1, a2, p1, p2, true, ctx); }, {n1, n2}, r.num("power"),
-        target, 2, true));
+    out.steps.push_back(two_group_step(
+        s, [&](double a1, double a2) { return fm_power({S}, a1, a2, p1, p2, true, ctx); }, n, r.num("power"), target,
+        2, true));
   }
+  out.answer = score_answer(s, r);
   return out;
 }
 
-derive::Steps equiv_steps(const Scenario& s, const Row& r) {
+// How the two one-sided score tests of an equivalence give the answer, following what was solved for (as
+// ni_derivation): the closed form for comparison is the usual one on the scale's metric (the log scale for the ratio
+// and the odds ratio), with z(1 − β/2) where the actual effect lies midway between the limits.
+derive::Derivation equiv_derivation(const Scenario& s, const Row& r) {
   using namespace derive;
   const Scale sc = scale_of(s);
   const char* lkey = sc == Scale::Ratio ? "rl" : (sc == Scale::Odds ? "orl" : "dl");
@@ -715,69 +793,122 @@ derive::Steps equiv_steps(const Scenario& s, const Row& r) {
   const NiSpec L{sc, r.num(lkey), true, alpha}, U{sc, r.num(ukey), false, alpha};
   const double n1 = r.num("n1"), n2 = r.num("n2"), p1 = r.num("p1"), p2 = r.num("p2"), target = s.get("power", NAN);
   const bool fell_back = has_note(r, FM_FELL_BACK), enumerated = s.is("method", "exact") && !fell_back;
-  Steps out;
-  p1_step(s, p1, p2, out);
+  const bool solved = s.solve == "n";
+  const blocks::TwoN n{n1, n2};
+  const Shown w = score_shown(s, n1, n2, p1, p2);
+  Derivation out;
+  out.find = solved ? find_size(sizes_unknown(s), target) : find_power("with " + group_sizes_text(s, n));
+  group_sizes_step(s, n, out.steps);
+  p1_step(s, p1, p2, out.steps);
+  const std::string& alloc = s.s("alloc");
+  if (solved && (alloc == "equal" || alloc == "ratio")) {
+    // as the search's start: the distance to the nearer limit on the scale's metric, and z(1 − β/2) when the actual
+    // effect lies midway between them (as group_guess, with group 2 r times group 1)
+    const bool ratio = alloc == "ratio", logs = sc != Scale::Diff;
+    const double k = ratio ? s("r") : 1.0, act = r.num(actual_key(sc));
+    const double m = metric(sc, act), ml = metric(sc, L.bound), mu = metric(sc, U.bound);
+    const bool mid = std::fabs(m - (ml + mu) / 2) < 1e-12;
+    const double za = stats::qnorm(alpha, false), zb = stats::qnorm(mid ? 1 - (1 - target) / 2 : target);
+    const double gap = std::min(m - ml, mu - m);
+    double v;
+    std::string vf, vn;
+    const std::string R = ratio ? gv(k) + " × " : "", per = ratio ? "r " : "";
+    if (sc == Scale::Ratio) {
+      v = (1 - p1) / p1 + (1 - p2) / (k * p2);
+      vf = "(1 − P1)/P1 + (1 − P2)/" + std::string(ratio ? "(r P2)" : "P2");
+      vn = dv(1 - p1) + "/" + w.p1 + " + " + dv(1 - p2) + "/" + (ratio ? "(" + R + w.p2 + ")" : w.p2);
+    } else if (sc == Scale::Odds) {
+      v = 1 / (p1 * (1 - p1)) + 1 / (k * p2 * (1 - p2));
+      vf = "1/(P1(1 − P1)) + 1/(" + per + "P2(1 − P2))";
+      vn = "1/(" + w.p1 + " × " + dv(1 - p1) + ") + 1/(" + R + w.p2 + " × " + dv(1 - p2) + ")";
+    } else {
+      v = p1 * (1 - p1) + p2 * (1 - p2) / k;
+      vf = "P1(1 − P1) + P2(1 − P2)" + std::string(ratio ? "/r" : "");
+      vn = w.p1 + " × " + dv(1 - p1) + " + " + w.p2 + " × " + dv(1 - p2) + (ratio ? "/" + gv(k) : "");
+    }
+    const std::string A = actual_symbol(sc), Av = mv(act, actual_typed(s, sc));
+    const std::string f = logs ? "ln " + A : A;
+    const std::string dist = logs ? "min(ln " + A + " − ln " + bl + ", ln " + bu + " − ln " + A + ")"
+                                  : "min(" + A + " − " + bl + ", " + bu + " − " + A + ")";
+    const std::string distn =
+        logs ? "min(ln " + Av + " − ln " + gv(L.bound) + ", ln " + gv(U.bound) + " − ln " + Av + ")"
+             : "min(" + Av + " − " + gvs(L.bound) + ", " + gv(U.bound) + " − " + Av + ")";
+    out.steps.push_back(
+        {"Normal approximation",
+         std::string(ratio ? "N1" : "N1 = N2") + " ≈ (z(1 − α) + z(1 − β" + (mid ? "/2" : "") + "))² (" + vf +
+             ") / d², d = " + dist +
+             (mid ? ", the distance to either limit (" + f + " midway between them)"
+                  : ", the distance to the nearer limit") +
+             ", for comparison; the steps below give the answer",
+         "d = " + distn + " = " + dv(gap) + ": (" + dv(za) + " + " + dvs(zb) + ")² × (" + vn + ") / " + dv(gap) +
+             "² = " + dv((za + zb) * (za + zb) * v / (gap * gap))});
+  }
   if (!enumerated) {
     const TostNormal q = tost_normal(L, U, n1, n2, p1, p2);
-    out.push_back({"Lower test", "H0: the measure ≤ " + bl + "; " + score_formula(sc, bl, "T_L", "σ0L", "P1", "P2"),
-                   score_numbers(L, p1, p2, n1, n2, true, q.l, "T_L", "σ0L")});
-    out.push_back({"Upper test", "H0: the measure ≥ " + bu + "; " + score_formula(sc, bu, "T_U", "σ0U", "P1", "P2"),
-                   score_numbers(U, p1, p2, n1, n2, true, q.u, "T_U", "σ0U")});
+    out.steps.push_back({"Lower test",
+                         "H0: the measure ≤ " + bl + "; " + score_formula(sc, bl, "T_L", "σ0L", "P1", "P2"),
+                         score_numbers(L, p1, p2, n1, n2, true, q.l, "T_L", "σ0L", w)});
+    out.steps.push_back({"Upper test",
+                         "H0: the measure ≥ " + bu + "; " + score_formula(sc, bu, "T_U", "σ0U", "P1", "P2"),
+                         score_numbers(U, p1, p2, n1, n2, true, q.u, "T_U", "σ0U", w)});
     // z σ0L and z σ0U as written in the formulas
-    const std::string zl = sub(q.z) + " × " + sig(std::sqrt(q.l.var0)),
-                      zu = sub(q.z) + " × " + sig(std::sqrt(q.u.var0));
+    const std::string zl = dvs(q.z) + " × " + dsig(std::sqrt(q.l.var0)),
+                      zu = dvs(q.z) + " × " + dsig(std::sqrt(q.u.var0));
     if (sc == Scale::Diff) {
-      out.push_back({"SD under H1", h1_formula(sc, "", "σ1") + ", the same for both numerators",
-                     h1_numbers(sc, q.l, n1, n2, p1, p2, q.sl)});
-      out.push_back(z_critical(alpha, Alt::Upper));
+      out.steps.push_back({"SD under H1", h1_formula(sc, "", "σ1") + ", the same for both numerators",
+                           h1_numbers(sc, q.l, p1, p2, q.sl, w)});
+      out.steps.push_back(z_critical(alpha, Alt::Upper));
       Step pw{"Power", "Φ((−T_U − z σ0U)/σ1) − Φ((z σ0L − T_L)/σ1), the chance that both tests reject",
-              "Φ((" + num(-q.u.num) + " − " + zu + ")/" + sig(q.su) + ") − Φ((" + zl + " − " + sub(q.l.num) + ")/" +
-                  sig(q.sl) + ") = " + prob(stats::pnorm(q.a)) + " − " + prob(stats::pnorm(q.b)) + " = " +
-                  prob(r.num("power"))};
+              "Φ((" + dv(-q.u.num) + " − " + zu + ")/" + dsig(q.su) + ") − Φ((" + zl + " − " + dvs(q.l.num) + ")/" +
+                  dsig(q.sl) + ") = " + dvp(stats::pnorm(q.a)) + " − " + dvp(stats::pnorm(q.b)) + " = " +
+                  dvp(r.num("power"))};
       if (fell_back) pw.formula += FM_NORMAL_NOTE;
-      out.push_back(pw);
+      out.steps.push_back(pw);
     } else {
-      out.push_back(
+      out.steps.push_back(
           {"SDs under H1 and their correlation",
            "σL = √(gL1² w1 + gL2² w2), σU = √(gU1² w1 + gU2² w2), ρ = (gL1 gU1 w1 + gL2 gU2 w2)/(σL σU), w1 = "
            "P1(1 − P1)/N1, w2 = P2(1 − P2)/N2, the g how each numerator moves with P1 and P2",
-           "w1 = " + sig(q.w1) + ", w2 = " + sig(q.w2) + ", gL = (" + num(q.l.g1) + ", " + num(q.l.g2) + "), gU = (" +
-               num(q.u.g1) + ", " + num(q.u.g2) + "): σL = " + sig(q.sl) + ", σU = " + sig(q.su) +
-               ", ρ = " + num(q.r)});
-      out.push_back(z_critical(alpha, Alt::Upper));
+           "w1 = " + dsig(q.w1) + ", w2 = " + dsig(q.w2) + ", gL = (" + dv(q.l.g1) + ", " + dv(q.l.g2) + "), gU = (" +
+               dv(q.u.g1) + ", " + dv(q.u.g2) + "): σL = " + dsig(q.sl) + ", σU = " + dsig(q.su) + ", ρ = " +
+               dv(q.r)});
+      out.steps.push_back(z_critical(alpha, Alt::Upper));
       Step pw{"Power",
               "P(Z1 > (z σ0L − T_L)/σL, Z2 > (z σ0U + T_U)/σU), (Z1, Z2) standard bivariate normal with correlation "
               "−ρ, the chance that both tests reject",
-              "P(Z1 > (" + zl + " − " + sub(q.l.num) + ")/" + sig(q.sl) + ", Z2 > (" + zu + " + " + sub(q.u.num) +
-                  ")/" + sig(q.su) + ") = P(Z1 > " + num(q.a) + ", Z2 > " + num(q.b) +
-                  ") with correlation " + num(-q.r) + " = " + prob(r.num("power"))};
+              "P(Z1 > (" + zl + " − " + dvs(q.l.num) + ")/" + dsig(q.sl) + ", Z2 > (" + zu + " + " + dvs(q.u.num) +
+                  ")/" + dsig(q.su) + ") = P(Z1 > " + dv(q.a) + ", Z2 > " + dv(q.b) + ") with correlation " +
+                  dv(-q.r) + " = " + dvp(r.num("power"))};
       if (fell_back) pw.formula += FM_NORMAL_NOTE;
-      out.push_back(pw);
+      out.steps.push_back(pw);
     }
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double a1, double a2) { return tost_power_normal(L, U, a1, a2, p1, p2); }, {n1, n2}, target, 2));
+    if (solved)
+      out.steps.push_back(two_group_step(
+          s, [&](double a1, double a2) { return tost_power_normal(L, U, a1, a2, p1, p2); }, n, r.num("power"),
+          target, 2, false));
+    out.answer = score_answer(s, r);
     return out;
   }
   // the exact power: the probability, under P1 and P2, of the tables that both score tests reject
   const int i1 = static_cast<int>(n1), i2 = static_cast<int>(n2), x1 = expected_count(n1, p1),
             x2 = expected_count(n2, p2);
   const double h1 = static_cast<double>(x1) / i1, h2 = static_cast<double>(x2) / i2;
-  out.push_back({"Score statistics",
-                 "Z_L = T_L/σ0L and Z_U = T_U/σ0U at a table's proportions p̂1 = x1/N1, p̂2 = x2/N2, each with the "
-                 "restricted estimates at its own limit (" + bl + " and " + bu + ")",
-                 "at the expected counts x1 = " + std::to_string(x1) + ", x2 = " + std::to_string(x2) + ": Z_L = " +
-                     num(fm_z(L, h1, h2, n1, n2)) + ", Z_U = " + num(fm_z(U, h1, h2, n1, n2))});
-  out.push_back(z_critical(alpha, Alt::Upper));
-  out.push_back(
+  out.steps.push_back({"Score statistics",
+                       "Z_L = T_L/σ0L and Z_U = T_U/σ0U at a table's proportions p̂1 = x1/N1, p̂2 = x2/N2, each with "
+                       "the restricted estimates at its own limit (" + bl + " and " + bu + ")",
+                       "at the expected counts x1 = " + dvi(x1) + ", x2 = " + dvi(x2) + ": Z_L = " +
+                           dv(fm_z(L, h1, h2, n1, n2)) + ", Z_U = " + dv(fm_z(U, h1, h2, n1, n2))});
+  out.steps.push_back(z_critical(alpha, Alt::Upper));
+  out.steps.push_back(
       {"Power", table_sum("1", "2", "over the tables with Z_L > z and Z_U < −z"),
-       "Σ over x1 = " + window_text(i1, p1) + ", x2 = " + window_text(i2, p2) + " = " + prob(r.num("power"))});
-  if (s.solve == "n") {
+       "Σ over x1 = " + window_text(i1, p1) + ", x2 = " + window_text(i2, p2) + " = " + dvp(r.num("power"))});
+  if (solved) {
     RunContext ctx;
-    out.push_back(two_group_step(
-        s, [&](double a1, double a2) { return fm_power({L, U}, a1, a2, p1, p2, true, ctx); }, {n1, n2},
-        r.num("power"), target, 2, true));
+    out.steps.push_back(two_group_step(
+        s, [&](double a1, double a2) { return fm_power({L, U}, a1, a2, p1, p2, true, ctx); }, n, r.num("power"),
+        target, 2, true));
   }
+  out.answer = score_answer(s, r);
   return out;
 }
 
@@ -947,7 +1078,7 @@ Procedure two_prop_ni() {
            (sc == Scale::Odds ? " (OR: the odds ratio of group 1 to group 2)" : "") + " at α = " + fnum(r.num("alpha")) +
            ", when the true proportions are P1 = " + p1 + " and P2 = " + p2 + ".";
   };
-  p.derivation = ni_steps;
+  p.derivation = ni_derivation;
   p.definitions = {{"D0 / R0 / OR0", "Boundary of the null hypothesis (non-inferiority or superiority margin)."},
                    {"P1, P2", "Actual proportions in the treatment and reference groups."},
                    {"OR", "Odds ratio: the odds P1/(1 − P1) divided by the odds P2/(1 − P2)."},
@@ -1126,7 +1257,7 @@ Procedure two_prop_equiv() {
            " using two one-sided score tests at α = " + fnum(r.num("alpha")) + " each, when P1 = " + p1 + " and P2 = " +
            p2 + ".";
   };
-  p.derivation = equiv_steps;
+  p.derivation = equiv_derivation;
   p.definitions = {{"DL, DU / RL, RU / ORL, ORU", "Equivalence limits for P1 − P2, P1/P2 or the odds ratio."},
                    {"D1 / R1 / OR1", "Actual difference, ratio or odds ratio."}};
   p.references = {FM_REF, MN_REF, REF_CHOW};
@@ -1251,23 +1382,42 @@ McNemarCells mcnemar_cells(const Scenario& s) {
 }
 
 // Connor's normal approximation with its parts, or the exact conditional test: the critical counts at the expected
-// number of discordant pairs, and the power summed over that number.
-derive::Steps mcnemar_steps(const Scenario& s, const Row& r) {
+// number of discordant pairs, and the power summed over that number. Solving for N, Connor's closed form for
+// comparison, the power at the number of pairs found and one fewer.
+derive::Derivation mcnemar_derivation(const Scenario& s, const Row& r) {
   using namespace derive;
   const McNemarCells c = mcnemar_cells(s);
   const Alt a = alt(s);
   const int n = static_cast<int>(r.num("n"));
-  const double p10 = c.p10, p01 = c.p01, alpha = s("alpha"), target = s.get("power", NAN);
+  const double p10 = c.p10, p01 = c.p01, alpha = s("alpha"), target = s.get("power", NAN), power = r.num("power");
   const double psi = std::min(1.0, p10 + p01), delta = p10 - p01;
+  const bool solved = s.solve == "n", props = s.is("es", "props");
+  const std::string N = size(n, solved), P10 = mv(p10, props), P01 = mv(p01, props);
   McNemarCache cache;
   RunContext ctx;
-  auto power = [&](double x) { return mcnemar_power(s, static_cast<int>(x), p10, p01, cache, ctx, c.q10, c.q01); };
-  Steps out;
-  if (s.is("es", "or")) {
+  auto pw = [&](double x) { return mcnemar_power(s, static_cast<int>(x), p10, p01, cache, ctx, c.q10, c.q01); };
+  Derivation out;
+  out.find = solved ? find_size("number of pairs N", target) : find_power("with N = " + N + " pairs");
+  if (!props) {
     const double o = s("orr");
-    out.push_back({"Discordant cells", "P10 = ψ OR/(1 + OR), P01 = ψ/(1 + OR)",
-                   "P10 = " + num(s("psi")) + " × " + num(o) + "/" + num(1 + o) + " = " + num(p10) + ", P01 = " +
-                       num(s("psi")) + "/" + num(1 + o) + " = " + num(p01)});
+    out.steps.push_back({"Discordant cells", "P10 = ψ OR/(1 + OR), P01 = ψ/(1 + OR)",
+                         "P10 = " + gv(s("psi")) + " × " + gv(o) + "/" + dv(1 + o) + " = " + P10 + ", P01 = " +
+                             gv(s("psi")) + "/" + dv(1 + o) + " = " + P01});
+  }
+  out.steps.push_back({"Discordance and difference", "ψ = P10 + P01, δ = P10 − P01",
+                       "ψ = " + P10 + " + " + P01 + " = " + dv(psi) + ", δ = " + P10 + " − " + P01 + " = " +
+                           dv(delta)});
+  if (solved) {
+    // Connor's closed form, beside the answer below (the search starts from it)
+    const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(target), sum = p10 + p01;
+    out.steps.push_back({"Normal approximation",
+                         std::string("N ≈ (z(") + level_symbol(a) +
+                             ") √ψ + z(1 − β) √(ψ − δ²))² / δ² (Connor), for comparison; the steps below give the "
+                             "answer",
+                         "(" + dv(za) + " × √" + dv(sum) + " + " + dvs(zb) + " × √(" + dv(sum) + " − " + dvs(delta) +
+                             "²))² / " + dvs(delta) + "² = " +
+                             dv(std::pow(za * std::sqrt(sum) + zb * std::sqrt(sum - delta * delta), 2) /
+                                (delta * delta))});
   }
   if (s.is("method", "normal")) {
     // as mcnemar_power computes them
@@ -1275,53 +1425,51 @@ derive::Steps mcnemar_steps(const Scenario& s, const Row& r) {
     const double sd1 = std::sqrt(p10 * q10 + p01 * q01 + 2 * p10 * p01);
     const double rn = std::sqrt(static_cast<double>(n)), sd0 = std::sqrt(psi),
                  z = stats::qnorm(tail_alpha(alpha, a), false);
-    out.push_back({"Discordance and difference", "ψ = P10 + P01, δ = P10 − P01",
-                   "ψ = " + num(p10) + " + " + num(p01) + " = " + num(psi) + ", δ = " + num(p10) + " − " + num(p01) +
-                       " = " + num(delta)});
-    out.push_back({"SD of a pair's difference under H1",
-                   "σ1 = √(P10(1 − P10) + P01(1 − P01) + 2 P10 P01), that is √(ψ − δ²)",
-                   "√(" + num(p10) + " × " + num(q10) + " + " + num(p01) + " × " + num(q01) + " + 2 × " + num(p10) +
-                       " × " + num(p01) + ") = " + sig(sd1)});
-    out.push_back(z_critical(alpha, a));
-    out.push_back(tails_power(a, "√N δ", "", "√ψ", "σ1", rn * delta, 0, z, sd0, sd1,
-                              stats::pnorm((rn * delta - z * sd0) / sd1), stats::pnorm((-rn * delta - z * sd0) / sd1),
-                              r.num("power")));
-    if (s.solve == "n") out.push_back(n_search(power, n, target, 1));
-    return out;
+    out.steps.push_back({"SD of a pair's difference under H1",
+                         "σ1 = √(P10(1 − P10) + P01(1 − P01) + 2 P10 P01), that is √(ψ − δ²)",
+                         "√(" + P10 + " × " + dv(q10) + " + " + P01 + " × " + dv(q01) + " + 2 × " + P10 + " × " + P01 +
+                             ") = " + dsig(sd1)});
+    out.steps.push_back(z_critical(alpha, a));
+    out.steps.push_back(tails_power(a, "√N δ", "", "√ψ", "σ1", rn * delta, 0, z, sd0, sd1,
+                                    stats::pnorm((rn * delta - z * sd0) / sd1),
+                                    stats::pnorm((-rn * delta - z * sd0) / sd1), power));
+    if (solved) out.steps.push_back(n_search(pw, n, target, 1));
+  } else {
+    // the exact conditional test given m discordant pairs, at the expected m
+    const int m = static_cast<int>(std::lround(n * psi));
+    const double side = tail_alpha(alpha, a);
+    const std::string level = a == Alt::Two ? "α/2" : "α";
+    out.steps.push_back({"Discordant pairs", "M ~ Binomial(N, ψ): only these pairs carry information",
+                         "E(M) = " + N + " × " + dv(psi) + " = " + dv(n * psi)});
+    std::string rule, crit;
+    const int cu = upper_critical(m, 0.5, side), cl = lower_critical(m, 0.5, side);
+    if (a != Alt::Lower) {
+      rule = "X10 ≥ c_U(m), the smallest c with P(X10 ≥ c) ≤ " + level;
+      crit = "c_U = " + dvi(cu);
+    }
+    if (a != Alt::Upper) {
+      rule += (rule.empty() ? "" : ", or ") + std::string("X10 ≤ c_L(m), the largest c with P(X10 ≤ c) ≤ ") + level;
+      crit = "c_L = " + dvi(cl) + (crit.empty() ? "" : ", " + crit);
+    }
+    out.steps.push_back({"Conditional test", "given M = m, X10 ~ Binomial(m, ½) under H0; reject when " + rule,
+                         "at the expected m = " + dvi(m) + ": " + crit + ", a conditional size of " +
+                             dvp(two_tail_prob(m, 0.5, a == Alt::Upper ? -1 : cl, a == Alt::Lower ? m + 1 : cu))});
+    out.steps.push_back({"Split of the discordant pairs under H1", "π = P10/ψ, X10 ~ Binomial(m, π)",
+                         P10 + "/" + dv(psi) + " = " + dv(p10 / psi)});
+    const std::string reject = a == Alt::Two ? "[P(X10 ≥ c_U(m)) + P(X10 ≤ c_L(m))]"
+                                             : (a == Alt::Upper ? "P(X10 ≥ c_U(m))" : "P(X10 ≤ c_L(m))");
+    out.steps.push_back({"Power",
+                         "Σₘ b(m; N, ψ) " + reject +
+                             ", X10 ~ Binomial(m, π), b the binomial probability, over the m that carry all but 1e-16 "
+                             "of M's distribution",
+                         "Σ over m = " + window_text(n, psi) + " = " + dvp(power)});
+    if (solved)
+      out.steps.push_back(size_step("Smallest size",
+                                    sawtooth_rule("N = the smallest whole number whose power reaches 1 − β"),
+                                    "N = " + dvi(n), power, n > 1 ? "N = " + dvi(n - 1) : "",
+                                    n > 1 ? pw(n - 1) : NAN, target));
   }
-  // the exact conditional test given m discordant pairs, at the expected m
-  const int m = static_cast<int>(std::lround(n * psi));
-  const double side = tail_alpha(alpha, a);
-  const std::string level = a == Alt::Two ? "α/2" : "α";
-  out.push_back({"Discordant pairs", "M ~ Binomial(N, ψ), ψ = P10 + P01: only these pairs carry information",
-                 "ψ = " + num(p10) + " + " + num(p01) + " = " + num(psi) + ", E(M) = " + fint(n) + " × " + num(psi) +
-                     " = " + num(n * psi)});
-  std::string rule, crit;
-  const int cu = upper_critical(m, 0.5, side), cl = lower_critical(m, 0.5, side);
-  if (a != Alt::Lower) {
-    rule = "X10 ≥ c_U(m), the smallest c with P(X10 ≥ c) ≤ " + level;
-    crit = "c_U = " + std::to_string(cu);
-  }
-  if (a != Alt::Upper) {
-    rule += (rule.empty() ? "" : ", or ") + std::string("X10 ≤ c_L(m), the largest c with P(X10 ≤ c) ≤ ") + level;
-    crit = "c_L = " + std::to_string(cl) + (crit.empty() ? "" : ", " + crit);
-  }
-  out.push_back({"Conditional test", "given M = m, X10 ~ Binomial(m, ½) under H0; reject when " + rule,
-                 "at the expected m = " + std::to_string(m) + ": " + crit + ", a conditional size of " +
-                     prob(two_tail_prob(m, 0.5, a == Alt::Upper ? -1 : cl, a == Alt::Lower ? m + 1 : cu))});
-  out.push_back({"Split of the discordant pairs under H1", "π = P10/ψ, X10 ~ Binomial(m, π)",
-                 num(p10) + "/" + num(psi) + " = " + num(p10 / psi)});
-  const std::string reject = a == Alt::Two ? "[P(X10 ≥ c_U(m)) + P(X10 ≤ c_L(m))]"
-                                           : (a == Alt::Upper ? "P(X10 ≥ c_U(m))" : "P(X10 ≤ c_L(m))");
-  out.push_back({"Power",
-                 "Σₘ b(m; N, ψ) " + reject +
-                     ", X10 ~ Binomial(m, π), b the binomial probability, over the m that carry all but 1e-16 of M's "
-                     "distribution",
-                 "Σ over m = " + window_text(n, psi) + " = " + prob(r.num("power"))});
-  if (s.solve == "n")
-    out.push_back(size_step(
-        "Sample size", sawtooth_rule("N = the smallest whole number whose power reaches the target"), "N = " + fint(n),
-        r.num("power"), n > 1 ? "N = " + fint(n - 1) : "", n > 1 ? power(n - 1) : NAN, target));
+  out.answer = solved ? "N = " + dvi(n) + " pairs, with power " + dvp(power, target) : "power = " + dvp(power);
   return out;
 }
 
@@ -1468,7 +1616,7 @@ Procedure mcnemar() {
            (s.is("method", "exact") ? " (exact conditional binomial)" : " (normal approximation)") + " at α = " +
            fnum(r.num("alpha")) + ".";
   };
-  p.derivation = mcnemar_steps;
+  p.derivation = mcnemar_derivation;
   p.definitions = {{"N", "Number of pairs."},
                    {"P10", "Proportion of pairs with response in the first but not the second condition."},
                    {"P01", "Proportion of pairs with response in the second but not the first condition."},
@@ -1518,12 +1666,23 @@ double chisq_power(double n, double w, double df, double alpha) {
   return stats::pnchisq(crit, df, n * w * w, false);
 }
 
-derive::Steps chisq_steps(const Scenario& s, const Row& r) {
+// The power of the chi-square test from the noncentrality λ = N w², following what was solved for: solving for N, the
+// power at the size found and one below; solving for w, back from the target power to the noncentrality it needs and
+// from that to w.
+derive::Derivation chisq_derivation(const Scenario& s, const Row& r) {
   using namespace derive;
   const double n = r.num("n"), w = r.num("w"), df = r.num("df"), alpha = s("alpha"), lambda = r.num("lambda");
-  const double crit = stats::qchisq(alpha, df, false), target = s.get("power", NAN);
-  Steps out;
-  if (s.solve != "w" && s.is("es", "gof")) {
+  const double crit = stats::qchisq(alpha, df, false), target = s.get("power", NAN), power = r.num("power");
+  const bool solved = s.solve == "n", effect = s.solve == "w", gof = !effect && s.is("es", "gof");
+  const std::string N = size(n, solved), W = mv(w, !effect && !gof), DF = gof ? dvi(df) : gvi(df);
+  Derivation out;
+  if (solved)
+    out.find = find_size("N", target);
+  else if (effect)
+    out.find = find_effect("effect size w", target, "with N = " + N + " and " + DF + " degrees of freedom");
+  else
+    out.find = find_power("with N = " + N);
+  if (gof) {
     // the categories' terms, each list rescaled to sum to 1 as chisq_w takes them (listed for up to 6 categories)
     const auto &p0 = s.v("p0s"), &p1 = s.v("p1s");
     double s0 = 0, s1 = 0;
@@ -1532,22 +1691,33 @@ derive::Steps chisq_steps(const Scenario& s, const Row& r) {
     std::string terms;
     for (std::size_t i = 0; i < p0.size(); ++i) {
       const double a = p0[i] / s0, b = p1[i] / s1;
-      terms += (i ? " + " : "") + ("(" + num(b) + " − " + num(a) + ")²/" + num(a));
+      terms += (i ? " + " : "") + ("(" + dv(b) + " − " + dv(a) + ")²/" + dv(a));
     }
-    out.push_back({"Effect size",
-                   "w = √Σᵢ (P1ᵢ − P0ᵢ)²/P0ᵢ over the k categories, each list rescaled to sum to 1; df = k − 1",
-                   (p0.size() <= 6 ? "√(" + terms + ")" : "√Σ over the " + std::to_string(p0.size()) + " categories") +
-                       " = " + num(w) + ", df = " + fint(df)});
+    out.steps.push_back({"Effect size",
+                         "w = √Σᵢ (P1ᵢ − P0ᵢ)²/P0ᵢ over the k categories, each list rescaled to sum to 1; df = k − 1",
+                         (p0.size() <= 6 ? "√(" + terms + ")" : "√Σ over the " + dvi(p0.size()) + " categories") +
+                             " = " + W + ", df = " + DF});
   }
-  out.push_back({"Noncentrality", "λ = N w²", fint(n) + " × " + num(w) + "² = " + num(lambda)});
-  out.push_back({"Critical value", "c = χ²(1 − α; df), the quantile of the chi-square distribution",
-                 "χ²(1 − " + num(alpha) + "; " + fint(df) + ") = " + num(crit)});
-  out.push_back({"Power", "P(X > c), X ~ noncentral χ²(df, λ)",
-                 "P(X > " + num(crit) + "), X ~ χ²(" + fint(df) + ", " + num(lambda) + ") = " + prob(r.num("power"))});
-  if (s.solve == "n")
-    out.push_back(n_search([&](double x) { return chisq_power(x, w, df, alpha); }, n, target, df + 1));
-  else if (s.solve == "w")
-    out.push_back(effect_search("w", w, r.num("power"), target));
+  const Step critical{"Critical value", "c = χ²(1 − α; df), the quantile of the chi-square distribution",
+                      "χ²(1 − " + gv(alpha) + "; " + DF + ") = " + dv(crit)};
+  if (effect) {
+    out.steps.push_back(critical);
+    out.steps.push_back({"Noncentrality needed", "λ solves P(X > c) = 1 − β, X ~ noncentral χ²(df, λ)",
+                         "P(X > " + dv(crit) + ") = " + gv(target) + " when λ = " + dv(lambda)});
+    out.steps.push_back({"Effect detected", "w = √(λ/N)", "√(" + dv(lambda) + "/" + N + ") = " + dv(w)});
+    out.answer = "w = " + dv(w);
+    return out;
+  }
+  out.steps.push_back({"Noncentrality", "λ = N w²", N + " × " + W + "² = " + dv(lambda)});
+  out.steps.push_back(critical);
+  out.steps.push_back({"Power", "P(X > c), X ~ noncentral χ²(df, λ)",
+                       "P(X > " + dv(crit) + "), X ~ χ²(" + DF + ", " + dv(lambda) + ") = " + dvp(power)});
+  if (solved) {
+    out.steps.push_back(n_search([&](double x) { return chisq_power(x, w, df, alpha); }, n, target, df + 1));
+    out.answer = "N = " + dvi(n) + ", with power " + dvp(power, target);
+  } else {
+    out.answer = "power = " + dvp(power);
+  }
   return out;
 }
 
@@ -1645,7 +1815,7 @@ Procedure chisq() {
            " to detect an effect size of w = " + fnum_apart(r.num("w"), 0).first + " with a chi-square test on " +
            fint(r.num("df")) + " degrees of freedom at α = " + fnum(r.num("alpha")) + ".";
   };
-  p.derivation = chisq_steps;
+  p.derivation = chisq_derivation;
   p.definitions = {{"w", "Cohen's effect size √Σ(P1ᵢ − P0ᵢ)²/P0ᵢ."},
                    {"DF", "Degrees of freedom: k − 1 for goodness of fit, (r − 1)(c − 1) for an r × c table."},
                    {"λ", "Noncentrality parameter N w²."}};
@@ -1693,29 +1863,53 @@ ClusterPower cluster_power(const Scenario& s, double k1) {
   return c;
 }
 
-derive::Steps cluster_steps(const Scenario& s, const Row& r) {
+// The pooled z-test with variances inflated by the design effect, following what was solved for: solving for k1, the
+// closed form for comparison, the power at the clusters found and one fewer.
+derive::Derivation cluster_derivation(const Scenario& s, const Row& r) {
   using namespace derive;
   const double k1 = r.num("k1"), m = r.num("m"), icc = r.num("icc"), p1 = r.num("p1"), p2 = r.num("p2");
-  const double de = r.num("de"), alpha = r.num("alpha");
+  const double de = r.num("de"), alpha = r.num("alpha"), kr = s("kr"), power = r.num("power");
   const Alt a = alt(s);
+  const bool solved = s.solve == "k";
   const ClusterPower c = cluster_power(s, k1);
-  const std::string N1 = fint(c.n1), N2 = fint(c.n2);
-  Steps out;
-  out.push_back({"Design effect", "DE = 1 + (m − 1)ρ", "1 + (" + fnum(m) + " − 1) × " + num(icc) + " = " + num(de)});
-  out.push_back({"Clusters and subjects", "k2 = ⌈r × k1⌉ for the cluster ratio r, N1 = k1 m, N2 = k2 m",
-                 "k2 = ⌈" + num(s("kr")) + " × " + fint(k1) + "⌉ = " + fint(c.k2) + ", N1 = " + fint(k1) + " × " +
-                     fnum(m) + " = " + N1 + ", N2 = " + fint(c.k2) + " × " + fnum(m) + " = " + N2});
-  out.push_back({"Difference to detect", "δ = P1 − P2", num(p1) + " − " + num(p2) + " = " + num(c.d)});
-  out.push_back({"Standard error under H0", "σ0 = √(DE p̄(1 − p̄)(1/N1 + 1/N2)), p̄ = (N1 P1 + N2 P2)/(N1 + N2)",
-                 "p̄ = " + num(c.pb) + ", σ0 = √(" + num(de) + " × " + num(c.pb) + " × " + num(1 - c.pb) + " × (1/" +
-                     N1 + " + 1/" + N2 + ")) = " + sig(c.s0)});
-  out.push_back({"Standard error under H1", "σ1 = √(DE (P1(1 − P1)/N1 + P2(1 − P2)/N2))",
-                 "√(" + num(de) + " × (" + num(p1) + " × " + num(1 - p1) + "/" + N1 + " + " + num(p2) + " × " +
-                     num(1 - p2) + "/" + N2 + ")) = " + sig(c.s1)});
-  out.push_back(z_critical(alpha, a));
-  out.push_back(tails_power(a, "δ", "", "σ0", "σ1", c.d, 0, c.z, c.s0, c.s1, c.up, c.lo, r.num("power")));
-  if (s.solve == "k")
-    out.push_back(n_search([&](double x) { return cluster_power(s, x).power; }, k1, s("power"), 1, "k1"));
+  const std::string K1 = size(k1, solved), N1 = dvi(c.n1), N2 = dvi(c.n2), P1 = gv(p1), P2 = gv(p2), M = gv(m);
+  Derivation out;
+  out.find = solved ? find_size("number of clusters k1 in group 1, with k2 = ⌈r × k1⌉ in group 2,", s("power"))
+                    : find_power("with k1 = " + K1 + " clusters in group 1 and k2 = ⌈r × k1⌉ in group 2");
+  out.steps.push_back({"Design effect", "DE = 1 + (m − 1)ρ", "1 + (" + M + " − 1) × " + gv(icc) + " = " + dv(de)});
+  out.steps.push_back({"Difference to detect", "δ = P1 − P2", P1 + " − " + P2 + " = " + dv(c.d)});
+  if (solved) {
+    // the usual closed form with the variances at P1 and P2 (Donner & Klar), beside the answer below (the search
+    // starts from it)
+    const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
+    out.steps.push_back(
+        {"Normal approximation",
+         std::string("k1 ≈ (z(") + level_symbol(a) +
+             ") + z(1 − β))² DE (P1(1 − P1) + P2(1 − P2)/r) / (m δ²), for comparison; the steps below give the answer",
+         "(" + dv(za) + " + " + dvs(zb) + ")² × " + dv(de) + " × (" + P1 + " × " + dv(1 - p1) + " + " + P2 + " × " +
+             dv(1 - p2) + "/" + gv(kr) + ") / (" + M + " × " + dvs(c.d) + "²) = " +
+             dv((za + zb) * (za + zb) * de * (p1 * (1 - p1) + p2 * (1 - p2) / kr) / (m * c.d * c.d))});
+  }
+  out.steps.push_back({"Clusters and subjects", "k2 = ⌈r × k1⌉ for the cluster ratio r, N1 = k1 m, N2 = k2 m",
+                       "k2 = ⌈" + gv(kr) + " × " + K1 + "⌉ = " + dvi(c.k2) + ", N1 = " + K1 + " × " + M + " = " + N1 +
+                           ", N2 = " + dvi(c.k2) + " × " + M + " = " + N2});
+  out.steps.push_back({"Standard error under H0",
+                       "σ0 = √(DE p̄(1 − p̄)(1/N1 + 1/N2)), p̄ = (N1 P1 + N2 P2)/(N1 + N2)",
+                       "p̄ = (" + N1 + " × " + P1 + " + " + N2 + " × " + P2 + ")/(" + N1 + " + " + N2 + ") = " +
+                           dv(c.pb) + ", σ0 = √(" + dv(de) + " × " + dv(c.pb) + " × " + dv(1 - c.pb) + " × (1/" + N1 +
+                           " + 1/" + N2 + ")) = " + dsig(c.s0)});
+  out.steps.push_back({"Standard error under H1", "σ1 = √(DE (P1(1 − P1)/N1 + P2(1 − P2)/N2))",
+                       "√(" + dv(de) + " × (" + P1 + " × " + dv(1 - p1) + "/" + N1 + " + " + P2 + " × " + dv(1 - p2) +
+                           "/" + N2 + ")) = " + dsig(c.s1)});
+  out.steps.push_back(z_critical(alpha, a));
+  out.steps.push_back(tails_power(a, "δ", "", "σ0", "σ1", c.d, 0, c.z, c.s0, c.s1, c.up, c.lo, power));
+  if (solved) {
+    out.steps.push_back(n_search([&](double x) { return cluster_power(s, x).power; }, k1, s("power"), 1, "k1"));
+    out.answer = "k1 = " + dvi(k1) + " and k2 = " + dvi(c.k2) + " clusters (N = " + dvi(r.num("n")) +
+                 " subjects), with power " + dvp(power, s("power"));
+  } else {
+    out.answer = "power = " + dvp(power);
+  }
   return out;
 }
 
@@ -1838,7 +2032,7 @@ Procedure cluster_props() {
            " (design effect " + fnum_from(r.num("de"), 1) + ") using a " + alt_words(alt(s)) + " z-test at α = " +
            fnum(r.num("alpha")) + ".";
   };
-  p.derivation = cluster_steps;
+  p.derivation = cluster_derivation;
   p.definitions = {{"k1, k2", "Clusters per group."}, {"m", "Subjects per cluster."},
                    {"Design Effect", "1 + (m − 1)ρ."}};
   p.references = {"Donner, A. & Klar, N. (2000). Design and Analysis of Cluster Randomization Trials in Health "
