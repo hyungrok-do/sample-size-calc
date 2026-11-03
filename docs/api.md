@@ -112,9 +112,16 @@ Another thread can watch progress and cancel it through the token.
   ],
   "definitions": [["N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."], …],
   "references": ["…"],
+  "bibliography": [{"key":"…", "citation":"…", "bibtex":"…", "source":"…", "export_url":"https://…"}],
   "notes": ["…"]
 }
 ```
+
+- **`references`** contains display citations formatted from retrieved records.
+  **`bibliography`** contains the corresponding citation keys, BibTeX records and
+  source export URLs. The source metadata and any unresolved legacy citations are
+  documented in [the bibliography review](reference-audit.md). These arrays describe
+  procedure-level references; they do not certify every selectable approximation.
 
 - **`columns`** lists the result table's columns in order. `fmt` is one of:
 
@@ -137,7 +144,7 @@ Another thread can watch progress and cancel it through the token.
   | `_statement` | a one-paragraph summary of the scenario |
   | `_notes` | remarks specific to this scenario |
   | `_tables` | extra tables, for example group-sequential boundaries: `{"title", "columns": [{key, label, fmt}], "rows": [[…], …]}`; the first 1,000 rows carry them |
-  | `_derivation` | how the row's numbers came about, in the procedure's own steps: `[{"what", "formula", "numbers"}, …]`, each a quantity, its formula in symbols, and the formula with the row's numbers ending in its value (for a calculated sample size, the power one size below and at the answer; for a simulated one, the simulated power at the answer and what the search established below it); computed with the functions that gave the answer, for the first 1,000 rows of the procedures that have one |
+  | `_derivation` | how the row's answer came about, in the terms of what was solved for: `{"find", "given", "steps", "answer"}`. `find` says what was to be found and the condition it meets (the smallest size whose power reaches the target, the power at the sizes given, the effect detected with the target power); `given` lists the inputs used, `[{"symbol", "label", "value"}, …]`; `steps` are `[{"what", "formula", "numbers"}, …]`, each a quantity, its formula in symbols, and the formula with the row's numbers ending in its value (for a calculated sample size, the power one size below and at the answer; for a simulated one, the simulated power at the answer and what the search established below it); `answer` is the result. In `find`, `numbers` and `answer`, a `*_parts` array `[[text, kind], …]` marks each value as `"given"` (an input) or `"derived"` (computed), kind `""` for the text between. Computed with the functions that gave the answer, for the first 1,000 rows |
 
 - **Simulation procedures** (`"simulation": true` in the result and the
   schema) estimate power from simulated studies. Their rows add `method`
@@ -232,7 +239,7 @@ form:
     …
   ],
   "example": {"solve_for": "n", "inputs": {…}},
-  "definitions": […], "references": […], "notes": […]
+  "definitions": […], "references": […], "bibliography": […], "notes": […]
 }
 ```
 

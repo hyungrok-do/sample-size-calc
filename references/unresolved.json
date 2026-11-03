@@ -1,0 +1,74 @@
+[
+  {
+    "id": "R006",
+    "legacy_reference": "Diletti, E., Hauschke, D. & Steinijans, V. W. (1991). Sample size determination for bioequivalence assessment by means of confidence intervals. Int. J. Clin. Pharmacol. Ther. Toxicol. 29, 1–8.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "No matching official BibTeX export found. The 1992 multiplicative-model paper is a different work."
+  },
+  {
+    "id": "R008",
+    "legacy_reference": "Desu, M. M. & Raghavarao, D. (1990). Sample Size Methodology. Academic Press.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Google Books lists the book but its BibTeX download returned HTTP 403. Crossref candidates are book chapters."
+  },
+  {
+    "id": "R011",
+    "legacy_reference": "Montgomery, D. C. (2017). Design and Analysis of Experiments, 9th ed. Wiley.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Google Books BibTeX download returned HTTP 403. Crossref matches were book reviews or different editions."
+  },
+  {
+    "id": "R025",
+    "legacy_reference": "Schlesselman, J. J. (1982). Case-Control Studies: Design, Conduct, Analysis. Oxford University Press.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Google Books BibTeX download returned HTTP 403. Book-review DOIs were rejected."
+  },
+  {
+    "id": "R027",
+    "legacy_reference": "Kelsey, J. L., Whittemore, A. S., Evans, A. S. & Thompson, W. D. (1996). Methods in Observational Epidemiology, 2nd ed. Oxford University Press.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Crossref book record uses the series title rather than the book title. No reliable complete export obtained."
+  },
+  {
+    "id": "R029",
+    "legacy_reference": "Breslow, N. E. & Day, N. E. (1980). Statistical Methods in Cancer Research, Vol. I: The Analysis of Case-Control Studies. IARC.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Google Books BibTeX download returned HTTP 403. Book-review records were rejected."
+  },
+  {
+    "id": "R043",
+    "legacy_reference": "Fisher, R. A. (1921). On the 'probable error' of a coefficient of correlation deduced from a small sample. Metron 1, 3–32.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "No matching official export found for the 1921 Metron paper. Related Pearson papers were rejected."
+  },
+  {
+    "id": "R064",
+    "legacy_reference": "Ostle, B. & Malone, L. C. (1988). Statistics in Research, 4th ed. Iowa State University Press.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Crossref returned book reviews rather than the cited fourth edition. No matching export obtained."
+  },
+  {
+    "id": "R066",
+    "legacy_reference": "Al-Sunduqchi, M. S. (1990). Determining the Appropriate Sample Size for Inferences Based on the Wilcoxon Statistics. PhD thesis, University of Wyoming.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Unpublished University of Wyoming dissertation. Citation appears in a publisher bibliography, but no official BibTeX record was retrieved."
+  },
+  {
+    "id": "R092",
+    "legacy_reference": "Donner, A. & Klar, N. (2000). Design and Analysis of Cluster Randomization Trials in Health Research. Arnold.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Google Books BibTeX download returned HTTP 403; no exact Crossref book record retrieved."
+  },
+  {
+    "id": "R119",
+    "legacy_reference": "Holm, S. (1979). A simple sequentially rejective multiple test procedure. Scandinavian Journal of Statistics 6, 65–70.",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "No matching Crossref record retrieved. JSTOR citation access was blocked; related Holland–Copenhaver papers were rejected."
+  },
+  {
+    "id": "R121",
+    "legacy_reference": "Horn, M. & Vollandt, R. (1995). Multiple Tests und Auswahlverfahren. Gustav Fischer (sample sizes for many-to-one comparisons).",
+    "status": "no_usable_official_bibtex_retrieved",
+    "reason": "Crossref matches are reviews of the book, not the book. No matching book export retrieved."
+  }
+]

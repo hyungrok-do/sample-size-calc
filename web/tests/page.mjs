@@ -126,15 +126,31 @@ try {
     const modes = await p.$$eval('.field input[type=text]', (xs) => xs.map((x) => `${x.id}:${x.getAttribute('inputmode') || '-'}`));
     assert.ok(!modes.some((m) => m.endsWith(':decimal')) && modes.includes('in-gamma:-'), modes.join(' '));
   });
-  await check('an answer shows how it was calculated, with its symbols and references', async () => {
+  await check('an answer shows how it was calculated: what was found, from which inputs, the steps and the answer', async () => {
     await show(p, 'means.two.t');
     await p.click('#calc'); await answer(p);
     await p.click('#derivation > summary');
     const text = await p.innerText('#derivation');
+    assert.match(text, /Find: the smallest N1 = N2 whose power is at least 1 − β = 0\.8/);
+    assert.match(text, /Given: [\s\S]*α = 0\.05/);
     assert.match(text, /Noncentrality: λ = δ \/ SE/);
     assert.match(text, /power at N1 = \d+, N2 = \d+: 0\.\d+ < 0\.8 ≤ power at N1 = \d+, N2 = \d+: 0\.\d+/);
+    assert.match(text, /Answer: N1 = \d+, N2 = \d+ \(N = \d+\), with power 0\.\d+/);
+    assert.ok(await p.$('#derivation .steps .v-given') && await p.$('#derivation .steps .v-derived'), 'given and derived values are told apart');
     assert.match(text, /Symbols[\s\S]*References/);
     return text.split('\n').find((line) => line.startsWith('power at')) ?? '';
+  });
+  await check('the reference download preserves the retrieved BibTeX metadata', async () => {
+    const downloading = p.waitForEvent('download');
+    await p.getByRole('button', { name: 'Download BibTeX', exact: true }).click();
+    const download = await downloading;
+    assert.equal(download.suggestedFilename(), 'means.two.t-references.bib');
+    const bib = await readFile(await download.path(), 'utf8');
+    const provenance = JSON.parse(await readFile(resolve(web, '../references/provenance.json'), 'utf8'));
+    const chow = provenance.find((r) => r.id === 'R001');
+    const source = await readFile(resolve(web, '..', chow.raw_file), 'utf8');
+    assert.ok(bib.includes(source.replace(`{${chow.original_key},`, `{${chow.key},`).trim()));
+    assert.equal((bib.match(/^@/gm) ?? []).length, await p.locator('#derivation .refs li').count());
   });
   await check('a Unicode minus sign and a no-break space are read', async () => {
     await show(p, 'means.two.t');

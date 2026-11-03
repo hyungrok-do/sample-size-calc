@@ -168,11 +168,23 @@ struct Table {
 };
 
 /// One step of how a row's numbers came about: the quantity, its formula in symbols, and the same formula with the
-/// row's numbers in place, ending in its value ("λ = δ√N / σ" and "0.5 × √34 / 1 = 2.9155").
+/// row's numbers in place, ending in its value ("λ = δ√N / σ" and "0.5 × √34 / 1 = 2.9155"). Within `numbers`,
+/// values are marked as given (an input) or derived (computed), by derive::given and derive::derived.
 struct Step {
   std::string what;
   std::string formula;
   std::string numbers;
+};
+
+/// How a row's answer came about, in the terms of what was solved for: what was to be found and the condition it
+/// meets ("the smallest N1 = N2 whose power is at least 0.8"), the steps toward it, and the answer. The inputs it
+/// starts from are listed by the runner from the scenario. `find` and `answer` may mark values as `numbers` does.
+struct Derivation {
+  std::string find;
+  std::vector<Step> steps;
+  std::string answer;
+  Derivation() = default;
+  Derivation(std::vector<Step> s) : steps(std::move(s)) {}  // steps alone, without the frame of a solve
 };
 
 struct Row {
@@ -182,7 +194,7 @@ struct Row {
   std::string statement;
   std::vector<std::string> notes;
   std::vector<Table> tables;
-  std::vector<Step> derivation;
+  Derivation derivation;
 
   void set(const std::string& key, double v);
   void set(const std::string& key, const std::string& v);
@@ -260,9 +272,10 @@ struct Procedure {
   std::function<std::string(const Scenario&, const Row&)> statement;
   /// How a row's numbers were derived, in this procedure's own steps, computed with the same functions as `run` so
   /// that they cannot disagree with the answer (a plug-in per procedure; none for a procedure without one).
-  std::function<std::vector<Step>(const Scenario&, const Row&)> derivation;
+  std::function<Derivation(const Scenario&, const Row&)> derivation;
 
   std::vector<std::string> references;
+  std::vector<std::string> reference_keys;  // retrieved BibTeX records, resolved at registration
   std::vector<std::pair<std::string, std::string>> definitions;
   std::vector<std::string> notes;
 

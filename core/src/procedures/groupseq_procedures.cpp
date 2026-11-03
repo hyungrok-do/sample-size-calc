@@ -592,21 +592,6 @@ std::string toward(const Scenario& s, const std::string& sym, const std::string&
   return s.is("alternative", "lower") ? sym + " = " + b + " − " + a : sym + " = " + a + " − " + b;
 }
 
-const std::vector<std::string> GS_REFS = {
-    "Jennison, C. & Turnbull, B. W. (2000). Group Sequential Methods with Applications to Clinical Trials. Chapman & "
-    "Hall/CRC.",
-    "Lan, K. K. G. & DeMets, D. L. (1983). Discrete sequential boundaries for clinical trials. Biometrika 70, 659–663.",
-    "O'Brien, P. C. & Fleming, T. R. (1979). A multiple testing procedure for clinical trials. Biometrics 35, 549–556.",
-    "Pocock, S. J. (1977). Group sequential methods in the design and analysis of clinical trials. Biometrika 64, "
-    "191–199.",
-    "Kim, K. & DeMets, D. L. (1987). Design and analysis of group sequential tests based on the type I error spending "
-    "rate function. Biometrika 74, 149–154.",
-    "Hwang, I. K., Shih, W. J. & DeCani, J. S. (1990). Group sequential designs using a family of type I error "
-    "probability spending functions. Statistics in Medicine 9, 1439–1445.",
-    "Wang, S. K. & Tsiatis, A. A. (1987). Approximately optimal one-parameter boundaries for group sequential trials. "
-    "Biometrics 43, 193–199.",
-    "Pampallona, S., Tsiatis, A. A. & Kim, K. (2001). Interim monitoring of group sequential trials using spending "
-    "functions for the type I and type II error probabilities. Drug Information Journal 35, 1113–1121."};
 
 const std::vector<std::pair<std::string, std::string>> GS_DEFS = {
     {"K", "Number of analyses (interim analyses plus the final analysis)."},
@@ -752,7 +737,6 @@ Procedure gs_means() {
   };
   p.definitions = GS_DEFS;
   p.definitions.push_back({"Efficacy / Futility (μ1 − μ2)", "Observed difference in means at a boundary."});
-  p.references = GS_REFS;
   p.notes = {"The test statistic is the z-test with known σ; with σ estimated, a t-test needs a few more subjects "
              "when the sample size is small."};
   p.curve_param = "n1";
@@ -928,7 +912,6 @@ Procedure gs_props() {
   p.definitions = GS_DEFS;
   p.definitions.push_back({"Efficacy / Futility (P1 − P2)", "Observed difference P̂1 − P̂2 at a boundary (at the "
                                                             "anticipated variance)."});
-  p.references = GS_REFS;
   p.notes = {"The z-test uses the normal approximation. With small proportions or small groups its actual type I "
              "error can exceed α (P1 = 0.05, P2 = 0.15, three Pocock analyses at one-sided α = 0.025: 0.030 by "
              "simulation)."};
@@ -1105,9 +1088,6 @@ Procedure gs_logrank() {
   p.definitions = GS_DEFS;
   p.definitions.push_back({"Efficacy / Futility (HR)", "Observed hazard ratio at a boundary (Schoenfeld's "
                                                        "approximation)."});
-  p.references = GS_REFS;
-  p.references.push_back("Schoenfeld, D. (1981). The asymptotic properties of nonparametric tests for comparing "
-                         "survival distributions. Biometrika 68, 316–319.");
   p.notes = {"The events come from Schoenfeld's formula. With equal groups it agrees with simulation; with unequal "
              "groups and a hazard ratio far from 1 it overstates the power when the larger group has the higher "
              "hazard (HR 0.65 with 1:2 allocation: 0.80, against 0.78 by simulation) and understates it in the "

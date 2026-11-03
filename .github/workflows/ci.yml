@@ -13,6 +13,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  bibliography:
+    name: Retrieved bibliography provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -r scripts/requirements-references.txt
+      - run: python scripts/build_references.py --check
+
   core:
     name: C++ core · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

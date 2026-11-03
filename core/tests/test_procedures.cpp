@@ -410,15 +410,34 @@ TEST_CASE("procedures: a derivation's steps agree with the answer they explain")
         if (r.find("_error") || row++ >= 3) continue;
         const std::string where = id + " (solving for " + solve.get("value").as_string() + "): ";
         ::ssc::test::count_check();
-        if (!r.find("_derivation") || r.get("_derivation").size() == 0) {
+        if (!r.find("_derivation") || r.get("_derivation").get("steps").size() == 0) {
           ::ssc::test::report_failure(where + "no derivation", __FILE__, __LINE__);
           continue;
         }
-        std::string all;
-        for (const auto& st : r.get("_derivation").elements()) {
+        const json::Value& d = r.get("_derivation");
+        std::string all, kinds;
+        const auto parts = [&](const json::Value& o, const std::string& key) {
+          if (const json::Value* ps = o.find(key + "_parts"))
+            for (const auto& seg : ps->elements()) kinds += seg.at(1).as_string() + " ";
+        };
+        for (const auto& st : d.get("steps").elements()) {
           for (const char* key : {"what", "formula", "numbers"})
             if (st.get(key).as_string().empty()) ::ssc::test::report_failure(where + "a step without its " + key, __FILE__, __LINE__);
           all += st.get("numbers").as_string() + " | ";
+          parts(st, "numbers");
+        }
+        if (d.get("given").size() == 0) ::ssc::test::report_failure(where + "no inputs listed as given", __FILE__, __LINE__);
+        // a derivation framed by what was solved for says what it finds and what it found, and tells the inputs it
+        // uses from the values it computes
+        if (d.find("find")) {
+          if (!d.find("answer") || d.get("answer").as_string().empty())
+            ::ssc::test::report_failure(where + "a find without an answer", __FILE__, __LINE__);
+          else {
+            all += d.get("answer").as_string();
+            parts(d, "answer");
+          }
+          if (kinds.find("given") == std::string::npos || kinds.find("derived") == std::string::npos)
+            ::ssc::test::report_failure(where + "given and derived values not marked", __FILE__, __LINE__);
         }
         if (all.find("—") != std::string::npos || all.find("nan") != std::string::npos)
           ::ssc::test::report_failure(where + "an undefined value in " + all, __FILE__, __LINE__);

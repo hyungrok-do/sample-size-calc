@@ -421,29 +421,56 @@ function details(rows) {
   return [...parts, box];
 }
 
-// How the numbers were derived: the method's own steps with one scenario's numbers in place (computed by the
-// engine with the functions that gave the answer), then its symbols and references. Kept open across answers once
-// opened.
+// How the numbers were derived, in the terms of what was solved for (computed by the engine with the functions that
+// gave the answer): what was to be found, the inputs given, the steps with each value marked as given (an input) or
+// derived (computed), and the answer; then the method's symbols and references. Kept open across answers once opened.
+const marked = (o, key) => (o[`${key}_parts`] ?? [[o[key] ?? '', '']]).map(([text, kind]) => (kind
+  ? el('span', { class: `v-${kind}`, title: kind === 'given' ? 'Given: one of your inputs' : 'Derived: computed from the inputs' }, text)
+  : text));
+
+function derivationOf(d) {
+  return [
+    d.find ? el('p', { class: 'deriv-find' }, el('strong', {}, 'Find: '), ...marked(d, 'find')) : null,
+    d.given?.length ? el('div', { class: 'deriv-given' }, el('strong', {}, 'Given: '),
+      el('ul', {}, d.given.map((g) => el('li', { title: g.label }, `${g.symbol} = `, el('span', { class: 'v-given' }, g.value))))) : null,
+    el('ol', { class: 'steps' }, d.steps.map((st) => el('li', {},
+      el('strong', {}, `${st.what}: `), el('span', { class: 'step-formula' }, ...marked(st, 'formula')),
+      el('span', { class: 'step-numbers' }, ...marked(st, 'numbers'))))),
+    d.answer ? el('p', { class: 'deriv-answer' }, el('strong', {}, 'Answer: '), ...marked(d, 'answer')) : null,
+  ];
+}
+
 function derivation(res, rows) {
-  const which = rows.map((r, i) => i).filter((i) => rows[i]._derivation?.length);
+  const which = rows.map((r, i) => i).filter((i) => rows[i]._derivation?.steps?.length);
   const defs = res.definitions ?? [], refs = res.references ?? [];
   if (!which.length && !defs.length && !refs.length) return [];
   const parts = [];
   if (which.length) {
-    const steps = el('ol', { class: 'steps' });
-    const show = (i) => steps.replaceChildren(...rows[i]._derivation.map((st) => el('li', {},
-      el('strong', {}, `${st.what}: `), el('span', { class: 'step-formula' }, st.formula),
-      el('span', { class: 'step-numbers' }, st.numbers))));
+    const body = el('div', { class: 'deriv-body' });
+    const show = (i) => body.replaceChildren(...derivationOf(rows[i]._derivation));
+    parts.push(el('p', { class: 'deriv-legend' }, el('span', { class: 'v-given' }, 'given'), ' your inputs · ',
+      el('span', { class: 'v-derived' }, 'derived'), ' computed from them'));
     if (rows.length > 1) {
       const pick = el('select', { id: 'derivation-row', onchange: (e) => show(Number(e.target.value)) },
         which.map((i) => el('option', { value: String(i) }, `Scenario ${i + 1}`)));
       parts.push(el('div', { class: 'details' }, el('label', { for: 'derivation-row' }, 'Steps for'), pick));
     }
     show(which[0]);
-    parts.push(steps);
+    parts.push(body);
   }
   if (defs.length) parts.push(el('h4', {}, 'Symbols'), el('dl', { class: 'symbols' }, defs.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])));
   if (refs.length) parts.push(el('h4', {}, 'References'), el('ol', { class: 'refs' }, refs.map((r) => el('li', {}, r))));
+  if (res.bibliography?.length) {
+    parts.push(el('button', { type: 'button', onclick: () => {
+      const text = res.bibliography.map((r) => r.bibtex.trim()).join('\n\n') + '\n';
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/x-bibtex;charset=utf-8' }));
+      const link = el('a', { href: url, download: `${state.proc.id}-references.bib` });
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } }, 'Download BibTeX'));
+  }
   const box = el('details', { class: 'derivation', id: 'derivation' }, el('summary', {}, 'How this was calculated'), ...parts);
   box.open = state.derivationOpen;
   box.addEventListener('toggle', () => { state.derivationOpen = box.open; });

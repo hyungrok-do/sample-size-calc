@@ -194,9 +194,6 @@ Procedure one_ni() {
                    {"δ0", "Boundary of the null hypothesis implied by the margin and the direction."},
                    {"δ", "True mean (or mean difference) relative to the reference value."},
                    {"Alpha", "One-sided significance level."}};
-  p.references = {REF_CHOW, REF_JULIOUS,
-                  "Blackwelder, W. C. (1982). Proving the null hypothesis in clinical trials. Controlled Clinical "
-                  "Trials 3, 345–353."};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.dropout_groups = {"n"};
@@ -291,9 +288,6 @@ Procedure two_ni() {
                    {"Margin", "Non-inferiority or superiority margin (positive)."},
                    {"δ0", "Null boundary for μ1 − μ2 implied by the margin and direction."},
                    {"δ", "True difference μ1 − μ2."}};
-  p.references = {REF_CHOW, REF_JULIOUS,
-                  "Blackwelder, W. C. (1982). Proving the null hypothesis in clinical trials. Controlled Clinical "
-                  "Trials 3, 345–353."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};
@@ -451,11 +445,6 @@ Procedure one_equiv() {
   p.definitions = {{"EL, EU", "Equivalence limits for the difference."},
                    {"δ", "True difference (mean minus reference value, or mean paired difference)."},
                    {"Alpha", "Level of each one-sided test (the TOST procedure has size ≤ alpha)."}};
-  p.references = {REF_CHOW, REF_JULIOUS,
-                  "Schuirmann, D. J. (1987). A comparison of the two one-sided tests procedure and the power approach "
-                  "for assessing the equivalence of average bioavailability. Journal of Pharmacokinetics and "
-                  "Biopharmaceutics 15, 657–680.",
-                  "Owen, D. B. (1965). A special case of a bivariate non-central t-distribution. Biometrika 52, 437–446."};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.dropout_groups = {"n"};
@@ -551,10 +540,6 @@ Procedure two_equiv() {
   p.definitions = {{"EL, EU", "Equivalence limits for μ1 − μ2."},
                    {"δ", "True difference μ1 − μ2."},
                    {"Alpha", "Level of each one-sided test."}};
-  p.references = {REF_CHOW, REF_JULIOUS,
-                  "Schuirmann, D. J. (1987). A comparison of the two one-sided tests procedure and the power approach "
-                  "for assessing the equivalence of average bioavailability. Journal of Pharmacokinetics and "
-                  "Biopharmaceutics 15, 657–680."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};

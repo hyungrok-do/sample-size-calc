@@ -223,10 +223,6 @@ Procedure icc() {
   p.definitions = {{"N", "Number of subjects."},
                    {"k", "Number of raters (or repeated measurements) per subject."},
                    {"ρ0, ρ1", "Intraclass correlation under the null and the alternative hypotheses."}};
-  p.references = {"Walter, S. D., Eliasziw, M. & Donner, A. (1998). Sample size and optimal designs for reliability "
-                  "studies. Statistics in Medicine 17, 101–110.",
-                  "Shrout, P. E. & Fleiss, J. L. (1979). Intraclass correlations: uses in assessing rater reliability. "
-                  "Psychological Bulletin 86, 420–428."};
   p.curve_param = "n";
   p.curve_label = "N (Subjects)";
   p.curve_min = 2;
@@ -418,9 +414,6 @@ Procedure kappa() {
   p.definitions = {{"κ0, κ1", "Cohen's kappa under the null and the alternative hypotheses."},
                    {"π", "Probability that a rater classifies a subject as positive (equal for both raters)."},
                    {"Agreement under H1", "Probability that the two raters agree when κ = κ1."}};
-  p.references = {"Fleiss, J. L., Cohen, J. & Everitt, B. S. (1969). Large sample standard errors of kappa and "
-                  "weighted kappa. Psychological Bulletin 72, 323–327.",
-                  "Cantor, A. B. (1996). Sample-size calculations for Cohen's kappa. Psychological Methods 1, 150–153."};
   p.curve_param = "n";
   p.curve_label = "N (Subjects)";
   p.curve_min = 2;
@@ -583,10 +576,6 @@ Procedure auc() {
   p.definitions = {{"Cases, Controls", "Subjects with and without the condition (by the reference standard)."},
                    {"AUC", "Area under the ROC curve: the probability that a random case scores higher than a random "
                            "control."}};
-  p.references = {"Hanley, J. A. & McNeil, B. J. (1982). The meaning and use of the area under a receiver operating "
-                  "characteristic (ROC) curve. Radiology 143, 29–36.",
-                  "Obuchowski, N. A. (1998). Sample size calculations in studies of test accuracy. Statistical Methods "
-                  "in Medical Research 7, 371–392."};
   p.notes = {"The variance uses Hanley and McNeil's exponential approximation; for binormal data it is close but "
              "slightly conservative."};
   p.curve_param = "n1";
@@ -855,10 +844,6 @@ Procedure sens_spec() {
   p.definitions = {{"Se, Sp", "Sensitivity (true positive rate) and specificity (true negative rate)."},
                    {"Power", "Probability that the test(s) reject the null hypotheses when Se = Se1 and Sp = Sp1; for "
                              "both, the product of the two powers (independent subjects)."}};
-  p.references = {"Flahault, A., Cadilhac, M. & Thomas, G. (2005). Sample size calculation should be performed for "
-                  "design accuracy in diagnostic test studies. Journal of Clinical Epidemiology 58, 859–862.",
-                  "Pepe, M. S. (2003). The Statistical Evaluation of Medical Tests for Classification and Prediction. "
-                  "Oxford University Press."};
   p.notes = {"Exact binomial power is not monotone in N; the smallest N reaching the target is reported."};
   p.curve_param = "n";
   p.curve_label = "N (Total)";
@@ -1296,12 +1281,6 @@ Procedure paired_diagnostic() {
              "The dependence between the tests matters: conditional independence is a conservative guess when both "
              "tests look at the same feature, and it understates the sample size when their results tend to "
              "disagree."};
-  p.references = {"Connor, R. J. (1987). Sample size for testing differences in proportions for the paired-sample "
-                  "design. Biometrics 43, 207–211.",
-                  "Alonzo, T. A., Pepe, M. S. & Moskowitz, C. S. (2002). Sample size calculations for comparative "
-                  "studies of medical tests for detecting presence of disease. Statistics in Medicine 21, 835–852.",
-                  "Pepe, M. S. (2003). The Statistical Evaluation of Medical Tests for Classification and Prediction. "
-                  "Oxford University Press."};
   p.curve_param = "n";
   p.curve_label = "N (Total)";
   p.curve_min = 2;

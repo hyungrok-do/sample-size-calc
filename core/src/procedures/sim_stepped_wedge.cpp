@@ -489,13 +489,6 @@ Procedure stepped_wedge_sim() {
              "With few clusters, Satterthwaite's degrees of freedom keep the type I error closer to α than the "
              "normal approximation, but with fewer than about 8 clusters even a correctly specified model rejects "
              "somewhat too often (6–7% at α = 0.05, as lmerTest's tests do)."};
-  p.references = {"Hussey, M. A. & Hughes, J. P. (2007). Design and analysis of stepped wedge cluster randomized "
-                  "trials. Contemporary Clinical Trials 28, 182–191.",
-                  "Hooper, R., Teerenstra, S., de Hoop, E. & Eldridge, S. (2016). Sample size calculation for "
-                  "stepped wedge and other longitudinal cluster randomised trials. Statistics in Medicine 35, "
-                  "4718–4728.",
-                  "Baio, G. et al. (2015). Sample size calculation for a stepped wedge trial. Trials 16, 354.",
-                  simc::REF_SIM};
   p.curve_param = "g";
   p.curve_label = "g (Clusters Switching at Each Step)";
   p.curve_min = 1;

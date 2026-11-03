@@ -1,0 +1,749 @@
+[
+  {
+    "id": "means.crossover",
+    "name": "Two-Treatment 2×2 Cross-Over Design (Difference of Means)",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R003_Senn_2002"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.be.ratio",
+    "name": "Bioequivalence: Ratio of Two Means (TOST, Log Scale)",
+    "keys": [
+      "R004_Schuirmann_1987",
+      "R005_OWEN_1965",
+      "R001_Chow_2017"
+    ],
+    "unresolved_legacy_refs": [
+      "R006"
+    ]
+  },
+  {
+    "id": "means.anova",
+    "name": "One-Way Analysis of Variance (ANOVA) F-Test",
+    "keys": [
+      "R007_Cohen_2013",
+      "R009_Fleiss_1999",
+      "R010_Benton_2003"
+    ],
+    "unresolved_legacy_refs": [
+      "R008"
+    ]
+  },
+  {
+    "id": "means.anova2",
+    "name": "Two-Way Factorial ANOVA (Main Effects and Interaction)",
+    "keys": [
+      "R007_Cohen_2013"
+    ],
+    "unresolved_legacy_refs": [
+      "R011"
+    ]
+  },
+  {
+    "id": "means.one.t",
+    "name": "Tests for One Mean (One-Sample T-Test)",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R012_Machin_2018",
+      "R013_Lenth_1989",
+      "R010_Benton_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.one.ni",
+    "name": "Non-Inferiority Tests for One Mean (or Paired Means)",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R014_Blackwelder_1982"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.one.equiv",
+    "name": "Equivalence Tests for One Mean (or Paired Means)",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R004_Schuirmann_1987",
+      "R005_OWEN_1965"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.paired.t",
+    "name": "Tests for Paired Means (Paired T-Test)",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.repeated",
+    "name": "Two Means in a Repeated-Measures Design (Time-Averaged Response)",
+    "keys": [
+      "R015_Diggle_2002",
+      "R016_Liu_1997"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.rm.anova",
+    "name": "Repeated-Measures ANOVA (One Within-Subject Factor)",
+    "keys": [
+      "R007_Cohen_2013",
+      "R017_Muller_1989"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.slopes",
+    "name": "Two Mean Slopes in a Longitudinal Design (Random Slopes)",
+    "keys": [
+      "R018_Fitzmaurice_2011",
+      "R015_Diggle_2002",
+      "R019_Ahn_2014"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.t",
+    "name": "Two-Sample T-Tests Assuming Equal Variance",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R012_Machin_2018",
+      "R013_Lenth_1989",
+      "R010_Benton_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.welch",
+    "name": "Two-Sample T-Tests Allowing Unequal Variance (Welch)",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R012_Machin_2018",
+      "R013_Lenth_1989",
+      "R010_Benton_2003",
+      "R020_WELCH_1947"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.ni",
+    "name": "Non-Inferiority Tests for Two Means",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R014_Blackwelder_1982"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.ancova",
+    "name": "Two Means Adjusted for Covariates (ANCOVA)",
+    "keys": [
+      "R021_Borm_2007",
+      "R001_Chow_2017"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.equiv",
+    "name": "Equivalence Tests for Two Means (TOST)",
+    "keys": [
+      "R001_Chow_2017",
+      "R002_Julious_2009",
+      "R004_Schuirmann_1987"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.coprimary",
+    "name": "Two Means with Co-Primary Endpoints (All Must Be Significant)",
+    "keys": [
+      "R022_Sozu_2011",
+      "R023_Sugimoto_2012",
+      "R024_Offen_2007"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.cc",
+    "name": "Unmatched Case-Control Study (Odds Ratio)",
+    "keys": [
+      "R026_Fleiss_2003"
+    ],
+    "unresolved_legacy_refs": [
+      "R025",
+      "R027"
+    ]
+  },
+  {
+    "id": "prop.cc.matched",
+    "name": "Matched Case-Control Study (1:M Matching)",
+    "keys": [
+      "R028_Dupont_1988"
+    ],
+    "unresolved_legacy_refs": [
+      "R025",
+      "R029"
+    ]
+  },
+  {
+    "id": "prop.chisq",
+    "name": "Chi-Square Tests (Goodness-of-Fit and Contingency Tables)",
+    "keys": [
+      "R007_Cohen_2013",
+      "R010_Benton_2003",
+      "R030_Guenther_1977"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.one",
+    "name": "Tests for One Proportion",
+    "keys": [
+      "R001_Chow_2017",
+      "R026_Fleiss_2003",
+      "R012_Machin_2018",
+      "R031_Chernick_2002"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.paired.mcnemar",
+    "name": "Tests for Two Correlated Proportions (McNemar Test)",
+    "keys": [
+      "R032_Connor_1987",
+      "R033_Lachin_1992",
+      "R026_Fleiss_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.trend",
+    "name": "Cochran–Armitage Test for a Trend in Proportions",
+    "keys": [
+      "R034_Nam_1987",
+      "R035_Armitage_1955"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.one.simon",
+    "name": "Simon's Two-Stage Designs (Single-Arm Phase II)",
+    "keys": [
+      "R036_Simon_1989",
+      "R037_Jung_2004"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.two",
+    "name": "Tests for Two Proportions",
+    "keys": [
+      "R026_Fleiss_2003",
+      "R001_Chow_2017",
+      "R012_Machin_2018",
+      "R038_Casagrande_1978",
+      "R039_Fisher_1935"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.two.ni",
+    "name": "Non-Inferiority Tests for Two Proportions",
+    "keys": [
+      "R040_Farrington_1990",
+      "R041_Miettinen_1985",
+      "R001_Chow_2017",
+      "R002_Julious_2009"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.two.equiv",
+    "name": "Equivalence Tests for Two Proportions",
+    "keys": [
+      "R040_Farrington_1990",
+      "R041_Miettinen_1985",
+      "R001_Chow_2017"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "corr.one",
+    "name": "Tests for One Correlation (Pearson)",
+    "keys": [
+      "R042_Guenther_1977",
+      "R007_Cohen_2013",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": [
+      "R043"
+    ]
+  },
+  {
+    "id": "corr.two",
+    "name": "Tests for Two Independent Correlations",
+    "keys": [
+      "R007_Cohen_2013"
+    ],
+    "unresolved_legacy_refs": [
+      "R043"
+    ]
+  },
+  {
+    "id": "reg.multiple",
+    "name": "Multiple Regression (R² Increase F-Test)",
+    "keys": [
+      "R007_Cohen_2013",
+      "R044_Gatsonis_1989",
+      "R010_Benton_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "reg.slope",
+    "name": "Simple Linear Regression (Test of the Slope)",
+    "keys": [
+      "R045_Dupont_1998",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "reg.logistic",
+    "name": "Logistic Regression (One Covariate of Interest)",
+    "keys": [
+      "R046_Hsieh_1998",
+      "R047_Hsieh_1989"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "reg.prediction",
+    "name": "Developing a Clinical Prediction Model (Minimum Sample Size)",
+    "keys": [
+      "R048_Riley_2020",
+      "R049_Riley_2018",
+      "R050_Riley_2018",
+      "R051_Riley_2020",
+      "R052_Ensor_2019",
+      "R053_Van_Houwelingen_1990"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "reg.cox",
+    "name": "Cox Regression (One Covariate of Interest)",
+    "keys": [
+      "R054_Hsieh_2000",
+      "R055_Schoenfeld_1983"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "surv.logrank",
+    "name": "Logrank Tests (Exponential Survival, Accrual and Follow-Up)",
+    "keys": [
+      "R056_SCHOENFELD_1981",
+      "R057_Freedman_1982",
+      "R058_Lachin_1986",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "surv.logrank.ni",
+    "name": "Non-Inferiority Logrank Tests (Hazard Ratio Margin)",
+    "keys": [
+      "R056_SCHOENFELD_1981",
+      "R059_Jung_2005",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "rates.one.poisson",
+    "name": "Tests for One Poisson Rate",
+    "keys": [
+      "R060_GARWOOD_1936",
+      "R061_Gu_2008",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "rates.two.poisson",
+    "name": "Tests for the Ratio of Two Poisson Rates",
+    "keys": [
+      "R061_Gu_2008",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "rates.two.negbin",
+    "name": "Tests for the Ratio of Two Negative Binomial Rates",
+    "keys": [
+      "R062_Zhu_2013",
+      "R063_Keene_2007"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "var.one",
+    "name": "Tests for One Variance (Chi-Square Test)",
+    "keys": [
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": [
+      "R064"
+    ]
+  },
+  {
+    "id": "var.two",
+    "name": "Tests for Two Variances (F-Test)",
+    "keys": [
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": [
+      "R008"
+    ]
+  },
+  {
+    "id": "nonpar.signedrank",
+    "name": "Wilcoxon Signed-Rank Test (One Sample or Paired)",
+    "keys": [
+      "R065_Lehm:nonp:1975"
+    ],
+    "unresolved_legacy_refs": [
+      "R066"
+    ]
+  },
+  {
+    "id": "nonpar.sign",
+    "name": "Sign Test (Exact Binomial)",
+    "keys": [
+      "R067_Noether_1987",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "nonpar.kruskal",
+    "name": "Kruskal–Wallis Test",
+    "keys": [
+      "R065_Lehm:nonp:1975",
+      "R068_Mahoney_1996"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "nonpar.mannwhitney",
+    "name": "Mann–Whitney U / Wilcoxon Rank-Sum Test",
+    "keys": [
+      "R067_Noether_1987",
+      "R065_Lehm:nonp:1975"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "gs.logrank",
+    "name": "Group-Sequential Logrank Tests (Hazard Ratio)",
+    "keys": [
+      "R069_Jennison_1999",
+      "R070_GORDON_LAN_1983",
+      "R071_O_Brien_1979",
+      "R072_POCOCK_1977",
+      "R073_KIM_1987",
+      "R074_Hwang_1990",
+      "R075_Wang_1987",
+      "R076_Pampallona_2001",
+      "R056_SCHOENFELD_1981"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "gs.means",
+    "name": "Group-Sequential Tests for Two Means",
+    "keys": [
+      "R069_Jennison_1999",
+      "R070_GORDON_LAN_1983",
+      "R071_O_Brien_1979",
+      "R072_POCOCK_1977",
+      "R073_KIM_1987",
+      "R074_Hwang_1990",
+      "R075_Wang_1987",
+      "R076_Pampallona_2001"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "gs.props",
+    "name": "Group-Sequential Tests for Two Proportions",
+    "keys": [
+      "R069_Jennison_1999",
+      "R070_GORDON_LAN_1983",
+      "R071_O_Brien_1979",
+      "R072_POCOCK_1977",
+      "R073_KIM_1987",
+      "R074_Hwang_1990",
+      "R075_Wang_1987",
+      "R076_Pampallona_2001"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "agree.icc",
+    "name": "Tests for an Intraclass Correlation (Reliability)",
+    "keys": [
+      "R077_Walter_1998",
+      "R078_Shrout_1979"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "agree.kappa",
+    "name": "Tests for Cohen's Kappa (Two Raters, Binary Ratings)",
+    "keys": [
+      "R079_Fleiss_1969",
+      "R080_Cantor_1996"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "diag.auc",
+    "name": "Tests for the Area Under a ROC Curve",
+    "keys": [
+      "R081_Hanley_1982",
+      "R082_Obuchowski_1998"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "diag.sens",
+    "name": "Tests for Sensitivity and Specificity (One Diagnostic Test)",
+    "keys": [
+      "R083_Flahault_2005",
+      "R084_Pepe_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "diag.paired",
+    "name": "Comparing Two Diagnostic Tests on the Same Subjects (Paired Sensitivity and Specificity)",
+    "keys": [
+      "R032_Connor_1987",
+      "R085_Alonzo_2002",
+      "R084_Pepe_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "corr.ci",
+    "name": "Confidence Interval for a Correlation",
+    "keys": [
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.one.ci",
+    "name": "Confidence Interval for One Mean",
+    "keys": [
+      "R086_Kupper_1989",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.ci",
+    "name": "Confidence Interval for the Difference of Two Means",
+    "keys": [
+      "R086_Kupper_1989",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.one.ci",
+    "name": "Confidence Interval for One Proportion",
+    "keys": [
+      "R087_Newcombe_1998",
+      "R088_CLOPPER_1934",
+      "R089_Agresti_1998",
+      "R026_Fleiss_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "prop.two.ci",
+    "name": "Confidence Interval for the Difference of Two Proportions",
+    "keys": [
+      "R090_Newcombe_1998",
+      "R091_Agresti_2000",
+      "R026_Fleiss_2003"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "means.two.cluster",
+    "name": "Two Means in a Cluster-Randomized Design",
+    "keys": [
+      "R093_Campbell_2014",
+      "R012_Machin_2018"
+    ],
+    "unresolved_legacy_refs": [
+      "R092"
+    ]
+  },
+  {
+    "id": "prop.two.cluster",
+    "name": "Two Proportions in a Cluster-Randomized Design",
+    "keys": [
+      "R094_130b794513fd4698b61465bc34f695ac"
+    ],
+    "unresolved_legacy_refs": [
+      "R092"
+    ]
+  },
+  {
+    "id": "cluster.sw",
+    "name": "Stepped-Wedge Cluster-Randomized Designs",
+    "keys": [
+      "R095_Hussey_2007",
+      "R096_Hemming_2015"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.lmm.cluster",
+    "name": "Two Means in a Cluster-Randomized Design with a Mixed Model, by Simulation",
+    "keys": [
+      "R097_Eldridge_2006",
+      "R098_Kuznetsova_2017",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": [
+      "R092"
+    ]
+  },
+  {
+    "id": "sim.glmm.cluster",
+    "name": "Two Proportions in a Cluster-Randomized Design with a Logistic Mixed Model, by Simulation",
+    "keys": [
+      "R100_Li_2015",
+      "R097_Eldridge_2006",
+      "R101_Pinheiro_1995",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.sw",
+    "name": "Stepped-Wedge Trial with a Mixed Model (Cluster-Period Effects), by Simulation",
+    "keys": [
+      "R095_Hussey_2007",
+      "R102_Hooper_2016",
+      "R103_Baio_2015",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.winratio",
+    "name": "Win Ratio for a Hierarchical Composite Endpoint (Death, Then a Non-Fatal Event, Then a Score), by Simulation",
+    "keys": [
+      "R104_Pocock_2011",
+      "R105_Finkelstein_1999",
+      "R106_Bebu_2015",
+      "R107_Yu_2022",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.lmm.longitudinal",
+    "name": "Two Mean Slopes with a Mixed Model, by Simulation",
+    "keys": [
+      "R108_Laird_1982",
+      "R109_Satterthwaite_1946",
+      "R098_Kuznetsova_2017",
+      "R099_Landau_2012",
+      "R110_Arnold_2011"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.mmrm",
+    "name": "Two Means at the Last Visit with Dropout: Mixed Model for Repeated Measures (MMRM), by Simulation",
+    "keys": [
+      "R111_Mallinckrodt_2001",
+      "R112_Lu_2008",
+      "R113_Anderson_1957",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.means.robust",
+    "name": "Two Means with Skewed or Heavy-Tailed Data (t, Welch, Mann–Whitney), by Simulation",
+    "keys": [
+      "R067_Noether_1987",
+      "R114_Fagerland_2009",
+      "R020_WELCH_1947",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.ordinal",
+    "name": "Two Groups with an Ordinal Outcome (Proportional Odds Model or Mann–Whitney), by Simulation",
+    "keys": [
+      "R115_Whitehead_1993",
+      "R116_McCullagh_1980",
+      "R117_Roozenbeek_2011",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": []
+  },
+  {
+    "id": "sim.multiarm",
+    "name": "Several Treatments against a Control with a Multiplicity Adjustment (Dunnett, Holm, Hochberg), by Simulation",
+    "keys": [
+      "R118_Dunnett_1955",
+      "R120_HOCHBERG_1988",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": [
+      "R119",
+      "R121"
+    ]
+  },
+  {
+    "id": "sim.surv.nph",
+    "name": "Two Survival Curves with Non-Proportional Hazards, by Simulation",
+    "keys": [
+      "R122_Fleming_2005",
+      "R123_Lin_2020",
+      "R124_Royston_2013",
+      "R056_SCHOENFELD_1981",
+      "R125_Genz_1992",
+      "R099_Landau_2012"
+    ],
+    "unresolved_legacy_refs": []
+  }
+]

@@ -1,4 +1,5 @@
 #include "engine/procedure.hpp"
+#include "engine/bibliography.hpp"
 
 #include <algorithm>
 
@@ -89,6 +90,7 @@ ProcRegistrar::ProcRegistrar(Procedure (*make)()) {
   // Procedures live for the whole program; leaking them avoids static
   // destruction-order issues when the library is unloaded.
   auto* p = new Procedure(make());
+  bibliography::attach(*p);
   registry().push_back(p);
 }
 

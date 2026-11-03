@@ -66,30 +66,56 @@ void run_one_mean(const Scenario& s, Row& r, RunContext& ctx, double m0, const s
   }
 }
 
-// How a one-mean t- or z-test's numbers come about: the difference, the noncentrality, the critical value, the
-// power, and how the solved quantity was found. Shared by the one-sample and paired designs.
-derive::Steps one_mean_steps(const Scenario& s, const Row& r, double m0, const std::string& m1_key, double sigma,
-                             const char* m1_sym, const char* m0_sym, const char* sd_sym) {
+// How a one-mean t- or z-test's answer comes about, following what was solved for (shared by the one-sample and
+// paired designs, whose `pre` steps derive σD). The test's power at N is that of a statistic with noncentrality
+// λ = δ √N / σ: solving for N, it is evaluated at the size found and one below; solving for the mean, the target
+// power gives λ, and λ the difference.
+derive::Derivation one_mean_derivation(const Scenario& s, const Row& r, double m0, const std::string& m1_key,
+                                       double sigma, const char* m1_sym, const char* m0_sym, const char* sd_sym,
+                                       bool sd_given, derive::Steps pre) {
   using namespace derive;
   const Alt a = alt(s);
+  const bool z = s.is("test", "z");
   const double n = r.num("n"), m1 = r.num(m1_key), diff = m1 - m0, alpha = s("alpha");
-  const double ncp = diff * std::sqrt(n) / sigma;
-  Steps out;
-  out.push_back({"Difference to detect", std::string("δ = ") + m1_sym + " − " + m0_sym,
-                 num(m1) + " − " + sub(m0) + " = " + num(diff)});
-  out.push_back({"Noncentrality", std::string("λ = δ √N / ") + sd_sym,
-                 sub(diff) + " × √" + fint(n) + " / " + num(sigma) + " = " + num(ncp)});
-  if (s.is("test", "z")) {
-    out.push_back(z_critical(alpha, a));
-    out.push_back(z_power_step(ncp, alpha, a));
-  } else {
-    out.push_back(t_critical(alpha, n - 1, a, "N − 1"));
-    out.push_back(t_power_step(ncp, n - 1, alpha, a));
+  const double ncp = diff * std::sqrt(n) / sigma, df = n - 1;
+  const std::string sd = sd_given ? gv(sigma) : dv(sigma), N = size(n, s.solve == "n");
+  const std::string m1s(m1_sym), m0s(m0_sym), sds(sd_sym);
+  Derivation out;
+  out.steps = std::move(pre);
+  const auto critical = [&] { out.steps.push_back(z ? z_critical(alpha, a) : t_critical(alpha, df, a, "N − 1")); };
+  if (s.solve == m1_key) {  // the target power gives λ, λ the difference, the difference the mean
+    const double target = s("power");
+    out.find = find_effect(m1s, target, "with N = " + gvi(n));
+    critical();
+    out.steps.push_back(z ? z_ncp_needed(ncp, alpha, a, target) : t_ncp_needed(ncp, df, alpha, a, target));
+    out.steps.push_back({"Difference detected", "δ = λ " + sds + " / √N",
+                         dvs(ncp) + " × " + sd + " / √" + N + " = " + dv(diff)});
+    out.steps.push_back({"Mean detected", m1s + " = " + m0s + " + δ", gv(m0) + " + " + dvs(diff) + " = " + dv(m1)});
+    out.answer = m1s + " = " + dv(m1) + " (δ = " + dv(diff) + ")";
+    return out;
   }
-  if (s.solve == "n")
-    out.push_back(n_search([&](double x) { return one_mean_power(s, x, diff, sigma); }, n, s("power"), 2));
-  else if (s.solve == m1_key)
-    out.push_back(effect_search(m1_sym, m1, one_mean_power(s, n, diff, sigma), s("power")));
+  out.steps.push_back({"Difference to detect", "δ = " + m1s + " − " + m0s, gv(m1) + " − " + gvs(m0) + " = " + dv(diff)});
+  if (s.solve == "n") {
+    out.find = find_size("N", s("power"));
+    // the closed form a normal statistic would give, beside the exact answer below
+    const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
+    out.steps.push_back({"Normal approximation", std::string("N ≈ (z(") + level_symbol(a) + ") + z(1 − β))² " + sds +
+                                                     "² / δ², for comparison; the steps below give the answer",
+                         "(" + dv(za) + " + " + dv(zb) + ")² × " + sd + "² / " + dvs(diff) + "² = " +
+                             dv((za + zb) * (za + zb) * sigma * sigma / (diff * diff))});
+  } else {
+    out.find = find_power("with N = " + gvi(n));
+  }
+  out.steps.push_back({"Noncentrality", "λ = δ √N / " + sds, dvs(diff) + " × √" + N + " / " + sd + " = " + dv(ncp)});
+  critical();
+  out.steps.push_back(z ? z_power_step(ncp, alpha, a) : t_power_step(ncp, df, alpha, a));
+  const double power = one_mean_power(s, n, diff, sigma);
+  if (s.solve == "n") {
+    out.steps.push_back(n_search([&](double x) { return one_mean_power(s, x, diff, sigma); }, n, s("power"), 2));
+    out.answer = "N = " + dvi(n) + ", with power " + dvp(power);
+  } else {
+    out.answer = "power = " + dvp(power);
+  }
   return out;
 }
 
@@ -165,7 +191,7 @@ Procedure one_sample() {
            fnum(r.num("alpha")) + ".";
   };
   p.derivation = [](const Scenario& s, const Row& r) {
-    return one_mean_steps(s, r, r.num("mu0"), "mu1", r.num("sigma"), "μ1", "μ0", "σ");
+    return one_mean_derivation(s, r, r.num("mu0"), "mu1", r.num("sigma"), "μ1", "μ0", "σ", true, {});
   };
   p.definitions = {{"N", "Number of subjects (the test has N − 1 degrees of freedom)."},
                    {"μ0", "Population mean under the null hypothesis."},
@@ -175,7 +201,6 @@ Procedure one_sample() {
                    {"δ/σ", "Standardized effect size (Cohen's d)."},
                    {"Alpha", "Probability of rejecting a true null hypothesis."},
                    {"Power", "Probability of rejecting the null hypothesis when μ = μ1."}};
-  p.references = {REF_CHOW, REF_JULIOUS, REF_MACHIN, REF_LENTH, REF_BK};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.curve_min = 2;
@@ -295,20 +320,19 @@ Procedure paired() {
   };
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
-    Steps out;
-    if (s.is("sdtype", "corr"))
-      out.push_back({"SD of the differences", "σD = √(σ1² + σ2² − 2ρ σ1 σ2)",
-                     "√(" + num(s("sd1")) + "² + " + num(s("sd2")) + "² − 2 × " + sub(s("rho")) + " × " +
-                         num(s("sd1")) + " × " + num(s("sd2")) + ") = " + num(r.num("sdd"))});
-    for (auto& st : one_mean_steps(s, r, r.num("mud0"), "mud", r.num("sdd"), "μD", "μD0", "σD")) out.push_back(st);
-    return out;
+    const bool corr = s.is("sdtype", "corr");
+    Steps pre;
+    if (corr)  // σD from the two SDs and their correlation
+      pre.push_back({"SD of the differences", "σD = √(σ1² + σ2² − 2ρ σ1 σ2)",
+                     "√(" + gv(s("sd1")) + "² + " + gv(s("sd2")) + "² − 2 × " + gvs(s("rho")) + " × " +
+                         gv(s("sd1")) + " × " + gv(s("sd2")) + ") = " + dv(r.num("sdd"))});
+    return one_mean_derivation(s, r, r.num("mud0"), "mud", r.num("sdd"), "μD", "μD0", "σD", !corr, std::move(pre));
   };
   p.definitions = {{"N", "Number of pairs (subjects measured twice)."},
                    {"μD0", "Mean of the paired differences under H0 (usually 0)."},
                    {"μD", "Mean of the paired differences under H1."},
                    {"σD", "SD of the paired differences: √(σ1² + σ2² − 2ρσ1σ2)."},
                    {"Alpha", "Significance level."}};
-  p.references = {REF_CHOW, REF_JULIOUS, REF_MACHIN};
   p.curve_param = "n";
   p.curve_label = "N (Number of Pairs)";
   p.dropout_groups = {"n"};
@@ -499,40 +523,81 @@ Procedure two_sample(bool welch) {
   p.derivation = [welch](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
-    const double n1 = r.num("n1"), n2 = r.num("n2"), diff = r.num("delta"), alpha = s("alpha");
-    Steps out;
-    out.push_back({"Difference to detect", "δ = μ1 − μ2",
-                   num(r.num("mu1")) + " − " + sub(r.num("mu2")) + " = " + num(diff)});
+    const bool z = s.is("test", "z"), solved = s.solve == "n";
+    const blocks::TwoN n{r.num("n1"), r.num("n2")};
+    const double diff = r.num("delta"), alpha = s("alpha"), mu1 = r.num("mu1"), mu2 = r.num("mu2");
+    const std::string N1 = size(n.n1, solved), N2 = size(n.n2, solved);
+    Derivation out;
+    // the standard error and degrees of freedom at the group sizes (given, or the ones found)
     double se, df;
     if (welch) {
-      const double v1 = s("sd1") * s("sd1") / n1, v2 = s("sd2") * s("sd2") / n2;
+      const double v1 = s("sd1") * s("sd1") / n.n1, v2 = s("sd2") * s("sd2") / n.n2;
       se = std::sqrt(v1 + v2);
-      df = (v1 + v2) * (v1 + v2) / (v1 * v1 / (n1 - 1) + v2 * v2 / (n2 - 1));
-      out.push_back({"Standard error", "SE = √(σ1²/N1 + σ2²/N2)",
-                     "√(" + num(s("sd1")) + "²/" + fint(n1) + " + " + num(s("sd2")) + "²/" + fint(n2) + ") = " +
-                         num(se)});
+      df = (v1 + v2) * (v1 + v2) / (v1 * v1 / (n.n1 - 1) + v2 * v2 / (n.n2 - 1));
     } else {
-      se = s("sigma") * std::sqrt(1 / n1 + 1 / n2);
-      df = n1 + n2 - 2;
-      out.push_back({"Standard error", "SE = σ √(1/N1 + 1/N2)",
-                     num(s("sigma")) + " × √(1/" + fint(n1) + " + 1/" + fint(n2) + ") = " + num(se)});
+      se = s("sigma") * std::sqrt(1 / n.n1 + 1 / n.n2);
+      df = n.n1 + n.n2 - 2;
     }
+    const auto se_step = [&] {
+      out.steps.push_back(welch ? Step{"Standard error", "SE = √(σ1²/N1 + σ2²/N2)",
+                                       "√(" + gv(s("sd1")) + "²/" + N1 + " + " + gv(s("sd2")) + "²/" + N2 + ") = " + dv(se)}
+                                : Step{"Standard error", "SE = σ √(1/N1 + 1/N2)",
+                                       gv(s("sigma")) + " × √(1/" + N1 + " + 1/" + N2 + ") = " + dv(se)});
+    };
+    const auto critical = [&] {
+      out.steps.push_back(z ? z_critical(alpha, a)
+                            : t_critical(alpha, df, a,
+                                         welch ? "(σ1²/N1 + σ2²/N2)² / ((σ1²/N1)²/(N1 − 1) + (σ2²/N2)²/(N2 − 1)), "
+                                                 "Welch–Satterthwaite"
+                                               : "N1 + N2 − 2"));
+    };
     const double ncp = diff / se;
-    out.push_back({"Noncentrality", "λ = δ / SE", sub(diff) + " / " + num(se) + " = " + num(ncp)});
-    if (s.is("test", "z")) {
-      out.push_back(z_critical(alpha, a));
-      out.push_back(z_power_step(ncp, alpha, a));
-    } else {
-      out.push_back(t_critical(alpha, df, a,
-                               welch ? "(σ1²/N1 + σ2²/N2)² / ((σ1²/N1)²/(N1 − 1) + (σ2²/N2)²/(N2 − 1)), Welch–Satterthwaite"
-                                     : "N1 + N2 − 2"));
-      out.push_back(t_power_step(ncp, df, alpha, a));
+    if (s.solve == "mu1") {  // the target power gives λ, λ the difference, the difference μ1
+      const double target = s("power");
+      out.find = find_effect("μ1", target, "with " + two_sizes(n, false));
+      se_step();
+      critical();
+      out.steps.push_back(z ? z_ncp_needed(ncp, alpha, a, target) : t_ncp_needed(ncp, df, alpha, a, target));
+      out.steps.push_back({"Difference detected", "δ = λ × SE", dvs(ncp) + " × " + dv(se) + " = " + dv(diff)});
+      out.steps.push_back({"Mean detected", "μ1 = μ2 + δ", gv(mu2) + " + " + dvs(diff) + " = " + dv(mu1)});
+      out.answer = "μ1 = " + dv(mu1) + " (δ = " + dv(diff) + ")";
+      return out;
     }
+    out.steps.push_back({"Difference to detect", "δ = μ1 − μ2", gv(mu1) + " − " + gvs(mu2) + " = " + dv(diff)});
+    const std::string& alloc = s.s("alloc");
+    if (solved) {
+      out.find = find_size(two_group_unknown(s), s("power"));
+      // the closed form a normal statistic would give, beside the exact answer below (where group 2 follows group 1)
+      if (alloc == "equal" || alloc == "ratio") {
+        const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
+        const double k = alloc == "ratio" ? s("r") : 1;  // N2 = k N1
+        const double var = welch ? s("sd1") * s("sd1") + s("sd2") * s("sd2") / k : s("sigma") * s("sigma") * (1 + 1 / k);
+        const std::string lead = std::string("(z(") + level_symbol(a) + ") + z(1 − β))²";
+        const std::string vf = welch ? (alloc == "ratio" ? "(σ1² + σ2²/r)" : "(σ1² + σ2²)")
+                                     : (alloc == "ratio" ? "σ²(1 + 1/r)" : "2σ²");
+        const std::string vn = welch ? "(" + gv(s("sd1")) + "² + " + gv(s("sd2")) + "²" + (alloc == "ratio" ? "/" + gv(k) : "") + ")"
+                                     : (alloc == "ratio" ? gv(s("sigma")) + "² × (1 + 1/" + gv(k) + ")"
+                                                         : "2 × " + gv(s("sigma")) + "²");
+        out.steps.push_back({"Normal approximation",
+                             std::string(alloc == "equal" ? "N1 = N2" : "N1") + " ≈ " + lead + " " + vf +
+                                 " / δ², for comparison; the steps below give the answer",
+                             "(" + dv(za) + " + " + dv(zb) + ")² × " + vn + " / " + dvs(diff) + "² = " +
+                                 dv((za + zb) * (za + zb) * var / (diff * diff))});
+      }
+    } else {
+      out.find = find_power("with " + two_sizes(n, false));
+    }
+    se_step();
+    out.steps.push_back({"Noncentrality", "λ = δ / SE", dvs(diff) + " / " + dv(se) + " = " + dv(ncp)});
+    critical();
+    out.steps.push_back(z ? z_power_step(ncp, alpha, a) : t_power_step(ncp, df, alpha, a));
     const auto power = [&](double x1, double x2) { return two_mean_power(s, x1, x2, diff, welch); };
-    if (s.solve == "n")
-      out.push_back(two_group_search(s, power, {n1, n2}, s("power"), 2));
-    else if (s.solve == "mu1")
-      out.push_back(effect_search("μ1", r.num("mu1"), power(n1, n2), s("power")));
+    if (solved) {
+      out.steps.push_back(two_group_search(s, power, n, s("power"), 2));
+      out.answer = two_sizes(n, true) + " (N = " + dvi(n.total()) + "), with power " + dvp(power(n.n1, n.n2));
+    } else {
+      out.answer = "power = " + dvp(power(n.n1, n.n2));
+    }
     return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
@@ -544,10 +609,6 @@ Procedure two_sample(bool welch) {
   if (welch)
     p.notes = {"The degrees of freedom are Welch–Satterthwaite's at the true standard deviations: accurate from about 8 "
                "subjects per group, while with 3–5 per group the power can be overstated by several points."};
-  p.references = {REF_CHOW, REF_JULIOUS, REF_MACHIN, REF_LENTH, REF_BK};
-  if (welch)
-    p.references.push_back("Welch, B. L. (1947). The generalization of 'Student's' problem when several different "
-                           "population variances are involved. Biometrika 34, 28–35.");
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.curve_min = 2;

@@ -12,8 +12,6 @@ namespace {
 
 using namespace blocks;
 
-const char* REF_COHEN = "Cohen, J. (1988). Statistical Power Analysis for the Behavioral Sciences, 2nd ed. Lawrence "
-                        "Erlbaum.";
 
 // =====================================================================================
 // ANCOVA: two means adjusted for covariates
@@ -183,9 +181,6 @@ Procedure ancova() {
              "with many covariates and small groups (5 covariates and 10 per group: 0.83 instead of 0.70)."};
   p.definitions = {{"R²", "Fraction of the outcome variance explained by the covariates (pooled within groups)."},
                    {"Residual σ", "Standard deviation after covariate adjustment, σ√(1 − R²)."}};
-  p.references = {"Borm, G. F., Fransen, J. & Lemmens, W. A. J. G. (2007). A simple sample size formula for analysis "
-                  "of covariance in randomized clinical trials. Journal of Clinical Epidemiology 60, 1234–1238.",
-                  REF_CHOW};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};
@@ -667,7 +662,6 @@ Procedure anova2() {
   p.definitions = {{"n per Cell", "Subjects in each of the A × B cells (balanced design)."},
                    {"f", "Cohen's effect size: SD of the effects divided by the within-cell SD."},
                    {"Power (A), (B), (A×B)", "Power of the F-tests for the two main effects and the interaction."}};
-  p.references = {REF_COHEN, "Montgomery, D. C. (2017). Design and Analysis of Experiments, 9th ed. Wiley."};
   p.curve_param = "n";
   p.curve_label = "n (Per Cell)";
   p.curve_min = 2;
@@ -869,9 +863,6 @@ Procedure rm_anova() {
   p.definitions = {{"f", "SD of the m means (divisor m) divided by the SD of a single measurement."},
                    {"ρ", "Correlation between two measurements of the same subject (compound symmetry)."},
                    {"ε", "Greenhouse–Geisser factor applied to the degrees of freedom and the noncentrality."}};
-  p.references = {REF_COHEN,
-                  "Muller, K. E. & Barton, C. N. (1989). Approximate power for repeated-measures ANOVA lacking "
-                  "sphericity. Journal of the American Statistical Association 84, 549–555."};
   p.curve_param = "n";
   p.curve_label = "N (Subjects)";
   p.curve_min = 2;
@@ -1122,12 +1113,6 @@ Procedure slopes() {
                           "equally spaced times over D, Sxx = D²·M(M + 1)/(12(M − 1))."}};
   p.notes = {"The calculation assumes that every subject completes every measurement; inflate the sample size for "
              "dropout with the dropout rate, or use the times that most subjects will complete."};
-  p.references = {"Fitzmaurice, G. M., Laird, N. M. & Ware, J. H. (2011). Applied Longitudinal Analysis, 2nd ed. "
-                  "Wiley.",
-                  "Diggle, P. J., Heagerty, P., Liang, K.-Y. & Zeger, S. L. (2002). Analysis of Longitudinal Data, "
-                  "2nd ed. Oxford University Press.",
-                  "Ahn, C., Heo, M. & Zhang, S. (2015). Sample Size Calculations for Clustered and Longitudinal "
-                  "Outcomes in Clinical Research. Chapman & Hall/CRC."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.curve_min = 2;

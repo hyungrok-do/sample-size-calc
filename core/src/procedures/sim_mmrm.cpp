@@ -729,13 +729,6 @@ Procedure mmrm_proc() {
              "completers' t-test.",
              "The quick approximation is the expected generalized least squares variance under the true covariance "
              "and the expected dropout pattern (Lu, Luo & Chen 2008)."};
-  p.references = {"Mallinckrodt, C. H., Clark, W. S. & David, S. R. (2001). Accounting for dropout bias using "
-                  "mixed-effects models. Journal of Biopharmaceutical Statistics 11, 9–21.",
-                  "Lu, K., Luo, X. & Chen, P.-Y. (2008). Sample size estimation for repeated measures analysis in "
-                  "randomized clinical trials with missing data. International Journal of Biostatistics 4(1), 9.",
-                  "Anderson, T. W. (1957). Maximum likelihood estimates for a multivariate normal distribution when "
-                  "some observations are missing. Journal of the American Statistical Association 52, 200–203.",
-                  simc::REF_SIM};
   p.curve_param = "n1";
   p.curve_label = "N1 (Patients Randomized to Group 1)";
   p.curve_min = 3;

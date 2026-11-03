@@ -602,13 +602,6 @@ Procedure robust() {
              "R's wilcox.test with exact = FALSE).",
              "The quick approximation is the normal-theory power of the t-tests and Noether's formula for the "
              "Mann–Whitney test, with P(X1 > X2) integrated numerically for the chosen distribution."};
-  p.references = {"Noether, G. E. (1987). Sample size determination for some common nonparametric tests. Journal "
-                  "of the American Statistical Association 82, 645–647.",
-                  "Fagerland, M. W. & Sandvik, L. (2009). The Wilcoxon–Mann–Whitney test under scrutiny. Statistics "
-                  "in Medicine 28, 1487–1497.",
-                  "Welch, B. L. (1947). The generalization of 'Student's' problem when several different population "
-                  "variances are involved. Biometrika 34, 28–35.",
-                  simc::REF_SIM};
   p.curve_param = "n1";
   p.curve_label = "N1 (Subjects in Group 1)";
   p.example_solve = "n";

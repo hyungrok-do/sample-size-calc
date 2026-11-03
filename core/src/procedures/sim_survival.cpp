@@ -1065,18 +1065,6 @@ Procedure nph() {
       "maximum keeps the type I error at α; for RMST it uses the asymptotic variance of the Kaplan–Meier areas.",
       "Results depend only on the seed: each subject's data come from their own random stream, so a larger study "
       "contains the subjects of a smaller one, which keeps the sample-size search stable."};
-  p.references = {"Fleming, T. R. & Harrington, D. P. (1991). Counting Processes and Survival Analysis. Wiley.",
-                  "Lin, R. S., Lin, J., Roychoudhury, S. et al. (2020). Alternative analysis methods for time to "
-                  "event endpoints under nonproportional hazards: a comparative analysis. Statistics in "
-                  "Biopharmaceutical Research 12, 187–198.",
-                  "Royston, P. & Parmar, M. K. B. (2013). Restricted mean survival time: an alternative to the "
-                  "hazard ratio for the design and analysis of randomized trials with a time-to-event outcome. BMC "
-                  "Medical Research Methodology 13, 152.",
-                  "Schoenfeld, D. (1981). The asymptotic properties of nonparametric tests for comparing survival "
-                  "distributions. Biometrika 68, 316–319.",
-                  "Genz, A. (1992). Numerical computation of multivariate normal probabilities. Journal of "
-                  "Computational and Graphical Statistics 1, 141–149.",
-                  simc::REF_SIM};
   p.curve_param = "n1";
   p.curve_label = "N1 (Subjects in Group 1)";
   p.curve_min = 2;

@@ -555,15 +555,6 @@ Procedure glmm_cluster() {
              "no study could be fitted, or when fits ran past 30 or did not converge in more than half of them.",
              "The quick approximation compares the population-averaged proportions with each cluster weighted by "
              "size / (p(1 − p)(1 + (size − 1)ρ)), averaged over the size distribution."};
-  p.references = {"Li, P. & Redden, D. T. (2015). Comparing denominator degrees of freedom approximations for the "
-                  "generalized linear mixed model in analyzing binary outcome in small sample cluster-randomized "
-                  "trials. BMC Medical Research Methodology 15, 38.",
-                  "Eldridge, S. M., Ashby, D. & Kerry, S. (2006). Sample size for cluster randomized trials: effect "
-                  "of coefficient of variation of cluster size and analysis method. International Journal of "
-                  "Epidemiology 35, 1292–1300.",
-                  "Pinheiro, J. C. & Bates, D. M. (1995). Approximations to the log-likelihood function in the "
-                  "nonlinear mixed-effects model. Journal of Computational and Graphical Statistics 4, 12–35.",
-                  simc::REF_SIM};
   p.curve_param = "k1";
   p.curve_label = "k1 (Clusters in Group 1)";
   p.example_solve = "k";

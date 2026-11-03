@@ -278,14 +278,6 @@ Procedure coprimary() {
              "With three or four endpoints and a negative correlation the multivariate normal probability is "
              "computed with a lattice rule, to within about 5e-4 where ρ is at least 0.01 above its smallest "
              "possible value, −1/(K − 1), and to within about 5e-3 closer to it; otherwise it is exact."};
-  p.references = {"Sozu, T., Sugimoto, T. & Hamasaki, T. (2011). Sample size determination in superiority clinical "
-                  "trials with multiple co-primary correlated endpoints. Journal of Biopharmaceutical Statistics 21, "
-                  "650–668.",
-                  "Sugimoto, T., Sozu, T. & Hamasaki, T. (2012). A convenient formula for sample size calculations in "
-                  "clinical trials with multiple co-primary continuous endpoints. Pharmaceutical Statistics 11, "
-                  "118–128.",
-                  "Offen, W. et al. (2007). Multiple co-primary endpoints: medical and statistical solutions. Drug "
-                  "Information Journal 41, 31–46."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};

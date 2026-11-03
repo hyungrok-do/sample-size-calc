@@ -94,25 +94,6 @@ double intercept_half(double m, double P, double sd, double r2) {
   return stats::qt(0.025, m - P - 1, false) * std::sqrt(sd * sd * (1 - r2) / m);
 }
 
-const char* REF_RILEY_I =
-    "Riley, R. D., Snell, K. I. E., Ensor, J., Burke, D. L., Harrell, F. E., Moons, K. G. M. & Collins, G. S. "
-    "(2019). Minimum sample size for developing a multivariable prediction model: Part I – Continuous outcomes. "
-    "Statistics in Medicine 38, 1262–1275.";
-const char* REF_RILEY_II =
-    "Riley, R. D., Snell, K. I. E., Ensor, J., Burke, D. L., Harrell, F. E., Moons, K. G. M. & Collins, G. S. "
-    "(2019). Minimum sample size for developing a multivariable prediction model: Part II – Binary and "
-    "time-to-event outcomes. Statistics in Medicine 38, 1276–1296.";
-const char* REF_RILEY_BMJ =
-    "Riley, R. D., Ensor, J., Snell, K. I. E., Harrell, F. E., Martin, G. P., Reitsma, J. B., Moons, K. G. M., "
-    "Collins, G. & van Smeden, M. (2020). Calculating the sample size required for developing a clinical prediction "
-    "model. BMJ 368, m441.";
-const char* REF_RILEY_C =
-    "Riley, R. D., Van Calster, B. & Collins, G. S. (2021). A note on estimating the Cox-Snell R² from a reported C "
-    "statistic (AUROC) to inform sample size calculations for developing a prediction model with a binary outcome. "
-    "Statistics in Medicine 40, 859–864.";
-const char* REF_PMSAMPSIZE =
-    "Ensor, J., Martin, E. C. & Riley, R. D. pmsampsize: Calculates the Minimum Sample Size Required for Developing a "
-    "Multivariable Prediction Model. R package and Stata module.";
 
 Procedure prediction_model() {
   Procedure p;
@@ -552,9 +533,6 @@ Procedure prediction_model() {
       "For time-to-event outcomes the precision of the overall risk is reported, not imposed, and the optimism in "
       "the Nagelkerke R² is held at 0.05, as in pmsampsize.",
       "These are minimum sizes for developing a model; external validation has its own sample size criteria."};
-  p.references = {REF_RILEY_BMJ, REF_RILEY_I, REF_RILEY_II, REF_RILEY_C, REF_PMSAMPSIZE,
-                  "van Houwelingen, J. C. & Le Cessie, S. (1990). Predictive value of statistical models. Statistics "
-                  "in Medicine 9, 1303–1325."};
   p.example_solve = "n";
   p.example = {{"outcome", "binary"}, {"p", "24"}, {"r2cs", "0.288"}, {"prev", "0.174"}};
   return p;

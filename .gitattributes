@@ -1,0 +1,3 @@
+# Preserve retrieved source bytes so provenance hashes survive every checkout.
+references/exports/*.bib -text
+references.bib text eol=lf

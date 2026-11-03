@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <!-- What the page may load: its own scripts, the engine (WebAssembly) and its workers, and the <style> below by its
      hash, which changes with any edit to it (npm test checks it). sw.js sends the same policy as a header. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'sha256-4GGjDmbAQYIaFX2C70yzJVYzyoxMVqaS8pmwW4UPKj8='; connect-src 'self'; worker-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'sha256-hb5li2dKzCC1b0sbe10/9HOqwCl/IpG3zBRPP1eZpns='; connect-src 'self'; worker-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sample Size Calculator</title>
 <meta name="description" content="Sample size and power for study planning. The calculator's C++ engine runs in your browser through WebAssembly; nothing you type leaves the page.">
@@ -259,6 +259,14 @@
   .derivation .symbols dt { font-weight: 600; }
   .derivation .symbols dd { margin: 0; }
   .derivation .refs { margin: 0 0 8px; padding-left: 20px; font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .derivation .v-given { background: var(--surface-2); border-radius: 4px; padding: 0 3px; }
+  .derivation .v-derived { color: var(--accent); font-weight: 650; }
+  .derivation .deriv-legend { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
+  .derivation .deriv-find, .derivation .deriv-answer { margin: 6px 0; font-size: 14px; overflow-wrap: anywhere; }
+  .derivation .deriv-answer { background: var(--accent-soft); border-radius: 8px; padding: 6px 10px; }
+  .derivation .deriv-given { margin: 6px 0; font-size: 13.5px; overflow-wrap: anywhere; }
+  .derivation .deriv-given ul { display: inline; margin: 0; padding: 0; list-style: none; }
+  .derivation .deriv-given li { display: inline-block; max-width: 100%; margin: 2px 12px 2px 0; }
   @media (max-width: 560px) { .derivation .symbols { grid-template-columns: 1fr; } .derivation .symbols dd { margin-bottom: 4px; } }
 
   .speed p { color: var(--ink-2); margin: 8px 0 14px; max-width: 75ch; }

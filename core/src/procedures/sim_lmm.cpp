@@ -717,13 +717,6 @@ Procedure longitudinal() {
              "lme4), so the simulated power is a few points lower.",
              "Results depend only on the seed: each subject's data come from their own random stream, so a "
              "larger study contains the subjects of a smaller one, which keeps the sample-size search stable."};
-  p.references = {"Laird, N. M. & Ware, J. H. (1982). Random-effects models for longitudinal data. Biometrics 38, "
-                  "963–974.",
-                  "Satterthwaite, F. E. (1946). An approximate distribution of estimates of variance components. "
-                  "Biometrics Bulletin 2, 110–114.",
-                  "Kuznetsova, A., Brockhoff, P. B. & Christensen, R. H. B. (2017). lmerTest package: tests in "
-                  "linear mixed effects models. Journal of Statistical Software 82(13).",
-                  simc::REF_SIM, simc::REF_ARNOLD};
   p.curve_param = "n1";
   p.curve_label = "N1 (Subjects in Group 1)";
   p.curve_min = 3;
@@ -1106,14 +1099,6 @@ Procedure cluster() {
              "distribution. It is close to the simulated power when the sizes vary moderately, and above it when "
              "they vary widely and clusters are few (0.43 against 0.39 with a size CV of 1.2 and 6 clusters per "
              "group)."};
-  p.references = {"Donner, A. & Klar, N. (2000). Design and Analysis of Cluster Randomization Trials in Health "
-                  "Research. Arnold.",
-                  "Eldridge, S. M., Ashby, D. & Kerry, S. (2006). Sample size for cluster randomized trials: effect "
-                  "of coefficient of variation of cluster size and analysis method. International Journal of "
-                  "Epidemiology 35, 1292–1300.",
-                  "Kuznetsova, A., Brockhoff, P. B. & Christensen, R. H. B. (2017). lmerTest package: tests in "
-                  "linear mixed effects models. Journal of Statistical Software 82(13).",
-                  simc::REF_SIM};
   p.curve_param = "k1";
   p.curve_label = "k1 (Clusters in Group 1)";
   p.example_solve = "k";

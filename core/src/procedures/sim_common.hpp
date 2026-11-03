@@ -381,11 +381,5 @@ inline ParamDef cluster_cv_param() {
             "least 1).");
 }
 
-inline const char* REF_SIM =
-    "Landau, S. & Stahl, D. (2013). Sample size and power calculations for medical studies by simulation when "
-    "closed form expressions are not available. Statistical Methods in Medical Research 22, 324–345.";
-inline const char* REF_ARNOLD =
-    "Arnold, B. F., Hogan, D. R., Colford, J. M. & Hubbard, A. E. (2011). Simulation methods to estimate design "
-    "power: an overview for applied research. BMC Medical Research Methodology 11, 94.";
 
 }  // namespace ssc::procs::simc

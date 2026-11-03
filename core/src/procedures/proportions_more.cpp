@@ -553,12 +553,6 @@ std::vector<ParamDef> actual_effect_params() {
                     "the outcome, between 0 and 1.")};
 }
 
-const char* FM_REF =
-    "Farrington, C. P. & Manning, G. (1990). Test statistics and sample size formulae for comparative binomial trials "
-    "with null hypothesis of non-zero risk difference or non-unity relative risk. Statistics in Medicine 9, "
-    "1447–1454.";
-const char* MN_REF =
-    "Miettinen, O. & Nurminen, M. (1985). Comparative analysis of two rates. Statistics in Medicine 4, 213–226.";
 
 const char* const FM_FELL_BACK = "Samples too large for exact enumeration; the normal approximation was used.";
 
@@ -952,7 +946,6 @@ Procedure two_prop_ni() {
                    {"P1, P2", "Actual proportions in the treatment and reference groups."},
                    {"OR", "Odds ratio: the odds P1/(1 − P1) divided by the odds P2/(1 − P2)."},
                    {"Actual Alpha", "Exact rejection probability at the boundary of H0 (P2 fixed)."}};
-  p.references = {FM_REF, MN_REF, REF_CHOW, REF_JULIOUS};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};
@@ -1129,7 +1122,6 @@ Procedure two_prop_equiv() {
   p.derivation = equiv_steps;
   p.definitions = {{"DL, DU / RL, RU / ORL, ORU", "Equivalence limits for P1 − P2, P1/P2 or the odds ratio."},
                    {"D1 / R1 / OR1", "Actual difference, ratio or odds ratio."}};
-  p.references = {FM_REF, MN_REF, REF_CHOW};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};
@@ -1473,11 +1465,6 @@ Procedure mcnemar() {
                    {"P10", "Proportion of pairs with response in the first but not the second condition."},
                    {"P01", "Proportion of pairs with response in the second but not the first condition."},
                    {"ψ", "Proportion of discordant pairs P10 + P01."}};
-  p.references = {"Connor, R. J. (1987). Sample size for testing differences in proportions for the paired-sample "
-                  "design. Biometrics 43, 207–211.",
-                  "Lachin, J. M. (1992). Power and sample size evaluation for the McNemar test with application to "
-                  "matched case-control studies. Statistics in Medicine 11, 1239–1251.",
-                  REF_FLEISS};
   p.curve_param = "n";
   p.curve_label = "N (Pairs)";
   p.curve_min = 1;
@@ -1649,9 +1636,6 @@ Procedure chisq() {
   p.definitions = {{"w", "Cohen's effect size √Σ(P1ᵢ − P0ᵢ)²/P0ᵢ."},
                    {"DF", "Degrees of freedom: k − 1 for goodness of fit, (r − 1)(c − 1) for an r × c table."},
                    {"λ", "Noncentrality parameter N w²."}};
-  p.references = {REF_COHEN, REF_BK,
-                  "Guenther, W. C. (1977). Power and sample size for approximate chi-square tests. The American "
-                  "Statistician 31, 83–85."};
   p.curve_param = "n";
   p.curve_label = "N (Total Sample Size)";
   p.curve_min = 1;
@@ -1841,9 +1825,6 @@ Procedure cluster_props() {
   p.derivation = cluster_steps;
   p.definitions = {{"k1, k2", "Clusters per group."}, {"m", "Subjects per cluster."},
                    {"Design Effect", "1 + (m − 1)ρ."}};
-  p.references = {"Donner, A. & Klar, N. (2000). Design and Analysis of Cluster Randomization Trials in Health "
-                  "Research. Arnold.",
-                  "Hayes, R. J. & Moulton, L. H. (2017). Cluster Randomised Trials, 2nd ed. CRC Press."};
   p.curve_param = "k1";
   p.curve_label = "k1 (Clusters in Group 1)";
   p.curve_min = 1;

@@ -1,0 +1,52 @@
+[
+  {
+    "topic": "Missing-data estimating equations",
+    "key": "N001_Robins_1994",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "Doubly robust estimation / AIPW",
+    "key": "N002_Bang_2005",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "Longitudinal g-formula",
+    "key": "N003_Robins_1986",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "Targeted maximum likelihood estimation",
+    "key": "N004_van_der_Laan_2006",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "TMLE R implementation",
+    "key": "N005_JSSv051i13",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "TMLE with bounded continuous outcomes",
+    "key": "N006_Gruber_2010",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "Super Learner nuisance estimation",
+    "key": "N007_van_der_Laan_2007",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "Cross-validated targeted estimation",
+    "key": "N008_Zheng2011",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "Asymptotic inference and Wald approximations",
+    "key": "N009_Vaart_1998",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  },
+  {
+    "topic": "Kaplan–Meier estimation",
+    "key": "N010_Kaplan_1958",
+    "scope": "Background source for DAG/Lean documentation; not yet attached to engine result objects."
+  }
+]
