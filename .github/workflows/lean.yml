@@ -27,7 +27,7 @@ jobs:
       - name: Build checked library and compiler
         working-directory: lean
         run: |
-          lake exe cache get Mathlib/Probability/Distributions/Gaussian.lean Mathlib/Probability/CDF.lean Mathlib/Tactic.lean
+          lake exe cache get Mathlib.Probability.Distributions.Gaussian Mathlib.Probability.CDF Mathlib.Tactic
           lake build
           lake env lean Audit.lean > audit.txt
           python ../scripts/check_lean_audit.py audit.txt

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "procedures/derive_sim.hpp"
 #include "procedures/sim_common.hpp"
 #include "sim/lmm.hpp"
 
@@ -110,6 +111,27 @@ double gls_variance(const Design& d, double g) {
   double cov[lmm::PMAX * lmm::PMAX];
   if (!lmm::beta_covariance(data, psi, rel, cov)) return INFINITY;
   return cov[(d.p() - 1) * d.p() + d.p() - 1];
+}
+
+/// The quick approximation's power with g clusters per step: δ over its generalized least squares standard error.
+/// Satterthwaite's degrees of freedom for the treatment effect are large (it is estimated mostly within clusters),
+/// so the normal distribution stands in for them; the fixed ones are K − 2.
+double approx_power(const Design& d, double g, int dfm, double alpha, Alt a) {
+  const double v = gls_variance(d, g), clusters = g * d.steps;
+  const double ncp = d.delta / d.unit / std::sqrt(v);
+  return dfm != 1 || clusters <= 2 ? z_power(ncp, alpha, a) : t_power(ncp, clusters - 2, alpha, a);
+}
+
+/// The smallest g of a search: at least 3 clusters, for K − 2 degrees of freedom.
+double smallest_g(const Design& d) { return d.steps >= 3 ? 1 : std::ceil(3.0 / d.steps); }
+
+/// The approximation's g for the target power: the answer of an approximation, and where the simulated search starts.
+template <class F>
+double approx_g(F&& approx, double target, double lo, const RunContext* ctx) {
+  solve::NSearch o;
+  o.lo = lo;
+  o.hi = 1e4;
+  return solve::min_n(approx, target, o, ctx);
 }
 
 /// One simulated trial.  `means` and `subjects` are the patterns of the cluster-period means and of the
@@ -297,25 +319,16 @@ Procedure stepped_wedge_sim() {
     const double alpha = s("alpha");
     const Design d = design_of(s);
     const int dfm = simc::df_method(s);
-    auto approx = [&](double g) {
-      const double v = gls_variance(d, g), clusters = g * d.steps;
-      const double ncp = d.delta / d.unit / std::sqrt(v);
-      // Satterthwaite's degrees of freedom for the treatment effect are large (it is estimated mostly within
-      // clusters), so the normal distribution stands in for them
-      return dfm != 1 || clusters <= 2 ? z_power(ncp, alpha, a) : t_power(ncp, clusters - 2, alpha, a);
-    };
+    auto approx = [&](double g) { return approx_power(d, g, dfm, alpha, a); };
     if (s.solve == "g") {
       if (d.delta == 0) throw CalcError("δ is zero; power cannot exceed alpha");
       if ((a == Alt::Upper && d.delta < 0) || (a == Alt::Lower && d.delta > 0))
         throw CalcError("δ has the sign opposite to the one-sided alternative");
     }
-    const double lo = d.steps >= 3 ? 1 : std::ceil(3.0 / d.steps);  // at least 3 clusters for K − 2 df
+    const double lo = smallest_g(d);
     double g;
     if (s.solve == "g") {
-      solve::NSearch o;
-      o.lo = lo;
-      o.hi = 1e4;
-      g = solve::min_n(approx, s("power"), o, &ctx);
+      g = approx_g(approx, s("power"), lo, &ctx);
     } else {
       g = s("g");
       if (g * d.steps < 3) throw CalcError("the trial needs at least 3 clusters");
@@ -393,6 +406,68 @@ Procedure stepped_wedge_sim() {
            "), analyzing each trial with a linear mixed model with period effects and " + model + " and a " +
            alt_words(alt(s)) + " " + test + " at α = " + fnum(r.num("alpha")) + "." + simc::method_note(r) +
            fallback_note(r, "K − 2");
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double alpha = s("alpha"), g = r.num("g"), K = r.num("clusters");
+    const double target = s.solve == "g" ? s("power") : NAN;
+    const Design d = design_of(s);
+    const int dfm = simc::df_method(s);
+    auto approx = [&](double c) { return approx_power(d, c, dfm, alpha, a); };
+    const double v = gls_variance(d, g), ncp = d.delta / d.unit / std::sqrt(v);
+    const bool normal = dfm != 1 || K <= 2;
+    const std::string model =
+        "y = μj + δ Xij + ai + cij + e, ai ~ N(0, ICC·CAC σ²) per cluster, cij ~ N(0, ICC(1 − CAC) σ²) per cluster "
+        "and period, e ~ N(0, (1 − ICC) σ²) per subject, Xij = 1 once cluster i has switched; g clusters switch at "
+        "each of S steps, over S + 1 periods of m new subjects";
+    const std::string values = "δ = " + num(d.delta) + ", σ = " + num(d.unit) + ", ICC = " + num(r.num("icc")) +
+                               ", CAC = " + num(r.num("cac")) + ": σa = " + num(d.sa * d.unit) + ", σc = " +
+                               num(d.sc * d.unit) + ", σe = " + num(d.se * d.unit) + "; S = " + fint(d.steps) +
+                               ", g = " + fint(g) + ", K = S g = " + fint(K) + ", m = " + num(d.m);
+    const std::string law = std::string(normal ? "Φ" : "noncentral t") + " power with λ = δ / (σ √V)" +
+                            (normal ? "" : " and ν = K − 2");
+    const std::string variance = "V = Var(δ̂)/σ² by generalized least squares on the cluster-period means under the "
+                                 "true model (residual variance σc² + σe²/m, random cluster intercept σa²)";
+    Steps out;
+    if (approximated(r)) {
+      out.push_back({"Assumed model", model, values});
+      out.push_back({"Variance of the effect", variance, "g = " + fint(g) + ", K = " + fint(K) + ": V = " + num(v)});
+      out.push_back({"Noncentrality", "λ = δ / (σ √V)",
+                     sub(d.delta) + " / (" + num(d.unit) + " × √" + num(v) + ") = " + num(ncp)});
+      if (normal) {
+        out.push_back(z_critical(alpha, a));
+        out.push_back(z_power_step(ncp, alpha, a));
+      } else {
+        out.push_back(t_critical(alpha, K - 2, a, "K − 2"));
+        out.push_back(t_power_step(ncp, K - 2, alpha, a));
+      }
+      if (s.solve == "g") {
+        Step st = n_search(approx, g, target, smallest_g(d), "g");
+        st.what = "Clusters per step";
+        out.push_back(st);
+      }
+      return out;
+    }
+    out.push_back({"Simulated trials", model, values});
+    out.push_back(sim_mixed_test(
+        s, r,
+        s.is("analysis", "hooper")
+            ? "REML fit with period effects and random cluster and cluster-period intercepts, on the cluster-period "
+              "means (refitted on the subjects without the cluster-period effect where its variance would be negative "
+              "or that fit fails)"
+            : "REML fit with period effects and a random cluster intercept, on the subjects (Hussey & Hughes)",
+        "δ̂", "K − 2", fint(K) + " − 2", K - 2, "trials"));
+    out.push_back(sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0"));
+    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
+    if (s.solve == "g") {
+      const double lo = smallest_g(d), start = approx_g(approx, target, lo, nullptr);
+      out.push_back(sim_size_search(r, "Clusters per step", "g", g, lo, start, approx(start), target, "trials"));
+    }
+    if (std::isfinite(r.num("approx_power")))
+      out.push_back({"Approximation (for comparison)", law + ", " + variance,
+                     "V = " + num(v) + ", λ = " + num(ncp) + ": " + prob(r.num("approx_power"))});
+    return out;
   };
   p.definitions = {{"S, g, K", "Steps, clusters switching at each step, and clusters in the trial (K = S × g)."},
                    {"m", "Subjects measured in each cluster in each period (cross-sectional: new subjects every "

@@ -317,7 +317,8 @@ try {
   assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
   await page.keyboard.press('Escape');
   // an arrow dragged from a box's port onto another box; Ctrl+Z takes it back
-  await page.locator('#dag-canvas .dag-node[data-node="X"]').scrollIntoViewIfNeeded();
+  // Drawing replaces node elements; scroll the persistent canvas before measuring them.
+  await page.locator('#dag-canvas').scrollIntoViewIfNeeded();
   const portBox = await page.getByRole('button', { name: 'Start an arrow from X', exact: true }).boundingBox();
   const targetBox = await page.locator('#dag-canvas .dag-node[data-node="A"]').locator('.dag-box').boundingBox();
   await page.mouse.move(portBox.x + portBox.width / 2, portBox.y + portBox.height / 2);

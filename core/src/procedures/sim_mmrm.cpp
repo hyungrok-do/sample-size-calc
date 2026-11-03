@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "procedures/derive_sim.hpp"
 #include "procedures/sim_common.hpp"
 
 namespace ssc::procs {
@@ -275,6 +276,42 @@ double expected_variance(const Design& d, double n1, double n2) {
 
 enum Analysis { MMRM = 0, COMPLETERS = 1 };
 
+/// The quick approximation's power with n1 and n2 patients randomized: the expected generalized least squares
+/// variance of the difference at the last visit (the MMRM) or the completers' variance, with the expected completers
+/// less 2 degrees of freedom.
+double approx_power(const Design& d, Analysis an, bool z, double n1, double n2, double alpha, Alt a) {
+  const double keep1 = d.retained(0, d.visits), keep2 = d.retained(1, d.visits);
+  const double var = an == MMRM ? expected_variance(d, n1, n2) : 1 / (n1 * keep1) + 1 / (n2 * keep2);
+  const double df = n1 * keep1 + n2 * keep2 - 2, ncp = d.delta / d.sd / std::sqrt(var);
+  return z || !(df > 0) ? z_power(ncp, alpha, a) : t_power(ncp, df, alpha, a);
+}
+
+/// The patients expected at the last visit with n1 randomized to group 1.
+double at_last(const Design& d, double ratio, double n1) {
+  return n1 * d.retained(0, d.visits) + solve::round_up(ratio * n1) * d.retained(1, d.visits);
+}
+
+/// The smallest N1 of a sample-size search: group 2 needs 3 patients, and the MMRM, which regresses each visit on the
+/// group and the earlier visits, at least T + 2 at the last visit, as fewer expected there would fail most fits.
+double smallest_n1(const Design& d, Analysis an, double ratio) {
+  double lo = solve::first_whole([&](double x) { return solve::round_up(ratio * x) >= 3; }, 3, 1e5,
+                                 "the allocation ratio is too small: group 2 would have fewer than 3 patients");
+  if (an == MMRM)
+    lo = solve::first_whole([&](double x) { return at_last(d, ratio, x) >= d.visits + 2; }, lo, 1e5,
+                            "too few patients would remain at the last visit for the MMRM fit");
+  return lo;
+}
+
+/// The approximation's N1 for the target power: the answer of an approximation, and where the simulated search
+/// starts.
+template <class F>
+double approx_n1(F&& approx, double target, double lo, const RunContext* ctx) {
+  solve::NSearch o;
+  o.lo = lo;
+  o.hi = 1e5;
+  return solve::min_n(approx, target, o, ctx);
+}
+
 // Bits of sim::Outcome::also: each analysis's rejection (bit MMRM or COMPLETERS), then why an analysis failed.
 constexpr unsigned EMPTY = 2, FEW = 3, ARITHMETIC = 4, NO_COMPLETERS = 5, FLAT_COMPLETERS = 6, FEW_FIRST = 7;
 
@@ -501,40 +538,23 @@ Procedure mmrm_proc() {
     const Analysis an = s.is("analysis", "completers") ? COMPLETERS : MMRM;
     const bool z = s.is("df", "z");
     auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
-    auto approx = [&](double n1) {
-      const double n2 = n2_of(n1);
-      const double keep1 = d.retained(0, d.visits), keep2 = d.retained(1, d.visits);
-      const double var = an == MMRM ? expected_variance(d, n1, n2) : 1 / (n1 * keep1) + 1 / (n2 * keep2);
-      const double df = n1 * keep1 + n2 * keep2 - 2, ncp = d.delta / d.sd / std::sqrt(var);
-      return z || !(df > 0) ? z_power(ncp, alpha, a) : t_power(ncp, df, alpha, a);
-    };
+    auto approx = [&](double n1) { return approx_power(d, an, z, n1, n2_of(n1), alpha, a); };
     if (s.solve == "n") {
       if (d.delta == 0) throw CalcError("δ is zero; power cannot exceed alpha");
       if ((a == Alt::Upper && d.delta < 0) || (a == Alt::Lower && d.delta > 0))
         throw CalcError("δ has the sign opposite to the one-sided alternative");
     }
-    // the unstructured covariance regresses each visit on the group and the earlier visits: the last visit needs
-    // at least T + 2 patients, so fewer expected there would fail most fits
     const double need = d.visits + 2;
-    auto at_last = [&](double n1) { return n1 * d.retained(0, d.visits) + n2_of(n1) * d.retained(1, d.visits); };
-    double lo = s.solve != "n" ? 3 : solve::first_whole([&](double x) { return n2_of(x) >= 3; }, 3, 1e5,
-                                                     "the allocation ratio is too small: group 2 would have "
-                                                     "fewer than 3 patients");
-    if (s.solve == "n" && an == MMRM)
-      lo = solve::first_whole([&](double x) { return at_last(x) >= need; }, lo, 1e5,
-                              "too few patients would remain at the last visit for the MMRM fit");
+    const double lo = s.solve != "n" ? 3 : smallest_n1(d, an, ratio);
     double n1;
     if (s.solve == "n") {
-      solve::NSearch o;
-      o.lo = lo;
-      o.hi = 1e5;
-      n1 = solve::min_n(approx, s("power"), o, &ctx);
+      n1 = approx_n1(approx, s("power"), lo, &ctx);
     } else {
       n1 = s("n1");
       if (n2_of(n1) < 3) throw CalcError("group 2 needs at least 3 patients");
-      if (an == MMRM && at_last(n1) < need)
+      if (an == MMRM && at_last(d, ratio, n1) < need)
         throw CalcError("with " + std::to_string(d.visits) + " visits the MMRM needs at least " + fint(need) +
-                        " patients at the last visit, but about " + fnum(at_last(n1), 3) +
+                        " patients at the last visit, but about " + fnum(at_last(d, ratio, n1), 3) +
                         " remain after dropout; randomize more patients");
     }
     if (ctx.approximate) {
@@ -614,6 +634,80 @@ Procedure mmrm_proc() {
                     " test at α = " + fnum(r.num("alpha")) + ".";
     t += simc::others_sentence(r, "trials", {{"MMRM", "power_mmrm"}, {"completers' t-test", "power_completers"}});
     return t + simc::method_note(r, "trials");
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2");
+    const double target = s.solve == "n" ? s("power") : NAN;
+    const Design d = design_of(s);
+    const Analysis an = s.is("analysis", "completers") ? COMPLETERS : MMRM;
+    const bool z = s.is("df", "z");
+    auto approx = [&](double m1) { return approx_power(d, an, z, m1, solve::round_up(ratio * m1), alpha, a); };
+    const double keep1 = d.retained(0, d.visits), keep2 = d.retained(1, d.visits);
+    const double var = an == MMRM ? expected_variance(d, n1, n2) : 1 / (n1 * keep1) + 1 / (n2 * keep2);
+    const double df = n1 * keep1 + n2 * keep2 - 2, ncp = d.delta / d.sd / std::sqrt(var);
+    const bool normal = z || !(df > 0);
+    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    const std::string model = "Y_t ~ N(μ_gt, σ²) at visits t = 1 … T, corr(Y_s, Y_t) = " +
+                              std::string(d.ar1 ? "ρ^|s − t| (AR(1))" : "ρ (exchangeable)") +
+                              ", μ_1T − μ_2T = δ; a patient of group g is observed through visit t with probability "
+                              "π_g(t) = (1 − D_g)^(t/T), then not; N2 = ⌈r N1⌉";
+    const std::string values = "δ = " + num(d.delta) + ", σ = " + num(d.sd) + ", ρ = " + num(d.rho) +
+                               ", T = " + std::to_string(d.visits) + ", D1 = " + num(d.drop[0]) + ", D2 = " +
+                               num(d.drop[1]) + "; " + sizes;
+    const std::string variance = an == MMRM ? "V = Σ_g Σ_t L_Tt² / (N_g π_g(t)), L the Cholesky factor of the visits' "
+                                              "correlation matrix: the expected GLS variance of δ̂/σ"
+                                            : "V = 1/(N1 π1(T)) + 1/(N2 π2(T)), the completers' variance of δ̂/σ";
+    const std::string completers = "N1 π1(T) + N2 π2(T) − 2 (the expected completers less 2)";
+    Steps out;
+    if (approximated(r)) {
+      out.push_back({"Assumed model", model, values});
+      out.push_back({"Expected completers", "N1 π1(T) + N2 π2(T), π_g(T) = 1 − D_g",
+                     fint(n1) + " × " + num(keep1) + " + " + fint(n2) + " × " + num(keep2) + " = " +
+                         num(r.num("completers"), 2)});
+      out.push_back({"Variance of the difference", variance + (an == MMRM ? " (Lu, Luo & Chen 2008)" : ""),
+                     sizes + ": V = " + num(var)});
+      out.push_back({"Noncentrality", "λ = δ / (σ √V)",
+                     sub(d.delta) + " / (" + num(d.sd) + " × √" + num(var) + ") = " + num(ncp)});
+      if (normal) {
+        out.push_back(z_critical(alpha, a));
+        out.push_back(z_power_step(ncp, alpha, a));
+      } else {
+        out.push_back(t_critical(alpha, df, a, completers));
+        out.push_back(t_power_step(ncp, df, alpha, a));
+      }
+      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(d, an, ratio), "N1"));
+      return out;
+    }
+    out.push_back({"Simulated trials", model, values});
+    const std::string level = sim_level(a, alpha);
+    if (an == MMRM)
+      out.push_back({"Analysis of each trial",
+                     "REML fit of the MMRM (a mean for every group and visit, unstructured covariance); " +
+                         std::string(z ? "z = δ̂ / SE(δ̂), normal" :
+                                         "t = δ̂ / SE(δ̂) with ν = the patients observed at the last visit − 2") +
+                         "; H0 rejected when p < α",
+                     level + (r.has("mean_df") ? "; mean ν over the trials = " + num(r.num("mean_df"), 2) : "")});
+    else
+      out.push_back({"Analysis of each trial",
+                     "pooled t-test of the patients observed at the last visit (the completers), t = (Ȳ1 − Ȳ2) / (s "
+                     "√(1/n1 + 1/n2))" + std::string(z ? ", normal" : " with ν = n1 + n2 − 2") +
+                         "; H0 rejected when p < α",
+                     level + "; mean completers over the trials = " + num(r.num("completers"), 2)});
+    out.push_back(sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0"));
+    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
+    if (s.solve == "n") {
+      const double lo = smallest_n1(d, an, ratio), start = approx_n1(approx, target, lo, nullptr);
+      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target, "trials"));
+    }
+    if (std::isfinite(r.num("approx_power")))
+      out.push_back({"Approximation (for comparison)",
+                     std::string(normal ? "Φ" : "noncentral t") + " power with λ = δ / (σ √V), " + variance +
+                         (normal ? "" : ", and ν = " + completers),
+                     "V = " + num(var) + ", λ = " + num(ncp) + (normal ? "" : ", ν = " + num(df, 2)) + ": " +
+                         prob(r.num("approx_power"))});
+    return out;
   };
   p.definitions = {{"N1, N2", "Number of patients randomized to each group; N = N1 + N2."},
                    {"δ", "Difference between the groups' means at the last visit."},

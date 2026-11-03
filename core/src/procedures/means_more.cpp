@@ -2,8 +2,10 @@
 // two-way factorial ANOVA and the one-way repeated-measures ANOVA.
 #include <algorithm>
 #include <cstdint>
+#include <tuple>
 
 #include "procedures/common.hpp"
+#include "procedures/derive_means.hpp"
 
 namespace ssc::procs {
 namespace {
@@ -19,10 +21,20 @@ const char* REF_COHEN = "Cohen, J. (1988). Statistical Power Analysis for the Be
 // Covariates explaining a fraction R² of the response variance reduce the
 // residual standard deviation to σ√(1 − R²); each covariate costs one degree
 // of freedom (Borm, Fransen & Lemmens, 2007).
+double ancova_se(double n1, double n2, double sigma, double r2) {
+  return sigma * std::sqrt((1 - r2) * (1 / n1 + 1 / n2));
+}
+
 double ancova_power(double n1, double n2, double diff, double sigma, double r2, double q, double alpha, Alt a) {
   const double df = n1 + n2 - 2 - q;
   if (!(df > 0)) return NAN;
-  return t_power(diff / (sigma * std::sqrt((1 - r2) * (1 / n1 + 1 / n2))), df, alpha, a);
+  return t_power(diff / ancova_se(n1, n2, sigma, r2), df, alpha, a);
+}
+
+// The power the search for the group sizes sees: none for designs with too few degrees of freedom for the covariates.
+double ancova_search_power(double n1, double n2, double diff, double sigma, double r2, double q, double alpha, Alt a) {
+  const double pw = ancova_power(n1, n2, diff, sigma, r2, q, alpha, a);
+  return std::isnan(pw) ? 0.0 : pw;
 }
 
 Procedure ancova() {
@@ -103,11 +115,7 @@ Procedure ancova() {
         const double guess = 2 * z_factor(alpha, s("power"), a) * sigma * sigma * (1 - r2) / (diff * diff) + 2;
         // at least 3 per group, as the inputs; designs with too few degrees of freedom for the covariates fall short
         n = solve_two_group_n(
-            s,
-            [&](double n1, double n2) {
-              const double pw = ancova_power(n1, n2, diff, sigma, r2, q, alpha, a);
-              return std::isnan(pw) ? 0.0 : pw;
-            },
+            s, [&](double n1, double n2) { return ancova_search_power(n1, n2, diff, sigma, r2, q, alpha, a); },
             s("power"), 3, guess, true, ctx);
       } else {
         n = two_group_n(s);
@@ -145,6 +153,30 @@ Procedure ancova() {
                             : " explaining none of the variance, so that the standard deviation stays " +
                                   fnum(r.num("sigma"))) +
            "), " + alt_words(alt(s)) + " at α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double n1 = r.num("n1"), n2 = r.num("n2"), mu1 = r.num("mu1"), mu2 = r.num("mu2"), diff = mu1 - mu2;
+    const double sigma = s("sigma"), r2 = s("r2"), q = s("ncov"), alpha = s("alpha");
+    const double se = ancova_se(n1, n2, sigma, r2), ncp = diff / se, df = n1 + n2 - 2 - q;
+    Steps out;
+    out.push_back({"Residual SD", "σres = σ √(1 − R²)",
+                   num(sigma) + " × √(1 − " + num(r2) + ") = " + num(r.num("sadj"))});
+    out.push_back({"Difference to detect", "δ = μ1 − μ2", num(mu1) + " − " + sub(mu2) + " = " + num(diff)});
+    out.push_back({"Standard error", "SE = σ √((1 − R²)(1/N1 + 1/N2))",
+                   num(sigma) + " × √((1 − " + num(r2) + ") × (1/" + fint(n1) + " + 1/" + fint(n2) + ")) = " +
+                       num(se)});
+    out.push_back({"Noncentrality", "λ = δ / SE", sub(diff) + " / " + num(se) + " = " + num(ncp)});
+    out.push_back(t_critical(alpha, df, a, "N1 + N2 − 2 − q (q = " + fint(q) + ", the number of covariates)"));
+    out.push_back(t_power_step(ncp, df, alpha, a));
+    if (s.solve == "n")
+      out.push_back(two_group_search(
+          s, [&](double x1, double x2) { return ancova_search_power(x1, x2, diff, sigma, r2, q, alpha, a); }, {n1, n2},
+          s("power"), 3));
+    else if (s.solve == "mu1")
+      out.push_back(effect_search("μ1", mu1, ancova_power(n1, n2, diff, sigma, r2, q, alpha, a), s("power")));
+    return out;
   };
   p.notes = {"The formula (Borm et al.) leaves out the chance imbalance of the covariates between the groups, so it "
              "slightly overstates the power: by less than half a point with one covariate, but by several points "
@@ -416,19 +448,54 @@ Factorial factorial(const Scenario& s) {
   return f;
 }
 
+// One number for each F-test: of A, of B and of A × B.
 struct FactorialPower {
   double a, b, ab;
 };
 
+// The noncentralities of the F-tests with n subjects per cell: n B Σαᵢ²/σ², n A Σβⱼ²/σ² and n Σ(αβ)ᵢⱼ²/σ².
+FactorialPower factorial_lambda(const Factorial& f, double n, double sigma) {
+  const double s2 = sigma * sigma;
+  return {n * f.b * f.ssa / s2, n * f.a * f.ssb / s2, n * f.ssab / s2};
+}
+
 FactorialPower factorial_power(const Factorial& f, double n, double sigma, double alpha) {
   using namespace stats;
-  const double s2 = sigma * sigma, dfe = f.a * f.b * (n - 1);
+  const double dfe = f.a * f.b * (n - 1);
   auto pw = [&](double df1, double lambda) -> double {
     if (!(dfe > 0)) return NAN;
     return pnf(qf(alpha, df1, dfe, false), df1, dfe, lambda, false);
   };
-  return {pw(f.a - 1, n * f.b * f.ssa / s2), pw(f.b - 1, n * f.a * f.ssb / s2),
-          pw((f.a - 1) * (f.b - 1), n * f.ssab / s2)};
+  const FactorialPower lambda = factorial_lambda(f, n, sigma);
+  return {pw(f.a - 1, lambda.a), pw(f.b - 1, lambda.b), pw((f.a - 1) * (f.b - 1), lambda.ab)};
+}
+
+// The effects that the cell means have, beyond 1e-12 σ² in their sums of squares.
+struct FactorialPresent {
+  bool a, b, ab;
+};
+
+FactorialPresent factorial_present(const Factorial& f, double sigma) {
+  const double eps = 1e-12 * sigma * sigma;
+  return {f.ssa > eps, f.ssb > eps, f.ssab > eps};
+}
+
+// The test the design is sized for: one effect ("A", "B", "AB"), or every effect present ("all").
+std::string factorial_goal(const Scenario& s) { return s.sel.count("goal") ? s.s("goal") : "all"; }
+
+// The power that decides the design: of the chosen effect, or the least of the effects present (also when solving for
+// power, so that the power curve and the card have one power to show).
+double factorial_goal_power(const Factorial& f, double n, double sigma, double alpha, const std::string& goal) {
+  const FactorialPresent has = factorial_present(f, sigma);
+  const auto p3 = factorial_power(f, n, sigma, alpha);
+  if (goal == "A") return p3.a;
+  if (goal == "B") return p3.b;
+  if (goal == "AB") return p3.ab;
+  double m = 1;
+  if (has.a) m = std::min(m, p3.a);
+  if (has.b) m = std::min(m, p3.b);
+  if (has.ab) m = std::min(m, p3.ab);
+  return has.a || has.b || has.ab ? m : alpha;
 }
 
 Procedure anova2() {
@@ -488,22 +555,8 @@ Procedure anova2() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const Factorial f = factorial(s);
     const double sigma = s("sigma"), alpha = s("alpha");
-    // the power that decides the design: of the chosen effect, or the least of the effects present (also when
-    // solving for power, so that the power curve and the card have one power to show)
-    const std::string goal = s.sel.count("goal") ? s.s("goal") : "all";
-    const double eps = 1e-12 * sigma * sigma;
-    const bool hasA = f.ssa > eps, hasB = f.ssb > eps, hasAB = f.ssab > eps;
-    auto P = [&](double x) {
-      const auto p3 = factorial_power(f, x, sigma, alpha);
-      if (goal == "A") return p3.a;
-      if (goal == "B") return p3.b;
-      if (goal == "AB") return p3.ab;
-      double m = 1;
-      if (hasA) m = std::min(m, p3.a);
-      if (hasB) m = std::min(m, p3.b);
-      if (hasAB) m = std::min(m, p3.ab);
-      return hasA || hasB || hasAB ? m : alpha;
-    };
+    const std::string goal = factorial_goal(s);
+    auto P = [&](double x) { return factorial_goal_power(f, x, sigma, alpha, goal); };
     double n;
     if (s.solve == "n") {
       if (f.equal) throw CalcError("the cell means are all equal; there is no effect to detect");
@@ -554,6 +607,63 @@ Procedure anova2() {
            " for the main effect of B (f = " + fnum(r.num("fb"), 3) + ") and " + fnum(r.num("pab"), 4) +
            " for the interaction (f = " + fnum(r.num("fab"), 3) + ").";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Factorial f = factorial(s);
+    const double sigma = s("sigma"), alpha = s("alpha"), n = r.num("n"), dfe = f.a * f.b * (n - 1);
+    const std::string goal = factorial_goal(s);
+    const FactorialPower lambda = factorial_lambda(f, n, sigma), pw = factorial_power(f, n, sigma, alpha);
+    const FactorialPresent has = factorial_present(f, sigma);
+    const double power = factorial_goal_power(f, n, sigma, alpha, goal);
+    Steps out;
+    out.push_back({"Effects of the cell means",
+                   "Σαᵢ², Σβⱼ², Σ(αβ)ᵢⱼ² for the effects αᵢ = μᵢ· − μ··, βⱼ = μ·ⱼ − μ··, "
+                   "(αβ)ᵢⱼ = μᵢⱼ − μᵢ· − μ·ⱼ + μ··",
+                   "Σαᵢ² = " + num_sig(f.ssa) + ", Σβⱼ² = " + num_sig(f.ssb) +
+                       ", Σ(αβ)ᵢⱼ² = " + num_sig(f.ssab)});
+    // each F-test: its noncentrality, critical value and power, against the error's AB(n − 1) degrees of freedom
+    const auto test = [&](const std::string& what, const std::string& lambda_formula, const std::string& df_formula,
+                          const std::string& lambda_numbers, double df1, double l, double p) {
+      const double fc = stats::qf(alpha, df1, dfe, false);
+      out.push_back({what,
+                     "λ = " + lambda_formula + ", power P(F′ > F(1 − α; " + df_formula +
+                         ", AB(n − 1))), F′ ~ noncentral F with noncentrality λ",
+                     "λ = " + lambda_numbers + " = " + num(l) + "; P(F′ > F(1 − " + num(alpha) + "; " + num(df1) +
+                         ", " + num(dfe) + ") = " + num(fc) + ") = " + prob(p)});
+    };
+    const std::string nn = fint(n), s2 = " / " + num(sigma) + "²";
+    test("Test of A", "n B Σαᵢ²/σ²", "A − 1", nn + " × " + fint(f.b) + " × " + num_sig(f.ssa) + s2, f.a - 1,
+         lambda.a, pw.a);
+    test("Test of B", "n A Σβⱼ²/σ²", "B − 1", nn + " × " + fint(f.a) + " × " + num_sig(f.ssb) + s2, f.b - 1,
+         lambda.b, pw.b);
+    test("Test of A × B", "n Σ(αβ)ᵢⱼ²/σ²", "(A − 1)(B − 1)", nn + " × " + num_sig(f.ssab) + s2,
+         (f.a - 1) * (f.b - 1), lambda.ab, pw.ab);
+    if (goal == "all") {
+      std::vector<std::string> names, powers;
+      for (const auto& [present, name, p] : {std::tuple{has.a, "A", pw.a}, std::tuple{has.b, "B", pw.b},
+                                             std::tuple{has.ab, "A × B", pw.ab}})
+        if (present) {
+          names.push_back(name);
+          powers.push_back(prob(p));
+        }
+      if (names.empty())
+        out.push_back({"Power", "with no effect present, the power is α", "α = " + prob(power)});
+      else if (names.size() == 1)
+        out.push_back({"Power", "the power of the test of the one effect present, " + names[0],
+                       "power of the test of " + names[0] + " = " + prob(power)});
+      else
+        out.push_back({"Power", "the least power of the tests of the effects present (" + joined(names, ", ") + ")",
+                       "min(" + joined(powers, ", ") + ") = " + prob(power)});
+    } else {
+      const std::string name = goal == "AB" ? "A × B" : goal;
+      out.push_back({"Power", "the power of the test the study is sized for, of " + name,
+                     "power of the test of " + name + " = " + prob(power)});
+    }
+    if (s.solve == "n")
+      out.push_back(n_search([&](double x) { return factorial_goal_power(f, x, sigma, alpha, goal); }, n, s("power"),
+                             2, "n"));
+    return out;
+  };
   p.definitions = {{"n per Cell", "Subjects in each of the A × B cells (balanced design)."},
                    {"f", "Cohen's effect size: SD of the effects divided by the within-cell SD."},
                    {"Power (A), (B), (A×B)", "Power of the F-tests for the two main effects and the interaction."}};
@@ -573,11 +683,33 @@ SSC_REGISTER(anova2);
 // With m measurements per subject, compound symmetry (correlation ρ) and the
 // Greenhouse–Geisser sphericity factor ε, the F-test has noncentrality
 // λ = ε·n·m·f²/(1 − ρ) and (m − 1)ε, (n − 1)(m − 1)ε degrees of freedom.
+struct RmTest {
+  double df1, df2, lambda;
+};
+
+RmTest rm_test(double n, double m, double f, double rho, double eps) {
+  return {(m - 1) * eps, (n - 1) * (m - 1) * eps, eps * n * m * f * f / (1 - rho)};
+}
+
 double rm_power(double n, double m, double f, double rho, double eps, double alpha) {
   using namespace stats;
-  const double df1 = (m - 1) * eps, df2 = (n - 1) * (m - 1) * eps;
-  if (!(df2 > 0)) return NAN;
-  return pnf(qf(alpha, df1, df2, false), df1, df2, eps * n * m * f * f / (1 - rho), false);
+  const RmTest t = rm_test(n, m, f, rho, eps);
+  if (!(t.df2 > 0)) return NAN;
+  return pnf(qf(alpha, t.df1, t.df2, false), t.df1, t.df2, t.lambda, false);
+}
+
+// The mean of the means (as its distance from the first) and their SD with divisor m, from their differences from the
+// first mean, as in the two-way ANOVA.
+struct MeansSpread {
+  double offset, sd;
+};
+
+MeansSpread means_spread(const std::vector<double>& mu) {
+  const double m = static_cast<double>(mu.size());
+  double mean = 0, ss = 0;
+  for (double v : mu) mean += (v - mu[0]) / m;
+  for (double v : mu) ss += (v - mu[0] - mean) * (v - mu[0] - mean);
+  return {mean, std::sqrt(ss / m)};
 }
 
 Procedure rm_anova() {
@@ -661,11 +793,7 @@ Procedure rm_anova() {
       const auto& mu = s.v("means");
       m = static_cast<double>(mu.size());
       if (m < 2) throw CalcError("enter at least two means");
-      // from the differences from the first mean, as in the two-way ANOVA
-      double mean = 0, ss = 0;
-      for (double v : mu) mean += (v - mu[0]) / m;
-      for (double v : mu) ss += (v - mu[0] - mean) * (v - mu[0] - mean);
-      f = std::sqrt(ss / m) / s("sigma");
+      f = means_spread(mu).sd / s("sigma");
     }
     // with no effect the power is alpha, which no sample size raises
     if (!(f > 0) && s.solve == "n")
@@ -690,7 +818,7 @@ Procedure rm_anova() {
     r.set("f", f);
     r.set("rho", rho);
     r.set("eps", eps);
-    r.set("lambda", eps * n * m * f * f / (1 - rho));
+    r.set("lambda", rm_test(n, m, f, rho, eps).lambda);
     r.set("alpha", alpha);
   };
   p.columns = [](const Scenario& s) {
@@ -708,6 +836,35 @@ Procedure rm_anova() {
            fnum(r.num("f"), 4) + ", assuming a correlation of " + fnum_fine(r.num("rho")) +
            " between measurements and a sphericity correction ε = " + fnum(r.num("eps")) +
            ", using the repeated-measures F-test at α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n = r.num("n"), m = r.num("m"), f = r.num("f"), rho = r.num("rho"), eps = r.num("eps");
+    const double alpha = s("alpha");
+    const RmTest t = rm_test(n, m, f, rho, eps);
+    Steps out;
+    if (s.is("estype", "means")) {
+      const auto& mu = s.v("means");
+      const MeansSpread spread = means_spread(mu);
+      const double mbar = mu[0] + spread.offset;
+      std::vector<std::string> sum, dev;
+      for (double v : mu) {
+        sum.push_back(sub(v));
+        dev.push_back("(" + num(v) + " − " + sub(mbar) + ")²");
+      }
+      out.push_back(
+          {"Mean of the means", "μ̄ = Σ μⱼ / m", "(" + joined(sum, " + ") + ") / " + fint(m) + " = " + num(mbar)});
+      out.push_back({"Effect size", "f = √(Σ (μⱼ − μ̄)² / m) / σ",
+                     "√((" + joined(dev, " + ") + ") / " + fint(m) + ") / " + num(s("sigma")) + " = " + num(f)});
+    }
+    out.push_back({"Noncentrality", "λ = ε N m f² / (1 − ρ)",
+                   num(eps) + " × " + fint(n) + " × " + fint(m) + " × " + num(f) + "² / (1 − " + sub(rho) + ") = " +
+                       num(t.lambda)});
+    out.push_back(f_critical(alpha, t.df1, t.df2, "ν1 = (m − 1)ε and ν2 = (N − 1)(m − 1)ε"));
+    out.push_back(f_power_step(t.df1, t.df2, t.lambda, alpha));
+    if (s.solve == "n")
+      out.push_back(n_search([&](double x) { return rm_power(x, m, f, rho, eps, alpha); }, n, s("power"), 2));
+    return out;
   };
   p.definitions = {{"f", "SD of the m means (divisor m) divided by the SD of a single measurement."},
                    {"ρ", "Correlation between two measurements of the same subject (compound symmetry)."},
@@ -734,13 +891,17 @@ SSC_REGISTER(rm_anova);
 // the variance of the intercepts.  The groups are compared with a two-sample
 // t-test on these slopes, which for complete, balanced data is the mixed-model
 // (generalized least squares) analysis of the slope difference.
+double times_mean(const std::vector<double>& t) {
+  double mean = 0;
+  for (double x : t) mean += x;
+  return mean / static_cast<double>(t.size());
+}
+
 double slope_sxx(const Scenario& s) {
   if (s.is("timing", "custom")) {
     const auto& t = s.v("times");
     if (t.size() < 2) throw CalcError("enter at least two measurement times");
-    double mean = 0;
-    for (double x : t) mean += x;
-    mean /= static_cast<double>(t.size());
+    const double mean = times_mean(t);
     double sxx = 0;
     bool spread = false;
     for (double x : t) {
@@ -768,8 +929,10 @@ double slope_sd(const Scenario& s) {
   return u * std::sqrt((sb / u) * (sb / u) + (se / u) * (se / u) / slope_sxx(s));
 }
 
+double slopes_se(const Scenario& s, double n1, double n2) { return slope_sd(s) * std::sqrt(1 / n1 + 1 / n2); }
+
 double slopes_power(const Scenario& s, double n1, double n2, double delta) {
-  const double se = slope_sd(s) * std::sqrt(1 / n1 + 1 / n2);
+  const double se = slopes_se(s, n1, n2);
   const Alt a = alt(s);
   return s.is("test", "z") ? z_power(delta / se, s("alpha"), a) : t_power(delta / se, n1 + n2 - 2, s("alpha"), a);
 }
@@ -911,6 +1074,43 @@ Procedure slopes() {
            ", the SD of the subjects' slopes is " + fnum(r.num("sdb")) + " and the residual SD is " +
            fnum(r.num("sde")) + ", using a " + alt_words(alt(s)) + " " + (s.is("test", "z") ? "z-test" : "t-test") +
            " on the subjects' slopes at significance level α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double n1 = r.num("n1"), n2 = r.num("n2"), delta = r.num("delta"), alpha = s("alpha");
+    const double sxx = slope_sxx(s), sd = r.num("sds"), se = slopes_se(s, n1, n2), ncp = delta / se;
+    Steps out;
+    if (s.is("timing", "custom")) {
+      const auto& t = s.v("times");
+      const double mean = times_mean(t);
+      std::vector<std::string> dev;
+      for (double x : t) dev.push_back("(" + num(x) + " − " + sub(mean) + ")²");
+      out.push_back({"Spread of the times", "Sxx = Σ (tⱼ − t̄)²", joined(dev, " + ") + " = " + num(sxx)});
+    } else {
+      const double m = s("m");
+      out.push_back({"Spread of the times", "Sxx = D² M(M + 1) / (12(M − 1)), for M times equally spaced over D",
+                     num(s("duration")) + "² × " + fint(m) + " × " + fint(m + 1) + " / (12 × " + fint(m - 1) +
+                         ") = " + num(sxx)});
+    }
+    out.push_back({"SD of a subject's slope", "σs = √(σb² + σe²/Sxx)",
+                   "√(" + num(s("sdb")) + "² + " + num(s("sde")) + "²/" + num(sxx) + ") = " + num(sd)});
+    out.push_back({"Standard error", "SE = σs √(1/N1 + 1/N2)",
+                   num(sd) + " × √(1/" + fint(n1) + " + 1/" + fint(n2) + ") = " + num(se)});
+    out.push_back({"Noncentrality", "λ = δ / SE", sub(delta) + " / " + num(se) + " = " + num(ncp)});
+    if (s.is("test", "z")) {
+      out.push_back(z_critical(alpha, a));
+      out.push_back(z_power_step(ncp, alpha, a));
+    } else {
+      out.push_back(t_critical(alpha, n1 + n2 - 2, a, "N1 + N2 − 2"));
+      out.push_back(t_power_step(ncp, n1 + n2 - 2, alpha, a));
+    }
+    const auto power = [&](double x1, double x2) { return slopes_power(s, x1, x2, delta); };
+    if (s.solve == "n")
+      out.push_back(two_group_search(s, power, {n1, n2}, s("power"), 2));
+    else if (s.solve == "delta")
+      out.push_back(effect_search("δ", delta, power(n1, n2), s("power")));
+    return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
                    {"δ", "Difference β1 − β2 between the groups' mean slopes (change per time unit)."},

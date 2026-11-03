@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 
+#include "procedures/derive_sim.hpp"
 #include "procedures/sim_common.hpp"
 
 namespace ssc::procs {
@@ -285,6 +286,44 @@ double separation_probability(const Design& d, double n1, double n2) {
   return std::fmax(0.0, below(d.p1, n1, d.p2, n2) + below(d.p2, n2, d.p1, n1) - 2 * single);
 }
 
+/// The quick approximation with n1 and n2 subjects: Σ p̄j³ of the categories' average probabilities (p̄j = π P1j +
+/// (1 − π) P2j, π = n1/N), the standard error (Whitehead's of log OR̂ for proportional odds, Noether's with ties of
+/// P(better) for given probabilities) and the noncentrality.
+struct Approx {
+  double cube, se, ncp;
+};
+
+Approx approx_of(const Design& d, double win, double n1, double n2) {
+  const double total = n1 + n2, pi = n1 / total;
+  double cube = 0;
+  for (int j = 0; j < d.k; ++j) {
+    const double avg = pi * d.p1[j] + (1 - pi) * d.p2[j];
+    cube += avg * avg * avg;
+  }
+  if (d.po) {
+    const double se = std::sqrt(3 / (total * pi * (1 - pi) * (1 - cube)));
+    return {cube, se, std::log(d.odds_ratio) / se};
+  }
+  const double se = std::sqrt((total + 1) * (1 - cube) / (12 * n1 * n2));
+  return {cube, se, (win - 0.5) / se};
+}
+
+/// The smallest N1 of a sample-size search: group 2, N1 × the ratio rounded up, needs 2 subjects.
+double smallest_n1(double ratio) {
+  return solve::first_whole([&](double x) { return solve::round_up(ratio * x) >= 2; }, 2, 1e5,
+                            "the allocation ratio is too small: group 2 would have fewer than 2 subjects");
+}
+
+/// The approximation's N1 for the target power: the answer of an approximation, and where the simulated search
+/// starts.
+template <class F>
+double approx_n1(F&& approx, double target, double lo, const RunContext* ctx) {
+  solve::NSearch o;
+  o.lo = lo;
+  o.hi = 1e5;
+  return solve::min_n(approx, target, o, ctx);
+}
+
 enum Test { WALD = 0, LR = 1, RANKS = 2 };
 
 // Bits of sim::Outcome::also: each test's rejection (bit WALD, LR or RANKS), then why a test could not be computed
@@ -446,21 +485,7 @@ Procedure ordinal() {
     const Test test = s.is("test", "lr") ? LR : (s.is("test", "mw") ? RANKS : WALD);
     const double win = win_probability(d);
     auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
-    // Whitehead's variance of log OR̂ for proportional odds; Noether's with ties for given probabilities
-    auto approx = [&](double n1) {
-      const double n2 = n2_of(n1), total = n1 + n2, pi = n1 / total;
-      double cube = 0;
-      for (int j = 0; j < d.k; ++j) {
-        const double avg = pi * d.p1[j] + (1 - pi) * d.p2[j];
-        cube += avg * avg * avg;
-      }
-      if (d.po) {
-        const double se = std::sqrt(3 / (total * pi * (1 - pi) * (1 - cube)));
-        return z_power(std::log(d.odds_ratio) / se, alpha, a);
-      }
-      const double se = std::sqrt((total + 1) * (1 - cube) / (12 * n1 * n2));
-      return z_power((win - 0.5) / se, alpha, a);
-    };
+    auto approx = [&](double n1) { return z_power(approx_of(d, win, n1, n2_of(n1)).ncp, alpha, a); };
     int lo1 = d.k, hi1 = -1, lo2 = d.k, hi2 = -1;
     for (int j = 0; j < d.k; ++j) {
       if (d.p1[j] > 0) lo1 = std::min(lo1, j), hi1 = j;
@@ -479,15 +504,10 @@ Procedure ordinal() {
       if ((a == Alt::Upper && effect < 0) || (a == Alt::Lower && effect > 0))
         throw CalcError("the effect has the direction opposite to the one-sided alternative");
     }
-    const double lo = s.solve != "n" ? 2 : solve::first_whole([&](double x) { return n2_of(x) >= 2; }, 2, 1e5,
-                                                           "the allocation ratio is too small: group 2 would have "
-                                                           "fewer than 2 subjects");
+    const double lo = s.solve != "n" ? 2 : smallest_n1(ratio);
     double n1;
     if (s.solve == "n") {
-      solve::NSearch o;
-      o.lo = lo;
-      o.hi = 1e5;
-      n1 = solve::min_n(approx, s("power"), o, &ctx);
+      n1 = approx_n1(approx, s("power"), lo, &ctx);
     } else {
       n1 = s("n1");
       if (n2_of(n1) < 2) throw CalcError("group 2 needs at least 2 subjects");
@@ -590,6 +610,74 @@ Procedure ordinal() {
            "reject; the approximation leaves this out.";
     }
     return t + simc::method_note(r);
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2"), win = r.num("win");
+    const double target = s.solve == "n" ? s("power") : NAN;
+    const Design d = design_of(s);
+    const Test test = s.is("test", "lr") ? LR : (s.is("test", "mw") ? RANKS : WALD);
+    auto approx = [&](double m1) { return z_power(approx_of(d, win, m1, solve::round_up(ratio * m1)).ncp, alpha, a); };
+    const Approx ap = approx_of(d, win, n1, n2);
+    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    const std::string probs = d.po ? "P2 = " + text_of(r, "p2") + ", OR = " + num(d.odds_ratio) + ": P1 = " +
+                                         text_of(r, "p1")
+                                   : "P1 = " + text_of(r, "p1") + ", P2 = " + text_of(r, "p2");
+    const std::string effect = d.po ? "group 1's probabilities from logit P1(Y ≤ j) = logit P2(Y ≤ j) − log OR "
+                                      "(proportional odds)"
+                                    : "both groups' probabilities as given";
+    const std::string se_formula =
+        d.po ? "SE(log OR̂) = √(3 / (N π(1 − π)(1 − Σ p̄j³))), p̄j = π P1j + (1 − π) P2j, π = N1/N (Whitehead)"
+             : "SE = √((N + 1)(1 − Σ p̄j³) / (12 N1 N2)), p̄j = π P1j + (1 − π) P2j, π = N1/N (Noether, with ties)";
+    const std::string ncp_formula = d.po ? "λ = log OR / SE(log OR̂)" : "λ = (P(better) − 1/2) / SE";
+    Steps out;
+    if (approximated(r)) {
+      out.push_back({"Category probabilities",
+                     effect + "; P(better) = P(Y1 > Y2) + P(Y1 = Y2)/2",
+                     probs + "; P(better) = " + num(win)});
+      out.push_back({"Standard error", se_formula + ", N2 = ⌈r N1⌉",
+                     sizes + ": Σ p̄j³ = " + num(ap.cube) + ", SE = " + num(ap.se)});
+      out.push_back({"Noncentrality", ncp_formula,
+                     (d.po ? "log " + num(d.odds_ratio) : "(" + num(win) + " − 0.5)") + " / " + num(ap.se) + " = " +
+                         num(ap.ncp)});
+      out.push_back(z_critical(alpha, a));
+      out.push_back(z_power_step(ap.ncp, alpha, a));
+      if (r.has("separated"))
+        out.push_back({"Separated studies (left out)",
+                       "the chance that one group's outcomes all lie at or above the other's, where the Wald test "
+                       "cannot reject",
+                       "expected share = " + num(r.num("separated"))});
+      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      return out;
+    }
+    out.push_back({"Simulated data",
+                   "each subject's category drawn from the group's probabilities, " + effect + "; N2 = ⌈r N1⌉",
+                   probs + "; " + sizes});
+    const std::string model =
+        "proportional odds model logit P(Y ≤ j) = θj − β x by maximum likelihood (Newton's method)";
+    out.push_back(test == WALD ? Step{"Test of each study", model + "; Wald z = β̂ / SE(β̂); H0 rejected when p < α",
+                                      sim_level(a, alpha)}
+                  : test == LR ? Step{"Test of each study",
+                                      model + "; likelihood ratio 2(ℓ̂ − ℓ̂0) against χ²₁ (one-sided: its signed root "
+                                              "against N(0, 1)); H0 rejected when p < α",
+                                      sim_level(a, alpha)}
+                               : Step{"Test of each study",
+                                      "Mann–Whitney test on the categories' midranks with the tie and continuity "
+                                      "corrections; H0 rejected when p < α",
+                                      sim_level(a, alpha)});
+    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
+    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
+    if (s.solve == "n") {
+      const double lo = smallest_n1(ratio), start = approx_n1(approx, target, lo, nullptr);
+      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target));
+    }
+    if (std::isfinite(r.num("approx_power")))
+      out.push_back({"Approximation (for comparison)",
+                     "Φ power with " + ncp_formula + ", " + se_formula,
+                     "Σ p̄j³ = " + num(ap.cube) + ", SE = " + num(ap.se) + ", λ = " + num(ap.ncp) + ": " +
+                         prob(r.num("approx_power"))});
+    return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
                    {"OR", "Common odds ratio: the odds of a higher category in group 1 divided by those in group 2, "

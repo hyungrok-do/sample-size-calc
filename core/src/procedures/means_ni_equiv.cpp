@@ -1,6 +1,7 @@
 // Non-inferiority / superiority-by-a-margin and equivalence (TOST) tests for
 // one mean (or paired differences) and for two independent means.
 #include "procedures/common.hpp"
+#include "procedures/derive_means.hpp"
 #include "procedures/integrals.hpp"
 
 namespace ssc::procs {
@@ -70,6 +71,47 @@ std::string margin_hypothesis(const Scenario& s, const MarginTest& mt, const std
          fnum(mt.delta0);
 }
 
+// How the margin M sets the null bound δ0 and the side of the one-sided test, as a step of a derivation.
+Step margin_step(const Scenario& s, const MarginTest& mt, const std::string& d) {
+  const std::string kind = std::string(s.is("testtype", "ni") ? "non-inferiority" : "superiority by a margin") +
+                           ", higher values " + (s.is("direction", "higher") ? "better" : "worse");
+  return {"Null bound", std::string("δ0 = ") + (mt.delta0 < 0 ? "−M" : "M") + ", testing H0: " + d +
+                            (mt.upper ? " ≤ " : " ≥ ") + "δ0 against H1: " + d + (mt.upper ? " > " : " < ") + "δ0 (" +
+                            kind + ")",
+          "δ0 = " + derive::num(mt.delta0)};
+}
+
+// The powers of the one-sided tests against the margin, at the noncentrality (δ − δ0)√n/σ for one mean and
+// (δ − δ0)/SE, SE = σ√(1/n1 + 1/n2), for two.
+double one_ni_power(const Scenario& s, double n) {
+  const MarginTest mt = margin_test(s);
+  return one_sided_power((s("delta") - mt.delta0) * std::sqrt(n) / s("sigma"), n - 1, s("alpha"), mt.upper,
+                         s.is("test", "z"));
+}
+
+double two_se(double sigma, double n1, double n2) { return sigma * std::sqrt(1 / n1 + 1 / n2); }
+
+double two_ni_power(const Scenario& s, double n1, double n2) {
+  const MarginTest mt = margin_test(s);
+  return one_sided_power((s("delta") - mt.delta0) / two_se(s("sigma"), n1, n2), n1 + n2 - 2, s("alpha"), mt.upper,
+                         s.is("test", "z"));
+}
+
+// The critical value and power of a one-sided test against the margin: the shared t- and z-test steps, which compute
+// what one_sided_power does.
+void one_sided_steps(derive::Steps& out, const Scenario& s, const MarginTest& mt, double ncp, double df,
+                     const std::string& df_formula) {
+  const Alt a = mt.upper ? Alt::Upper : Alt::Lower;
+  const double alpha = s("alpha");
+  if (s.is("test", "z")) {
+    out.push_back(derive::z_critical(alpha, a));
+    out.push_back(derive::z_power_step(ncp, alpha, a));
+  } else {
+    out.push_back(derive::t_critical(alpha, df, a, df_formula));
+    out.push_back(derive::t_power_step(ncp, df, alpha, a));
+  }
+}
+
 // ------------------------------------------------------------------ one mean NI
 Procedure one_ni() {
   Procedure p;
@@ -99,8 +141,7 @@ Procedure one_ni() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const MarginTest mt = margin_test(s);
     const double sigma = s("sigma"), alpha = s("alpha"), delta = s("delta");
-    const bool z = s.is("test", "z");
-    auto P = [&](double n) { return one_sided_power((delta - mt.delta0) * std::sqrt(n) / sigma, n - 1, alpha, mt.upper, z); };
+    auto P = [&](double n) { return one_ni_power(s, n); };
     double n;
     if (s.solve == "n") {
       const double eff = mt.upper ? delta - mt.delta0 : mt.delta0 - delta;
@@ -134,6 +175,20 @@ Procedure one_ni() {
            " margin " + fnum(r.num("margin")) + ") when the true difference is δ = " + fnum(r.num("delta")) +
            " and the standard deviation is " + fnum(r.num("sigma")) + ", at significance level " +
            fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const MarginTest mt = margin_test(s);
+    const double n = r.num("n"), delta = r.num("delta"), sigma = r.num("sigma");
+    const double ncp = (delta - mt.delta0) * std::sqrt(n) / sigma;
+    Steps out;
+    out.push_back(margin_step(s, mt, "δ"));
+    out.push_back({"Noncentrality", "λ = (δ − δ0) √N / σ",
+                   "(" + num(delta) + " − " + sub(mt.delta0) + ") × √" + fint(n) + " / " + num(sigma) + " = " +
+                       num(ncp)});
+    one_sided_steps(out, s, mt, ncp, n - 1, "N − 1");
+    if (s.solve == "n") out.push_back(n_search([&](double x) { return one_ni_power(s, x); }, n, s("power"), 2));
+    return out;
   };
   p.definitions = {{"Margin", "Non-inferiority (NIM) or superiority (SM) margin, entered as a positive number."},
                    {"δ0", "Boundary of the null hypothesis implied by the margin and the direction."},
@@ -180,11 +235,7 @@ Procedure two_ni() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const MarginTest mt = margin_test(s);
     const double sigma = s("sigma"), alpha = s("alpha"), delta = s("delta");
-    const bool z = s.is("test", "z");
-    auto P = [&](double n1, double n2) {
-      const double se = sigma * std::sqrt(1 / n1 + 1 / n2);
-      return one_sided_power((delta - mt.delta0) / se, n1 + n2 - 2, alpha, mt.upper, z);
-    };
+    auto P = [&](double n1, double n2) { return two_ni_power(s, n1, n2); };
     TwoN n;
     if (s.solve == "n") {
       const double eff = mt.upper ? delta - mt.delta0 : mt.delta0 - delta;
@@ -218,6 +269,23 @@ Procedure two_ni() {
            (s.is("testtype", "ni") ? "non-inferiority" : "superiority") + " margin " + fnum(r.num("margin")) +
            ") when the true difference is " + fnum(r.num("delta")) + " and the common standard deviation is " +
            fnum(r.num("sigma")) + ", at significance level " + fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const MarginTest mt = margin_test(s);
+    const double n1 = r.num("n1"), n2 = r.num("n2"), delta = r.num("delta"), sigma = r.num("sigma");
+    const double se = two_se(sigma, n1, n2), ncp = (delta - mt.delta0) / se;
+    Steps out;
+    out.push_back(margin_step(s, mt, "μ1 − μ2"));
+    out.push_back({"Standard error", "SE = σ √(1/N1 + 1/N2)",
+                   num(sigma) + " × √(1/" + fint(n1) + " + 1/" + fint(n2) + ") = " + num(se)});
+    out.push_back({"Noncentrality", "λ = (δ − δ0) / SE",
+                   "(" + num(delta) + " − " + sub(mt.delta0) + ") / " + num(se) + " = " + num(ncp)});
+    one_sided_steps(out, s, mt, ncp, n1 + n2 - 2, "N1 + N2 − 2");
+    if (s.solve == "n")
+      out.push_back(two_group_search(
+          s, [&](double x1, double x2) { return two_ni_power(s, x1, x2); }, {n1, n2}, s("power"), 2));
+    return out;
   };
   p.definitions = {{"N1, N2", "Sample sizes of the treatment (1) and reference (2) groups."},
                    {"Margin", "Non-inferiority or superiority margin (positive)."},
@@ -282,6 +350,22 @@ std::pair<double, double> limits(const Scenario& s) {
   return {-s("e"), s("e")};
 }
 
+// The TOST power with the standard error of one mean, σ/√n, or of a difference of two, σ√(1/n1 + 1/n2), estimated
+// with n − 1 or n1 + n2 − 2 degrees of freedom (known for z-tests).
+double one_se(double sigma, double n) { return sigma / std::sqrt(n); }
+
+double one_equiv_power(const Scenario& s, double n) {
+  const auto lim = limits(s);
+  return tost_power(lim.first, lim.second, s("delta"), one_se(s("sigma"), n), s.is("test", "z") ? INFINITY : n - 1,
+                    s("alpha"));
+}
+
+double two_equiv_power(const Scenario& s, double n1, double n2) {
+  const auto lim = limits(s);
+  return tost_power(lim.first, lim.second, s("delta"), two_se(s("sigma"), n1, n2),
+                    s.is("test", "z") ? INFINITY : n1 + n2 - 2, s("alpha"));
+}
+
 Procedure one_equiv() {
   Procedure p;
   p.id = "means.one.equiv";
@@ -314,12 +398,11 @@ Procedure one_equiv() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const auto lim = limits(s);
     const double sigma = s("sigma"), alpha = s("alpha"), delta = s("delta");
-    const bool z = s.is("test", "z");
     // on a limit itself the power is the size of the tests, which no sample size raises above alpha
     if (s.solve == "n" ? !(delta > lim.first && delta < lim.second) : !(delta >= lim.first && delta <= lim.second))
       throw CalcError(s.solve == "n" ? "the true difference must lie strictly between the equivalence limits"
                                      : "the true difference cannot lie outside the equivalence limits");
-    auto P = [&](double n) { return tost_power(lim.first, lim.second, delta, sigma / std::sqrt(n), z ? INFINITY : n - 1, alpha); };
+    auto P = [&](double n) { return one_equiv_power(s, n); };
     double n;
     if (s.solve == "n") {
       solve::NSearch o;
@@ -353,6 +436,17 @@ Procedure one_equiv() {
            " at level " + fnum(r.num("alpha")) + " each, when the equivalence limits are " + fnum(r.num("el")) +
            " and " + fnum(r.num("eu")) + ", the true difference is " + fnum(r.num("delta")) +
            " and the standard deviation is " + fnum(r.num("sigma")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n = r.num("n"), sigma = r.num("sigma"), se = one_se(sigma, n);
+    Steps out;
+    out.push_back({"Standard error", "SE = σ / √N", num(sigma) + " / √" + fint(n) + " = " + num(se)});
+    for (auto& st : tost_steps(r.num("el"), r.num("eu"), r.num("delta"), se, s.is("test", "z") ? INFINITY : n - 1,
+                               s("alpha"), "N − 1", {"EL", "EU", "δ"}))
+      out.push_back(st);
+    if (s.solve == "n") out.push_back(n_search([&](double x) { return one_equiv_power(s, x); }, n, s("power"), 2));
+    return out;
   };
   p.definitions = {{"EL, EU", "Equivalence limits for the difference."},
                    {"δ", "True difference (mean minus reference value, or mean paired difference)."},
@@ -400,15 +494,11 @@ Procedure two_equiv() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const auto lim = limits(s);
     const double sigma = s("sigma"), alpha = s("alpha"), delta = s("delta");
-    const bool z = s.is("test", "z");
     // on a limit itself the power is the size of the tests, which no sample size raises above alpha
     if (s.solve == "n" ? !(delta > lim.first && delta < lim.second) : !(delta >= lim.first && delta <= lim.second))
       throw CalcError(s.solve == "n" ? "the true difference must lie strictly between the equivalence limits"
                                      : "the true difference cannot lie outside the equivalence limits");
-    auto P = [&](double n1, double n2) {
-      return tost_power(lim.first, lim.second, delta, sigma * std::sqrt(1 / n1 + 1 / n2), z ? INFINITY : n1 + n2 - 2,
-                        alpha);
-    };
+    auto P = [&](double n1, double n2) { return two_equiv_power(s, n1, n2); };
     TwoN n;
     if (s.solve == "n") {
       const double gap = std::min(delta - lim.first, lim.second - delta);
@@ -442,6 +532,21 @@ Procedure two_equiv() {
            " at level " + fnum(r.num("alpha")) + " each, when the equivalence limits for μ1 − μ2 are " +
            fnum(r.num("el")) + " and " + fnum(r.num("eu")) + ", the true difference is " + fnum(r.num("delta")) +
            " and the common standard deviation is " + fnum(r.num("sigma")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n1 = r.num("n1"), n2 = r.num("n2"), sigma = r.num("sigma"), se = two_se(sigma, n1, n2);
+    Steps out;
+    out.push_back({"Standard error", "SE = σ √(1/N1 + 1/N2)",
+                   num(sigma) + " × √(1/" + fint(n1) + " + 1/" + fint(n2) + ") = " + num(se)});
+    for (auto& st : tost_steps(r.num("el"), r.num("eu"), r.num("delta"), se,
+                               s.is("test", "z") ? INFINITY : n1 + n2 - 2, s("alpha"), "N1 + N2 − 2",
+                               {"EL", "EU", "δ"}))
+      out.push_back(st);
+    if (s.solve == "n")
+      out.push_back(two_group_search(
+          s, [&](double x1, double x2) { return two_equiv_power(s, x1, x2); }, {n1, n2}, s("power"), 2));
+    return out;
   };
   p.definitions = {{"EL, EU", "Equivalence limits for μ1 − μ2."},
                    {"δ", "True difference μ1 − μ2."},

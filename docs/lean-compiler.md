@@ -72,7 +72,7 @@ Native Lean checking of the same input also compares the two exported plans:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 cd lean
-lake exe cache get Mathlib/Probability/Distributions/Gaussian.lean Mathlib/Probability/CDF.lean Mathlib/Tactic.lean
+lake exe cache get Mathlib.Probability.Distributions.Gaussian Mathlib.Probability.CDF Mathlib.Tactic
 lake build
 cd ..
 python scripts/compile_lean.py examples/design/normal.lean --cpp study.cpp

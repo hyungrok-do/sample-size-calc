@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <utility>
 
+#include "procedures/derive_sim.hpp"
 #include "procedures/sim_common.hpp"
 #include "stats/numerics.hpp"
 
@@ -175,6 +176,62 @@ double prob_greater(const Design& d) {
 }
 
 enum Test { POOLED = 0, WELCH = 1, RANKS = 2 };
+
+Test test_of(const Scenario& s) { return s.is("test", "t") ? POOLED : (s.is("test", "mw") ? RANKS : WELCH); }
+
+Design design_of(const Scenario& s) {
+  Design d;
+  d.shape = shape_of(s);
+  d.mu1 = s("mu1");
+  d.mu2 = s("mu2");
+  d.sd1 = s("sd1");
+  d.sd2 = s("sd2");
+  return d;
+}
+
+/// The design as simulated and analyzed.  The three tests are unchanged by a common change of location and scale:
+/// extreme values are simulated on the scale of the larger SD (`unit`), where their squares cannot overflow, and
+/// around μ2 (group 1 around μ1 − μ2), so that means far from 0 next to the SDs do not swamp the variation (μ1 = μ2 =
+/// 10¹⁶ with SDs of 2 gave the t-tests a type I error of 35%, and μ1 − μ2 = 2 there a power of 76% for 97%); others
+/// exactly as given.
+Design simulated(const Design& d, double& unit) {
+  Design w = d;
+  unit = 1;
+  const double sd_min = std::fmin(d.sd1, d.sd2), mu_max = std::fmax(std::fabs(d.mu1), std::fabs(d.mu2));
+  if (!(std::fmax(d.sd1, d.sd2) < 1e100 && sd_min > 1e-100 && mu_max < 1e100 && mu_max < 1e6 * sd_min)) {
+    unit = std::fmax(d.sd1, d.sd2);
+    w.mu1 = (d.mu1 - d.mu2) / unit;
+    w.mu2 = 0;
+    w.sd1 = d.sd1 / unit;
+    w.sd2 = d.sd2 / unit;
+  }
+  return w;
+}
+
+/// The quick approximation's power with n1 and n2 subjects (w as simulated, pgt = P(X1 > X2)): the t-tests' power
+/// at the true SDs, and Noether's formula for the Mann–Whitney test.
+double approx_power(const Design& w, Test test, double pgt, double n1, double n2, double alpha, Alt a) {
+  if (test == RANKS) return z_power((pgt - 0.5) / std::sqrt((n1 + n2 + 1) / (12 * n1 * n2)), alpha, a);
+  const double q1 = w.sd1 * w.sd1 / n1, q2 = w.sd2 * w.sd2 / n2, ncp = (w.mu1 - w.mu2) / std::sqrt(q1 + q2);
+  const double df = test == POOLED ? n1 + n2 - 2 : (q1 + q2) * (q1 + q2) / (q1 * q1 / (n1 - 1) + q2 * q2 / (n2 - 1));
+  return t_power(ncp, df, alpha, a);
+}
+
+/// The smallest N1 of a sample-size search: group 2, N1 × the ratio rounded up, needs 2 subjects.
+double smallest_n1(double ratio) {
+  return solve::first_whole([&](double x) { return solve::round_up(ratio * x) >= 2; }, 2, 1e5,
+                            "the allocation ratio is too small: group 2 would have fewer than 2 subjects");
+}
+
+/// The approximation's N1 for the target power: the answer of an approximation, and where the simulated search
+/// starts.
+template <class F>
+double approx_n1(F&& approx, double target, double lo, const RunContext* ctx) {
+  solve::NSearch o;
+  o.lo = lo;
+  o.hi = 1e5;
+  return solve::min_n(approx, target, o, ctx);
+}
 
 sim::Outcome robust_study(const Design& d, long n1, long n2, long rep, std::uint64_t seed, Test test, double alpha,
                           Alt a) {
@@ -345,36 +402,13 @@ Procedure robust() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const Alt a = alt(s);
     const double alpha = s("alpha"), ratio = s("r");
-    Design d;
-    d.shape = shape_of(s);
-    d.mu1 = s("mu1");
-    d.mu2 = s("mu2");
-    d.sd1 = s("sd1");
-    d.sd2 = s("sd2");
-    // the three tests are unchanged by a common change of location and scale: extreme values are simulated on the
-    // scale of the larger SD, where their squares cannot overflow, and around μ2 (group 1 around μ1 − μ2), so
-    // that means far from 0 next to the SDs do not swamp the variation (μ1 = μ2 = 10¹⁶ with SDs of 2 gave the
-    // t-tests a type I error of 35%, and μ1 − μ2 = 2 there a power of 76% for 97%); others exactly as given
-    Design w = d;
-    double unit = 1;
-    const double sd_min = std::fmin(d.sd1, d.sd2), mu_max = std::fmax(std::fabs(d.mu1), std::fabs(d.mu2));
-    if (!(std::fmax(d.sd1, d.sd2) < 1e100 && sd_min > 1e-100 && mu_max < 1e100 && mu_max < 1e6 * sd_min)) {
-      unit = std::fmax(d.sd1, d.sd2);
-      w.mu1 = (d.mu1 - d.mu2) / unit;
-      w.mu2 = 0;
-      w.sd1 = d.sd1 / unit;
-      w.sd2 = d.sd2 / unit;
-    }
-    const Test test = s.is("test", "t") ? POOLED : (s.is("test", "mw") ? RANKS : WELCH);
+    const Design d = design_of(s);
+    double unit;
+    const Design w = simulated(d, unit);
+    const Test test = test_of(s);
     const double delta = d.mu1 - d.mu2, pgt = prob_greater(w);
     auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
-    auto approx = [&](double n1) {
-      const double n2 = n2_of(n1);
-      if (test == RANKS) return z_power((pgt - 0.5) / std::sqrt((n1 + n2 + 1) / (12 * n1 * n2)), alpha, a);
-      const double q1 = w.sd1 * w.sd1 / n1, q2 = w.sd2 * w.sd2 / n2, ncp = (w.mu1 - w.mu2) / std::sqrt(q1 + q2);
-      const double df = test == POOLED ? n1 + n2 - 2 : (q1 + q2) * (q1 + q2) / (q1 * q1 / (n1 - 1) + q2 * q2 / (n2 - 1));
-      return t_power(ncp, df, alpha, a);
-    };
+    auto approx = [&](double n1) { return approx_power(w, test, pgt, n1, n2_of(n1), alpha, a); };
     if (s.solve == "n") {
       const double effect = test == RANKS ? pgt - 0.5 : delta;
       if (std::fabs(effect) < 1e-12)
@@ -384,15 +418,10 @@ Procedure robust() {
         throw CalcError(test == RANKS ? "P(X1 > X2) − 1/2 has the sign opposite to the one-sided alternative"
                                       : "μ1 − μ2 has the sign opposite to the one-sided alternative");
     }
-    const double lo = s.solve != "n" ? 2 : solve::first_whole([&](double x) { return n2_of(x) >= 2; }, 2, 1e5,
-                                                           "the allocation ratio is too small: group 2 would have "
-                                                           "fewer than 2 subjects");
+    const double lo = s.solve != "n" ? 2 : smallest_n1(ratio);
     double n1;
     if (s.solve == "n") {
-      solve::NSearch o;
-      o.lo = lo;
-      o.hi = 1e5;
-      n1 = solve::min_n(approx, s("power"), o, &ctx);
+      n1 = approx_n1(approx, s("power"), lo, &ctx);
     } else {
       n1 = s("n1");
       if (n2_of(n1) < 2) throw CalcError("group 2 needs at least 2 subjects");
@@ -474,6 +503,84 @@ Procedure robust() {
            ", Welch's t-test " + fpct(r.num("power_welch")) + " and the Mann–Whitney test " +
            fpct(r.num("power_mw")) + ".";
     return t + simc::method_note(r);
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2");
+    const double target = s.solve == "n" ? s("power") : NAN, pgt = r.num("pgt");
+    const Test test = test_of(s);
+    const Design d = design_of(s);
+    double unit;
+    const Design w = simulated(d, unit);
+    auto approx = [&](double m1) { return approx_power(w, test, pgt, m1, solve::round_up(ratio * m1), alpha, a); };
+    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    // the approximation's quantities, as approx_power computes them on the design as simulated
+    const double q1 = w.sd1 * w.sd1 / n1, q2 = w.sd2 * w.sd2 / n2, ncp_t = (w.mu1 - w.mu2) / std::sqrt(q1 + q2);
+    const double df = test == POOLED ? n1 + n2 - 2 : (q1 + q2) * (q1 + q2) / (q1 * q1 / (n1 - 1) + q2 * q2 / (n2 - 1));
+    const double ncp_w = (pgt - 0.5) / std::sqrt((n1 + n2 + 1) / (12 * n1 * n2));
+    const std::string df_formula = test == POOLED ? "N1 + N2 − 2"
+                                                  : "(σ1²/N1 + σ2²/N2)² / ((σ1²/N1)²/(N1 − 1) + (σ2²/N2)²/(N2 − 1)), "
+                                                    "Welch–Satterthwaite";
+    const std::string noether = "λ = (P(X1 > X2) − 1/2) / √((N1 + N2 + 1) / (12 N1 N2))";
+    Steps out;
+    if (approximated(r)) {
+      if (test == RANKS) {
+        out.push_back({"P(X1 > X2)",
+                       "P(X1 > X2) = ∫₀¹ F((μ1 − μ2 + σ1 Q(u)) / σ2) du, F and Q the distribution and quantile "
+                       "functions of the standardized shape",
+                       "μ1 = " + num(d.mu1) + ", μ2 = " + num(d.mu2) + ", σ1 = " + num(d.sd1) + ", σ2 = " +
+                           num(d.sd2) + ", " + text_of(r, "dist") + ": P(X1 > X2) = " + num(pgt)});
+        out.push_back({"Noncentrality (Noether)", noether + ", N2 = ⌈r N1⌉",
+                       sizes + ": (" + num(pgt) + " − 0.5) / √((" + fint(n1) + " + " + fint(n2) + " + 1) / (12 × " +
+                           fint(n1) + " × " + fint(n2) + ")) = " + num(ncp_w)});
+        out.push_back(z_critical(alpha, a));
+        out.push_back(z_power_step(ncp_w, alpha, a));
+      } else {
+        out.push_back({"Standard error", "SE = √(σ1²/N1 + σ2²/N2), N2 = ⌈r N1⌉",
+                       sizes + ": √(" + num(d.sd1) + "²/" + fint(n1) + " + " + num(d.sd2) + "²/" + fint(n2) + ") = " +
+                           num(unit * std::sqrt(q1 + q2))});
+        out.push_back({"Noncentrality", "λ = (μ1 − μ2) / SE",
+                       "(" + num(d.mu1) + " − " + sub(d.mu2) + ") / " + num(unit * std::sqrt(q1 + q2)) + " = " +
+                           num(ncp_t)});
+        out.push_back(t_critical(alpha, df, a, df_formula));
+        out.push_back(t_power_step(ncp_t, df, alpha, a));
+      }
+      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      return out;
+    }
+    out.push_back({"Simulated data", "Yg = μg + σg Z, Z of mean 0 and SD 1 with the chosen shape; N2 = ⌈r N1⌉",
+                   "Y1 = " + num(d.mu1) + " + " + num(d.sd1) + " Z, Y2 = " + num(d.mu2) + " + " + num(d.sd2) +
+                       " Z, Z from " + text_of(r, "dist") + "; " + sizes});
+    const std::string level = sim_level(a, alpha);
+    if (test == RANKS)
+      out.push_back({"Test of each study",
+                     "Mann–Whitney z = (W − N1 N2/2 ∓ 1/2) / √(N1 N2/12 × (N + 1 − Σ(t³ − t)/(N(N − 1)))), W the rank "
+                     "sum of group 1 less N1(N1 + 1)/2, t the sizes of tied groups; H0 rejected when p < α",
+                     level});
+    else if (test == POOLED)
+      out.push_back({"Test of each study",
+                     "pooled t = (Ȳ1 − Ȳ2) / (sp √(1/N1 + 1/N2)) with ν = N1 + N2 − 2; H0 rejected when p < α",
+                     level + "; ν = " + fint(n1) + " + " + fint(n2) + " − 2 = " + fint(n1 + n2 - 2)});
+    else
+      out.push_back({"Test of each study",
+                     "Welch t = (Ȳ1 − Ȳ2) / √(s1²/N1 + s2²/N2) with Welch–Satterthwaite ν from the study's own SDs; "
+                     "H0 rejected when p < α",
+                     level + (r.has("mean_df") ? "; mean ν over the studies = " + num(r.num("mean_df"), 2) : "")});
+    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
+    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
+    if (s.solve == "n") {
+      const double lo = smallest_n1(ratio), start = approx_n1(approx, target, lo, nullptr);
+      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target));
+    }
+    if (std::isfinite(r.num("approx_power")))
+      out.push_back(test == RANKS
+                        ? Step{"Approximation (for comparison)", "Noether's formula: Φ power with " + noether,
+                               "P(X1 > X2) = " + num(pgt) + ", λ = " + num(ncp_w) + ": " + prob(r.num("approx_power"))}
+                        : Step{"Approximation (for comparison)",
+                               "noncentral t power with λ = (μ1 − μ2) / √(σ1²/N1 + σ2²/N2) and ν = " + df_formula,
+                               "λ = " + num(ncp_t) + ", ν = " + num(df, 2) + ": " + prob(r.num("approx_power"))});
+    return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
                    {"μ1, μ2", "Means of the outcome in the two groups."},

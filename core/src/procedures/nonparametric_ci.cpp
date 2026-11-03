@@ -1,7 +1,10 @@
 // Nonparametric tests (via asymptotic relative efficiency, Noether's formula
 // and the exact sign test) and confidence-interval precision for means.
+#include <array>
+
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
+#include "procedures/derive_misc.hpp"
 
 namespace ssc::procs {
 namespace {
@@ -18,6 +21,18 @@ double are_of(const Scenario& s) {
   return 3 / stats::PI;  // normal
 }
 
+// The ARE as a step: its value for the parent distribution.
+Step are_step(const Scenario& s) {
+  using namespace derive;
+  const std::string& d = s.s("dist");
+  const double are = are_of(s);
+  if (d == "uniform") return {"Asymptotic relative efficiency", "ARE = 1 for uniform data", "ARE = " + num(are)};
+  if (d == "logistic") return {"Asymptotic relative efficiency", "ARE = π²/9 for logistic data", "π²/9 = " + num(are)};
+  if (d == "laplace")
+    return {"Asymptotic relative efficiency", "ARE = 3/2 for double exponential data", "3/2 = " + num(are)};
+  return {"Asymptotic relative efficiency", "ARE = 3/π for normal data", "3/π = " + num(are)};
+}
+
 ParamDef dist_param() {
   return select("dist", "Parent Distribution (for the ARE)",
                 {{"normal", "Normal (ARE = 3/π ≈ 0.955)", {}},
@@ -32,6 +47,12 @@ ParamDef dist_param() {
 // =====================================================================================
 // Wilcoxon signed-rank (one sample or paired)
 // =====================================================================================
+// The signed-rank test's power: the one-sample t-test's with N × ARE subjects.
+double signed_rank_power(double n, double d, double sigma, double are, double alpha, Alt a) {
+  const double ne = n * are;
+  return ne > 1 ? t_power(d * std::sqrt(ne) / sigma, ne - 1, alpha, a) : 0.0;
+}
+
 Procedure signed_rank() {
   Procedure p;
   p.id = "nonpar.signedrank";
@@ -68,10 +89,7 @@ Procedure signed_rank() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double are = are_of(s), d = s("delta"), sigma = s("sigma"), alpha = s("alpha");
     const Alt a = alt(s);
-    auto P = [&](double n) {
-      const double ne = n * are;
-      return ne > 1 ? t_power(d * std::sqrt(ne) / sigma, ne - 1, alpha, a) : 0.0;
-    };
+    auto P = [&](double n) { return signed_rank_power(n, d, sigma, are, alpha, a); };
     double n;
     if (s.solve == "n") {
       if (d == 0) throw CalcError("δ = 0: there is no shift to detect");
@@ -104,6 +122,26 @@ Procedure signed_rank() {
            ") with a " + alt_words(alt(s)) + " Wilcoxon signed-rank test at α = " + fnum(r.num("alpha")) +
            ", assuming an asymptotic relative efficiency of " + fnum(r.num("are"), 3) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double n = r.num("n"), are = r.num("are"), d = r.num("delta"), sigma = r.num("sigma"), alpha = s("alpha");
+    const double ne = n * are, ncp = d * std::sqrt(ne) / sigma;
+    Steps out;
+    out.push_back(are_step(s));
+    out.push_back({"Equivalent t-test size", "Ne = N × ARE", fint(n) + " × " + num(are) + " = " + num(ne)});
+    out.push_back({"Noncentrality", "λ = δ √Ne / σ", sub(d) + " × √" + num(ne) + " / " + num(sigma) + " = " + num(ncp)});
+    if (ne > 1) {
+      out.push_back(t_critical(alpha, ne - 1, a, "Ne − 1"));
+      out.push_back(t_power_step(ncp, ne - 1, alpha, a));
+    } else {
+      out.push_back({"Power", "0 when Ne ≤ 1 (no degrees of freedom)", "Ne = " + num(ne) + " ≤ 1: power = " +
+                                                                           prob(r.num("power"))});
+    }
+    if (s.solve == "n")
+      out.push_back(n_search([&](double x) { return signed_rank_power(x, d, sigma, are, alpha, a); }, n, s("power"), 2));
+    return out;
+  };
   p.definitions = {{"ARE", "Asymptotic relative efficiency of the signed-rank test relative to the t-test."},
                    {"δ", "Shift in location (mean/median) from the null value."}};
   p.references = {"Lehmann, E. L. (1975). Nonparametrics: Statistical Methods Based on Ranks. Holden-Day.",
@@ -125,6 +163,18 @@ SSC_REGISTER(signed_rank);
 // =====================================================================================
 // Mann–Whitney / Wilcoxon rank-sum
 // =====================================================================================
+// The Mann–Whitney test's power for a location shift: the two-sample t-test's with each group × ARE.
+double mw_shift_power(double n1, double n2, double d, double sigma, double are, double alpha, Alt a) {
+  const double e1 = n1 * are, e2 = n2 * are;
+  return t_power(d / (sigma * std::sqrt(1 / e1 + 1 / e2)), e1 + e2 - 2, alpha, a);
+}
+
+// Noether's power from P(X1 > X2) = pg.
+double mw_noether_power(double n1, double n2, double pg, double alpha, Alt a) {
+  const double N = n1 + n2, c = n1 / N;
+  return z_power(std::sqrt(12 * N * c * (1 - c)) * (pg - 0.5), alpha, a);
+}
+
 Procedure mann_whitney() {
   Procedure p;
   p.id = "nonpar.mannwhitney";
@@ -179,20 +229,14 @@ Procedure mann_whitney() {
       if (pg == 0.5 && s.solve == "n") throw CalcError("P(X1 > X2) = 0.5 means no effect");
       if (s.solve == "n" && ((a == Alt::Upper && (pg - 0.5) < 0) || (a == Alt::Lower && (pg - 0.5) > 0)))
         throw CalcError("P(X1 > X2) lies on the side opposite to the one-sided alternative");
-      P = [=](double n1, double n2) {
-        const double N = n1 + n2, c = n1 / N;
-        return z_power(std::sqrt(12 * N * c * (1 - c)) * (pg - 0.5), alpha, a);
-      };
+      P = [=](double n1, double n2) { return mw_noether_power(n1, n2, pg, alpha, a); };
       if (s.solve == "n") guess = z_factor(alpha, s("power"), a) / (12 * 0.25 * (pg - 0.5) * (pg - 0.5)) / 2;
     } else {
       const double are = are_of(s), d = s("delta"), sigma = s("sigma");
       if (d == 0 && s.solve == "n") throw CalcError("δ = 0: there is no shift to detect");
       if (s.solve == "n" && ((a == Alt::Upper && d < 0) || (a == Alt::Lower && d > 0)))
         throw CalcError("δ has the sign opposite to the one-sided alternative");
-      P = [=](double n1, double n2) {
-        const double e1 = n1 * are, e2 = n2 * are;
-        return t_power(d / (sigma * std::sqrt(1 / e1 + 1 / e2)), e1 + e2 - 2, alpha, a);
-      };
+      P = [=](double n1, double n2) { return mw_shift_power(n1, n2, d, sigma, are, alpha, a); };
       if (s.solve == "n") guess = z_factor(alpha, s("power"), a) * 2 * sigma * sigma / (d * d) / are + 1;
       r.set("are", are);
       r.set("delta", d);
@@ -222,6 +266,38 @@ Procedure mann_whitney() {
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
            " to detect " + eff + " with a " + alt_words(alt(s)) + " Mann–Whitney test at α = " + fnum(r.num("alpha")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double n1 = r.num("n1"), n2 = r.num("n2"), alpha = s("alpha");
+    Steps out;
+    std::function<double(double, double)> power;
+    if (s.is("method", "noether")) {
+      const double pg = r.num("pgt"), N = n1 + n2, c = n1 / N, ncp = std::sqrt(12 * N * c * (1 - c)) * (pg - 0.5);
+      out.push_back({"Share of group 1", "c = N1 / N", fint(n1) + " / " + fint(N) + " = " + num(c)});
+      out.push_back({"Noncentrality", "λ = √(12 N c (1 − c)) (P(X1 > X2) − 0.5), Noether",
+                     "√(12 × " + fint(N) + " × " + num(c) + " × " + num(1 - c) + ") × (" + num(pg) + " − 0.5) = " +
+                         num(ncp)});
+      out.push_back(z_critical(alpha, a));
+      out.push_back(z_power_step(ncp, alpha, a));
+      power = [=](double x1, double x2) { return mw_noether_power(x1, x2, pg, alpha, a); };
+    } else {
+      const double are = r.num("are"), d = r.num("delta"), sigma = r.num("sigma");
+      const double e1 = n1 * are, e2 = n2 * are, se = sigma * std::sqrt(1 / e1 + 1 / e2), ncp = d / se;
+      out.push_back(are_step(s));
+      out.push_back({"Equivalent t-test sizes", "N1e = N1 × ARE, N2e = N2 × ARE",
+                     fint(n1) + " × " + num(are) + " = " + num(e1) + ", " + fint(n2) + " × " + num(are) + " = " +
+                         num(e2)});
+      out.push_back({"Standard error", "SE = σ √(1/N1e + 1/N2e)",
+                     num(sigma) + " × √(1/" + num(e1) + " + 1/" + num(e2) + ") = " + num(se)});
+      out.push_back({"Noncentrality", "λ = δ / SE", sub(d) + " / " + num(se) + " = " + num(ncp)});
+      out.push_back(t_critical(alpha, e1 + e2 - 2, a, "N1e + N2e − 2"));
+      out.push_back(t_power_step(ncp, e1 + e2 - 2, alpha, a));
+      power = [=](double x1, double x2) { return mw_shift_power(x1, x2, d, sigma, are, alpha, a); };
+    }
+    if (s.solve == "n") out.push_back(two_group_search(s, power, {n1, n2}, s("power"), 2));
+    return out;
+  };
   p.definitions = {{"P(X1>X2)", "Probability that a random observation from group 1 exceeds one from group 2."},
                    {"ARE", "Asymptotic relative efficiency relative to the two-sample t-test."}};
   p.references = {"Noether, G. E. (1987). Sample size determination for some common nonparametric tests. Journal of "
@@ -245,6 +321,29 @@ SSC_REGISTER(mann_whitney);
 // =====================================================================================
 // Kruskal–Wallis (ARE-adjusted one-way ANOVA)
 // =====================================================================================
+// The spread of the location parameters: their mean less the first one (mbar), the sum of squares about the mean
+// and Cohen's f² = ss / (k σ²).  From the differences from the first mean: a mean of the means themselves rounds
+// when they are large next to their spread, and leaves a spread that is not there.
+struct KwEffect {
+  double mbar, ss, f2;
+};
+KwEffect kw_effect(const std::vector<double>& mu, double sigma) {
+  const int k = static_cast<int>(mu.size());
+  double mbar = 0;
+  for (double m : mu) mbar += (m - mu[0]) / k;
+  double ss = 0;
+  for (double m : mu) ss += (m - mu[0] - mbar) * (m - mu[0] - mbar);
+  return {mbar, ss, ss / k / (sigma * sigma)};
+}
+
+// The Kruskal–Wallis test's power: the one-way ANOVA F-test's with n × ARE subjects in each of the k groups.
+double kw_power(double n, int k, double f2, double are, double alpha) {
+  const double ne = n * are, N = ne * k;
+  const double df2 = N - k;
+  if (!(df2 > 0)) return 0.0;
+  return stats::pnf(stats::qf(alpha, k - 1, df2, false), k - 1, df2, N * f2, false);
+}
+
 Procedure kruskal() {
   Procedure p;
   p.id = "nonpar.kruskal";
@@ -278,24 +377,13 @@ Procedure kruskal() {
     const auto& mu = s.v("means");
     const int k = static_cast<int>(mu.size());
     if (k < 2) throw CalcError("enter at least two group means");
-    // from the differences from the first mean: a mean of the means themselves rounds when they are large next to
-    // their spread, and leaves a spread that is not there
-    double mbar = 0;
-    for (double m : mu) mbar += (m - mu[0]) / k;
-    double ss = 0;
-    for (double m : mu) ss += (m - mu[0] - mbar) * (m - mu[0] - mbar);
     const double sigma = s("sigma"), alpha = s("alpha"), are = are_of(s);
-    const double f2 = ss / k / (sigma * sigma);
+    const double f2 = kw_effect(mu, sigma).f2;
     // with no effect the power is alpha, which no sample size raises
     if (!(f2 > 0) && s.solve == "n") throw CalcError("the group means are all equal");
     if (!std::isfinite(f2))
       throw CalcError("the effect size is too large to compute with (σ is tiny next to the spread of the means)");
-    auto P = [&](double n) {
-      const double ne = n * are, N = ne * k;
-      const double df2 = N - k;
-      if (!(df2 > 0)) return 0.0;
-      return stats::pnf(stats::qf(alpha, k - 1, df2, false), k - 1, df2, N * f2, false);
-    };
+    auto P = [&](double n) { return kw_power(n, k, f2, are, alpha); };
     double n;
     if (s.solve == "n") {
       solve::NSearch o;
@@ -325,6 +413,38 @@ Procedure kruskal() {
     return fint(r.num("n")) + " subjects per group (" + fint(r.num("N")) + " in total, " + fint(r.num("k")) +
            " groups) " + achieves(s, r) + " to detect differences with effect size f = " + fnum(r.num("f")) +
            " using the Kruskal–Wallis test at α = " + fnum(r.num("alpha")) + " (ARE " + fnum(r.num("are"), 3) + ").";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const auto& mu = s.v("means");
+    const int k = static_cast<int>(mu.size());
+    const double n = r.num("n"), are = r.num("are"), sigma = s("sigma"), alpha = s("alpha");
+    const KwEffect e = kw_effect(mu, sigma);
+    const double mean = mu[0] + e.mbar, ne = n * are, N = ne * k, df2 = N - k, ncp = N * e.f2;
+    std::string squares;
+    for (std::size_t i = 0; i < mu.size(); ++i)
+      squares += (i ? " + " : "") + std::string("(") + num(mu[i]) + " − " + sub(mean) + ")²";
+    Steps out;
+    out.push_back({"Effect size", "f² = Σ(μᵢ − μ̄)² / (k σ²)",
+                   "μ̄ = " + num(mean) + "; " + squares + " = " + num(e.ss) + "; " + num(e.ss) + " / (" +
+                       std::to_string(k) + " × " + num(sigma) + "²) = " + num(e.f2)});
+    out.push_back(are_step(s));
+    out.push_back({"Equivalent ANOVA size", "Ne = n × ARE × k", fint(n) + " × " + num(are) + " × " +
+                                                                    std::to_string(k) + " = " + num(N)});
+    out.push_back({"Noncentrality", "λ = Ne f²", num(N) + " × " + num(e.f2) + " = " + num(ncp)});
+    if (df2 > 0) {
+      const double fc = stats::qf(alpha, k - 1, df2, false);
+      out.push_back({"Critical value", "F = F(1 − α; k − 1, Ne − k), the F quantile",
+                     "F(1 − " + num(alpha) + "; " + std::to_string(k - 1) + ", " + num(df2) + ") = " + num(fc)});
+      out.push_back({"Power", "P(F′ > F), F′ ~ noncentral F(k − 1, Ne − k, λ)",
+                     "P(F′ > " + num(fc) + ") = " + prob(r.num("power"))});
+    } else {
+      out.push_back({"Power", "0 when Ne ≤ k (no error degrees of freedom)",
+                     "Ne − k = " + num(df2) + ": power = " + prob(r.num("power"))});
+    }
+    if (s.solve == "n")
+      out.push_back(n_search([&](double x) { return kw_power(x, k, e.f2, are, alpha); }, n, s("power"), 2, "n"));
+    return out;
   };
   p.references = {"Lehmann, E. L. (1975). Nonparametrics: Statistical Methods Based on Ranks. Holden-Day.",
                   "Mahoney, M. & Magel, R. (1996). Estimation of the power of the Kruskal-Wallis test. Biometrical "
@@ -429,6 +549,67 @@ Procedure sign_test() {
            alt_words(alt(s)) + " exact sign test at a target α of " + fnum(r.num("alpha")) + " (actual " +
            text::format_fixed(r.num("actual_alpha"), 4) + ").";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const int n = static_cast<int>(r.num("n"));
+    const double pp = r.num("p"), alpha = s("alpha"), side = tail_alpha(alpha, a);
+    // the critical counts of sign_power
+    const int cu = a == Alt::Lower ? n + 1 : upper_critical(n, 0.5, side);
+    const int cl = a == Alt::Upper ? -1 : lower_critical(n, 0.5, side);
+    const auto ge = [&](int c, double p) { return stats::pbinom(c - 1, n, p, false); };  // P(X ≥ c)
+    const auto le = [&](int c, double p) { return stats::pbinom(c, n, p, true); };       // P(X ≤ c)
+    const std::string level = a == Alt::Two ? "α/2" : "α";
+    const std::string at = std::to_string(n) + ", ½)";
+    Steps out;
+    if (s.is("es", "shift"))
+      out.push_back({"Probability of a positive sign", "P = Φ(δ/σ)", "Φ(" + num(s("es_d")) + ") = " + num(pp)});
+    std::string cf, cn;
+    if (a != Alt::Lower) {
+      cf = "cU = the smallest count with P(X ≥ cU) ≤ " + level;
+      cn = cu > n ? "no count: P(X ≥ " + std::to_string(n) + " | " + at + " = " + prob(ge(n, 0.5), side) + " > " +
+                        fnum(side)
+                  : "cU = " + std::to_string(cu) + ": P(X ≥ " + std::to_string(cu) + " | " + at + " = " +
+                        prob(ge(cu, 0.5), side) + " ≤ " + fnum(side) + " < P(X ≥ " + std::to_string(cu - 1) + " | " +
+                        at + " = " + prob(ge(cu - 1, 0.5), side);
+    }
+    if (a != Alt::Upper) {
+      const std::string sep = a == Alt::Two ? "; " : "";
+      cf += sep + "cL = the largest count with P(X ≤ cL) ≤ " + level;
+      cn += sep + (cl < 0 ? "no count: P(X ≤ 0 | " + at + " = " + prob(le(0, 0.5), side) + " > " + fnum(side)
+                          : "cL = " + std::to_string(cl) + ": P(X ≤ " + std::to_string(cl) + " | " + at + " = " +
+                                prob(le(cl, 0.5), side) + " ≤ " + fnum(side) + " < P(X ≤ " + std::to_string(cl + 1) +
+                                " | " + at + " = " + prob(le(cl + 1, 0.5), side));
+    }
+    out.push_back({"Critical counts", cf + ", X ~ Bin(N, ½) the positive signs under H0", cn});
+    // the rejection region's probability at p (as two_tail_prob), term by term
+    const auto region = [&](double p) {
+      std::string f, x, parts;
+      if (a != Alt::Lower) {
+        f = "P(X ≥ cU)";
+        x = cu > n ? "0" : "P(X ≥ " + std::to_string(cu) + ")";
+        parts = cu > n ? "0" : prob(ge(cu, p));
+      }
+      if (a != Alt::Upper) {
+        const std::string plus = a == Alt::Two ? " + " : "";
+        f += plus + "P(X ≤ cL)";
+        x += plus + (cl < 0 ? "0" : "P(X ≤ " + std::to_string(cl) + ")");
+        parts += plus + (cl < 0 ? "0" : prob(le(cl, p)));
+      }
+      // the terms one by one, when there are two and one of them is not 0 already
+      const bool terms = a == Alt::Two && x.find("P(") != std::string::npos;
+      return std::array<std::string, 3>{f, x, terms ? " = " + parts : ""};
+    };
+    const auto h0 = region(0.5), h1 = region(pp);
+    out.push_back({"Actual alpha", h0[0] + ", X ~ Bin(N, ½)", h0[1] + h0[2] + " = " + prob(r.num("actual_alpha"))});
+    out.push_back({"Power", h1[0] + ", X ~ Bin(N, P)",
+                   h1[1] + " with X ~ Bin(" + std::to_string(n) + ", " + num(pp) + ")" + h1[2] + " = " +
+                       prob(r.num("power"))});
+    if (s.solve == "n")
+      out.push_back(saw_search([&](double x) { return sign_power(static_cast<int>(x), pp, alpha, a); }, n,
+                               s("power"), 1));
+    return out;
+  };
   p.references = {"Noether, G. E. (1987). Sample size determination for some common nonparametric tests. Journal of "
                   "the American Statistical Association 82, 645–647.",
                   REF_MACHIN};
@@ -471,16 +652,26 @@ CiMean ci_mean(const Scenario& s, double se_factor, double df, double target) {
   return c;
 }
 
+// Group 2: n1 × the ratio, rounded up (at least 1: a tiny ratio left it empty, and the interval infinitely wide).
+double ci_n2(const Scenario& s, double n) { return solve::round_up(s("r") * n); }
+
+// The standard error of the estimate in units of σ, and its degrees of freedom, for n (group 1's size with two).
+double ci_factor(const Scenario& s, double n, bool two_groups) {
+  if (!two_groups) return std::sqrt(1 / n);
+  return std::sqrt(1 / n + 1 / ci_n2(s, n));
+}
+double ci_df(const Scenario& s, double n, bool two_groups) { return two_groups ? n + ci_n2(s, n) - 2 : n - 1; }
+
+// Whether a size is sized by the chance that the realized half-width is at most the target (rather than by the
+// expected half-width).
+bool ci_tolerance(const Scenario& s) { return s.solve == "n" && s.get("tolprob", 0) > 0 && !s.is("known", "z"); }
+
 void run_ci_mean(const Scenario& s, Row& r, RunContext& ctx, bool two_groups) {
   if (!s.is("sides", "two")) check_one_sided_conf(s("conf"));
   const double gamma = s.get("tolprob", 0);
-  // group 2: n1 × the ratio, rounded up (at least 1: a tiny ratio left it empty, and the interval infinitely wide)
-  auto n2_of = [&](double n) { return solve::round_up(s("r") * n); };
-  auto factor = [&](double n) {
-    if (!two_groups) return std::sqrt(1 / n);
-    return std::sqrt(1 / n + 1 / n2_of(n));
-  };
-  auto dfof = [&](double n) { return two_groups ? n + n2_of(n) - 2 : n - 1; };
+  auto n2_of = [&](double n) { return ci_n2(s, n); };
+  auto factor = [&](double n) { return ci_factor(s, n, two_groups); };
+  auto dfof = [&](double n) { return ci_df(s, n, two_groups); };
   double n;
   if (s.solve == "n") {
     const double target = s("e");
@@ -508,9 +699,71 @@ void run_ci_mean(const Scenario& s, Row& r, RunContext& ctx, bool two_groups) {
     r.set("n", n);
   }
   r.set("e", c.halfwidth);
-  if (s.solve == "n" && gamma > 0 && !s.is("known", "z")) r.set("prob", c.prob);
+  if (ci_tolerance(s)) r.set("prob", c.prob);
   r.set("sigma", s("sigma"));
   r.set("conf", s("conf"));
+}
+
+// How a confidence interval's half-width comes about, and the size that gives the target half-width.
+derive::Steps ci_mean_steps(const Scenario& s, const Row& r, bool two_groups) {
+  using namespace derive;
+  const double n = r.num(two_groups ? "n1" : "n"), sigma = r.num("sigma"), conf = r.num("conf");
+  const bool two_sided = s.is("sides", "two"), known = s.is("known", "z");
+  const double a = two_sided ? (1 - conf) / 2 : 1 - conf, f = ci_factor(s, n, two_groups), df = ci_df(s, n, two_groups);
+  const double q = known ? stats::qnorm(a, false) : stats::qt(a, df, false);
+  const std::string level = two_sided ? "1 − (1 − C)/2" : "C";
+  const std::string root =
+      two_groups ? "√(1/" + fint(n) + " + 1/" + fint(ci_n2(s, n)) + ")" : "√(1/" + fint(n) + ")";
+  Steps out;
+  if (two_groups)
+    out.push_back({"Group 2", "N2 = ⌈R × N1⌉", "⌈" + fnum(s("r")) + " × " + fint(n) + "⌉ = " + fint(ci_n2(s, n))});
+  if (known)
+    out.push_back({"Critical value", "z = Φ⁻¹(" + level + "), C the confidence level",
+                   "Φ⁻¹(1 − " + num(a) + ") = " + num(q)});
+  else
+    out.push_back({"Critical value",
+                   "t = t(" + level + "; ν), C the confidence level, the t quantile with ν = " +
+                       (two_groups ? "N1 + N2 − 2" : "N − 1") + " degrees of freedom",
+                   "t(1 − " + num(a) + "; " + fint(df) + ") = " + num(q)});
+  const std::string sym = known ? "z" : "t";
+  out.push_back({"Standard error", std::string("SE = σ ") + (two_groups ? "√(1/N1 + 1/N2)" : "√(1/N)"),
+                 num(sigma) + " × " + root + " = " + num(sigma * f)});
+  out.push_back({"Half-width", "E = " + sym + " SE", num(q) + " × " + num(sigma * f) + " = " + num(r.num("e"))});
+  if (s.solve != "n") return out;
+  const double target = s("e");
+  const bool tol = ci_tolerance(s);
+  const std::string n_sym = two_groups ? "N1" : "N";
+  if (tol)
+    out.push_back({"Chance of the target half-width",
+                   "P(E′ ≤ E*) = P(χ²(ν) ≤ ν (E*/E)²), with E′ = " + sym + " S " +
+                       (two_groups ? "√(1/N1 + 1/N2)" : "√(1/N)") +
+                       " the half-width with the sample SD S and E* the target",
+                   "P(χ²(" + fint(df) + ") ≤ " + fint(df) + " × (" + num(target) + " / " + num(r.num("e")) +
+                       ")²) = " + prob(r.num("prob"), s("tolprob"))});
+  const std::string rule = tol ? n_sym + " = the smallest whole number at which P(E′ ≤ E*) reaches γ"
+                               : n_sym + " = the smallest whole number whose half-width E is at most the target E*";
+  const std::string with = two_groups ? ", with N2 = ⌈R × N1⌉" : "";
+  const CiMean at = ci_mean(s, f, df, target);
+  if (n - 1 < 2) {
+    out.push_back({"Sample size", rule + with,
+                   n_sym + " = " + fint(n) + " is the smallest size allowed, and its " +
+                       (tol ? "P(E′ ≤ " + num(target) + ") is already " + prob(at.prob, s("tolprob")) + " ≥ " +
+                                  fnum(s("tolprob"))
+                            : "half-width is already " + prob(at.halfwidth, target) + " ≤ " + num(target))});
+    return out;
+  }
+  const CiMean below = ci_mean(s, ci_factor(s, n - 1, two_groups), ci_df(s, n - 1, two_groups), target);
+  if (tol)
+    out.push_back({"Sample size", rule + with,
+                   "P(E′ ≤ " + num(target) + ") at " + n_sym + " = " + fint(n - 1) + ": " +
+                       prob(below.prob, s("tolprob")) + " < " + fnum(s("tolprob")) + " ≤ at " + n_sym + " = " +
+                       fint(n) + ": " + prob(at.prob, s("tolprob"))});
+  else
+    out.push_back({"Sample size", rule + with,
+                   "half-width at " + n_sym + " = " + fint(n - 1) + ": " + prob(below.halfwidth, target) + " > " +
+                       num(target) + " ≥ half-width at " + n_sym + " = " + fint(n) + ": " +
+                       prob(at.halfwidth, target)});
+  return out;
 }
 
 std::vector<ParamDef> ci_mean_params(bool two) {
@@ -608,6 +861,7 @@ Procedure ci_one_mean() {
            level_text(r.num("conf")) + " confidence interval for the mean with a half-width of " + fnum(r.num("e")) +
            " when the standard deviation is " + fnum(r.num("sigma")) + tolerance_words(s, r) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) { return ci_mean_steps(s, r, false); };
   p.definitions = {{"E", "Distance from the sample mean to a confidence limit (half the width of a two-sided interval)."},
                    {"P(E ≤ Target)", "Probability that the realized half-width is no larger than the target."}};
   p.references = {"Kupper, L. L. & Hafner, K. B. (1989). How appropriate are popular sample size formulas? The American "
@@ -632,6 +886,7 @@ Procedure ci_two_means() {
   p.solve_for = {{"n", "Sample Size", "n1", "N1"}, {"width", "Half-Width", "e", "Half-Width"}};
   p.params = ci_mean_params(true);
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) { run_ci_mean(s, r, ctx, true); };
+  p.derivation = [](const Scenario& s, const Row& r) { return ci_mean_steps(s, r, true); };
   p.columns = [](const Scenario& s) {
     std::vector<Column> c = {col("conf", "Confidence", "num"), col("n1", "N1", "int"), col("n2", "N2", "int"), col("n", "N", "int")};
     if (s.solve == "n") c.push_back(col("target_e", "Target E", "num"));

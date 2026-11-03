@@ -1,7 +1,11 @@
 // Survival (logrank test with accrual and follow-up), rates (Poisson and
 // negative binomial) and variances (chi-square and F tests).
+#include <algorithm>
+#include <functional>
+
 #include "procedures/apart.hpp"
 #include "procedures/common.hpp"
+#include "procedures/derive_models.hpp"
 
 namespace ssc::procs {
 namespace {
@@ -57,20 +61,69 @@ LogrankDesign logrank_design(const Scenario& s, double hr) {
   return d;
 }
 
-// Power from the expected number of events.
-double logrank_power(const Scenario& s, double n1, double n2, const LogrankDesign& d) {
-  const double alpha = s("alpha");
-  const Alt a = alt(s);
+// The mean of the logrank statistic under H1 (its drift), from the expected number of events.
+double logrank_drift(const Scenario& s, double n1, double n2, const LogrankDesign& d) {
   const double events = n1 * d.p1 + n2 * d.p2;
-  double drift;
   if (s.is("method", "freedman")) {
     const double phi = n2 / n1;  // control-to-treatment ratio
-    drift = std::sqrt(events * phi) * (d.hr - 1) / (d.hr + phi);
-  } else {  // Schoenfeld
-    const double w1 = n1 / (n1 + n2), w2 = 1 - w1;
-    drift = std::sqrt(events * w1 * w2) * std::log(d.hr);
+    return std::sqrt(events * phi) * (d.hr - 1) / (d.hr + phi);
   }
-  return z_power(drift, alpha, a);
+  // Schoenfeld
+  const double w1 = n1 / (n1 + n2), w2 = 1 - w1;
+  return std::sqrt(events * w1 * w2) * std::log(d.hr);
+}
+
+// Power from the expected number of events.
+double logrank_power(const Scenario& s, double n1, double n2, const LogrankDesign& d) {
+  return z_power(logrank_drift(s, n1, n2, d), s("alpha"), alt(s));
+}
+
+// The first steps of both logrank derivations: the hazards, each group's probability of an event (as event_prob
+// computes it) and the expected number of events, from which the power follows.
+void logrank_event_steps(const Scenario& s, const LogrankDesign& d, double n1, double n2, derive::Steps& out) {
+  using namespace derive;
+  const std::string what = "Hazard rates (exponential survival)";
+  const std::string lam1 = "λ1 = " + num(d.hr) + " × " + sig(d.lam2) + " = " + sig(d.lam1);
+  const std::string& in = s.s("survin");
+  if (in == "median")
+    out.push_back({what, "λ2 = ln 2 / Median2, λ1 = HR × λ2",
+                   "λ2 = ln 2 / " + num(s("med2")) + " = " + sig(d.lam2) + ", " + lam1});
+  else if (in == "surv")
+    out.push_back({what, "λ2 = −ln S2 / T0, λ1 = HR × λ2",
+                   "λ2 = −ln " + num(s("s2")) + " / " + num(s("t0")) + " = " + sig(d.lam2) + ", " + lam1});
+  else
+    out.push_back({what, "λ1 = HR × λ2", lam1});
+  const double eta = s("eta"), A = s("accrual"), F = s("follow");
+  const bool loss = eta > 0;
+  // 1 − e^(−hF)(1 − e^(−hA))/(hA), or 1 − e^(−hF) when all enter at once, for h × F and h × A as written
+  auto shape = [&](const std::string& hF, const std::string& hA) {
+    std::string t = "1 − e^(−" + hF + ")";
+    if (A > 0) t += " (1 − e^(−" + hA + ")) / (" + hA + ")";
+    return t;
+  };
+  const std::string formula =
+      (loss ? "Pi = λi/(λi + η) × [" + shape("(λi + η)F", "(λi + η)A") + "]" : "Pi = " + shape("λi F", "λi A")) +
+      (A > 0 ? ", with uniform entry over the accrual A and follow-up F after it"
+             : ", all entering at once and followed F") +
+      (loss ? ", and loss to follow-up at the rate η" : "");
+  auto numbers = [&](int i, double lam, double p) {
+    const double h = lam + eta;
+    const std::string t = shape(sig(h) + " × " + num(F), sig(h) + " × " + num(A));
+    return "P" + std::to_string(i) + " = " + (loss ? sig(lam) + "/" + sig(h) + " × [" + t + "]" : t) + " = " + sig(p);
+  };
+  out.push_back({"Probability of an event", formula, numbers(1, d.lam1, d.p1) + "; " + numbers(2, d.lam2, d.p2)});
+  out.push_back({"Expected events", "D = N1 P1 + N2 P2",
+                 fint(n1) + " × " + sig(d.p1) + " + " + fint(n2) + " × " + sig(d.p2) + " = " +
+                     num(n1 * d.p1 + n2 * d.p2, 2)});
+}
+
+// The power of a statistic N(θ, 1) under H1, as derive::z_power_step shows it, with θ for its mean: λ is a hazard
+// here.
+Step drift_power_step(double drift, double alpha, Alt a) {
+  Step st = derive::z_power_step(drift, alpha, a);
+  const std::string lambda = "λ";
+  for (std::size_t at; (at = st.formula.find(lambda)) != std::string::npos;) st.formula.replace(at, lambda.size(), "θ");
+  return st;
 }
 
 // Help texts of the inputs shared by the two logrank procedures.
@@ -251,6 +304,31 @@ Procedure logrank() {
            " method), assuming exponential survival, uniform accrual over " + fnum(r.num("accrual")) +
            " time units and " + fnum(r.num("follow")) + " units of additional follow-up.";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n1 = r.num("n1"), n2 = r.num("n2"), alpha = s("alpha");
+    const Alt a = alt(s);
+    const LogrankDesign d = logrank_design(s, r.num("hr"));
+    Steps out;
+    logrank_event_steps(s, d, n1, n2, out);
+    const double events = n1 * d.p1 + n2 * d.p2, drift = logrank_drift(s, n1, n2, d);
+    if (s.is("method", "freedman"))
+      out.push_back({"Noncentrality (Freedman)", "θ = √(D φ) (HR − 1) / (HR + φ), φ = N2/N1",
+                     "√(" + num(events, 2) + " × " + num(n2 / n1) + ") × (" + num(d.hr) + " − 1) / (" + num(d.hr) +
+                         " + " + num(n2 / n1) + ") = " + num(drift)});
+    else
+      out.push_back({"Noncentrality (Schoenfeld)", "θ = √(D w1 w2) ln HR, w1 = N1/(N1 + N2), w2 = 1 − w1",
+                     "√(" + num(events, 2) + " × " + num(n1 / (n1 + n2)) + " × " + num(1 - n1 / (n1 + n2)) +
+                         ") × ln " + num(d.hr) + " = " + num(drift)});
+    out.push_back(z_critical(alpha, a));
+    out.push_back(drift_power_step(drift, alpha, a));
+    if (s.solve == "n")
+      out.push_back(two_group_search(
+          s, [&](double x1, double x2) { return logrank_power(s, x1, x2, d); }, {n1, n2}, s("power"), 1));
+    else if (s.solve == "hr")
+      out.push_back(effect_search("HR", d.hr, logrank_power(s, n1, n2, d), s("power")));
+    return out;
+  };
   p.definitions = {{"HR", "Hazard ratio λ1/λ2 (treatment relative to control)."},
                    {"Events", "Expected number of events N1·P(Event)1 + N2·P(Event)2."},
                    {"P(Event)", "Probability that a subject has an event before the end of the study."},
@@ -286,11 +364,14 @@ SSC_REGISTER(logrank);
 // margin M > 1; with higher hazard better (e.g. recovery), H0: HR ≤ M versus
 // H1: HR > M for M < 1.  The logrank/Cox statistic for ln HR − ln M has drift
 // √(D w1 w2)·|ln M − ln HR| (Schoenfeld; Jung et al., 2005).
-double logrank_ni_power(double n1, double n2, const LogrankDesign& d, double margin, double alpha) {
+double logrank_ni_drift(double n1, double n2, const LogrankDesign& d, double margin) {
   const double events = n1 * d.p1 + n2 * d.p2;
   const double w1 = n1 / (n1 + n2);
-  const double drift = std::sqrt(events * w1 * (1 - w1)) * std::fabs(std::log(margin) - std::log(d.hr));
-  return stats::pnorm(drift - stats::qnorm(alpha, false));
+  return std::sqrt(events * w1 * (1 - w1)) * std::fabs(std::log(margin) - std::log(d.hr));
+}
+
+double logrank_ni_power(double n1, double n2, const LogrankDesign& d, double margin, double alpha) {
+  return stats::pnorm(logrank_ni_drift(n1, n2, d, margin) - stats::qnorm(alpha, false));
 }
 
 Procedure logrank_ni() {
@@ -420,6 +501,25 @@ Procedure logrank_ni() {
            " to show that the hazard ratio is " + (worse ? "below" : "above") + " the non-inferiority margin of " +
            fnum(r.num("margin")) + " when the actual hazard ratio is " + fnum(r.num("hr")) +
            ", using a one-sided logrank test at α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n1 = r.num("n1"), n2 = r.num("n2"), margin = r.num("margin"), alpha = s("alpha");
+    const LogrankDesign d = logrank_design(s, r.num("hr"));
+    Steps out;
+    logrank_event_steps(s, d, n1, n2, out);
+    const double events = n1 * d.p1 + n2 * d.p2, drift = logrank_ni_drift(n1, n2, d, margin);
+    out.push_back({"Noncentrality (Schoenfeld)", "θ = √(D w1 w2) |ln M − ln HR|, w1 = N1/(N1 + N2), w2 = 1 − w1",
+                   "√(" + num(events, 2) + " × " + num(n1 / (n1 + n2)) + " × " + num(1 - n1 / (n1 + n2)) +
+                       ") × |ln " + num(margin) + " − ln " + num(d.hr) + "| = " + num(drift)});
+    // the one-sided test that the hazard ratio lies on the acceptable side of the margin
+    out.push_back(z_critical(alpha, Alt::Upper));
+    out.push_back(drift_power_step(drift, alpha, Alt::Upper));
+    if (s.solve == "n")
+      out.push_back(two_group_search(
+          s, [&](double x1, double x2) { return logrank_ni_power(x1, x2, d, margin, alpha); }, {n1, n2},
+          s("power"), 1));
+    return out;
   };
   p.definitions = {{"M", "Non-inferiority margin for the hazard ratio (treatment/control)."},
                    {"HR", "Actual hazard ratio at which power is computed."},
@@ -569,6 +669,11 @@ struct OnePoisResult {
   double power, actual_alpha;
   PoisRegion region;
   bool exact;  // power from the Poisson distribution (else the normal approximation)
+  // what the power came from, for the derivation: the expected events and their difference, and beyond POIS_FAR
+  // the critical counts' distances from μ0 (NaN: no such tail)
+  double mu0 = NAN, mu1 = NAN, dmu = NAN;
+  bool far = false;
+  double up = NAN, lo = NAN;
 };
 
 // The power at λ1 with n subjects, and the size.  d, when given, is λ1 − λ0 itself: with many events the difference
@@ -584,6 +689,10 @@ OnePoisResult one_pois_eval(const Scenario& s, double n, double lam1, double d =
   const Alt a = alt(s);
   OnePoisResult res;
   res.exact = s.is("test", "exact") || s.is("method", "exact");
+  res.mu0 = mu0;
+  res.mu1 = mu1;
+  res.dmu = dmu;
+  res.far = far;
   if (!res.exact) {
     const double z = stats::qnorm(tail_alpha(alpha, a), false);
     const double s0 = std::sqrt(mu0), s1 = std::sqrt(mu1);
@@ -602,6 +711,8 @@ OnePoisResult one_pois_eval(const Scenario& s, double n, double lam1, double d =
     return res;
   }
   const auto [up, lo] = pois_region_far(exact_test, mu0, alpha, a);
+  res.up = up;
+  res.lo = lo;
   // the counts shown: exact up to 2^53, beyond it the nearest that can be stored
   res.region.cu = std::isnan(up) ? INFINITY : mu0 + up;
   res.region.cl = std::isnan(lo) ? -1 : mu0 + lo;
@@ -616,6 +727,92 @@ std::string pois_region_text(const PoisRegion& r) {
   if (r.cl >= 0) t += "X\u00a0≤\u00a0" + fint(r.cl);
   if (std::isfinite(r.cu)) t += std::string(t.empty() ? "" : " or ") + "X\u00a0≥\u00a0" + fint(r.cu);
   return t.empty() ? "never rejects" : t;
+}
+
+// How N was found where the exact power rises in a saw-tooth (solve::min_n, not monotone): the first size of its
+// scan to reach the target, so that the size below it falls short unless the scan began at N.
+Step sawtooth_n_search(const std::function<double(double)>& power, double n, double target, double lo) {
+  using namespace derive;
+  const double at = power(n), below = n - 1 >= lo ? power(n - 1) : NAN;
+  if (!(below >= target)) return n_search([&](double x) { return x == n ? at : below; }, n, target, lo);
+  return {"Sample size",
+          "N = the first size of the search's scan whose power reaches the target (the exact power rises in a "
+          "saw-tooth with N)",
+          "power at N = " + fint(n) + ": " + prob(at, target) + " ≥ " + fnum(target)};
+}
+
+// The steps of a one-rate Poisson test from its rejection region on: the region, the actual significance level and
+// the power, as one_pois_eval computed them (Poisson tails, or beyond POIS_FAR their Edgeworth approximation).
+void one_pois_exact_steps(const Scenario& s, const OnePoisResult& res, derive::Steps& out) {
+  using namespace derive;
+  const Alt a = alt(s);
+  const bool upper = a != Alt::Lower, lower = a != Alt::Upper, exact_test = s.is("test", "exact");
+  const std::string side = a == Alt::Two ? "α/2" : "α";
+  const std::string far = res.far ? ", from the normal tails with the Poisson skewness and a continuity correction "
+                                    "(Edgeworth), as beyond 10^15 events"
+                                  : "";
+  const PoisRegion& g = res.region;
+  std::string formula, numbers;
+  auto add = [](std::string& to, const std::string& t) { to += (to.empty() ? "" : "; ") + t; };
+  if (exact_test) {
+    if (upper) {
+      add(formula, "c_U = the smallest count with P(X ≥ c_U | μ0) ≤ " + side);
+      add(numbers, "c_U = " + fint(g.cu));
+    }
+    if (lower) {
+      add(formula, "c_L = the largest count with P(X ≤ c_L | μ0) ≤ " + side);
+      add(numbers, g.cl >= 0 ? "c_L = " + fint(g.cl) : "no c_L: even P(X = 0 | μ0) exceeds " + side);
+    }
+    formula += far;
+  } else {
+    const double z = stats::qnorm(tail_alpha(s("alpha"), a), false);
+    const std::string spread = num(z) + " × √" + num(res.mu0);
+    if (upper) {
+      add(formula, "c_U = ⌊μ0 + z√μ0⌋ + 1");
+      add(numbers, "c_U = ⌊" + num(res.mu0) + " + " + spread + "⌋ + 1 = " + fint(g.cu));
+    }
+    if (lower) {
+      add(formula, "c_L = ⌈μ0 − z√μ0⌉ − 1");
+      add(numbers, g.cl >= 0 ? "c_L = ⌈" + num(res.mu0) + " − " + spread + "⌉ − 1 = " + fint(g.cl)
+                             : "no c_L: μ0 − z√μ0 = " + num(res.mu0 - z * std::sqrt(res.mu0)) +
+                                   " leaves no count below it");
+    }
+    formula += ", the counts beyond μ0 ± z√μ0";
+  }
+  out.push_back({"Rejection region", formula, numbers});
+  // the tails beyond the critical counts at the mean mu (with mu − μ0 = dmu), as one_pois_eval sums them
+  auto tails = [&](double mu, double dmu) -> std::pair<double, double> {
+    if (res.far)
+      return {upper ? pois_power_far(res.up, NAN, mu, dmu) : 0.0, lower ? pois_power_far(NAN, res.lo, mu, dmu) : 0.0};
+    return {pois_at_least(g.cu, mu), pois_at_most(g.cl, mu)};
+  };
+  // a lower tail without a critical count adds nothing
+  const bool hi_tail = upper && std::isfinite(g.cu), lo_tail = lower && g.cl >= 0;
+  auto sum = [&](const std::string& mu, double at, double dmu, double total) {
+    const auto [hi, lo] = tails(at, dmu);
+    // beyond POIS_FAR the means differ by less than the digits shown: μ1 as μ0 and the difference
+    const std::string mean =
+        res.far && dmu != 0 ? num(res.mu0) + (dmu < 0 ? " − " : " + ") + num(std::fabs(dmu)) : num(at);
+    std::string f, t;
+    if (hi_tail) {
+      f = "P(X ≥ c_U | " + mu + ")";
+      t = "P(X ≥ " + fint(g.cu) + " | " + mean + ")";
+    }
+    if (lo_tail) {
+      f += std::string(hi_tail ? " + " : "") + "P(X ≤ c_L | " + mu + ")";
+      t += std::string(hi_tail ? " + " : "") + "P(X ≤ " + fint(g.cl) + " | " + mean + ")";
+    }
+    if (!hi_tail && !lo_tail)
+      return std::pair<std::string, std::string>{"P(reject | " + mu + "), 0 as no count is rare enough to reject",
+                                                 "P(reject | " + mean + ") = " + prob(total)};
+    t += " = ";
+    if (hi_tail && lo_tail) t += prob(hi) + " + " + prob(lo) + " = ";
+    return std::pair<std::string, std::string>{f + far, t + prob(total)};
+  };
+  const auto size = sum("μ0", res.mu0, 0, res.actual_alpha);
+  out.push_back({"Actual significance level", "α* = " + size.first, size.second});
+  const auto power = sum("μ1", res.mu1, res.dmu, res.power);
+  out.push_back({"Power", power.first, power.second});
 }
 
 Procedure one_poisson() {
@@ -760,6 +957,50 @@ Procedure one_poisson() {
     if (r.has("actual_alpha")) t += " (actual significance level " + fprob(r.num("actual_alpha")) + ")";
     return t + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n = r.num("n"), t = s("time"), lam0 = r.num("lam0"), lam1 = r.num("lam1"), alpha = s("alpha");
+    const Alt a = alt(s);
+    const OnePoisResult res = one_pois_eval(s, n, lam1);
+    Steps out;
+    // λ1 with the digits that tell it from λ0 (which a rate found next to a large λ0 can need)
+    const auto [l1, l0] = fnum_apart(lam1, lam0);
+    Step events{"Expected events", "μ0 = λ0 N t, μ1 = λ1 N t",
+                "μ0 = " + l0 + " × " + fint(n) + " × " + num(t) + " = " + num(res.mu0) + ", μ1 = " + l1 + " × " +
+                    fint(n) + " × " + num(t) + " = " + num(res.mu1)};
+    if (res.far) {  // the difference of the means, which one_pois_eval takes from that of the rates
+      events.formula += ", μ1 − μ0 = (λ1 − λ0) N t";
+      events.numbers += ", μ1 − μ0 = " + num(res.dmu);
+    }
+    out.push_back(events);
+    if (!s.is("test", "exact")) out.push_back(z_critical(alpha, a));
+    if (res.exact) {
+      one_pois_exact_steps(s, res, out);
+    } else {
+      // the normal approximation of one_pois_eval: X ~ N(μ1, μ1) against the critical values μ0 ± z√μ0
+      const double z = stats::qnorm(tail_alpha(alpha, a), false), s0 = std::sqrt(res.mu0), s1 = std::sqrt(res.mu1);
+      const double hi = stats::pnorm((res.dmu - z * s0) / s1), lo = stats::pnorm((-res.dmu - z * s0) / s1);
+      auto term = [&](double d) {
+        return "Φ((" + num(d) + " − " + num(z) + " × √" + num(res.mu0) + ") / √" + num(res.mu1) + ")";
+      };
+      if (a == Alt::Two)
+        out.push_back({"Power", "Φ((μ1 − μ0 − z√μ0) / √μ1) + Φ((μ0 − μ1 − z√μ0) / √μ1)",
+                       term(res.dmu) + " + " + term(-res.dmu) + " = " + prob(hi) + " + " + prob(lo) + " = " +
+                           prob(res.power)});
+      else if (a == Alt::Upper)
+        out.push_back({"Power", "Φ((μ1 − μ0 − z√μ0) / √μ1)", term(res.dmu) + " = " + prob(res.power)});
+      else
+        out.push_back({"Power", "Φ((μ0 − μ1 − z√μ0) / √μ1)", term(-res.dmu) + " = " + prob(res.power)});
+    }
+    const auto power = [&](double x) { return one_pois_eval(s, x, lam1).power; };
+    if (s.solve == "n")
+      out.push_back(res.exact ? sawtooth_n_search(power, n, s("power"), 1) : n_search(power, n, s("power"), 1));
+    else if (s.solve == "lam1")  // effect_search's step, with λ1's digits apart from λ0's
+      out.push_back({"Detectable λ1", "λ1 = the value at which the power equals the target",
+                     "power at λ1 = " + l1 + ": " + prob(res.power, s("power")) + " (target " +
+                         fnum(s("power")) + ")"});
+    return out;
+  };
   p.definitions = {{"N", "Number of subjects."},
                    {"t", "Exposure time per subject; N·t is the total exposure."},
                    {"λ0, λ1", "Event rates per unit of exposure under H0 and H1."},
@@ -811,6 +1052,9 @@ void check_rate_events(int group, double side_power, double log_none, double eve
 }
 
 const char* FEW_EVENTS = "A group expects fewer than 10 events; the normal approximation of the test is rough with so few.";
+const char* SIZES_WITH_EVENTS =
+    "Smaller samples leave a group so little chance of an event that the normal approximation gives the test more "
+    "power than that chance allows; this is the smallest that does not.";
 
 // Sizes `n` from an n search at which a side's power exceeds the chance of the events it needs (`possible` is false):
 // the smallest from which none does, with a note, or `n` itself (refused by check_rate_events) when no sizes up to the
@@ -821,13 +1065,93 @@ TwoN sizes_with_events(const Scenario& s, const std::function<double(double, dou
   try {
     const TwoN m = solve_two_group_n(s, [&](double n1, double n2) { return possible(n1, n2) ? P(n1, n2) : 0.0; },
                                      s("power"), 1, n.n1, true, ctx);
-    r.notes.push_back("Smaller samples leave a group so little chance of an event that the normal approximation gives "
-                      "the test more power than that chance allows; this is the smallest that does not.");
+    r.notes.push_back(SIZES_WITH_EVENTS);
     return m;
   } catch (const CalcError&) {
     return n;
   }
 }
+
+// The power of a two-rate z-test of the log ratio `lr` (written `sym`) from its variances under H0 and H1, with the
+// chances `up` and `down` of rejecting on each side as the procedure's sides computed them, and their total.
+Step log_ratio_power_step(const std::string& sym, double lr, double v0, double v1, std::pair<double, double> sides,
+                          double power, double alpha, Alt a) {
+  using namespace derive;
+  const double z = stats::qnorm(tail_alpha(alpha, a), false);
+  const std::string up = "Φ((" + sym + " − z√V0) / √V1)", down = "Φ((−" + sym + " − z√V0) / √V1)";
+  auto term = [&](double d) {
+    return "Φ((" + num(d) + " − " + num(z) + " × √" + sig(v0) + ") / √" + sig(v1) + ")";
+  };
+  if (a == Alt::Two)
+    return {"Power", up + " + " + down,
+            term(lr) + " + " + term(-lr) + " = " + prob(sides.first) + " + " + prob(sides.second) + " = " +
+                prob(power)};
+  if (a == Alt::Upper) return {"Power", up, term(lr) + " = " + prob(power)};
+  return {"Power", down, term(-lr) + " = " + prob(power)};
+}
+
+// How a two-rate test's group sizes were found: as two_group_search shows it, or, where sizes_with_events moved them
+// on, the smallest whose power reaches the target without a side's power above its group's chance of an event.  M is
+// the test (TwoPois or TwoNegbin).
+template <class M>
+Step rate_sizes_step(const Scenario& s, const Row& r, const M& m) {
+  using namespace derive;
+  const TwoN n{r.num("n1"), r.num("n2")};
+  const double target = s("power");
+  const auto P = [&](double n1, double n2) { return m.power(n1, n2); };
+  if (std::find(r.notes.begin(), r.notes.end(), SIZES_WITH_EVENTS) == r.notes.end())
+    return two_group_search(s, P, n, target, 1);
+  Step st = two_group_search(
+      s, [&](double n1, double n2) { return m.possible(n1, n2) ? P(n1, n2) : 0.0; }, n, target, 1);
+  st.formula += ", where no side's power exceeds its group's chance of an event (the normal approximation fails there)";
+  const TwoN less = smaller_two_group(s, n);
+  if (less.n1 >= 1 && less.n2 >= 1 && !m.possible(less.n1, less.n2)) {
+    // the side that the sizes below fail on, and the chance of an event in the group it needs one in
+    const auto [up, down] = m.sides(less.n1, less.n2);
+    const auto [none1, none2] = m.log_none_groups(less.n1, less.n2);
+    const bool first = beyond_events(up, none1);
+    const double side = first ? up : down, chance = -std::expm1(first ? none1 : none2);
+    st.numbers = "at N1 = " + fint(less.n1) + ", N2 = " + fint(less.n2) + " the normal approximation gives group " +
+                 (first ? "1" : "2") + "'s side a power of " + prob(side, chance) +
+                 ", above that group's chance of an event, " + prob(chance, side) + "; power at N1 = " + fint(n.n1) +
+                 ", N2 = " + fint(n.n2) + ": " + prob(P(n.n1, n.n2), target) + " ≥ " + fnum(target);
+  }
+  return st;
+}
+
+// The z-test of the log ratio of two Poisson rates: its variances under H1 and H0, and the chances of rejecting with
+// group 1's rate the higher and with group 2's (0 for a side the test does not have).
+struct TwoPois {
+  double l1, l2, t, alpha, lr;
+  Alt a;
+  bool wald;  // the variance under H0 is the one under H1
+  explicit TwoPois(const Scenario& s)
+      : l1(s("lam1")), l2(s("lam2")), t(s("time")), alpha(s("alpha")), lr(std::log(l1 / l2)), a(alt(s)),
+        wald(s.is("method", "h1")) {}
+  double v1(double n1, double n2) const { return 1 / (n1 * t * l1) + 1 / (n2 * t * l2); }
+  double pooled(double n1, double n2) const { return (n1 * l1 + n2 * l2) / (n1 + n2); }
+  double v0(double n1, double n2) const {
+    return wald ? v1(n1, n2) : (1 / (n1 * t) + 1 / (n2 * t)) / pooled(n1, n2);
+  }
+  std::pair<double, double> sides(double n1, double n2) const {
+    const double var1 = v1(n1, n2), var0 = v0(n1, n2);
+    const double zt = stats::qnorm(tail_alpha(alpha, a), false);
+    auto tail = [&](double d) { return stats::pnorm((d - zt * std::sqrt(var0)) / std::sqrt(var1)); };
+    return {a != Alt::Lower ? tail(lr) : 0.0, a != Alt::Upper ? tail(-lr) : 0.0};
+  }
+  double power(double n1, double n2) const {
+    const auto [up, down] = sides(n1, n2);
+    return a == Alt::Two ? stats::clamp01(up + down) : up + down;  // a NaN stays NaN (std::min(1.0, x) gives 1)
+  }
+  // the logs of each group's chance of no event: e^−events for Poisson counts
+  std::pair<double, double> log_none_groups(double n1, double n2) const { return {-n1 * l1 * t, -n2 * l2 * t}; }
+  // no side's power above its group's chance of an event (see beyond_events)
+  bool possible(double n1, double n2) const {
+    const auto [up, down] = sides(n1, n2);
+    const auto [none1, none2] = log_none_groups(n1, n2);
+    return !beyond_events(up, none1) && !beyond_events(down, none2);
+  }
+};
 
 Procedure two_poisson() {
   Procedure p;
@@ -874,7 +1198,6 @@ Procedure two_poisson() {
                      .hint("How long each subject is observed, in the time unit of the rates.")})
     p.params.push_back(q);
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    using namespace stats;
     const double l1 = s("lam1"), l2 = s("lam2"), t = s("time"), alpha = s("alpha");
     const Alt a = alt(s);
     // the variances' reciprocals of exposures below about 5.6e-309 overflow to infinity (and their ratio, the
@@ -882,20 +1205,10 @@ Procedure two_poisson() {
     if (!std::isfinite(1 / t)) throw CalcError("the exposure time t is too small to compute with");
     if (!std::isfinite(1 / (t * std::fmin(l1, l2))))
       throw CalcError("the expected events per subject (λ × t) are too small to compute with");
-    const double lr = std::log(l1 / l2);
-    // the chances of rejecting with group 1's rate the higher and with group 2's (0 for a side the test does not have)
-    auto sides = [&](double n1, double n2) -> std::pair<double, double> {
-      const double v1 = 1 / (n1 * t * l1) + 1 / (n2 * t * l2);
-      const double lbar = (n1 * l1 + n2 * l2) / (n1 + n2);
-      const double v0 = s.is("method", "h1") ? v1 : (1 / (n1 * t) + 1 / (n2 * t)) / lbar;
-      const double zt = qnorm(tail_alpha(alpha, a), false);
-      auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
-      return {a != Alt::Lower ? tail(lr) : 0.0, a != Alt::Upper ? tail(-lr) : 0.0};
-    };
-    auto P = [&](double n1, double n2) {
-      const auto [up, down] = sides(n1, n2);
-      return a == Alt::Two ? clamp01(up + down) : up + down;  // a NaN stays NaN (std::min(1.0, x) gives 1)
-    };
+    const TwoPois m(s);
+    const double lr = m.lr;
+    auto sides = [&](double n1, double n2) { return m.sides(n1, n2); };
+    auto P = [&](double n1, double n2) { return m.power(n1, n2); };
     TwoN n;
     if (s.solve == "n") {
       if (l1 == l2) throw CalcError("the rates are equal");
@@ -903,10 +1216,7 @@ Procedure two_poisson() {
         throw CalcError("the rate ratio λ1/λ2 lies on the side opposite to the one-sided alternative");
       const double g = z_factor(alpha, s("power"), a) * (1 / l1 + 1 / l2) / t / (lr * lr);
       n = solve_two_group_n(s, P, s("power"), 1, std::ceil(g), true, ctx);
-      auto possible = [&](double n1, double n2) {
-        const auto [up, down] = sides(n1, n2);
-        return !beyond_events(up, -n1 * l1 * t) && !beyond_events(down, -n2 * l2 * t);
-      };
+      auto possible = [&](double n1, double n2) { return m.possible(n1, n2); };
       if (!possible(n.n1, n.n2)) n = sizes_with_events(s, P, possible, n, r, ctx);
     } else {
       n = two_group_n(s);
@@ -937,6 +1247,31 @@ Procedure two_poisson() {
            fnum(r.num("ratio")) + " (rates " + fnum(r.num("lam1")) + " and " + fnum(r.num("lam2")) +
            ") with a " + alt_words(alt(s)) + " z-test on the log rate ratio at α = " + fnum(r.num("alpha")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const TwoPois m(s);
+    const double n1 = r.num("n1"), n2 = r.num("n2"), t = m.t;
+    const double v1 = m.v1(n1, n2), v0 = m.v0(n1, n2);
+    Steps out;
+    out.push_back({"Log rate ratio", "ln(λ1/λ2)", "ln(" + sig(m.l1) + " / " + sig(m.l2) + ") = " + num(m.lr)});
+    out.push_back({"Variance under H1", "V1 = 1/(N1 t λ1) + 1/(N2 t λ2), one over each group's expected events",
+                   "1/" + sig(n1 * t * m.l1) + " + 1/" + sig(n2 * t * m.l2) + " = " + sig(v1)});
+    if (m.wald) {
+      out.push_back({"Variance under H0", "V0 = V1 (Wald)", "V0 = " + sig(v0)});
+    } else {
+      const double pooled = m.pooled(n1, n2);
+      out.push_back({"Variance under H0",
+                     "V0 = (1/(N1 t) + 1/(N2 t)) / λ̄, λ̄ = (N1 λ1 + N2 λ2) / (N1 + N2), the pooled rate",
+                     "λ̄ = (" + fint(n1) + " × " + sig(m.l1) + " + " + fint(n2) + " × " + sig(m.l2) + ") / " +
+                         fint(n1 + n2) + " = " + sig(pooled) + ", V0 = (1/" + sig(n1 * t) + " + 1/" + sig(n2 * t) +
+                         ") / " + sig(pooled) + " = " + sig(v0)});
+    }
+    out.push_back(z_critical(m.alpha, m.a));
+    out.push_back(log_ratio_power_step("ln(λ1/λ2)", m.lr, v0, v1, m.sides(n1, n2), m.power(n1, n2), m.alpha, m.a));
+    if (s.solve == "n")
+      out.push_back(rate_sizes_step(s, r, m));
+    return out;
+  };
   p.definitions = {{"λ1, λ2", "Event rates per unit of exposure."}, {"t", "Exposure time per subject."}};
   p.references = {"Gu, K., Ng, H. K. T., Tang, M. L. & Schucany, W. R. (2008). Testing the ratio of two Poisson rates. "
                   "Biometrical Journal 50, 283–298.",
@@ -955,6 +1290,47 @@ SSC_REGISTER(two_poisson);
 // =====================================================================================
 // Two negative binomial rates (Zhu & Lakkis 2014)
 // =====================================================================================
+// The test of the log rate ratio: its variances under H1 and H0 (by Zhu and Lakkis's method 1, 2 or 3), and the
+// chances of rejecting with the treatment rate the higher and with the control rate (0 for a side the test does not
+// have).  Group 1 is treatment (rate r1), group 2 control (rate r0).
+struct TwoNegbin {
+  double r0, rr, r1, kappa, mt, alpha;
+  Alt a;
+  std::string method;
+  explicit TwoNegbin(const Scenario& s)
+      : r0(s("r0")), rr(s("rr")), r1(r0 * rr), kappa(s("kappa")), mt(s("time")), alpha(s("alpha")), a(alt(s)),
+        method(s.s("method")) {}
+  double v1(double n1, double n2) const { return (1 / (mt * r1) + kappa) / n1 + (1 / (mt * r0) + kappa) / n2; }
+  double pooled(double n1, double n2) const { return (n1 * r1 + n2 * r0) / (n1 + n2); }
+  double v0(double n1, double n2) const {
+    if (method == "1") return (1 / (mt * r0) + kappa) * (1 / n1 + 1 / n2);
+    if (method == "2") return v1(n1, n2);
+    return (1 / (mt * pooled(n1, n2)) + kappa) * (1 / n1 + 1 / n2);
+  }
+  std::pair<double, double> sides(double n1, double n2) const {
+    const double var1 = v1(n1, n2), var0 = v0(n1, n2);
+    const double lr = std::log(rr);
+    const double zt = stats::qnorm(tail_alpha(alpha, a), false);
+    auto tail = [&](double d) { return stats::pnorm((d - zt * std::sqrt(var0)) / std::sqrt(var1)); };
+    return {a != Alt::Lower ? tail(lr) : 0.0, a != Alt::Upper ? tail(-lr) : 0.0};
+  }
+  double power(double n1, double n2) const {
+    const auto [up, down] = sides(n1, n2);
+    return a == Alt::Two ? stats::clamp01(up + down) : up + down;  // a NaN stays NaN (std::min(1.0, x) gives 1)
+  }
+  // the chance that a subject with mean count μ has no event: (1 + κμ)^(−1/κ), e^(−μ) for κ = 0
+  double log_none(double mu) const { return kappa > 0 ? -std::log1p(kappa * mu) / kappa : -mu; }
+  std::pair<double, double> log_none_groups(double n1, double n2) const {
+    return {n1 * log_none(r1 * mt), n2 * log_none(r0 * mt)};
+  }
+  // no side's power above its group's chance of an event (see beyond_events)
+  bool possible(double n1, double n2) const {
+    const auto [up, down] = sides(n1, n2);
+    const auto [none1, none2] = log_none_groups(n1, n2);
+    return !beyond_events(up, none1) && !beyond_events(down, none2);
+  }
+};
+
 Procedure two_negbin() {
   Procedure p;
   p.id = "rates.two.negbin";
@@ -1009,7 +1385,6 @@ Procedure two_negbin() {
             .hint("Average time each subject is followed, in the time unit of the rates.")})
     p.params.push_back(q);
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    using namespace stats;
     const double r0 = s("r0"), rr = s("rr"), kappa = s("kappa"), mt = s("time"), alpha = s("alpha");
     const double r1 = r0 * rr;
     const Alt a = alt(s);
@@ -1017,32 +1392,10 @@ Procedure two_negbin() {
     // statistic, is then no number)
     if (!std::isfinite(1 / (mt * std::fmin(r0, r1))))
       throw CalcError("the expected events per subject (rate × time) are too small to compute with");
-    const std::string& m = s.s("method");
-    // the chances of rejecting with the treatment rate the higher and with the control rate (0 for a side the test
-    // does not have)
-    auto sides = [&](double n1, double n2) -> std::pair<double, double> {
-      // n1: treatment (rate r1), n2: control (rate r0)
-      const double v1 = (1 / (mt * r1) + kappa) / n1 + (1 / (mt * r0) + kappa) / n2;
-      double v0;
-      if (m == "1") {
-        v0 = (1 / (mt * r0) + kappa) * (1 / n1 + 1 / n2);
-      } else if (m == "2") {
-        v0 = v1;
-      } else {
-        const double rt = (n1 * r1 + n2 * r0) / (n1 + n2);
-        v0 = (1 / (mt * rt) + kappa) * (1 / n1 + 1 / n2);
-      }
-      const double lr = std::log(rr);
-      const double zt = qnorm(tail_alpha(alpha, a), false);
-      auto tail = [&](double d) { return pnorm((d - zt * std::sqrt(v0)) / std::sqrt(v1)); };
-      return {a != Alt::Lower ? tail(lr) : 0.0, a != Alt::Upper ? tail(-lr) : 0.0};
-    };
-    auto P = [&](double n1, double n2) {
-      const auto [up, down] = sides(n1, n2);
-      return a == Alt::Two ? clamp01(up + down) : up + down;  // a NaN stays NaN (std::min(1.0, x) gives 1)
-    };
-    // the chance that a subject with mean count μ has no event: (1 + κμ)^(−1/κ), e^(−μ) for κ = 0
-    auto log_none = [&](double mu) { return kappa > 0 ? -std::log1p(kappa * mu) / kappa : -mu; };
+    const TwoNegbin m(s);
+    auto sides = [&](double n1, double n2) { return m.sides(n1, n2); };
+    auto P = [&](double n1, double n2) { return m.power(n1, n2); };
+    auto log_none = [&](double mu) { return m.log_none(mu); };
     TwoN n;
     if (s.solve == "n") {
       if (rr == 1) throw CalcError("a rate ratio of 1 has no effect to detect");
@@ -1051,10 +1404,7 @@ Procedure two_negbin() {
       const double v = (1 / (mt * r1) + kappa) + (1 / (mt * r0) + kappa);
       n = solve_two_group_n(s, P, s("power"), 1, std::ceil(z_factor(alpha, s("power"), a) * v / (std::log(rr) * std::log(rr))),
                             true, ctx);
-      auto possible = [&](double n1, double n2) {
-        const auto [up, down] = sides(n1, n2);
-        return !beyond_events(up, n1 * log_none(r1 * mt)) && !beyond_events(down, n2 * log_none(r0 * mt));
-      };
+      auto possible = [&](double n1, double n2) { return m.possible(n1, n2); };
       if (!possible(n.n1, n.n2)) n = sizes_with_events(s, P, possible, n, r, ctx);
     } else {
       n = two_group_n(s);
@@ -1087,6 +1437,37 @@ Procedure two_negbin() {
            " and the dispersion is " + fnum(r.num("kappa")) + ", using a " + alt_words(alt(s)) +
            " test of the log rate ratio at α = " + fnum(r.num("alpha")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const TwoNegbin m(s);
+    const double n1 = r.num("n1"), n2 = r.num("n2");
+    const double v1 = m.v1(n1, n2), v0 = m.v0(n1, n2);
+    // 1/(t λ) + κ, the variance of a subject's log rate in a group, written out
+    auto per = [&](double rate) { return "(1/(" + num(m.mt) + " × " + sig(rate) + ") + " + num(m.kappa) + ")"; };
+    const std::string inv = "(1/" + fint(n1) + " + 1/" + fint(n2) + ")";
+    Steps out;
+    out.push_back({"Treatment rate", "λ1 = R × λ2", num(m.rr) + " × " + sig(m.r0) + " = " + sig(m.r1)});
+    out.push_back({"Variance under H1", "V1 = (1/(t λ1) + κ)/N1 + (1/(t λ2) + κ)/N2",
+                   per(m.r1) + "/" + fint(n1) + " + " + per(m.r0) + "/" + fint(n2) + " = " + sig(v1)});
+    if (m.method == "1") {
+      out.push_back({"Variance under H0 (method 1)", "V0 = (1/(t λ2) + κ)(1/N1 + 1/N2), from the control rate",
+                     per(m.r0) + " × " + inv + " = " + sig(v0)});
+    } else if (m.method == "2") {
+      out.push_back({"Variance under H0 (method 2)", "V0 = V1, from the true rates", "V0 = " + sig(v0)});
+    } else {
+      const double pooled = m.pooled(n1, n2);
+      out.push_back({"Variance under H0 (method 3)",
+                     "V0 = (1/(t λ̄) + κ)(1/N1 + 1/N2), λ̄ = (N1 λ1 + N2 λ2) / (N1 + N2), the pooled rate",
+                     "λ̄ = (" + fint(n1) + " × " + sig(m.r1) + " + " + fint(n2) + " × " + sig(m.r0) + ") / " +
+                         fint(n1 + n2) + " = " + sig(pooled) + ", V0 = " + per(pooled) + " × " + inv + " = " +
+                         sig(v0)});
+    }
+    out.push_back(z_critical(m.alpha, m.a));
+    out.push_back(log_ratio_power_step("ln R", std::log(m.rr), v0, v1, m.sides(n1, n2), m.power(n1, n2), m.alpha, m.a));
+    if (s.solve == "n")
+      out.push_back(rate_sizes_step(s, r, m));
+    return out;
+  };
   p.definitions = {{"λ1, λ2", "Event rates in the treatment and control groups."},
                    {"R", "Rate ratio λ1/λ2."},
                    {"κ", "Negative binomial dispersion (Var = μ + κμ²; κ = 0 is Poisson)."}};
@@ -1108,6 +1489,51 @@ SSC_REGISTER(two_negbin);
 // =====================================================================================
 // One variance (chi-square test)
 // =====================================================================================
+// The exact power with n subjects at the variance ratio σ1²/σ0²: (N − 1)S²/σ0² is σ1²/σ0² times a chi-square
+// variable with N − 1 degrees of freedom.
+double one_var_power(double n, double ratio, double alpha, Alt a) {
+  using namespace stats;
+  const double df = n - 1;
+  double pw = 0;
+  const double side = tail_alpha(alpha, a);
+  if (a != Alt::Lower) pw += pchisq(qchisq(side, df, false) / ratio, df, false);
+  if (a != Alt::Upper) pw += pchisq(qchisq(side, df, true) / ratio, df, true);
+  return clamp01(pw);
+}
+
+// The critical values and the power of a test of variances whose statistic, divided by the variance ratio
+// `ratio_sym`, has the law `q` (χ² or F, its degrees of freedom `df`, defined by `df_def`) under H1: c_U and c_L are
+// its quantiles (quantile(lower, p)), and the power the chances beyond them once divided by the ratio (tail(lower, x),
+// as the power function computes them).
+void variance_test_steps(const std::string& q, const std::string& df, const std::string& df_def,
+                         const std::string& df_numbers, const std::string& ratio_sym, double ratio, double alpha, Alt a,
+                         double power, const std::function<double(bool, double)>& quantile,
+                         const std::function<double(bool, double)>& tail, derive::Steps& out) {
+  using namespace derive;
+  const double side = tail_alpha(alpha, a);
+  const std::string level = a == Alt::Two ? "α/2" : "α";
+  const bool hi = a != Alt::Lower, lo = a != Alt::Upper;
+  const double cu = hi ? quantile(false, side) : NAN, cl = lo ? quantile(true, side) : NAN;
+  std::string f, t, pf, pt;
+  if (hi) {
+    f = "c_U = " + q + "(1 − " + level + "; " + df + ")";
+    t = "c_U = " + q + "(1 − " + num(side) + "; " + df_numbers + ") = " + num(cu);
+    pf = "P(" + q + " > c_U / " + ratio_sym + ")";
+    pt = "P(" + q + " > " + num(cu) + " / " + num(ratio) + ")";
+  }
+  if (lo) {
+    const std::string join = hi ? ", " : "", plus = hi ? " + " : "";
+    f += join + "c_L = " + q + "(" + level + "; " + df + ")";
+    t += join + "c_L = " + q + "(" + num(side) + "; " + df_numbers + ") = " + num(cl);
+    pf += plus + "P(" + q + " < c_L / " + ratio_sym + ")";
+    pt += plus + "P(" + q + " < " + num(cl) + " / " + num(ratio) + ")";
+  }
+  out.push_back({"Critical values", f + ", the " + q + " quantiles with " + df_def, t});
+  pt += " = ";
+  if (hi && lo) pt += prob(tail(false, cu / ratio)) + " + " + prob(tail(true, cl / ratio)) + " = ";
+  out.push_back({"Power", pf + ", " + q + " with " + df + " degrees of freedom", pt + prob(power)});
+}
+
 Procedure one_variance() {
   Procedure p;
   p.id = "var.one";
@@ -1137,17 +1563,9 @@ Procedure one_variance() {
                   .sugg({"1.5", "0.5", "1.25 1.5 2"})
                   .hint("The true standard deviation you expect; the study is sized to tell it apart from σ0.")};
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    using namespace stats;
     const double ratio = s("sd1") * s("sd1") / (s("sd0") * s("sd0")), alpha = s("alpha");
     const Alt a = alt(s);
-    auto P = [&](double n) {
-      const double df = n - 1;
-      double pw = 0;
-      const double side = tail_alpha(alpha, a);
-      if (a != Alt::Lower) pw += pchisq(qchisq(side, df, false) / ratio, df, false);
-      if (a != Alt::Upper) pw += pchisq(qchisq(side, df, true) / ratio, df, true);
-      return clamp01(pw);
-    };
+    auto P = [&](double n) { return one_var_power(n, ratio, alpha, a); };
     double n;
     if (s.solve == "n") {
       if (ratio == 1) throw CalcError("σ1 equals σ0");
@@ -1181,6 +1599,20 @@ Procedure one_variance() {
            " (variance ratio " + fnum(r.num("ratio")) + ") using a " + alt_words(alt(s)) + " chi-square test at α = " +
            fnum(r.num("alpha")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n = r.num("n"), ratio = r.num("ratio"), alpha = s("alpha"), df = n - 1;
+    const Alt a = alt(s);
+    Steps out;
+    out.push_back({"Variance ratio", "σ1²/σ0²", num(s("sd1")) + "² / " + num(s("sd0")) + "² = " + num(ratio)});
+    variance_test_steps(
+        "χ²", "ν", "ν = N − 1", fint(df), "(σ1²/σ0²)", ratio, alpha, a, one_var_power(n, ratio, alpha, a),
+        [&](bool lower, double p) { return stats::qchisq(p, df, lower); },
+        [&](bool lower, double x) { return stats::pchisq(x, df, lower); }, out);
+    if (s.solve == "n")
+      out.push_back(n_search([&](double x) { return one_var_power(x, ratio, alpha, a); }, n, s("power"), 2));
+    return out;
+  };
   p.references = {"Ostle, B. & Malone, L. C. (1988). Statistics in Research, 4th ed. Iowa State University Press.", REF_MACHIN};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
@@ -1194,6 +1626,18 @@ SSC_REGISTER(one_variance);
 // =====================================================================================
 // Two variances (F test)
 // =====================================================================================
+// The exact power with group sizes n1 and n2 at the variance ratio σ1²/σ2²: S1²/S2² is σ1²/σ2² times an F variable
+// with N1 − 1 and N2 − 1 degrees of freedom.
+double two_var_power(double n1, double n2, double ratio, double alpha, Alt a) {
+  using namespace stats;
+  const double d1 = n1 - 1, d2 = n2 - 1;
+  const double side = tail_alpha(alpha, a);
+  double pw = 0;
+  if (a != Alt::Lower) pw += pf(qf(side, d1, d2, false) / ratio, d1, d2, false);
+  if (a != Alt::Upper) pw += pf(qf(side, d1, d2, true) / ratio, d1, d2, true);
+  return clamp01(pw);
+}
+
 Procedure two_variances() {
   Procedure p;
   p.id = "var.two";
@@ -1216,17 +1660,9 @@ Procedure two_variances() {
                          .hint("The variance (squared SD) of group 1 divided by that of group 2 that you expect; 1 "
                                "means equal variability."));
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    using namespace stats;
     const double ratio = s("ratio"), alpha = s("alpha");
     const Alt a = alt(s);
-    auto P = [&](double n1, double n2) {
-      const double d1 = n1 - 1, d2 = n2 - 1;
-      const double side = tail_alpha(alpha, a);
-      double pw = 0;
-      if (a != Alt::Lower) pw += pf(qf(side, d1, d2, false) / ratio, d1, d2, false);
-      if (a != Alt::Upper) pw += pf(qf(side, d1, d2, true) / ratio, d1, d2, true);
-      return clamp01(pw);
-    };
+    auto P = [&](double n1, double n2) { return two_var_power(n1, n2, ratio, alpha, a); };
     TwoN n;
     if (s.solve == "n") {
       if (ratio == 1) throw CalcError("the variance ratio is 1");
@@ -1253,6 +1689,23 @@ Procedure two_variances() {
     return "Group sample sizes of " + fint(r.num("n1")) + " and " + fint(r.num("n2")) + " " + achieves(s, r) +
            " to detect a variance ratio of " + fnum(r.num("ratio")) + " using a " + alt_words(alt(s)) +
            " F-test at α = " + fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n1 = r.num("n1"), n2 = r.num("n2"), ratio = r.num("ratio"), alpha = s("alpha");
+    const double d1 = n1 - 1, d2 = n2 - 1;
+    const Alt a = alt(s);
+    Steps out;
+    out.push_back({"Degrees of freedom", "ν1 = N1 − 1, ν2 = N2 − 1",
+                   "ν1 = " + fint(n1) + " − 1 = " + fint(d1) + ", ν2 = " + fint(n2) + " − 1 = " + fint(d2)});
+    variance_test_steps(
+        "F", "ν1, ν2", "ν1 = N1 − 1 and ν2 = N2 − 1", fint(d1) + ", " + fint(d2), "(σ1²/σ2²)", ratio, alpha, a,
+        two_var_power(n1, n2, ratio, alpha, a), [&](bool lower, double p) { return stats::qf(p, d1, d2, lower); },
+        [&](bool lower, double x) { return stats::pf(x, d1, d2, lower); }, out);
+    if (s.solve == "n")
+      out.push_back(two_group_search(
+          s, [&](double x1, double x2) { return two_var_power(x1, x2, ratio, alpha, a); }, {n1, n2}, s("power"), 2));
+    return out;
   };
   p.references = {"Desu, M. M. & Raghavarao, D. (1990). Sample Size Methodology. Academic Press.", REF_MACHIN};
   p.curve_param = "n1";
