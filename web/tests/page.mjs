@@ -126,13 +126,17 @@ try {
     const modes = await p.$$eval('.field input[type=text]', (xs) => xs.map((x) => `${x.id}:${x.getAttribute('inputmode') || '-'}`));
     assert.ok(!modes.some((m) => m.endsWith(':decimal')) && modes.includes('in-gamma:-'), modes.join(' '));
   });
-  await check('an answer shows how it was calculated, with its symbols and references', async () => {
+  await check('an answer shows how it was calculated: what was found, from which inputs, the steps and the answer', async () => {
     await show(p, 'means.two.t');
     await p.click('#calc'); await answer(p);
     await p.click('#derivation > summary');
     const text = await p.innerText('#derivation');
+    assert.match(text, /Find: the smallest N1 = N2 whose power is at least 1 − β = 0\.8/);
+    assert.match(text, /Given: [\s\S]*α = 0\.05/);
     assert.match(text, /Noncentrality: λ = δ \/ SE/);
     assert.match(text, /power at N1 = \d+, N2 = \d+: 0\.\d+ < 0\.8 ≤ power at N1 = \d+, N2 = \d+: 0\.\d+/);
+    assert.match(text, /Answer: N1 = \d+, N2 = \d+ \(N = \d+\), with power 0\.\d+/);
+    assert.ok(await p.$('#derivation .steps .v-given') && await p.$('#derivation .steps .v-derived'), 'given and derived values are told apart');
     assert.match(text, /Symbols[\s\S]*References/);
     return text.split('\n').find((line) => line.startsWith('power at')) ?? '';
   });

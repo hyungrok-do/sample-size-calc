@@ -83,6 +83,87 @@ std::string normalize_bool(const std::string& s) {
 
 std::string value_label(double v) { return blocks::fnum(v, 6); }
 
+// Text whose values derive::given and derive::derived marked (\x01 or \x02 before, \x03 after): set as the plain
+// text under `key`, and, when anything is marked, as its segments [[text, "" | "given" | "derived"], …] under
+// key + "_parts", for a page to tell a study's inputs from what was computed from them.
+void set_marked(json::Value& o, const std::string& key, const std::string& text) {
+  std::string plain, piece, kind;
+  json::Value parts = json::Value::array();
+  bool marked = false;
+  const auto flush = [&] {
+    if (piece.empty()) return;
+    json::Value seg = json::Value::array();
+    seg.push(piece);
+    seg.push(kind);
+    parts.push(std::move(seg));
+    piece.clear();
+  };
+  for (char c : text) {
+    if (c == '\x01' || c == '\x02') {
+      flush();
+      kind = c == '\x01' ? "given" : "derived";
+      marked = true;
+    } else if (c == '\x03') {
+      flush();
+      kind.clear();
+    } else {
+      piece += c;
+      plain += c;
+    }
+  }
+  flush();
+  o.set(key, plain);
+  if (marked) o.set(key + "_parts", std::move(parts));
+}
+
+// The inputs a derivation starts from: every input the scenario uses (the quantity solved for is not one), as its
+// symbol, its label and its value as entered; alpha and the target power under their usual symbols.
+json::Value given_json(const Procedure& p, const Scenario& s) {
+  json::Value list = json::Value::array();
+  const auto shown = [](double x) {
+    std::string t = blocks::fnum(x, 6);
+    return !t.empty() && t[0] == '-' ? "−" + t.substr(1) : t;
+  };
+  for (const auto& q : p.params) {
+    if (!s.has(q.id) || q.id == "dropout") continue;  // dropout enlarges the answer afterwards, outside the derivation
+    std::string value;
+    if (q.type == PType::Select) {
+      value = s.s(q.id);
+      for (const auto& op : q.options)
+        if (op.value == value) value = op.label;
+    } else if (q.type == PType::Bool) {
+      value = s.flag(q.id) ? "yes" : "no";
+    } else if (q.type == PType::Vector) {
+      for (double x : s.v(q.id)) value += (value.empty() ? "" : ", ") + shown(x);
+    } else {
+      value = shown(s(q.id));
+    }
+    json::Value g = json::Value::object();
+    g.set("symbol", q.id == "alpha" ? "α" : q.id == "power" ? "1 − β" : q.symbol.empty() ? q.label : q.symbol);
+    g.set("label", q.label);
+    g.set("value", value);
+    list.push(std::move(g));
+  }
+  return list;
+}
+
+json::Value derivation_json(const Procedure& p, const Scenario& s, const Derivation& d) {
+  json::Value o = json::Value::object();
+  if (!d.find.empty()) set_marked(o, "find", d.find);
+  o.set("given", given_json(p, s));
+  json::Value steps = json::Value::array();
+  for (const auto& st : d.steps) {
+    json::Value one = json::Value::object();
+    set_marked(one, "what", st.what);
+    set_marked(one, "formula", st.formula);
+    set_marked(one, "numbers", st.numbers);
+    steps.push(std::move(one));
+  }
+  o.set("steps", std::move(steps));
+  if (!d.answer.empty()) set_marked(o, "answer", d.answer);
+  return o;
+}
+
 std::string vector_label(const std::vector<double>& v) {
   std::string s;
   for (std::size_t i = 0; i < v.size(); ++i) {
@@ -658,7 +739,7 @@ json::Value run_request(const json::Value& req, Token* token) {
               } catch (const Cancelled&) {
                 throw;
               } catch (const std::exception&) {
-                r.derivation.clear();
+                r.derivation = Derivation();
               }
             }
             // 20,000 rows of group-sequential boundaries would take a gigabyte
@@ -749,17 +830,7 @@ json::Value run_request(const json::Value& req, Token* token) {
     if (!r.error.empty()) x.set("_error", r.error);
     if (!r.detail.empty()) x.set("_detail", r.detail);
     if (!r.statement.empty()) x.set("_statement", r.statement);
-    if (!r.derivation.empty()) {
-      json::Value steps = json::Value::array();
-      for (const auto& st : r.derivation) {
-        json::Value one = json::Value::object();
-        one.set("what", st.what);
-        one.set("formula", st.formula);
-        one.set("numbers", st.numbers);
-        steps.push(std::move(one));
-      }
-      x.set("_derivation", std::move(steps));
-    }
+    if (!r.derivation.steps.empty()) x.set("_derivation", derivation_json(*proc, scen[i], r.derivation));
     if (!r.notes.empty()) {
       json::Value nn = json::Value::array();
       for (const auto& n : r.notes) nn.push(n);

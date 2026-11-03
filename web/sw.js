@@ -51,7 +51,7 @@ self.addEventListener('activate', (event) => {
 
 // The policy of the <meta> in index.html, plus frame-ancestors (npm test checks that the two agree).
 const POLICY = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; "
-  + "style-src 'sha256-4GGjDmbAQYIaFX2C70yzJVYzyoxMVqaS8pmwW4UPKj8='; connect-src 'self'; worker-src 'self'; "
+  + "style-src 'sha256-hb5li2dKzCC1b0sbe10/9HOqwCl/IpG3zBRPP1eZpns='; connect-src 'self'; worker-src 'self'; "
   + "img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 // The independent DAG page uses its own stylesheet and the shared WebAssembly engine.
