@@ -176,48 +176,85 @@ Procedure icc() {
            " when the value under the null hypothesis is " + r0 + ", using a " +
            alt_words(alt(s)) + " F-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
+  // Solving for N, the F-test's exact power at the size found and one below, beside Walter et al.'s closed form;
+  // solving for ρ1, the target power gives the ratio c(ρ0)/c(ρ1) of the F multipliers, and the ratio gives ρ1.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solve_n = s.solve == "n", solve_rho = s.solve == "rho1";
     const double n = r.num("n"), k = r.num("k"), rho0 = r.num("rho0"), rho1 = r.num("rho1"), alpha = s("alpha");
     const double c0 = icc_c(rho0, k), c1 = icc_c(rho1, k), ratio = c0 / c1, df1 = n - 1, df2 = n * (k - 1);
     const double side = tail_alpha(alpha, a), pw = icc_power(n, k, rho0, rho1, alpha, a);
-    const auto c_text = [&](double rho) {
-      return "(1 + " + fint(k - 1) + " × " + sub(rho) + ") / (1 − " + sub(rho) + ")";
+    const std::string N = size(n, solve_n), K = gvi(k);
+    const auto c_text = [&](const std::string& rho) {
+      return "(1 + (" + K + " − 1) × " + rho + ") / (1 − " + rho + ")";
     };
-    Steps out;
-    out.push_back({"F multipliers", "c(ρ) = (1 + (k − 1)ρ) / (1 − ρ): MSB/MSW is c(ρ) times an F(ν1, ν2) variable F*",
-                   "c(ρ0) = " + c_text(rho0) + " = " + num(c0) + ", c(ρ1) = " + c_text(rho1) + " = " + num(c1)});
-    out.push_back({"Degrees of freedom", "ν1 = N − 1, ν2 = N(k − 1)",
-                   "ν1 = " + fint(n) + " − 1 = " + fint(df1) + ", ν2 = " + fint(n) + " × " + fint(k - 1) + " = " +
-                       fint(df2)});
+    const std::string c_law = "c(ρ) = (1 + (k − 1)ρ) / (1 − ρ): MSB/MSW is c(ρ) times an F(ν1, ν2) variable F*";
+    Derivation out;
+    if (solve_rho) {
+      out.find = find_effect("ρ1", s("power"), "with N = " + N);
+      out.steps.push_back({"F multiplier under H0", c_law, "c(ρ0) = " + c_text(gvs(rho0)) + " = " + dv(c0)});
+    } else {
+      out.find = solve_n ? find_size("N", s("power")) : find_power("with N = " + N);
+      out.steps.push_back({"F multipliers", c_law,
+                           "c(ρ0) = " + c_text(gvs(rho0)) + " = " + dv(c0) + ", c(ρ1) = " + c_text(gvs(rho1)) +
+                               " = " + dv(c1)});
+    }
+    if (solve_n) {  // Walter, Eliasziw & Donner's closed form, beside the exact answer below
+      const double za = stats::qnorm(side, false), zb = stats::qnorm(s("power")), lr = std::log(c1 / c0);
+      out.steps.push_back({"Normal approximation",
+                           "N ≈ 1 + 2k " + z_sum_symbol(a) + "² / ((k − 1)(ln(c(ρ1)/c(ρ0)))²), Walter, Eliasziw & "
+                           "Donner" + FOR_COMPARISON,
+                           "1 + 2 × " + K + " × " + z_sum_numbers(alpha, s("power"), a) + "² / ((" + K +
+                               " − 1) × (ln(" + dv(c1) + " / " + dv(c0) + "))²) = " +
+                               dv(1 + 2 * k * (za + zb) * (za + zb) / ((k - 1) * lr * lr))});
+    }
+    out.steps.push_back({"Degrees of freedom", "ν1 = N − 1, ν2 = N(k − 1)",
+                         "ν1 = " + N + " − 1 = " + dvi(df1) + ", ν2 = " + N + " × (" + K + " − 1) = " + dvi(df2)});
     // the F quantiles that MSB/MSW is compared with, c(ρ0) times each, and the chance that c(ρ1)·F* passes them
-    const std::string q = "; " + fint(df1) + ", " + fint(df2) + ")";
+    const std::string lvl = a == Alt::Two ? "α/2" : "α", q = "; " + dvi(df1) + ", " + dvi(df2) + ")";
+    const std::string tail = gv(alpha) + (a == Alt::Two ? "/2" : "");
     const double fu = stats::qf(side, df1, df2, false), fl = stats::qf(side, df1, df2, true);
-    std::string crit_f, crit_n, pow_f, pow_n, parts;
+    std::string crit_f, crit_n, pow_f, pow_n, parts, need_f, need_n;
     if (a != Alt::Lower) {
-      crit_f = "reject when MSB/MSW ≥ c(ρ0) F(1 − " + std::string(a == Alt::Two ? "α/2" : "α") + "; ν1, ν2)";
-      crit_n = "F(1 − " + num(side) + q + " = " + num(fu);
-      pow_f = "P(F* ≥ F(1 − " + std::string(a == Alt::Two ? "α/2" : "α") + "; ν1, ν2) c(ρ0)/c(ρ1))";
-      pow_n = "P(F* ≥ " + num(fu) + " × " + num(c0) + " / " + num(c1) + ")";
-      parts = prob(stats::pf(fu * ratio, df1, df2, false));
+      crit_f = "reject when MSB/MSW ≥ c(ρ0) F(1 − " + lvl + "; ν1, ν2)";
+      crit_n = "F(1 − " + tail + q + " = " + dv(fu);
+      pow_f = "P(F* ≥ F(1 − " + lvl + "; ν1, ν2) c(ρ0)/c(ρ1))";
+      pow_n = "P(F* ≥ " + dv(fu) + " × " + dv(c0) + " / " + dv(c1) + ")";
+      parts = dvp(stats::pf(fu * ratio, df1, df2, false));
+      need_f = "P(F* ≥ F(1 − " + lvl + "; ν1, ν2) R)";
+      need_n = "P(F* ≥ " + dv(fu) + " × R)";
     }
     if (a != Alt::Upper) {
-      crit_f += std::string(a == Alt::Two ? " or " : "reject when MSB/MSW ") + "≤ c(ρ0) F(" +
-                (a == Alt::Two ? "α/2" : "α") + "; ν1, ν2)";
-      crit_n += std::string(a == Alt::Two ? ", " : "") + "F(" + num(side) + q + " = " + num(fl);
-      pow_f += std::string(a == Alt::Two ? " + " : "") + "P(F* ≤ F(" + (a == Alt::Two ? "α/2" : "α") +
-               "; ν1, ν2) c(ρ0)/c(ρ1))";
-      pow_n += std::string(a == Alt::Two ? " + " : "") + "P(F* ≤ " + num(fl) + " × " + num(c0) + " / " + num(c1) + ")";
-      parts += std::string(a == Alt::Two ? " + " : "") + prob(stats::pf(fl * ratio, df1, df2, true));
+      const std::string plus = a == Alt::Two ? " + " : "";
+      crit_f += std::string(a == Alt::Two ? " or " : "reject when MSB/MSW ") + "≤ c(ρ0) F(" + lvl + "; ν1, ν2)";
+      crit_n += std::string(a == Alt::Two ? ", " : "") + "F(" + tail + q + " = " + dv(fl);
+      pow_f += plus + "P(F* ≤ F(" + lvl + "; ν1, ν2) c(ρ0)/c(ρ1))";
+      pow_n += plus + "P(F* ≤ " + dv(fl) + " × " + dv(c0) + " / " + dv(c1) + ")";
+      parts += plus + dvp(stats::pf(fl * ratio, df1, df2, true));
+      need_f += plus + "P(F* ≤ F(" + lvl + "; ν1, ν2) R)";
+      need_n += plus + "P(F* ≤ " + dv(fl) + " × R)";
     }
-    out.push_back({"Critical values", crit_f, crit_n});
-    out.push_back({"Power", pow_f + ", F* ~ F(ν1, ν2)",
-                   pow_n + " = " + (a == Alt::Two ? parts + " = " : "") + prob(pw)});
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return icc_power(x, k, rho0, rho1, alpha, a); }, n, s("power"), 2));
-    else if (s.solve == "rho1")
-      out.push_back(effect_search("ρ1", rho1, pw, s("power")));
+    out.steps.push_back({"Critical values", crit_f, crit_n});
+    if (solve_rho) {  // the ratio that gives the target power, then c(ρ1) and ρ1 from it
+      out.steps.push_back({"Ratio needed", "R = c(ρ0)/c(ρ1) solves " + need_f + " = 1 − β, F* ~ F(ν1, ν2)",
+                           need_n + " = " + gv(s("power")) + " when R = " + dv(ratio)});
+      out.steps.push_back({"F multiplier under H1", "c(ρ1) = c(ρ0) / R",
+                           dv(c0) + " / " + dv(ratio) + " = " + dv(c1)});
+      out.steps.push_back({"ICC detected", "ρ1 = (c(ρ1) − 1) / (c(ρ1) + k − 1), the inverse of c",
+                           "(" + dv(c1) + " − 1) / (" + dv(c1) + " + " + K + " − 1) = " + dv(rho1)});
+      out.answer = "ρ1 = " + dv(rho1) + ", with power " + dvp(pw, s("power"));
+      return out;
+    }
+    out.steps.push_back({"Power", pow_f + ", F* ~ F(ν1, ν2)",
+                         pow_n + " = " + (a == Alt::Two ? parts + " = " : "") + dvp(pw)});
+    if (solve_n) {
+      out.steps.push_back(
+          n_search([&](double x) { return icc_power(x, k, rho0, rho1, alpha, a); }, n, s("power"), 2));
+      out.answer = "N = " + dvi(n) + " subjects (" + dvi(n * k) + " ratings), with power " + dvp(pw, s("power"));
+    } else {
+      out.answer = "power = " + dvp(pw);
+    }
     return out;
   };
   p.definitions = {{"N", "Number of subjects."},
@@ -277,25 +314,24 @@ double kappa_power(double n, double k0, double k1, double pi, double alpha, Alt 
 }
 
 // The power step of a z-test whose estimate has the standard error se0 under H0 and se1 under H1 (as kappa_power
-// and auc_power), for the difference d of the alternative from the null value written `d_sym` (−d_sym written
-// `neg_sym`).
-Step two_se_power_step(double d, double se0, double se1, double alpha, Alt a, const std::string& d_sym,
-                       const std::string& neg_sym, double power) {
+// and auc_power), for the alternative x1 and the null value x0 (given, written x1_sym and x0_sym).
+Step two_se_power_step(double x1, double x0, double se0, double se1, double alpha, Alt a, const std::string& x1_sym,
+                       const std::string& x0_sym, double power) {
   using namespace derive;
-  const double z = stats::qnorm(tail_alpha(alpha, a), false);
+  const double z = stats::qnorm(tail_alpha(alpha, a), false), d = x1 - x0;
   std::string f, n, parts;
   if (a != Alt::Lower) {
-    f = "Φ((" + d_sym + " − z SE0) / SE1)";
-    n = "Φ((" + num(d) + " − " + num(z) + " × " + num(se0) + ") / " + num(se1) + ")";
-    parts = prob(stats::pnorm((d - z * se0) / se1));
+    f = "Φ((" + x1_sym + " − " + x0_sym + " − z SE0) / SE1)";
+    n = "Φ((" + gv(x1) + " − " + gvs(x0) + " − " + dv(z) + " × " + dv(se0) + ") / " + dv(se1) + ")";
+    parts = dvp(stats::pnorm((d - z * se0) / se1));
   }
   if (a != Alt::Upper) {
     const std::string plus = a == Alt::Two ? " + " : "";
-    f += plus + "Φ((" + neg_sym + " − z SE0) / SE1)";
-    n += plus + "Φ((" + num(-d) + " − " + num(z) + " × " + num(se0) + ") / " + num(se1) + ")";
-    parts += plus + prob(stats::pnorm((-d - z * se0) / se1));
+    f += plus + "Φ((" + x0_sym + " − " + x1_sym + " − z SE0) / SE1)";
+    n += plus + "Φ((" + gv(x0) + " − " + gvs(x1) + " − " + dv(z) + " × " + dv(se0) + ") / " + dv(se1) + ")";
+    parts += plus + dvp(stats::pnorm((-d - z * se0) / se1));
   }
-  return {"Power", f, n + " = " + (a == Alt::Two ? parts + " = " : "") + prob(power)};
+  return {"Power", f, n + " = " + (a == Alt::Two ? parts + " = " : "") + dvp(power)};
 }
 
 Procedure kappa() {
@@ -386,33 +422,51 @@ Procedure kappa() {
            ", assuming a proportion of positive ratings of " + fnum_fine(r.num("prev")) + ", using a " +
            alt_words(alt(s)) + " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
+  // Solving for N, the z-test's power at the size found and one below, beside Cantor's closed form; solving for
+  // power, the power at the size given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solve_n = s.solve == "n";
     const double n = r.num("n"), k0 = r.num("kappa0"), k1 = r.num("kappa1"), pi = r.num("prev"), alpha = s("alpha");
     const double q0 = kappa_q(k0, pi), q1 = kappa_q(k1, pi);
-    const double se0 = std::sqrt(q0 / n), se1 = std::sqrt(q1 / n);
+    const double se0 = std::sqrt(q0 / n), se1 = std::sqrt(q1 / n), pw = kappa_power(n, k0, k1, pi, alpha, a);
     const KappaCells c0 = kappa_cells(k0, pi), c1 = kappa_cells(k1, pi);
+    const std::string N = size(n, solve_n);
     const auto cells = [&](const char* sym, double k, const KappaCells& c, double q) {
-      return std::string(sym) + " = " + num(k) + ": p11 = " + num(c.p11) + ", p22 = " + num(c.p22) + ", p12 = " +
-             num(c.p12) + ", Q = " + num(q);
+      return std::string(sym) + " = " + gv(k) + ": p11 = " + dv(c.p11) + ", p22 = " + dv(c.p22) + ", p12 = " +
+             dv(c.p12) + ", Q = " + dv(q);
     };
-    Steps out;
-    out.push_back({"Chance agreement", "pe = π² + (1 − π)²",
-                   num(pi) + "² + " + num(1 - pi) + "² = " + num(c0.pe)});
-    out.push_back({"Variance factor",
-                   "Q(κ) = N·Var(κ̂) = [p11(1 − 2π(1 − κ))² + p22(1 − 2(1 − π)(1 − κ))² + 2(1 − κ)²p12 − "
-                   "(κ − pe(1 − κ))²] / (1 − pe)², with p11 = π² + κπ(1 − π), p22 = (1 − π)² + κπ(1 − π) and "
-                   "p12 = (1 − κ)π(1 − π)",
-                   cells("κ0", k0, c0, q0) + "; " + cells("κ1", k1, c1, q1)});
-    out.push_back({"Standard errors", "SE0 = √(Q(κ0) / N), SE1 = √(Q(κ1) / N)",
-                   "√(" + num(q0) + " / " + fint(n) + ") = " + num(se0) + ", √(" + num(q1) + " / " + fint(n) +
-                       ") = " + num(se1)});
-    out.push_back(z_critical(alpha, a));
-    out.push_back(two_se_power_step(k1 - k0, se0, se1, alpha, a, "κ1 − κ0", "κ0 − κ1",
-                                    kappa_power(n, k0, k1, pi, alpha, a)));
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return kappa_power(x, k0, k1, pi, alpha, a); }, n, s("power"), 2));
+    Derivation out;
+    out.find = solve_n ? find_size("N", s("power")) : find_power("with N = " + N);
+    out.steps.push_back({"Chance agreement", "pe = π² + (1 − π)²",
+                         gv(pi) + "² + (1 − " + gv(pi) + ")² = " + dv(c0.pe)});
+    out.steps.push_back({"Variance factor",
+                         "Q(κ) = N·Var(κ̂) = [p11(1 − 2π(1 − κ))² + p22(1 − 2(1 − π)(1 − κ))² + 2(1 − κ)²p12 − "
+                         "(κ − pe(1 − κ))²] / (1 − pe)², with p11 = π² + κπ(1 − π), p22 = (1 − π)² + κπ(1 − π) and "
+                         "p12 = (1 − κ)π(1 − π)",
+                         cells("κ0", k0, c0, q0) + "; " + cells("κ1", k1, c1, q1)});
+    if (solve_n) {  // Cantor's closed form, beside the exact answer below
+      const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
+      const double approx = std::pow(za * std::sqrt(q0) + zb * std::sqrt(q1), 2) / ((k1 - k0) * (k1 - k0));
+      out.steps.push_back({"Normal approximation",
+                           std::string("N ≈ (z(") + level_symbol(a) + ") √Q(κ0) + z(1 − β) √Q(κ1))² / (κ1 − κ0)², "
+                           "Cantor" + FOR_COMPARISON,
+                           "(" + dv(za) + " × √" + dv(q0) + " + " + dv(zb) + " × √" + dv(q1) + ")² / (" + gv(k1) +
+                               " − " + gvs(k0) + ")² = " + dv(approx)});
+    }
+    out.steps.push_back({"Standard errors", "SE0 = √(Q(κ0) / N), SE1 = √(Q(κ1) / N)",
+                         "√(" + dv(q0) + " / " + N + ") = " + dv(se0) + ", √(" + dv(q1) + " / " + N + ") = " +
+                             dv(se1)});
+    out.steps.push_back(z_critical(alpha, a));
+    out.steps.push_back(two_se_power_step(k1, k0, se0, se1, alpha, a, "κ1", "κ0", pw));
+    if (solve_n) {
+      out.steps.push_back(
+          n_search([&](double x) { return kappa_power(x, k0, k1, pi, alpha, a); }, n, s("power"), 2));
+      out.answer = "N = " + dvi(n) + ", with power " + dvp(pw, s("power"));
+    } else {
+      out.answer = "power = " + dvp(pw);
+    }
     return out;
   };
   p.definitions = {{"κ0, κ1", "Cohen's kappa under the null and the alternative hypotheses."},
@@ -551,33 +605,64 @@ Procedure auc() {
            " when the value under the null hypothesis is " + a0 + ", using a " + alt_words(alt(s)) +
            " z-test at significance level α = " + fnum(r.num("alpha")) + ".";
   };
+  // Solving for the cases, the z-test's power at the number found and one below, beside the closed form of the
+  // large-sample variance; solving for power, the power at the cases given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solve_n = s.solve == "n";
     const double n1 = r.num("n1"), n0 = r.num("n0"), a0 = r.num("auc0"), a1 = r.num("auc1"), alpha = s("alpha");
     const double ratio = s("ratio");
     const double se0 = std::sqrt(auc_var(a0, n1, n0)), se1 = std::sqrt(auc_var(a1, n1, n0));
-    // Hanley and McNeil's variance at the area A, with its Q1 and Q2
-    const auto variance = [&](const char* sym, double A, double se) {
-      const double q1 = auc_q1(A), q2 = auc_q2(A);
-      return std::string(sym) + " = " + num(A) + ": Q1 = " + num(A) + " / (2 − " + num(A) + ") = " + num(q1) +
-             ", Q2 = 2 × " + num(A) + "² / (1 + " + num(A) + ") = " + num(q2) + ", SE = √([" + num(A) + " × " +
-             num(1 - A) + " + " + fint(n1 - 1) + " × (" + num(q1) + " − " + num(A) + "²) + " + fint(n0 - 1) + " × (" +
-             num(q2) + " − " + num(A) + "²)] / (" + fint(n1) + " × " + fint(n0) + ")) = " + num(se);
+    const double pw = auc_power(n1, n0, a0, a1, alpha, a);
+    const std::string N1 = size(n1, solve_n), R = gv(ratio);
+    // Hanley and McNeil's Q1 and Q2 at the area A, and its standard error with N1 cases and N0 controls
+    const auto qs = [&](const char* sym, double A) {
+      return std::string(sym) + " = " + gv(A) + ": Q1 = " + gv(A) + " / (2 − " + gv(A) + ") = " + dv(auc_q1(A)) +
+             ", Q2 = 2 × " + gv(A) + "² / (1 + " + gv(A) + ") = " + dv(auc_q2(A));
     };
-    Steps out;
-    out.push_back({"Controls", "N0 = ⌈R × N1⌉, R controls per case",
-                   "⌈" + fnum(ratio) + " × " + fint(n1) + "⌉ = " + fint(n0)});
-    out.push_back({"Standard errors",
-                   "SE = √([A(1 − A) + (N1 − 1)(Q1 − A²) + (N0 − 1)(Q2 − A²)] / (N1 N0)), Q1 = A/(2 − A), "
-                   "Q2 = 2A²/(1 + A) (Hanley & McNeil), at A = AUC0 (SE0) and A = AUC1 (SE1)",
-                   variance("AUC0", a0, se0) + "; " + variance("AUC1", a1, se1)});
-    out.push_back(z_critical(alpha, a));
-    out.push_back(two_se_power_step(a1 - a0, se0, se1, alpha, a, "AUC1 − AUC0", "AUC0 − AUC1",
-                                    auc_power(n1, n0, a0, a1, alpha, a)));
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return auc_power(x, auc_controls(x, ratio), a0, a1, alpha, a); }, n1,
-                             s("power"), auc_min_cases(ratio), "N1"));
+    const auto se_text = [&](const char* sym, double A, double se) {
+      return std::string(sym) + " = √([" + gv(A) + " × (1 − " + gv(A) + ") + (" + N1 + " − 1) × (" + dv(auc_q1(A)) +
+             " − " + gv(A) + "²) + (" + dvi(n0) + " − 1) × (" + dv(auc_q2(A)) + " − " + gv(A) + "²)] / (" + N1 +
+             " × " + dvi(n0) + ")) = " + dv(se);
+    };
+    Derivation out;
+    out.find = solve_n ? find_size("number of cases N1, with N0 = ⌈R × N1⌉ controls (R = " + R + "),", s("power"))
+                       : find_power("with N1 = " + N1 + " cases and R = " + R + " controls per case");
+    out.steps.push_back({"Hanley–McNeil terms", "Q1 = A / (2 − A), Q2 = 2A² / (1 + A), at A = AUC0 and A = AUC1",
+                         qs("AUC0", a0) + "; " + qs("AUC1", a1)});
+    if (solve_n) {
+      // the large-sample variance V(A)/N1 (the lower-order terms of Hanley and McNeil's dropped), beside the answer
+      const double za = stats::qnorm(tail_alpha(alpha, a), false), zb = stats::qnorm(s("power"));
+      const auto v = [&](double A) { return (auc_q1(A) - A * A) / ratio + auc_q2(A) - A * A; };
+      const auto v_text = [&](const char* sym, double A) {
+        return std::string("V(") + sym + ") = (" + dv(auc_q1(A)) + " − " + gv(A) + "²) / " + R + " + " +
+               dv(auc_q2(A)) + " − " + gv(A) + "² = " + dv(v(A));
+      };
+      const double approx = std::pow(za * std::sqrt(v(a0)) + zb * std::sqrt(v(a1)), 2) / ((a1 - a0) * (a1 - a0));
+      out.steps.push_back({"Normal approximation",
+                           std::string("N1 ≈ (z(") + level_symbol(a) +
+                               ") √V(AUC0) + z(1 − β) √V(AUC1))² / (AUC1 − AUC0)², V(A) = (Q1 − A²)/R + Q2 − A² "
+                               "the large-sample N1 × Var(AUC)" + FOR_COMPARISON,
+                           v_text("AUC0", a0) + ", " + v_text("AUC1", a1) + "; (" + dv(za) + " × √" + dv(v(a0)) +
+                               " + " + dv(zb) + " × √" + dv(v(a1)) + ")² / (" + gv(a1) + " − " + gvs(a0) + ")² = " +
+                               dv(approx)});
+    }
+    out.steps.push_back({"Controls", "N0 = ⌈R × N1⌉, R controls per case", "⌈" + R + " × " + N1 + "⌉ = " + dvi(n0)});
+    out.steps.push_back({"Standard errors",
+                         "SE = √([A(1 − A) + (N1 − 1)(Q1 − A²) + (N0 − 1)(Q2 − A²)] / (N1 N0)) (Hanley & McNeil), at "
+                         "A = AUC0 (SE0) and A = AUC1 (SE1)",
+                         se_text("SE0", a0, se0) + "; " + se_text("SE1", a1, se1)});
+    out.steps.push_back(z_critical(alpha, a));
+    out.steps.push_back(two_se_power_step(a1, a0, se0, se1, alpha, a, "AUC1", "AUC0", pw));
+    if (solve_n) {
+      out.steps.push_back(n_search([&](double x) { return auc_power(x, auc_controls(x, ratio), a0, a1, alpha, a); },
+                                   n1, s("power"), auc_min_cases(ratio), "N1"));
+      out.answer = "N1 = " + dvi(n1) + " cases and N0 = " + dvi(n0) + " controls (N = " + dvi(n1 + n0) +
+                   "), with power " + dvp(pw, s("power"));
+    } else {
+      out.answer = "power = " + dvp(pw);
+    }
     return out;
   };
   p.definitions = {{"Cases, Controls", "Subjects with and without the condition (by the reference standard)."},
@@ -623,18 +708,20 @@ struct SensSpecPower {
   }
 };
 
-// The step that splits N into the subjects with and without the condition (those the tests use).
-Step condition_split(double n, double prev, bool with, bool without) {
+// The step that splits N (given, or found when `solved`) into the subjects with and without the condition (those
+// the tests use).
+Step condition_split(double n, double prev, bool with, bool without, bool solved) {
   using namespace derive;
+  const std::string N = size(n, solved);
   std::string f, x;
   if (with) {
     f = "ND = ⌊N × prevalence⌋";
-    x = "ND = ⌊" + fint(n) + " × " + fnum_fine(prev) + "⌋ = " + fint(with_condition(n, prev));
+    x = "ND = ⌊" + N + " × " + given(fnum_fine(prev)) + "⌋ = " + dvi(with_condition(n, prev));
   }
   if (without) {
     f += std::string(with ? ", " : "") + "NN = ⌊N × (1 − prevalence)⌋";
-    x += std::string(with ? ", " : "") + "NN = ⌊" + fint(n) + " × " + fnum_fine(1 - prev) + "⌋ = " +
-         fint(without_condition(n, prev));
+    x += std::string(with ? ", " : "") + "NN = ⌊" + N + " × (1 − " + given(fnum_fine(prev)) + ")⌋ = " +
+         dvi(without_condition(n, prev));
   }
   return {"Subjects with and without the condition", f, x};
 }
@@ -647,25 +734,41 @@ void exact_upper_steps(derive::Steps& out, const std::string& what, int m, doubl
   const std::string law = ", X ~ Bin(" + m_sym + ", ";
   if (m < 1) {
     out.push_back({"Power (" + what + ")", "P(X ≥ c)" + law + p1_sym + ")",
-                   m_sym + " = " + std::to_string(m) + ": no subjects to test, power = " + prob(power)});
+                   m_sym + " = " + dvi(m) + ": no subjects to test, power = " + dvp(power)});
     return;
   }
   const int c = upper_critical(m, p0, alpha);
   const auto tail = [&](int x, double p) { return stats::pbinom(x - 1, m, p, false); };  // P(X ≥ x)
-  const std::string at = " | " + std::to_string(m) + ", " + num(p0) + ")";
+  const std::string at = " | " + dvi(m) + ", " + gv(p0) + ")";
   if (c > m) {
     out.push_back({"Critical count (" + what + ")", "c = the smallest count with P(X ≥ c) ≤ α" + law + p0_sym + ")",
-                   "even P(X ≥ " + std::to_string(m) + at + " = " + prob(tail(m, p0)) + " > " + fnum(alpha) +
+                   "even P(X ≥ " + dvi(m) + at + " = " + dvp(tail(m, p0)) + " > " + gv(alpha) +
                        ": the test cannot reject"});
-    out.push_back({"Power (" + what + ")", "P(X ≥ c)" + law + p1_sym + ")", "0 (no count rejects) = " + prob(power)});
+    out.push_back({"Power (" + what + ")", "P(X ≥ c)" + law + p1_sym + ")", "0 (no count rejects) = " + dvp(power)});
     return;
   }
   out.push_back({"Critical count (" + what + ")", "c = the smallest count with P(X ≥ c) ≤ α" + law + p0_sym + ")",
-                 "c = " + std::to_string(c) + ": P(X ≥ " + std::to_string(c) + at + " = " + prob(tail(c, p0), alpha) +
-                     " ≤ " + fnum(alpha) + " < P(X ≥ " + std::to_string(c - 1) + at + " = " +
-                     prob(tail(c - 1, p0), alpha)});
+                 "c = " + dvi(c) + ": P(X ≥ " + dvi(c) + at + " = " + dvp(tail(c, p0), alpha) + " ≤ " + gv(alpha) +
+                     " < P(X ≥ " + dvi(c - 1) + at + " = " + dvp(tail(c - 1, p0), alpha)});
   out.push_back({"Power (" + what + ")", "P(X ≥ c)" + law + p1_sym + ")",
-                 "P(X ≥ " + std::to_string(c) + " | " + std::to_string(m) + ", " + num(p1) + ") = " + prob(power)});
+                 "P(X ≥ " + dvi(c) + " | " + dvi(m) + ", " + gv(p1) + ") = " + dvp(power)});
+}
+
+// Solving for N with one test (`goal` "se" or "sp"): the closed form of a one-sample binomial test's normal
+// approximation for the subjects with (or without) the condition, and N from them, beside the exact answer.
+Step one_test_approximation(const Scenario& s, bool with, double p0, double p1, const std::string& p0_sym,
+                            const std::string& p1_sym) {
+  using namespace derive;
+  const double za = stats::qnorm(s("alpha"), false), zb = stats::qnorm(s("power")), prev = s("prev");
+  const double m = std::pow(za * std::sqrt(p0 * (1 - p0)) + zb * std::sqrt(p1 * (1 - p1)), 2) / ((p1 - p0) * (p1 - p0));
+  const std::string M = with ? "ND" : "NN", share = with ? "prevalence" : "(1 − prevalence)";
+  const std::string P = given(fnum_fine(prev));
+  return {"Normal approximation",
+          M + " ≈ (z(1 − α) √(" + p0_sym + "(1 − " + p0_sym + ")) + z(1 − β) √(" + p1_sym + "(1 − " + p1_sym +
+              ")))² / (" + p1_sym + " − " + p0_sym + ")², N ≈ " + M + " / " + share + FOR_COMPARISON,
+          "(" + dv(za) + " × √(" + gv(p0) + " × (1 − " + gv(p0) + ")) + " + dv(zb) + " × √(" + gv(p1) + " × (1 − " +
+              gv(p1) + ")))² / (" + gv(p1) + " − " + gv(p0) + ")² = " + dv(m) + "; " + dv(m) + " / " +
+              (with ? P : "(1 − " + P + ")") + " = " + dv(m / (with ? prev : 1 - prev))};
 }
 
 Procedure sens_spec() {
@@ -832,24 +935,35 @@ Procedure sens_spec() {
                                     use_sp ? r.num("sp1") : NAN,
                                     prev,
                                     alpha};
-    Steps out;
-    out.push_back(condition_split(n, prev, use_se, use_sp));
+    const bool solve_n = s.solve == "n";
+    Derivation out;
+    out.find = solve_n ? find_size("total N", s("power")) : find_power("with N = " + size(n, false));
+    // one test: the normal approximation's size beside the exact answer (none for both, whose power is a product)
+    if (solve_n && use_se != use_sp)
+      out.steps.push_back(use_se ? one_test_approximation(s, true, r.num("se0"), r.num("se1"), "Se0", "Se1")
+                                 : one_test_approximation(s, false, r.num("sp0"), r.num("sp1"), "Sp0", "Sp1"));
+    out.steps.push_back(condition_split(n, prev, use_se, use_sp, solve_n));
     if (use_se)
-      exact_upper_steps(out, "Se", static_cast<int>(r.num("nd")), r.num("se0"), r.num("se1"), alpha, "ND", "Se0",
-                        "Se1", r.num("pse"));
+      exact_upper_steps(out.steps, "Se", static_cast<int>(r.num("nd")), r.num("se0"), r.num("se1"), alpha, "ND",
+                        "Se0", "Se1", r.num("pse"));
     if (use_sp)
-      exact_upper_steps(out, "Sp", static_cast<int>(r.num("nn")), r.num("sp0"), r.num("sp1"), alpha, "NN", "Sp0",
-                        "Sp1", r.num("psp"));
+      exact_upper_steps(out.steps, "Sp", static_cast<int>(r.num("nn")), r.num("sp0"), r.num("sp1"), alpha, "NN",
+                        "Sp0", "Sp1", r.num("psp"));
     if (use_se && use_sp)
-      out.push_back({"Power", "Power(Se) × Power(Sp), both tests significant",
-                     prob(r.num("pse")) + " × " + prob(r.num("psp")) + " = " + prob(r.num("power"))});
-    if (s.solve == "n")
-      out.push_back(saw_search(
+      out.steps.push_back({"Power", "Power(Se) × Power(Sp), both tests significant",
+                           dvp(r.num("pse")) + " × " + dvp(r.num("psp")) + " = " + dvp(r.num("power"))});
+    if (solve_n) {
+      out.steps.push_back(saw_search(
           [&](double x) {
             double a, b;
             return x == n ? r.num("power") : power_parts(x, a, b);
           },
           n, s("power"), 2));
+      out.answer = "N = " + dvi(n) + " (" + dvi(r.num("nd")) + " with and " + dvi(r.num("nn")) +
+                   " without the condition), with power " + dvp(r.num("power"), s("power"));
+    } else {
+      out.answer = "power = " + dvp(r.num("power"));
+    }
     return out;
   };
   p.definitions = {{"Se, Sp", "Sensitivity (true positive rate) and specificity (true negative rate)."},
@@ -928,25 +1042,42 @@ Step paired_cells_step(const Scenario& s, const std::string& what, double a, dou
                        const char* rho_key, const char* disc_key, const std::string& x1, const std::string& x2) {
   using namespace derive;
   const double psi = c.p10 + c.p01;
-  const std::string tail = "; ψ = P10 + P01 = " + num(psi);
+  const std::string tail = "; ψ = P10 + P01 = " + dv(psi);
   if (s.is("dep", "disc")) {
     const double d = s(disc_key);
     return {"Discordant pairs (" + what + ")", "P10 = (ψ + " + x1 + " − " + x2 + ")/2, P01 = (ψ − " + x1 + " + " + x2 + ")/2",
-            "P10 = (" + num(d) + " + " + num(a) + " − " + num(b) + ")/2 = " + num(c.p10) + ", P01 = (" + num(d) +
-                " − " + num(a) + " + " + num(b) + ")/2 = " + num(c.p01)};
+            "P10 = (" + gv(d) + " + " + gv(a) + " − " + gv(b) + ")/2 = " + dv(c.p10) + ", P01 = (" + gv(d) +
+                " − " + gv(a) + " + " + gv(b) + ")/2 = " + dv(c.p01)};
   }
   const std::string p10 = x1 + "(1 − " + x2 + ")", p01 = "(1 − " + x1 + ")" + x2;
   if (s.is("dep", "corr")) {
     const double rho = s(rho_key), cov = rho * std::sqrt(a * (1 - a) * b * (1 - b));
     const std::string root = "ρ√(" + x1 + "(1 − " + x1 + ")" + x2 + "(1 − " + x2 + "))";
     return {"Discordant pairs (" + what + ")", "P10 = " + p10 + " − " + root + ", P01 = " + p01 + " − " + root,
-            root + " = " + sub(rho) + " × √(" + num(a) + " × " + num(1 - a) + " × " + num(b) + " × " + num(1 - b) +
-                ") = " + num(cov) + "; P10 = " + num(a) + " × " + num(1 - b) + " − " + sub(cov) + " = " + num(c.p10) +
-                ", P01 = " + num(1 - a) + " × " + num(b) + " − " + sub(cov) + " = " + num(c.p01) + tail};
+            root + " = " + gvs(rho) + " × √(" + gv(a) + " × (1 − " + gv(a) + ") × " + gv(b) + " × (1 − " + gv(b) +
+                ")) = " + dv(cov) + "; P10 = " + gv(a) + " × (1 − " + gv(b) + ") − " + dvs(cov) + " = " +
+                dv(c.p10) + ", P01 = (1 − " + gv(a) + ") × " + gv(b) + " − " + dvs(cov) + " = " + dv(c.p01) + tail};
   }
   return {"Discordant pairs (" + what + ")", "P10 = " + p10 + ", P01 = " + p01 + " (conditionally independent tests)",
-          "P10 = " + num(a) + " × " + num(1 - b) + " = " + num(c.p10) + ", P01 = " + num(1 - a) + " × " + num(b) +
-              " = " + num(c.p01) + tail};
+          "P10 = " + gv(a) + " × (1 − " + gv(b) + ") = " + dv(c.p10) + ", P01 = (1 − " + gv(a) + ") × " + gv(b) +
+              " = " + dv(c.p01) + tail};
+}
+
+// Solving for N with one comparison (`goal` "se" or "sp"): Connor's closed form for the pairs with (or without) the
+// condition, and N from them, beside the exact answer.
+Step connor_approximation(const Scenario& s, bool with, const PairedCells& c) {
+  using namespace derive;
+  const Alt a = alt(s);
+  const double za = stats::qnorm(tail_alpha(s("alpha"), a), false), zb = stats::qnorm(s("power"));
+  const double psi = c.p10 + c.p01, d = c.p10 - c.p01, prev = s("prev");
+  const double m = std::pow(za * std::sqrt(psi) + zb * std::sqrt(psi - d * d), 2) / (d * d);
+  const std::string M = with ? "ND" : "NN", P = given(fnum_fine(prev));
+  return {"Normal approximation",
+          M + " ≈ (z(" + level_symbol(a) + ") √ψ + z(1 − β) √(ψ − (P10 − P01)²))² / (P10 − P01)², Connor; N ≈ " + M +
+              " / " + (with ? "prevalence" : "(1 − prevalence)") + FOR_COMPARISON,
+          "(" + dv(za) + " × √" + dv(psi) + " + " + dv(zb) + " × √(" + dv(psi) + " − " + dvs(d) + "²))² / " + dvs(d) +
+              "² = " + dv(m) + "; " + dv(m) + " / " + (with ? P : "(1 − " + P + ")") + " = " +
+              dv(m / (with ? prev : 1 - prev))};
 }
 
 // The power of McNemar's test among m pairs with the discordant cells c (as mcnemar_power): exact conditional, or
@@ -958,32 +1089,32 @@ Step paired_power_step(const Scenario& s, const std::string& what, double m, con
   const double psi = std::min(1.0, c.p10 + c.p01), delta = c.p10 - c.p01;
   if (m < 1 || !(psi > 0))
     return {"Power (" + what + ")", "McNemar's test, which only the discordant pairs inform",
-            m_sym + " = " + fint(m) + ", ψ = " + num(psi) + ": no discordant pairs to expect, power = " + prob(power)};
+            m_sym + " = " + dvi(m) + ", ψ = " + dv(psi) + ": no discordant pairs to expect, power = " + dvp(power)};
   if (s.is("method", "exact")) {
     const std::string tails = a == Alt::Two ? "α/2 in each tail" : a == Alt::Upper ? "α in the upper tail" : "α in the lower tail";
     return {"Power (" + what + ")",
             "Σₘ P(M = m) P(reject | m): M ~ Bin(" + m_sym + ", ψ) discordant pairs, and given m the exact test of "
             "Bin(m, ½) at " + tails + ", with Bin(m, P10/ψ) under H1",
-            "M ~ Bin(" + fint(m) + ", " + num(psi) + "), P10/ψ = " + num(c.p10) + " / " + num(psi) + " = " +
-                num(c.p10 / psi) + ": power = " + prob(power)};
+            "M ~ Bin(" + dvi(m) + ", " + dv(psi) + "), P10/ψ = " + dv(c.p10) + " / " + dv(psi) + " = " +
+                dv(c.p10 / psi) + ": power = " + dvp(power)};
   }
   // as mcnemar_power: the SD of a pair's difference from terms that are not negative
   const double sd1 = std::sqrt(c.p10 * c.q10 + c.p01 * c.q01 + 2 * c.p10 * c.p01);
   const double rn = std::sqrt(m), sd0 = std::sqrt(psi);
   const double z = stats::qnorm(tail_alpha(s("alpha"), a), false);
-  const std::string sd = "σd = √(" + num(psi) + " − " + sub(delta) + "²) = " + num(sd1) + "; ";
+  const std::string sd = "σd = √(" + dv(psi) + " − " + dvs(delta) + "²) = " + dv(sd1) + "; ";
   const auto arg = [&](double sign) {
-    return "Φ((" + std::string(sign < 0 ? "−" : "") + "√" + fint(m) + " × " + sub(delta) + " − " + num(z) + " × √" +
-           num(psi) + ") / " + num(sd1) + ")";
+    return "Φ((" + std::string(sign < 0 ? "−" : "") + "√" + dvi(m) + " × " + dvs(delta) + " − " + dv(z) + " × √" +
+           dv(psi) + ") / " + dv(sd1) + ")";
   };
   const std::string up = "Φ((√" + m_sym + " (P10 − P01) − z√ψ) / σd)", lo = "Φ((−√" + m_sym + " (P10 − P01) − z√ψ) / σd)";
   const std::string law = ", σd = √(ψ − (P10 − P01)²) (Connor)";
   if (a == Alt::Two)
     return {"Power (" + what + ")", up + " + " + lo + law,
-            sd + arg(1) + " + " + arg(-1) + " = " + prob(stats::pnorm((rn * delta - z * sd0) / sd1)) + " + " +
-                prob(stats::pnorm((-rn * delta - z * sd0) / sd1)) + " = " + prob(power)};
+            sd + arg(1) + " + " + arg(-1) + " = " + dvp(stats::pnorm((rn * delta - z * sd0) / sd1)) + " + " +
+                dvp(stats::pnorm((-rn * delta - z * sd0) / sd1)) + " = " + dvp(power)};
   return {"Power (" + what + ")", (a == Alt::Upper ? up : lo) + law,
-          sd + arg(a == Alt::Upper ? 1 : -1) + " = " + prob(power)};
+          sd + arg(a == Alt::Upper ? 1 : -1) + " = " + dvp(power)};
 }
 
 Procedure paired_diagnostic() {
@@ -1266,17 +1397,21 @@ Procedure paired_diagnostic() {
     PairedCells se, sp;
     if (use_se) se = paired_cells(s, s("se1"), s("se2"), "rse", "dse", "sensitivities");
     if (use_sp) sp = paired_cells(s, s("sp1"), s("sp2"), "rsp", "dsp", "specificities");
-    Steps out;
-    out.push_back(condition_split(n, prev, use_se, use_sp));
-    if (use_se) out.push_back(paired_cells_step(s, "Se", s("se1"), s("se2"), se, "rse", "dse", "Se1", "Se2"));
-    if (use_sp) out.push_back(paired_cells_step(s, "Sp", s("sp1"), s("sp2"), sp, "rsp", "dsp", "Sp1", "Sp2"));
-    if (s.is("method", "normal")) out.push_back(z_critical(s("alpha"), alt(s)));
-    if (use_se) out.push_back(paired_power_step(s, "Se", r.num("nd"), se, "ND", r.num("pse")));
-    if (use_sp) out.push_back(paired_power_step(s, "Sp", r.num("nn"), sp, "NN", r.num("psp")));
+    const bool solve_n = s.solve == "n";
+    Derivation out;
+    out.find = solve_n ? find_size("total N", s("power")) : find_power("with N = " + size(n, false));
+    if (use_se) out.steps.push_back(paired_cells_step(s, "Se", s("se1"), s("se2"), se, "rse", "dse", "Se1", "Se2"));
+    if (use_sp) out.steps.push_back(paired_cells_step(s, "Sp", s("sp1"), s("sp2"), sp, "rsp", "dsp", "Sp1", "Sp2"));
+    // one comparison: Connor's size beside the answer (none for both, whose power is a product)
+    if (solve_n && use_se != use_sp) out.steps.push_back(connor_approximation(s, use_se, use_se ? se : sp));
+    out.steps.push_back(condition_split(n, prev, use_se, use_sp, solve_n));
+    if (s.is("method", "normal")) out.steps.push_back(z_critical(s("alpha"), alt(s)));
+    if (use_se) out.steps.push_back(paired_power_step(s, "Se", r.num("nd"), se, "ND", r.num("pse")));
+    if (use_sp) out.steps.push_back(paired_power_step(s, "Sp", r.num("nn"), sp, "NN", r.num("psp")));
     if (use_se && use_sp)
-      out.push_back({"Power", "Power(Se) × Power(Sp), both tests significant",
-                     prob(r.num("pse")) + " × " + prob(r.num("psp")) + " = " + prob(r.num("power"))});
-    if (s.solve == "n") {
+      out.steps.push_back({"Power", "Power(Se) × Power(Sp), both tests significant",
+                           dvp(r.num("pse")) + " × " + dvp(r.num("psp")) + " = " + dvp(r.num("power"))});
+    if (solve_n) {
       McNemarCache cse, csp;
       const RunContext ctx;
       const auto power = [&](double x) {
@@ -1284,7 +1419,12 @@ Procedure paired_diagnostic() {
         return (use_se ? paired_group_power(s, with_condition(x, prev), se, cse, ctx) : 1.0) *
                (use_sp ? paired_group_power(s, without_condition(x, prev), sp, csp, ctx) : 1.0);
       };
-      out.push_back(s.is("method", "exact") ? saw_search(power, n, s("power"), 2) : n_search(power, n, s("power"), 2));
+      out.steps.push_back(s.is("method", "exact") ? saw_search(power, n, s("power"), 2)
+                                                  : n_search(power, n, s("power"), 2));
+      out.answer = "N = " + dvi(n) + " (" + dvi(r.num("nd")) + " with and " + dvi(r.num("nn")) +
+                   " without the condition), with power " + dvp(r.num("power"), s("power"));
+    } else {
+      out.answer = "power = " + dvp(r.num("power"));
     }
     return out;
   };
