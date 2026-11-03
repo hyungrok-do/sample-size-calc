@@ -410,63 +410,82 @@ Procedure stepped_wedge_sim() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "g";
     const double alpha = s("alpha"), g = r.num("g"), K = r.num("clusters");
-    const double target = s.solve == "g" ? s("power") : NAN;
+    const double target = solved ? s("power") : NAN;
     const Design d = design_of(s);
     const int dfm = simc::df_method(s);
     auto approx = [&](double c) { return approx_power(d, c, dfm, alpha, a); };
     const double v = gls_variance(d, g), ncp = d.delta / d.unit / std::sqrt(v);
     const bool normal = dfm != 1 || K <= 2;
+    const std::string G = size(g, solved);
+    const std::string unknown = "g, the clusters switching at each step,", at = "with g = " + G + " clusters "
+                                "switching at each step (K = " + dvi(K) + ")";
+    const std::string found = "g = " + dvi(g) + " clusters per step (K = " + dvi(K) + " clusters, " +
+                              dvi(r.num("N")) + " observations)";
     const std::string model =
         "y = μj + δ Xij + ai + cij + e, ai ~ N(0, ICC·CAC σ²) per cluster, cij ~ N(0, ICC(1 − CAC) σ²) per cluster "
         "and period, e ~ N(0, (1 − ICC) σ²) per subject, Xij = 1 once cluster i has switched; g clusters switch at "
         "each of S steps, over S + 1 periods of m new subjects";
-    const std::string values = "δ = " + num(d.delta) + ", σ = " + num(d.unit) + ", ICC = " + num(r.num("icc")) +
-                               ", CAC = " + num(r.num("cac")) + ": σa = " + num(d.sa * d.unit) + ", σc = " +
-                               num(d.sc * d.unit) + ", σe = " + num(d.se * d.unit) + "; S = " + fint(d.steps) +
-                               ", g = " + fint(g) + ", K = S g = " + fint(K) + ", m = " + num(d.m);
+    const std::string values = "δ = " + gv(d.delta) + ", σ = " + gv(d.unit) + ", ICC = " + gv(s("icc")) +
+                               ", CAC = " + gv(s("cac")) + ": σa = " + dv(d.sa * d.unit) + ", σc = " +
+                               dv(d.sc * d.unit) + ", σe = " + dv(d.se * d.unit) + "; S = " + gvi(d.steps) + ", g = " +
+                               G + ", K = S g = " + dvi(K) + ", m = " + gv(d.m);
     const std::string law = std::string(normal ? "Φ" : "noncentral t") + " power with λ = δ / (σ √V)" +
                             (normal ? "" : " and ν = K − 2");
     const std::string variance = "V = Var(δ̂)/σ² by generalized least squares on the cluster-period means under the "
                                  "true model (residual variance σc² + σe²/m, random cluster intercept σa²)";
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Assumed model", model, values});
-      out.push_back({"Variance of the effect", variance, "g = " + fint(g) + ", K = " + fint(K) + ": V = " + num(v)});
-      out.push_back({"Noncentrality", "λ = δ / (σ √V)",
-                     sub(d.delta) + " / (" + num(d.unit) + " × √" + num(v) + ") = " + num(ncp)});
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back({"Assumed model", model, values});
+      out.steps.push_back({"Variance of the effect", variance, "g = " + G + ", K = " + dvi(K) + ": V = " + dv(v)});
+      out.steps.push_back({"Noncentrality", "λ = δ / (σ √V)",
+                           gvs(d.delta) + " / (" + gv(d.unit) + " × √" + dv(v) + ") = " + dv(ncp)});
       if (normal) {
-        out.push_back(z_critical(alpha, a));
-        out.push_back(z_power_step(ncp, alpha, a));
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_power_step(ncp, alpha, a));
       } else {
-        out.push_back(t_critical(alpha, K - 2, a, "K − 2"));
-        out.push_back(t_power_step(ncp, K - 2, alpha, a));
+        out.steps.push_back(t_critical(alpha, K - 2, a, "K − 2"));
+        out.steps.push_back(t_power_step(ncp, K - 2, alpha, a));
       }
-      if (s.solve == "g") {
+      if (solved) {
         Step st = n_search(approx, g, target, smallest_g(d), "g");
         st.what = "Clusters per step";
-        out.push_back(st);
+        out.steps.push_back(st);
       }
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated trials", model, values});
-    out.push_back(sim_mixed_test(
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated trials", model, values});
+    out.steps.push_back(sim_mixed_test(
         s, r,
         s.is("analysis", "hooper")
             ? "REML fit with period effects and random cluster and cluster-period intercepts, on the cluster-period "
               "means (refitted on the subjects without the cluster-period effect where its variance would be negative "
               "or that fit fails)"
             : "REML fit with period effects and a random cluster intercept, on the subjects (Hussey & Hughes)",
-        "δ̂", "K − 2", fint(K) + " − 2", K - 2, "trials"));
-    out.push_back(sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "g") {
-      const double lo = smallest_g(d), start = approx_g(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Clusters per step", "g", g, lo, start, approx(start), target, "trials"));
+        "δ̂", "K − 2", dvi(K) + " − 2", K - 2, "trials"));
+    SimSize zs;
+    if (solved) {
+      zs.sym = "g";
+      zs.n = g;
+      zs.lo = smallest_g(d);
+      zs.start = approx_g(approx, target, zs.lo, nullptr);
+      zs.start_power = approx(zs.start);
+      zs.target = target;
+      const double steps = d.steps;
+      zs.design = [steps](double x) { return "g = " + dvi(x) + " (K = " + dvi(steps * x) + ")"; };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0",
+                                    solved ? zs.at(g) : ""),
+                     solved ? &zs : nullptr, "trials");
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)", law + ", " + variance,
-                     "V = " + num(v) + ", λ = " + num(ncp) + ": " + prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)", law + ", " + variance,
+                           "V = " + dv(v) + ", λ = " + dv(ncp) + ": " + dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"S, g, K", "Steps, clusters switching at each step, and clusters in the trial (K = S × g)."},

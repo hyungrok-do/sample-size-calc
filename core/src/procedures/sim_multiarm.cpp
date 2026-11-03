@@ -780,8 +780,9 @@ Procedure multiarm() {
     using namespace derive;
     const Design d = design_of(s);
     const RunContext ctx;  // the exact powers of the derivation, on one thread and without a token
+    const bool solved = s.solve == "n";
     const double n = r.num("n"), n0 = r.num("n0"), df = r.num("df"), K = d.k;
-    const double target = s.solve == "n" ? s("power") : NAN;
+    const double target = solved ? s("power") : NAN;
     const bool single = d.adjust == Adjust::Dunnett || d.adjust == Adjust::Bonferroni || d.adjust == Adjust::None;
     const bool two = d.alt == Alt::Two;
     auto approx = [&](double m) { return goal_power(d, exact_power_at(d, m, ctx)); };
@@ -789,82 +790,92 @@ Procedure multiarm() {
     const Sizes z = sizes_of(d, n);
     const double crit = r.has("crit") ? r.num("crit") : critical_value(d, z, ctx);
     const double se = d.sigma * std::sqrt(1 / n + 1 / n0), lam = std::sqrt(n / (n + n0));
-    std::string theta, means;
-    for (int i = 0; i < d.k; ++i) {
-      theta += (i ? ", " : "") + num((d.mu[i] - d.mu0) / se);
-      means += (i ? ", " : "") + num(d.mu[i]);
-    }
-    const std::string sizes = "n = " + fint(n) + ", n0 = ⌈" + num(d.r0) + " × " + fint(n) + "⌉ = " + fint(n0) +
-                              ", ν = " + fint(K) + " × " + fint(n) + " + " + fint(n0) + " − " + fint(K) + " − 1 = " +
-                              fint(df);
+    std::vector<double> theta;
+    for (int i = 0; i < d.k; ++i) theta.push_back((d.mu[i] - d.mu0) / se);
+    const std::string means = gv_list(std::vector<double>(d.mu.begin(), d.mu.begin() + d.k));
+    const std::string Nn = size(n, solved), N0 = dvi(n0);
+    const std::string sizes = "n = " + Nn + ", n0 = ⌈" + gv(d.r0) + " × " + Nn + "⌉ = " + N0 + ", ν = " + dvi(K) +
+                              " × " + Nn + " + " + N0 + " − " + dvi(K) + " − 1 = " + dvi(df);
+    const std::string unknown = "n per treatment arm, with n0 = ⌈r0 × n⌉ (r0 = " + gv(d.r0) + "),";
+    const std::string at = "with n = " + Nn + " per treatment arm, n0 = " + N0;
+    const std::string found =
+        "n = " + dvi(n) + " per treatment arm, n0 = " + dvi(n0) + " (N = " + dvi(r.num("N")) + ")";
+    const std::string which = d.goal == Goal::All    ? " to find all the effective treatments"
+                              : d.goal == Goal::Each ? " to find each effective treatment (the smallest per-arm power)"
+                              : d.effective_count() == 0 ? " to reject any H0 (the familywise error, no treatment "
+                                                           "being effective)"
+                                                         : " to find at least one effective treatment";
     const std::string stat = two ? "|Ti|" : (d.alt == Alt::Lower ? "−Ti" : "Ti");
     const std::string share = two ? "α/(2K)" : "α/K", level = sim_level(d.alt, d.alpha);
-    const double tail = tail_alpha(d.adjust == Adjust::None ? d.alpha : alpha_share(d.alpha, K), d.alt);
+    // the level of the single test's quantile, with α and K in place
+    const std::string tail = d.adjust == Adjust::None ? gv(d.alpha) + (two ? "/2" : "")
+                                                      : gv(d.alpha) + "/(" + (two ? "2 × " : "") + dvi(K) + ")";
     const std::string goal = d.goal == Goal::All ? "all" : (d.goal == Goal::Each ? "each" : "any");
     const Step critical =
         d.adjust == Adjust::Dunnett
             ? Step{"Critical value (Dunnett)",
                    "c such that P(max_i " + stat + " ≥ c) = α when every H0 holds, the Ti correlated through the "
                    "shared control",
-                   "ν = " + fint(df) + ", α = " + fnum(d.alpha) + ": c = " + num(crit)}
+                   "ν = " + dvi(df) + ", α = " + gv(d.alpha) + ": c = " + dv(crit)}
             : Step{d.adjust == Adjust::None ? "Critical value" : "Critical value (Bonferroni)",
                    "c = t(1 − " + (d.adjust == Adjust::None ? std::string(two ? "α/2" : "α") : share) + "; ν)",
-                   "t(1 − " + num(tail) + "; " + fint(df) + ") = " + num(crit)};
-    Steps out;
+                   "t(1 − " + tail + "; " + dvi(df) + ") = " + dv(crit)};
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Design", "n0 = ⌈r0 n⌉, ν = K n + n0 − K − 1", sizes});
-      out.push_back({"Standardized effects", "θi = (μi − μ0) / (σ √(1/n + 1/n0))",
-                     "μ = " + means + ", μ0 = " + num(d.mu0) + ": σ √(1/" + fint(n) + " + 1/" + fint(n0) +
-                         ") = " + num(se) + ", θ = " + theta});
-      out.push_back(critical);
-      const std::string given = two                     ? "Φ((−cS − θi − λZ)/√(1 − λ²)) + Φ((θi + λZ − cS)/√(1 − λ²))"
+      out.find = solved ? find_approx_size(unknown, target, which) : find_approx_power(at, which);
+      out.steps.push_back({"Design", "n0 = ⌈r0 n⌉, ν = K n + n0 − K − 1", sizes});
+      out.steps.push_back({"Standardized effects", "θi = (μi − μ0) / (σ √(1/n + 1/n0))",
+                           "μ = " + means + ", μ0 = " + gv(d.mu0) + ": " + gv(d.sigma) + " × √(1/" + Nn + " + 1/" +
+                               N0 + ") = " + dv(se) + ", θ = " + dv_list(theta)});
+      out.steps.push_back(critical);
+      const std::string given = two                   ? "Φ((−cS − θi − λZ)/√(1 − λ²)) + Φ((θi + λZ − cS)/√(1 − λ²))"
                                 : d.alt == Alt::Lower ? "Φ((−θi + λZ − cS)/√(1 − λ²))"
                                                       : "Φ((θi + λZ − cS)/√(1 − λ²))";
-      out.push_back({"Rejection given the control and the SD",
-                     "Pi(Z, S) = " + given + " for the control's share Z ~ N(0, 1) and S = s/σ, λ = √(n/(n + n0)); "
-                     "given both, the arms reject independently",
-                     "λ = √(" + fint(n) + " / (" + fint(n) + " + " + fint(n0) + ")) = " + num(lam)});
-      out.push_back({single ? "Exact power" : "Exact power (Bonferroni's, a lower bound)",
-                     "P(any) = E[1 − Π(1 − Pi)] over the effective arms (all arms if none is), P(all) = E[Π Pi] over "
-                     "the effective arms, P(each) = their smallest "
-                     "E[Pi], E over Z and over S = √(χ²_ν/ν)",
-                     goal == "any"   ? "P(all) = " + prob(r.num("power_all")) + ", P(each) = " +
-                                           prob(r.num("power_each")) + ", P(any) = " + prob(r.num("power_any"))
-                     : goal == "all" ? "P(any) = " + prob(r.num("power_any")) + ", P(each) = " +
-                                           prob(r.num("power_each")) + ", P(all) = " + prob(r.num("power_all"))
-                                     : "P(any) = " + prob(r.num("power_any")) + ", P(all) = " +
-                                           prob(r.num("power_all")) + ", P(each) = " + prob(r.num("power_each"))});
-      if (s.solve == "n") out.push_back(n_search(approx, n, target, smallest_n(d), "n"));
+      out.steps.push_back({"Rejection given the control and the SD",
+                           "Pi(Z, S) = " + given + " for the control's share Z ~ N(0, 1) and S = s/σ, λ = √(n/(n + "
+                           "n0)); given both, the arms reject independently",
+                           "λ = √(" + Nn + " / (" + Nn + " + " + N0 + ")) = " + dv(lam)});
+      const std::string any = "P(any) = " + dvp(r.num("power_any")), all = "P(all) = " + dvp(r.num("power_all")),
+                        each = "P(each) = " + dvp(r.num("power_each"));
+      out.steps.push_back({single ? "Exact power" : "Exact power (Bonferroni's, a lower bound)",
+                           "P(any) = E[1 − Π(1 − Pi)] over the effective arms (all arms if none is), P(all) = E[Π Pi] "
+                           "over the effective arms, P(each) = their smallest E[Pi], E over Z and over S = √(χ²_ν/ν)",
+                           goal == "any"   ? all + ", " + each + ", " + any
+                           : goal == "all" ? any + ", " + each + ", " + all
+                                           : any + ", " + all + ", " + each});
+      if (solved) out.steps.push_back(n_search(approx, n, target, smallest_n(d), "n"));
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated studies",
-                   "Ȳi ~ N(μi, σ²/n) for the K treatment arms, Ȳ0 ~ N(μ0, σ²/n0), s² ~ σ² χ²_ν/ν (each study's "
-                   "sufficient statistics); n0 = ⌈r0 n⌉, ν = K n + n0 − K − 1",
-                   "μ = " + means + ", μ0 = " + num(d.mu0) + ", σ = " + num(d.sigma) + "; " + sizes});
+    out.find = solved ? find_sim_size(unknown, target, which) : find_sim_power(at, which);
+    out.steps.push_back({"Simulated studies",
+                         "Ȳi ~ N(μi, σ²/n) for the K treatment arms, Ȳ0 ~ N(μ0, σ²/n0), s² ~ σ² χ²_ν/ν (each study's "
+                         "sufficient statistics); n0 = ⌈r0 n⌉, ν = K n + n0 − K − 1",
+                         "μ = " + means + ", μ0 = " + gv(d.mu0) + ", σ = " + gv(d.sigma) + "; " + sizes});
     const std::string tests = "Ti = (Ȳi − Ȳ0) / (s √(1/n + 1/n0)) for each treatment; ";
-    std::string thresholds;
-    for (int j = 0; j < d.k; ++j) thresholds += (j ? ", " : "") + num(d.alpha / (d.k - j));
+    std::vector<double> thresholds;
+    for (int j = 0; j < d.k; ++j) thresholds.push_back(d.alpha / (d.k - j));
     switch (d.adjust) {
       case Adjust::Holm:
-        out.push_back({"Tests of each study",
-                       tests + "with the p-values ordered p(1) ≤ … ≤ p(K), H(1), H(2), … rejected while p(j) ≤ "
-                               "α/(K − j + 1) (Holm)",
-                       level + "; α/(K − j + 1) = " + thresholds});
+        out.steps.push_back({"Tests of each study",
+                             tests + "with the p-values ordered p(1) ≤ … ≤ p(K), H(1), H(2), … rejected while p(j) ≤ "
+                                     "α/(K − j + 1) (Holm)",
+                             level + "; α/(K − j + 1) = " + dv_list(thresholds)});
         break;
       case Adjust::Hochberg:
-        out.push_back({"Tests of each study",
-                       tests + "with the p-values ordered p(1) ≤ … ≤ p(K), H(1) … H(j) rejected for the largest j with "
-                               "p(j) ≤ α/(K − j + 1) (Hochberg)",
-                       level + "; α/(K − j + 1) = " + thresholds});
+        out.steps.push_back({"Tests of each study",
+                             tests + "with the p-values ordered p(1) ≤ … ≤ p(K), H(1) … H(j) rejected for the "
+                                     "largest j with p(j) ≤ α/(K − j + 1) (Hochberg)",
+                             level + "; α/(K − j + 1) = " + dv_list(thresholds)});
         break;
       default:
-        out.push_back({"Tests of each study",
-                       tests + "H0i rejected when " + stat + " > c, " +
-                           (d.adjust == Adjust::Dunnett
-                                ? "Dunnett's c: P(max_i " + stat + " ≥ c) = α when every H0 holds"
-                            : d.adjust == Adjust::Bonferroni ? "Bonferroni's c = t(1 − " + share + "; ν)"
-                                                             : std::string("c = t(1 − ") + (two ? "α/2" : "α") + "; ν)"),
-                       level + "; c = " + num(crit)});
+        out.steps.push_back(
+            {"Tests of each study",
+             tests + "H0i rejected when " + stat + " > c, " +
+                 (d.adjust == Adjust::Dunnett      ? "Dunnett's c: P(max_i " + stat + " ≥ c) = α when every H0 holds"
+                  : d.adjust == Adjust::Bonferroni ? "Bonferroni's c = t(1 − " + share + "; ν)"
+                                                   : std::string("c = t(1 − ") + (two ? "α/2" : "α") + "; ν)"),
+             level + "; c = " + dv(crit)});
     }
     // the studies that meet the goal; for each treatment, the smallest of the effective arms' own counts
     std::string count;
@@ -875,28 +886,35 @@ Procedure multiarm() {
           for (const auto& row : t.rows) arm.push_back(std::get<double>(row[4]));
       std::string each;
       for (int i = 0; i < d.k && i < static_cast<int>(arm.size()); ++i)
-        if (d.effective(i)) each += (each.empty() ? "" : ", ") + simc::grouped(std::round(arm[i] * r.num("reps")));
-      count = d.effective_count() > 1 ? "k = min(" + each + ") = " + simc::grouped(sim_count(r))
-                                      : "k = " + simc::grouped(sim_count(r));
+        if (d.effective(i)) each += (each.empty() ? "" : ", ") + dvg(std::round(arm[i] * r.num("reps")));
+      count = d.effective_count() > 1 ? "k = min(" + each + ") = " + dvg(sim_count(r)) : "k = " + dvg(sim_count(r));
     }
     const std::string counted =
-        d.goal == Goal::All    ? "the studies that reject H0 for every effective treatment"
-        : d.goal == Goal::Each ? "the smallest, over the effective treatments i, of the studies that reject H0i"
+        d.goal == Goal::All        ? "the studies that reject H0 for every effective treatment"
+        : d.goal == Goal::Each     ? "the smallest, over the effective treatments i, of the studies that reject H0i"
         : d.effective_count() == 0 ? "the studies that reject any H0 (no treatment is effective: the familywise error)"
                                    : "the studies that reject H0 for at least one effective treatment";
-    out.push_back(sim_count_step(r, "Studies meeting the goal", counted, count));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "n") {
-      const double lo = smallest_n(d), start = approx_n(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Sample size", "n", n, lo, start, approx(start), target));
+    SimSize zs;
+    if (solved) {
+      zs.sym = "n";
+      zs.n = n;
+      zs.lo = smallest_n(d);
+      zs.start = approx_n(approx, target, zs.lo, nullptr);
+      zs.start_power = approx(zs.start);
+      zs.target = target;
+      zs.design = [d](double x) { return "n = " + dvi(x) + ", n0 = " + dvi(sizes_of(d, x).n0); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Studies meeting the goal", counted, solved ? zs.at(n) : "", count),
+                     solved ? &zs : nullptr);
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)",
-                     std::string("the exact power of the single-step test") +
-                         (single ? "" : " with Bonferroni's c, a lower bound for Holm's and Hochberg's") +
-                         ": given the control's mean and the pooled SD the arms are independent, and their rejection "
-                         "probabilities are integrated over both",
-                     "c = " + num(crit) + ": P(" + goal + ") = " + prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)",
+                           std::string("the exact power of the single-step test") +
+                               (single ? "" : " with Bonferroni's c, a lower bound for Holm's and Hochberg's") +
+                               ": given the control's mean and the pooled SD the arms are independent, and their "
+                               "rejection probabilities are integrated over both",
+                           "c = " + dv(crit) + ": P(" + goal + ") = " + dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"n, n0", "Subjects in each treatment arm and in the control arm."},

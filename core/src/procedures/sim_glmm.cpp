@@ -443,85 +443,111 @@ Procedure glmm_cluster() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "k";
     const double alpha = s("alpha"), kr = s("kr"), k1 = r.num("k1"), k2 = r.num("k2");
-    const double target = s.solve == "k" ? s("power") : NAN;
-    const bool z = s.is("test", "z");
+    const double target = solved ? s("power") : NAN;
+    const bool z = s.is("test", "z"), latent = s.is("iccscale", "latent");
     const GlmmDesign d = glmm_design(s);
     const double w1 = expected_weight(d, d.pm1, d.icc1), w2 = expected_weight(d, d.pm2, d.icc2);
     auto approx = [&](double c1) { return approx_power(d, w1, w2, c1, solve::round_up(kr * c1), z, alpha, a); };
     const double se = std::sqrt(1 / (k1 * w1) + 1 / (k2 * w2)), ncp = (d.pm1 - d.pm2) / se;
-    const std::string clusters = "k1 = " + fint(k1) + ", k2 = ⌈" + num(kr) + " × " + fint(k1) + "⌉ = " + fint(k2);
-    const std::string sizes = r.num("cv") > 0 ? "m̄ = " + num(r.num("m")) + " (CV " + num(r.num("cv")) + ")"
-                                               : "m = " + num(r.num("m"));
+    const std::string K1 = size(k1, solved), K2 = dvi(k2), clusters = ratio_sizes("k1", "k2", k1, kr, k2, solved);
+    const std::string unknown = "k1, with k2 = ⌈r × k1⌉ (r = " + gv(kr) + "),";
+    const std::string at = "with k1 = " + K1 + ", k2 = " + K2;
+    const bool vary = r.num("cv") > 0;
+    // equal sizes are the average rounded to whole subjects
+    const std::string sizes = vary ? "m̄ = " + gv(r.num("m")) + " (CV " + gv(r.num("cv")) + ")"
+                              : r.num("m") == s("m") ? "m = " + gv(r.num("m"))
+                                                     : "m = " + dv(r.num("m")) + " (" + gv(s("m")) + " rounded)";
+    const std::string found = "k1 = " + dvi(k1) + ", k2 = " + dvi(k2) + " clusters (N " + (vary ? "≈ " : "= ") +
+                              dv(r.num("n")) + " subjects)";
     const Step sigma =
-        s.is("iccscale", "latent")
-            ? Step{"Between-cluster SD", "σb = √(π²/3 × ρ / (1 − ρ)), ρ the ICC on the latent scale",
-                   "√(" + num(PI2_3) + " × " + num(s("icc")) + " / (1 − " + num(s("icc")) + ")) = " + num(d.sigma)}
-            : Step{"Between-cluster SD",
-                   "σb = the SD of the random intercept at which the outcomes of group 2 have the ICC ρ on the "
-                   "proportion scale",
-                   "ρ = " + num(s("icc")) + ": σb = " + num(d.sigma) + " (latent ICC σb²/(σb² + π²/3) = " +
-                       num(d.icc_latent) + ")"};
+        latent ? Step{"Between-cluster SD", "σb = √(π²/3 × ρ / (1 − ρ)), ρ the ICC on the latent scale",
+                      "√(" + num(PI2_3) + " × " + gv(s("icc")) + " / (1 − " + gv(s("icc")) + ")) = " + dv(d.sigma)}
+               : Step{"Between-cluster SD",
+                      "σb = the SD of the random intercept at which the outcomes of group 2 have the ICC ρ on the "
+                      "proportion scale",
+                      "ρ = " + gv(s("icc")) + ": σb = " + dv(d.sigma) + " (latent ICC σb²/(σb² + π²/3) = " +
+                          dv(d.icc_latent) + ")"};
     const std::string weight = "w = the mean over the cluster sizes m of m / (P(1 − P)(1 + (m − 1)ρ)), P the "
                                "population-averaged proportion and ρ the proportion-scale ICC of the group";
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
-      out.push_back(sigma);
-      out.push_back({"Cluster weights", weight,
-                     "P1 = " + prob(d.pm1) + ", ρ1 = " + num(d.icc1) + ", P2 = " + prob(d.pm2) + ", ρ2 = " +
-                         num(d.icc2) + ", " + sizes + ": w1 = " + num(w1) + ", w2 = " + num(w2)});
-      out.push_back({"Noncentrality", "λ = (P1 − P2) / √(1/(k1 w1) + 1/(k2 w2)), k2 = ⌈r k1⌉",
-                     clusters + ": (" + prob(d.pm1) + " − " + prob(d.pm2) + ") / √(1/(" + fint(k1) + " × " +
-                         num(w1) + ") + 1/(" + fint(k2) + " × " + num(w2) + ")) = " + num(ncp)});
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back(sigma);
+      if (s.is("pscale", "conditional"))
+        out.steps.push_back({"Population-averaged proportions",
+                             "Pg = E[expit(logit Pg′ + b)] over b ~ N(0, σb²), Pg′ the proportion of a typical cluster",
+                             "P1′ = " + gv(s("p1")) + ", P2′ = " + gv(s("p2")) + ", σb = " + dv(d.sigma) + ": P1 = " +
+                                 dvp(d.pm1) + ", P2 = " + dvp(d.pm2)});
+      out.steps.push_back({"Cluster weights", weight,
+                           "P1 = " + dvp(d.pm1) + ", ρ1 = " + dv(d.icc1) + ", P2 = " + dvp(d.pm2) + ", ρ2 = " +
+                               dv(d.icc2) + ", " + sizes + ": w1 = " + dv(w1) + ", w2 = " + dv(w2)});
+      out.steps.push_back({"Noncentrality", "λ = (P1 − P2) / √(1/(k1 w1) + 1/(k2 w2)), k2 = ⌈r k1⌉",
+                           clusters + ": (" + dvp(d.pm1) + " − " + dvp(d.pm2) + ") / √(1/(" + K1 + " × " + dv(w1) +
+                               ") + 1/(" + K2 + " × " + dv(w2) + ")) = " + dv(ncp)});
       if (z) {
-        out.push_back(z_critical(alpha, a));
-        out.push_back(z_power_step(ncp, alpha, a));
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_power_step(ncp, alpha, a));
       } else {
-        out.push_back(t_critical(alpha, k1 + k2 - 2, a, "k1 + k2 − 2"));
-        out.push_back(t_power_step(ncp, k1 + k2 - 2, alpha, a));
+        out.steps.push_back(t_critical(alpha, k1 + k2 - 2, a, "k1 + k2 − 2"));
+        out.steps.push_back(t_power_step(ncp, k1 + k2 - 2, alpha, a));
       }
-      if (s.solve == "k") {
+      if (solved) {
         Step st = n_search(approx, k1, target, smallest_k1(kr), "k1");
         st.what = "Clusters";
-        out.push_back(st);
+        out.steps.push_back(st);
       }
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated data",
-                   "logit P(Y = 1 | b) = β0 + β1 x + b, b ~ N(0, σb²) per cluster, σb from the ICC (" +
-                       std::string(s.is("iccscale", "latent") ? "latent scale" : "proportion scale") +
-                       "), β0 and β1 from P1 and P2 (" +
-                       (s.is("pscale", "conditional") ? "a typical cluster's, b = 0" : "over all clusters") +
-                       "); cluster sizes " + (r.num("cv") > 0 ? "gamma with mean m̄ and CV, rounded" : "all m") +
-                       "; k2 = ⌈r k1⌉",
-                   "σb = " + num(d.sigma) + ", β0 = " + num(d.b0) + ", β1 = log OR = " + num(d.b1) + " (P1 = " +
-                       prob(d.pm1) + ", P2 = " + prob(d.pm2) + " over all clusters); " + clusters + " clusters of " +
-                       sizes});
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    const bool conditional = s.is("pscale", "conditional");
+    out.steps.push_back({"Simulated data",
+                         "logit P(Y = 1 | b) = β0 + β1 x + b, b ~ N(0, σb²) per cluster, σb from the ICC (" +
+                             std::string(latent ? "latent scale" : "proportion scale") +
+                             "), β0 and β1 from P1 and P2 (" +
+                             (conditional ? "a typical cluster's, b = 0" : "over all clusters") + "); cluster sizes " +
+                             (vary ? "gamma with mean m̄ and CV, rounded" : "all m") + "; k2 = ⌈r k1⌉",
+                         "P1 = " + gv(s("p1")) + ", P2 = " + gv(s("p2")) + ", ρ = " + gv(s("icc")) + ": σb = " +
+                             dv(d.sigma) + ", β0 = " + dv(d.b0) + ", β1 = log OR = " + dv(d.b1) +
+                             (conditional ? " (over all clusters P1 = " + dvp(d.pm1) + ", P2 = " + dvp(d.pm2) + ")"
+                                          : std::string()) +
+                             "; " + clusters + " clusters of " + sizes});
     // studies whose clusters all had one subject leave σb unestimable: logistic regression, with σb held at 0
     const std::string logistic =
-        r.has("logistic_studies") ? simc::grouped(r.num("logistic_studies")) +
+        r.has("logistic_studies") ? dvg(r.num("logistic_studies")) +
                                         " studies with clusters all of one subject by logistic regression (σb held "
                                         "at 0); "
                                   : "";
     const std::string fit = "logistic mixed model by maximum likelihood (adaptive Gauss–Hermite quadrature); ";
-    out.push_back(z ? Step{"Analysis of each study", fit + "Wald z = β̂1 / SE(β̂1); H0 rejected when p < α",
-                           logistic + sim_level(a, alpha)}
-                    : Step{"Analysis of each study",
-                           fit + "Wald t = β̂1 / SE(β̂1) with ν = k1 + k2 − 2; H0 rejected when p < α",
-                           logistic + sim_level(a, alpha) + "; ν = " + fint(k1) + " + " + fint(k2) + " − 2 = " +
-                               fint(k1 + k2 - 2)});
-    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "k") {
-      const double lo = smallest_k1(kr), start = approx_k1(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Clusters", "k1", k1, lo, start, approx(start), target));
+    out.steps.push_back(z ? Step{"Analysis of each study", fit + "Wald z = β̂1 / SE(β̂1); H0 rejected when p < α",
+                                 logistic + sim_level(a, alpha)}
+                          : Step{"Analysis of each study",
+                                 fit + "Wald t = β̂1 / SE(β̂1) with ν = k1 + k2 − 2; H0 rejected when p < α",
+                                 logistic + sim_level(a, alpha) + "; ν = " + K1 + " + " + K2 + " − 2 = " +
+                                     dvi(k1 + k2 - 2)});
+    SimSize zs;
+    if (solved) {
+      zs.sym = "k1";
+      zs.n = k1;
+      zs.lo = smallest_k1(kr);
+      zs.start = approx_k1(approx, target, zs.lo, nullptr);
+      zs.start_power = approx(zs.start);
+      zs.target = target;
+      zs.design = [kr](double x) { return "k1 = " + dvi(x) + ", k2 = " + dvi(solve::round_up(kr * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0",
+                                    solved ? zs.at(k1) : ""),
+                     solved ? &zs : nullptr);
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)",
-                     std::string(z ? "Φ" : "noncentral t") + " power with λ = (P1 − P2) / √(1/(k1 w1) + 1/(k2 w2)), " +
-                         weight,
-                     "w1 = " + num(w1) + ", w2 = " + num(w2) + ", λ = " + num(ncp) + ": " +
-                         prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)",
+                           std::string(z ? "Φ" : "noncentral t") +
+                               " power with λ = (P1 − P2) / √(1/(k1 w1) + 1/(k2 w2)), " + weight,
+                           "w1 = " + dv(w1) + ", w2 = " + dv(w2) + ", λ = " + dv(ncp) + ": " +
+                               dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"k1, k2", "Number of clusters randomized to each group."},

@@ -162,6 +162,24 @@ Shape shape_of(const Scenario& s) {
   return z;
 }
 
+/// The shape in words for a derivation, its inputs marked as given.
+std::string shape_marked(const Scenario& s, const Shape& z) {
+  using derive::gv;
+  switch (z.kind) {
+    case Shape::Lognormal: return "a log-normal distribution with skewness " + gv(s("skew"));
+    case Shape::Gamma: return "a gamma distribution with skewness " + gv(s("skew"));
+    case Shape::T: return "a t distribution with " + gv(s("df")) + " degrees of freedom";
+    case Shape::Contaminated:
+      return "a normal distribution with a share " + gv(s("eps")) + " of outliers whose SD is " + gv(s("kout")) +
+             " times the others'";
+    case Shape::Uniform: return "a uniform distribution";
+    default:  // a skewness within 1e-6 of 0 is simulated as the normal shape (see shape_of)
+      return s.is("dist", "lognormal") || s.is("dist", "gamma")
+                 ? "a normal distribution (the skewness " + gv(s("skew")) + " is within 10⁻⁶ of 0)"
+                 : "a normal distribution";
+  }
+}
+
 struct Design {
   Shape shape;
   double mu1 = 0, mu2 = 0, sd1 = 1, sd2 = 1;
@@ -507,14 +525,19 @@ Procedure robust() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2");
-    const double target = s.solve == "n" ? s("power") : NAN, pgt = r.num("pgt");
+    const double target = solved ? s("power") : NAN, pgt = r.num("pgt");
     const Test test = test_of(s);
     const Design d = design_of(s);
     double unit;
     const Design w = simulated(d, unit);
     auto approx = [&](double m1) { return approx_power(w, test, pgt, m1, solve::round_up(ratio * m1), alpha, a); };
-    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    const std::string N1 = size(n1, solved), N2 = dvi(n2), shape = shape_marked(s, d.shape);
+    const std::string sizes = ratio_sizes("N1", "N2", n1, ratio, n2, solved);
+    const std::string unknown = "N1, with N2 = ⌈r × N1⌉ (r = " + gv(ratio) + "),";
+    const std::string at = "with N1 = " + N1 + ", N2 = " + N2;
+    const std::string found = "N1 = " + dvi(n1) + ", N2 = " + dvi(n2) + " (N = " + dvi(n1 + n2) + ")";
     // the approximation's quantities, as approx_power computes them on the design as simulated
     const double q1 = w.sd1 * w.sd1 / n1, q2 = w.sd2 * w.sd2 / n2, ncp_t = (w.mu1 - w.mu2) / std::sqrt(q1 + q2);
     const double df = test == POOLED ? n1 + n2 - 2 : (q1 + q2) * (q1 + q2) / (q1 * q1 / (n1 - 1) + q2 * q2 / (n2 - 1));
@@ -523,63 +546,76 @@ Procedure robust() {
                                                   : "(σ1²/N1 + σ2²/N2)² / ((σ1²/N1)²/(N1 − 1) + (σ2²/N2)²/(N2 − 1)), "
                                                     "Welch–Satterthwaite";
     const std::string noether = "λ = (P(X1 > X2) − 1/2) / √((N1 + N2 + 1) / (12 N1 N2))";
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
       if (test == RANKS) {
-        out.push_back({"P(X1 > X2)",
-                       "P(X1 > X2) = ∫₀¹ F((μ1 − μ2 + σ1 Q(u)) / σ2) du, F and Q the distribution and quantile "
-                       "functions of the standardized shape",
-                       "μ1 = " + num(d.mu1) + ", μ2 = " + num(d.mu2) + ", σ1 = " + num(d.sd1) + ", σ2 = " +
-                           num(d.sd2) + ", " + text_of(r, "dist") + ": P(X1 > X2) = " + num(pgt)});
-        out.push_back({"Noncentrality (Noether)", noether + ", N2 = ⌈r N1⌉",
-                       sizes + ": (" + num(pgt) + " − 0.5) / √((" + fint(n1) + " + " + fint(n2) + " + 1) / (12 × " +
-                           fint(n1) + " × " + fint(n2) + ")) = " + num(ncp_w)});
-        out.push_back(z_critical(alpha, a));
-        out.push_back(z_power_step(ncp_w, alpha, a));
+        out.steps.push_back({"P(X1 > X2)",
+                             "P(X1 > X2) = ∫₀¹ F((μ1 − μ2 + σ1 Q(u)) / σ2) du, F and Q the distribution and quantile "
+                             "functions of the standardized shape",
+                             "μ1 = " + gv(d.mu1) + ", μ2 = " + gv(d.mu2) + ", σ1 = " + gv(d.sd1) + ", σ2 = " +
+                                 gv(d.sd2) + ", " + shape + ": P(X1 > X2) = " + dv(pgt)});
+        out.steps.push_back({"Noncentrality (Noether)", noether + ", N2 = ⌈r N1⌉",
+                             sizes + ": (" + dv(pgt) + " − 0.5) / √((" + N1 + " + " + N2 + " + 1) / (12 × " + N1 +
+                                 " × " + N2 + ")) = " + dv(ncp_w)});
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_power_step(ncp_w, alpha, a));
       } else {
-        out.push_back({"Standard error", "SE = √(σ1²/N1 + σ2²/N2), N2 = ⌈r N1⌉",
-                       sizes + ": √(" + num(d.sd1) + "²/" + fint(n1) + " + " + num(d.sd2) + "²/" + fint(n2) + ") = " +
-                           num(unit * std::sqrt(q1 + q2))});
-        out.push_back({"Noncentrality", "λ = (μ1 − μ2) / SE",
-                       "(" + num(d.mu1) + " − " + sub(d.mu2) + ") / " + num(unit * std::sqrt(q1 + q2)) + " = " +
-                           num(ncp_t)});
-        out.push_back(t_critical(alpha, df, a, df_formula));
-        out.push_back(t_power_step(ncp_t, df, alpha, a));
+        const double se = unit * std::sqrt(q1 + q2);
+        out.steps.push_back({"Standard error",
+                             "SE = √(σ1²/N1 + σ2²/N2), N2 = ⌈r N1⌉: normal theory at the true SDs, whatever the shape",
+                             sizes + ": √(" + gv(d.sd1) + "²/" + N1 + " + " + gv(d.sd2) + "²/" + N2 + ") = " + dv(se)});
+        out.steps.push_back({"Noncentrality", "λ = (μ1 − μ2) / SE",
+                             "(" + gv(d.mu1) + " − " + gvs(d.mu2) + ") / " + dv(se) + " = " + dv(ncp_t)});
+        out.steps.push_back(t_critical(alpha, df, a, df_formula));
+        out.steps.push_back(t_power_step(ncp_t, df, alpha, a));
       }
-      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      if (solved) out.steps.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated data", "Yg = μg + σg Z, Z of mean 0 and SD 1 with the chosen shape; N2 = ⌈r N1⌉",
-                   "Y1 = " + num(d.mu1) + " + " + num(d.sd1) + " Z, Y2 = " + num(d.mu2) + " + " + num(d.sd2) +
-                       " Z, Z from " + text_of(r, "dist") + "; " + sizes});
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated data", "Yg = μg + σg Z, Z of mean 0 and SD 1 with the chosen shape; N2 = ⌈r N1⌉",
+                         "Y1 = " + gv(d.mu1) + " + " + gv(d.sd1) + " Z, Y2 = " + gv(d.mu2) + " + " + gv(d.sd2) +
+                             " Z, Z from " + shape + "; " + sizes});
     const std::string level = sim_level(a, alpha);
     if (test == RANKS)
-      out.push_back({"Test of each study",
-                     "Mann–Whitney z = (W − N1 N2/2 ∓ 1/2) / √(N1 N2/12 × (N + 1 − Σ(t³ − t)/(N(N − 1)))), W the rank "
-                     "sum of group 1 less N1(N1 + 1)/2, t the sizes of tied groups; H0 rejected when p < α",
-                     level});
+      out.steps.push_back({"Test of each study",
+                           "Mann–Whitney z = (W − N1 N2/2 ∓ 1/2) / √(N1 N2/12 × (N + 1 − Σ(t³ − t)/(N(N − 1)))), W the "
+                           "rank sum of group 1 less N1(N1 + 1)/2, t the sizes of tied groups; H0 rejected when p < α",
+                           level});
     else if (test == POOLED)
-      out.push_back({"Test of each study",
-                     "pooled t = (Ȳ1 − Ȳ2) / (sp √(1/N1 + 1/N2)) with ν = N1 + N2 − 2; H0 rejected when p < α",
-                     level + "; ν = " + fint(n1) + " + " + fint(n2) + " − 2 = " + fint(n1 + n2 - 2)});
+      out.steps.push_back({"Test of each study",
+                           "pooled t = (Ȳ1 − Ȳ2) / (sp √(1/N1 + 1/N2)) with ν = N1 + N2 − 2; H0 rejected when p < α",
+                           level + "; ν = " + N1 + " + " + N2 + " − 2 = " + dvi(n1 + n2 - 2)});
     else
-      out.push_back({"Test of each study",
-                     "Welch t = (Ȳ1 − Ȳ2) / √(s1²/N1 + s2²/N2) with Welch–Satterthwaite ν from the study's own SDs; "
-                     "H0 rejected when p < α",
-                     level + (r.has("mean_df") ? "; mean ν over the studies = " + num(r.num("mean_df"), 2) : "")});
-    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "n") {
-      const double lo = smallest_n1(ratio), start = approx_n1(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target));
+      out.steps.push_back({"Test of each study",
+                           "Welch t = (Ȳ1 − Ȳ2) / √(s1²/N1 + s2²/N2) with Welch–Satterthwaite ν from the study's own "
+                           "SDs; H0 rejected when p < α",
+                           level + (r.has("mean_df") ? "; mean ν over the studies = " + dv(r.num("mean_df"), 2) : "")});
+    SimSize z;
+    if (solved) {
+      z.sym = "N1";
+      z.n = n1;
+      z.lo = smallest_n1(ratio);
+      z.start = approx_n1(approx, target, z.lo, nullptr);
+      z.start_power = approx(z.start);
+      z.target = target;
+      z.design = [ratio](double x) { return "N1 = " + dvi(x) + ", N2 = " + dvi(solve::round_up(ratio * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0",
+                                    solved ? z.at(n1) : ""),
+                     solved ? &z : nullptr);
     if (std::isfinite(r.num("approx_power")))
-      out.push_back(test == RANKS
-                        ? Step{"Approximation (for comparison)", "Noether's formula: Φ power with " + noether,
-                               "P(X1 > X2) = " + num(pgt) + ", λ = " + num(ncp_w) + ": " + prob(r.num("approx_power"))}
-                        : Step{"Approximation (for comparison)",
-                               "noncentral t power with λ = (μ1 − μ2) / √(σ1²/N1 + σ2²/N2) and ν = " + df_formula,
-                               "λ = " + num(ncp_t) + ", ν = " + num(df, 2) + ": " + prob(r.num("approx_power"))});
+      out.steps.push_back(test == RANKS
+                              ? Step{"Approximation (for comparison)", "Noether's formula: Φ power with " + noether,
+                                     "P(X1 > X2) = " + dv(pgt) + ", λ = " + dv(ncp_w) + ": " +
+                                         dvp(r.num("approx_power"))}
+                              : Step{"Approximation (for comparison)",
+                                     "noncentral t power with λ = (μ1 − μ2) / √(σ1²/N1 + σ2²/N2) and ν = " + df_formula,
+                                     "λ = " + dv(ncp_t) + ", ν = " + dv(df, 2) + ": " + dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},

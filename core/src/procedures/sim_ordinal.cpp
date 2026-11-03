@@ -614,16 +614,28 @@ Procedure ordinal() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2"), win = r.num("win");
-    const double target = s.solve == "n" ? s("power") : NAN;
+    const double target = solved ? s("power") : NAN;
     const Design d = design_of(s);
     const Test test = s.is("test", "lr") ? LR : (s.is("test", "mw") ? RANKS : WALD);
     auto approx = [&](double m1) { return z_power(approx_of(d, win, m1, solve::round_up(ratio * m1)).ncp, alpha, a); };
     const Approx ap = approx_of(d, win, n1, n2);
-    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
-    const std::string probs = d.po ? "P2 = " + text_of(r, "p2") + ", OR = " + num(d.odds_ratio) + ": P1 = " +
-                                         text_of(r, "p1")
-                                   : "P1 = " + text_of(r, "p1") + ", P2 = " + text_of(r, "p2");
+    const std::string N1 = size(n1, solved), N2 = dvi(n2), sizes = ratio_sizes("N1", "N2", n1, ratio, n2, solved);
+    const std::string unknown = "N1, with N2 = ⌈r × N1⌉ (r = " + gv(ratio) + "),";
+    const std::string at = "with N1 = " + N1 + ", N2 = " + N2;
+    const std::string found = "N1 = " + dvi(n1) + ", N2 = " + dvi(n2) + " (N = " + dvi(n1 + n2) + ")";
+    // a group's probabilities as typed, and as rescaled to add up to 1 where that shows (not a sum of 1 − 1e-16)
+    const auto typed = [&](const char* id, const std::array<double, CMAX>& used) {
+      const std::vector<double>& v = s.v(id);
+      const std::vector<double> scaled(used.begin(), used.begin() + d.k);
+      bool shown = true;
+      for (int j = 0; j < d.k; ++j) shown = shown && num(v[j]) == num(scaled[j]);
+      return shown ? gv_list(v) : gv_list(v) + ", rescaled to add up to 1: " + dv_list(scaled);
+    };
+    const std::string probs = d.po ? "P2 = " + typed("p2", d.p2) + ", OR = " + gv(d.odds_ratio) + ": P1 = " +
+                                         dv_list(std::vector<double>(d.p1.begin(), d.p1.begin() + d.k))
+                                   : "P1 = " + typed("p1", d.p1) + ", P2 = " + typed("p2", d.p2);
     const std::string effect = d.po ? "group 1's probabilities from logit P1(Y ≤ j) = logit P2(Y ≤ j) − log OR "
                                       "(proportional odds)"
                                     : "both groups' probabilities as given";
@@ -631,52 +643,63 @@ Procedure ordinal() {
         d.po ? "SE(log OR̂) = √(3 / (N π(1 − π)(1 − Σ p̄j³))), p̄j = π P1j + (1 − π) P2j, π = N1/N (Whitehead)"
              : "SE = √((N + 1)(1 − Σ p̄j³) / (12 N1 N2)), p̄j = π P1j + (1 − π) P2j, π = N1/N (Noether, with ties)";
     const std::string ncp_formula = d.po ? "λ = log OR / SE(log OR̂)" : "λ = (P(better) − 1/2) / SE";
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Category probabilities",
-                     effect + "; P(better) = P(Y1 > Y2) + P(Y1 = Y2)/2",
-                     probs + "; P(better) = " + num(win)});
-      out.push_back({"Standard error", se_formula + ", N2 = ⌈r N1⌉",
-                     sizes + ": Σ p̄j³ = " + num(ap.cube) + ", SE = " + num(ap.se)});
-      out.push_back({"Noncentrality", ncp_formula,
-                     (d.po ? "log " + num(d.odds_ratio) : "(" + num(win) + " − 0.5)") + " / " + num(ap.se) + " = " +
-                         num(ap.ncp)});
-      out.push_back(z_critical(alpha, a));
-      out.push_back(z_power_step(ap.ncp, alpha, a));
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back({"Category probabilities", effect + "; P(better) = P(Y1 > Y2) + P(Y1 = Y2)/2",
+                           probs + "; P(better) = " + dv(win)});
+      out.steps.push_back({"Standard error", se_formula + ", N2 = ⌈r N1⌉",
+                           sizes + ": Σ p̄j³ = " + dv(ap.cube) + ", SE = " + dv(ap.se)});
+      out.steps.push_back({"Noncentrality", ncp_formula,
+                           (d.po ? "log " + gv(d.odds_ratio) : "(" + dv(win) + " − 0.5)") + " / " + dv(ap.se) +
+                               " = " + dv(ap.ncp)});
+      out.steps.push_back(z_critical(alpha, a));
+      out.steps.push_back(z_power_step(ap.ncp, alpha, a));
       if (r.has("separated"))
-        out.push_back({"Separated studies (left out)",
-                       "the chance that one group's outcomes all lie at or above the other's, where the Wald test "
-                       "cannot reject",
-                       "expected share = " + num(r.num("separated"))});
-      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+        out.steps.push_back({"Separated studies (left out)",
+                             "the chance that one group's outcomes all lie at or above the other's, where the Wald "
+                             "test cannot reject",
+                             "expected share = " + dv(r.num("separated"))});
+      if (solved) out.steps.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated data",
-                   "each subject's category drawn from the group's probabilities, " + effect + "; N2 = ⌈r N1⌉",
-                   probs + "; " + sizes});
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated data",
+                         "each subject's category drawn from the group's probabilities, " + effect + "; N2 = ⌈r N1⌉",
+                         probs + "; " + sizes});
     const std::string model =
         "proportional odds model logit P(Y ≤ j) = θj − β x by maximum likelihood (Newton's method)";
-    out.push_back(test == WALD ? Step{"Test of each study", model + "; Wald z = β̂ / SE(β̂); H0 rejected when p < α",
-                                      sim_level(a, alpha)}
-                  : test == LR ? Step{"Test of each study",
-                                      model + "; likelihood ratio 2(ℓ̂ − ℓ̂0) against χ²₁ (one-sided: its signed root "
-                                              "against N(0, 1)); H0 rejected when p < α",
-                                      sim_level(a, alpha)}
-                               : Step{"Test of each study",
-                                      "Mann–Whitney test on the categories' midranks with the tie and continuity "
-                                      "corrections; H0 rejected when p < α",
-                                      sim_level(a, alpha)});
-    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "n") {
-      const double lo = smallest_n1(ratio), start = approx_n1(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target));
+    out.steps.push_back(test == WALD ? Step{"Test of each study",
+                                            model + "; Wald z = β̂ / SE(β̂); H0 rejected when p < α",
+                                            sim_level(a, alpha)}
+                        : test == LR ? Step{"Test of each study",
+                                            model + "; likelihood ratio 2(ℓ̂ − ℓ̂0) against χ²₁ (one-sided: its signed "
+                                                    "root against N(0, 1)); H0 rejected when p < α",
+                                            sim_level(a, alpha)}
+                                     : Step{"Test of each study",
+                                            "Mann–Whitney test on the categories' midranks with the tie and continuity "
+                                            "corrections; H0 rejected when p < α",
+                                            sim_level(a, alpha)});
+    SimSize zs;
+    if (solved) {
+      zs.sym = "N1";
+      zs.n = n1;
+      zs.lo = smallest_n1(ratio);
+      zs.start = approx_n1(approx, target, zs.lo, nullptr);
+      zs.start_power = approx(zs.start);
+      zs.target = target;
+      zs.design = [ratio](double x) { return "N1 = " + dvi(x) + ", N2 = " + dvi(solve::round_up(ratio * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0",
+                                    solved ? zs.at(n1) : ""),
+                     solved ? &zs : nullptr);
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)",
-                     "Φ power with " + ncp_formula + ", " + se_formula,
-                     "Σ p̄j³ = " + num(ap.cube) + ", SE = " + num(ap.se) + ", λ = " + num(ap.ncp) + ": " +
-                         prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)", "Φ power with " + ncp_formula + ", " + se_formula,
+                           "Σ p̄j³ = " + dv(ap.cube) + ", SE = " + dv(ap.se) + ", λ = " + dv(ap.ncp) + ": " +
+                               dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},

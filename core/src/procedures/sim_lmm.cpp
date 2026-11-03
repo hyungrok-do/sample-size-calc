@@ -636,68 +636,89 @@ Procedure longitudinal() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double alpha = s("alpha"), ratio = s("r"), delta = s("delta"), dropout = s("dropout");
-    const double n1 = r.num("n1"), n2 = r.num("n2"), target = s.solve == "n" ? s("power") : NAN;
+    const double n1 = r.num("n1"), n2 = r.num("n2"), target = solved ? s("power") : NAN;
     const LongDesign d = long_design(s);
     const int dfm = df_method(s);
     auto approx = [&](double m1) { return long_approx(d, delta, m1, solve::round_up(ratio * m1), dfm, alpha, a); };
     const double se = long_se(d, n1, n2), ncp = delta / se, K = static_cast<double>(d.times.size());
-    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
-    std::string times;
-    for (double t : d.times) times += (times.empty() ? "" : ", ") + num(t);
+    const std::string N1 = size(n1, solved), N2 = dvi(n2), sizes = ratio_sizes("N1", "N2", n1, ratio, n2, solved);
+    const std::string unknown = "N1, with N2 = ⌈r × N1⌉ (r = " + gv(ratio) + "),";
+    const std::string at = "with N1 = " + N1 + ", N2 = " + N2;
+    const std::string found = "N1 = " + dvi(n1) + ", N2 = " + dvi(n2) + " (N = " + dvi(n1 + n2) + ")";
+    // the visits as typed (sorted), or M of them equally spaced from 0 to D
+    const std::string times = s.is("timing", "custom")
+                                  ? "times " + gv_list(d.times)
+                                  : "M = " + gv(s("m")) + " times equally spaced from 0 to D = " + gv(s("duration")) +
+                                        ": " + dv_list(d.times);
     const std::string model = d.slopes ? "y = β0 + β g + (βt + δ g) t + b0 + b1 t + e, (b0, b1) normal with SDs σ0 "
                                          "and σ1 and correlation ρ, e ~ N(0, σe²)"
                                        : "y = β0 + β g + (βt + δ g) t + b0 + e, b0 ~ N(0, σ0²), e ~ N(0, σe²)";
-    const std::string values = "δ = " + num(delta) + ", σ0 = " + num(d.sd0) +
-                               (d.slopes ? ", σ1 = " + num(d.sd1) + ", ρ = " + num(d.rho) : std::string()) +
-                               ", σe = " + num(d.sde) + "; times " + times;
-    const std::string hazard = "h = 1 − (1 − " + num(dropout) + ")^(1/" + fint(K - 1) + ") = " + num(d.hazard);
+    const std::string values = "δ = " + gv(delta) + ", σ0 = " + gv(d.sd0) +
+                               (d.slopes ? ", σ1 = " + gv(d.sd1) + ", ρ = " + gv(d.rho) : std::string()) +
+                               ", σe = " + gv(d.sde) + "; " + times;
+    const std::string hazard =
+        "h = 1 − (1 − " + gv(dropout) + ")^(1/" + dvi(K - 1) + ") = " + dv(d.hazard);
     const std::string law = std::string(dfm == 2 ? "Φ" : "noncentral t") + " power with λ = δ / SE(δ̂)" +
                             (dfm == 2 ? "" : " and ν = N1 + N2 − 2");
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Assumed model", model + "; N2 = ⌈r N1⌉", values + "; " + sizes});
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back({"Assumed model", model + "; N2 = ⌈r N1⌉", values + "; " + sizes});
       if (dropout > 0) {
         std::string shares;
-        for (double x : visit_probs(d)) shares += (shares.empty() ? "" : ", ") + num(x);
-        out.push_back({"Dropout",
-                       "h = 1 − (1 − D)^(1/(K − 1)) after each visit, D the share gone by the last of K visits; "
-                       "π_k = (1 − h)^(k − 1) h are measured at the first k visits only, (1 − h)^(K − 1) at all K",
-                       hazard + ": π = " + shares});
+        for (double x : visit_probs(d)) shares += (shares.empty() ? "" : ", ") + dv(x);
+        out.steps.push_back({"Dropout",
+                             "h = 1 − (1 − q)^(1/(K − 1)) after each visit, q the share gone by the last of K "
+                             "visits; π_k = (1 − h)^(k − 1) h are measured at the first k visits only, (1 − h)^(K − 1) "
+                             "at all K",
+                             hazard + ": π = " + shares});
       }
-      out.push_back({"Standard error (GLS)",
-                     "SE(δ̂)² = the δ entry of (Σ N_g π_k X′V⁻¹X)⁻¹ over the groups g and the visit patterns k, "
-                     "V = ZGZ′ + σe² I at the assumed variances",
-                     sizes + ": SE(δ̂) = " + num(se)});
-      out.push_back({"Noncentrality", "λ = δ / SE(δ̂)", sub(delta) + " / " + num(se) + " = " + num(ncp)});
+      out.steps.push_back({"Standard error (GLS)",
+                           "SE(δ̂)² = the δ entry of (Σ N_g π_k X′V⁻¹X)⁻¹ over the groups g and the visit patterns k, "
+                           "V = ZGZ′ + σe² I at the assumed variances",
+                           sizes + ": SE(δ̂) = " + dv(se)});
+      out.steps.push_back({"Noncentrality", "λ = δ / SE(δ̂)", gvs(delta) + " / " + dv(se) + " = " + dv(ncp)});
       if (dfm == 2) {
-        out.push_back(z_critical(alpha, a));
-        out.push_back(z_power_step(ncp, alpha, a));
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_power_step(ncp, alpha, a));
       } else {
-        out.push_back(t_critical(alpha, n1 + n2 - 2, a, "N1 + N2 − 2"));
-        out.push_back(t_power_step(ncp, n1 + n2 - 2, alpha, a));
+        out.steps.push_back(t_critical(alpha, n1 + n2 - 2, a, "N1 + N2 − 2"));
+        out.steps.push_back(t_power_step(ncp, n1 + n2 - 2, alpha, a));
       }
-      if (s.solve == "n") out.push_back(n_search(approx, n1, target, long_smallest_n1(ratio), "N1"));
+      if (solved) out.steps.push_back(n_search(approx, n1, target, long_smallest_n1(ratio), "N1"));
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated data",
-                   model + (dropout > 0 ? "; subjects leave after each visit with probability h = 1 − (1 − D)^(1/(K "
-                                          "− 1)), D the share gone by the last of K visits"
-                                        : "") +
-                       "; N2 = ⌈r N1⌉",
-                   values + (dropout > 0 ? "; " + hazard : "") + "; " + sizes});
-    out.push_back(sim_mixed_test(s, r, "REML fit of the same mixed model", "δ̂", "N1 + N2 − 2",
-                                 fint(n1) + " + " + fint(n2) + " − 2", n1 + n2 - 2));
-    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "n") {
-      const double lo = long_smallest_n1(ratio), start = approx_size(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target));
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated data",
+                         model + (dropout > 0 ? "; subjects leave after each visit with probability h = 1 − (1 − "
+                                                "q)^(1/(K − 1)), q the share gone by the last of K visits"
+                                              : "") +
+                             "; N2 = ⌈r N1⌉",
+                         values + (dropout > 0 ? "; " + hazard : "") + "; " + sizes});
+    out.steps.push_back(sim_mixed_test(s, r, "REML fit of the same mixed model", "δ̂", "N1 + N2 − 2",
+                                       N1 + " + " + N2 + " − 2", n1 + n2 - 2));
+    SimSize z;
+    if (solved) {
+      z.sym = "N1";
+      z.n = n1;
+      z.lo = long_smallest_n1(ratio);
+      z.start = approx_size(approx, target, z.lo, nullptr);
+      z.start_power = approx(z.start);
+      z.target = target;
+      z.design = [ratio](double x) { return "N1 = " + dvi(x) + ", N2 = " + dvi(solve::round_up(ratio * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0",
+                                    solved ? z.at(n1) : ""),
+                     solved ? &z : nullptr);
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)",
-                     law + ", SE(δ̂) by generalized least squares at the assumed variances and expected dropout",
-                     "SE(δ̂) = " + num(se) + ", λ = " + num(ncp) + ": " + prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)",
+                           law + ", SE(δ̂) by generalized least squares at the assumed variances and expected dropout",
+                           "SE(δ̂) = " + dv(se) + ", λ = " + dv(ncp) + ": " + dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
@@ -1027,8 +1048,9 @@ Procedure cluster() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "k";
     const double alpha = s("alpha"), kr = s("kr"), mu1 = s("mu1"), mu2 = s("mu2"), sigma = s("sigma");
-    const double k1 = r.num("k1"), k2 = r.num("k2"), target = s.solve == "k" ? s("power") : NAN;
+    const double k1 = r.num("k1"), k2 = r.num("k2"), target = solved ? s("power") : NAN;
     const ClusterDesign d = cluster_design(s);
     const auto ew = expected_weight(d);
     const int dfm = df_method(s);
@@ -1036,54 +1058,72 @@ Procedure cluster() {
       return cluster_approx(ew.first, mu1 - mu2, sigma, c1, solve::round_up(kr * c1), dfm, alpha, a);
     };
     const double se = std::sqrt((1 / k1 + 1 / k2) / ew.first), ncp = (mu1 - mu2) / sigma / se;
-    const std::string clusters = "k1 = " + fint(k1) + ", k2 = ⌈" + num(kr) + " × " + fint(k1) + "⌉ = " + fint(k2);
-    const std::string sizes = r.num("cv") > 0 ? "m̄ = " + num(r.num("m")) + " (CV " + num(r.num("cv")) + ")"
-                                               : "m = " + num(r.num("m"));
+    const std::string K1 = size(k1, solved), K2 = dvi(k2), clusters = ratio_sizes("k1", "k2", k1, kr, k2, solved);
+    const std::string unknown = "k1, with k2 = ⌈r × k1⌉ (r = " + gv(kr) + "),";
+    const std::string at = "with k1 = " + K1 + ", k2 = " + K2;
+    const bool vary = r.num("cv") > 0;
+    // equal sizes are the average rounded to whole subjects
+    const std::string sizes = vary ? "m̄ = " + gv(r.num("m")) + " (CV " + gv(r.num("cv")) + ")"
+                              : r.num("m") == s("m") ? "m = " + gv(r.num("m"))
+                                                     : "m = " + dv(r.num("m")) + " (" + gv(s("m")) + " rounded)";
+    const std::string found = "k1 = " + dvi(k1) + ", k2 = " + dvi(k2) + " clusters (N " + (vary ? "≈ " : "= ") +
+                              dv(r.num("n")) + " subjects)";
     const std::string law = std::string(dfm == 2 ? "Φ" : "noncentral t") +
                             " power with λ = (μ1 − μ2) / (σ √((1/k1 + 1/k2) / w))" +
                             (dfm == 2 ? "" : " and ν = k1 + k2 − 2");
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Cluster weight",
-                     "w = the mean over the cluster sizes m of m / ((1 − ρ) + m ρ), in units of 1/σ²; the design "
-                     "effect is the mean size over w",
-                     sizes + ", ρ = " + num(s("icc")) + ": w = " + num(ew.first) + ", design effect = " +
-                         num(r.num("de"))});
-      out.push_back({"Noncentrality", "λ = (μ1 − μ2) / (σ √((1/k1 + 1/k2) / w)), k2 = ⌈r k1⌉",
-                     clusters + ": (" + num(mu1) + " − " + sub(mu2) + ") / (" + num(sigma) + " × √((1/" + fint(k1) +
-                         " + 1/" + fint(k2) + ") / " + num(ew.first) + ")) = " + num(ncp)});
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back({"Cluster weight",
+                           "w = the mean over the cluster sizes m of m / ((1 − ρ) + m ρ), in units of 1/σ²; the design "
+                           "effect is the mean size over w",
+                           sizes + ", ρ = " + gv(s("icc")) + ": w = " + dv(ew.first) + ", design effect = " +
+                               dv(r.num("de"))});
+      out.steps.push_back({"Noncentrality", "λ = (μ1 − μ2) / (σ √((1/k1 + 1/k2) / w)), k2 = ⌈r k1⌉",
+                           clusters + ": (" + gv(mu1) + " − " + gvs(mu2) + ") / (" + gv(sigma) + " × √((1/" + K1 +
+                               " + 1/" + K2 + ") / " + dv(ew.first) + ")) = " + dv(ncp)});
       if (dfm == 2) {
-        out.push_back(z_critical(alpha, a));
-        out.push_back(z_power_step(ncp, alpha, a));
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_power_step(ncp, alpha, a));
       } else {
-        out.push_back(t_critical(alpha, k1 + k2 - 2, a, "k1 + k2 − 2"));
-        out.push_back(t_power_step(ncp, k1 + k2 - 2, alpha, a));
+        out.steps.push_back(t_critical(alpha, k1 + k2 - 2, a, "k1 + k2 − 2"));
+        out.steps.push_back(t_power_step(ncp, k1 + k2 - 2, alpha, a));
       }
-      if (s.solve == "k") {
+      if (solved) {
         Step st = n_search(approx, k1, target, cluster_smallest_k1(kr), "k1");
         st.what = "Clusters";
-        out.push_back(st);
+        out.steps.push_back(st);
       }
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated data",
-                   "y = μg + c + e, c ~ N(0, ρσ²) per cluster, e ~ N(0, (1 − ρ)σ²); cluster sizes " +
-                       std::string(r.num("cv") > 0 ? "gamma with mean m̄ and CV, rounded" : "all m") +
-                       "; k2 = ⌈r k1⌉",
-                   "μ1 = " + num(mu1) + ", μ2 = " + num(mu2) + ", σ = " + num(sigma) + ", ρ = " + num(s("icc")) +
-                       "; " + clusters + " clusters of " + sizes});
-    out.push_back(sim_mixed_test(s, r, "REML fit of y = μ2 + δ x + c + e with a random cluster intercept", "δ̂",
-                                 "k1 + k2 − 2", fint(k1) + " + " + fint(k2) + " − 2", k1 + k2 - 2));
-    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "k") {
-      const double lo = cluster_smallest_k1(kr), start = approx_size(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Clusters", "k1", k1, lo, start, approx(start), target));
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated data",
+                         "y = μg + c + e, c ~ N(0, ρσ²) per cluster, e ~ N(0, (1 − ρ)σ²); cluster sizes " +
+                             std::string(vary ? "gamma with mean m̄ and CV, rounded" : "all m") + "; k2 = ⌈r k1⌉",
+                         "μ1 = " + gv(mu1) + ", μ2 = " + gv(mu2) + ", σ = " + gv(sigma) + ", ρ = " + gv(s("icc")) +
+                             "; " + clusters + " clusters of " + sizes});
+    out.steps.push_back(sim_mixed_test(s, r, "REML fit of y = μ2 + δ x + c + e with a random cluster intercept",
+                                       "δ̂", "k1 + k2 − 2", K1 + " + " + K2 + " − 2", k1 + k2 - 2));
+    SimSize z;
+    if (solved) {
+      z.sym = "k1";
+      z.n = k1;
+      z.lo = cluster_smallest_k1(kr);
+      z.start = approx_size(approx, target, z.lo, nullptr);
+      z.start_power = approx(z.start);
+      z.target = target;
+      z.design = [kr](double x) { return "k1 = " + dvi(x) + ", k2 = " + dvi(solve::round_up(kr * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0",
+                                    solved ? z.at(k1) : ""),
+                     solved ? &z : nullptr);
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)",
-                     law + ", w the expected weight of a cluster over the size distribution",
-                     "w = " + num(ew.first) + ", λ = " + num(ncp) + ": " + prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)",
+                           law + ", w the expected weight of a cluster over the size distribution",
+                           "w = " + dv(ew.first) + ", λ = " + dv(ncp) + ": " + dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"k1, k2", "Number of clusters randomized to each group."},

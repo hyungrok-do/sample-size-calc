@@ -903,127 +903,145 @@ Procedure nph() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2"), N = n1 + n2;
-    const double target = s.solve == "n" ? s("power") : NAN;
+    const double target = solved ? s("power") : NAN;
     const Design d = nph_design(s);
     // the approximation's parts, as the run computes them (on one thread, which gives the same values)
     const RmstExpected rm = d.test == Test::Rmst ? rmst_expected(d) : RmstExpected{};
     const ComboNull combo = d.test == Test::MaxCombo ? combo_null(d, 1 / (1 + ratio), alpha, a, 1) : ComboNull{};
     auto approx = [&](double m1) { return approx_power(d, rm, combo, m1, solve::round_up(ratio * m1), alpha, a, 1); };
     const double p = n1 / N, root = std::sqrt(N);
-    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    const std::string N1 = size(n1, solved), N2 = dvi(n2), sizes = ratio_sizes("N1", "N2", n1, ratio, n2, solved);
+    const std::string unknown = "N1, with N2 = ⌈r × N1⌉ (r = " + gv(ratio) + "),";
+    const std::string at = "with N1 = " + N1 + ", N2 = " + N2;
+    const std::string found = "N1 = " + dvi(n1) + ", N2 = " + dvi(n2) + " (N = " + dvi(N) + ")";
     const std::string model =
         "control event times exponential with λ2 = ln 2 / median, the treatment's hazard HR1 λ2 before T* and HR2 λ2 "
         "from T* on; entry uniform over the accrual time A, analysis at A + F, loss to follow-up at the rate η; N2 = "
         "⌈r N1⌉";
-    const std::string values = "λ2 = ln 2 / " + num(s("med2")) + " = " + num(d.lam2) + ", HR1 = " + num(d.hr1) +
-                               ", HR2 = " + num(d.hr2) + ", T* = " + num(d.tc) + "; A = " + num(d.A) + ", F = " +
-                               num(d.F) + ", η = " + num(d.eta) + "; " + sizes;
+    const std::string values = "λ2 = ln 2 / " + gv(s("med2")) + " = " + dv(d.lam2) + ", HR1 = " + gv(d.hr1) +
+                               ", HR2 = " + gv(d.hr2) + ", T* = " + gv(d.tc) + "; A = " + gv(d.A) + ", F = " +
+                               gv(d.F) + ", η = " + gv(d.eta) + "; " + sizes;
     const std::string drift = "√(p(1 − p)) ∫ w log HR dD / √(∫ w² dD) over the expected events D per subject, p = N1/N";
     const std::string weight = d.test == Test::FH ? "w = S̄^ρ (1 − S̄)^γ at the expected pooled survival S̄"
                                                   : "w = 1 (logrank)";
     const std::string fh = "FH(0, 0), FH(0, 1), FH(1, 0) and FH(1, 1)";
+    const std::string weights = d.test == Test::FH ? "ρ = " + gv(d.rho) + ", γ = " + gv(d.gamma) + ": " : "";
     // logrank and FH: one statistic; MaxCombo: four; RMST: the difference in restricted mean survival
     const Expected e1 = expected(d, p, 1, &d.rho, &d.gamma), e4 = expected(d, p, 4, COMBO_RHO, COMBO_GAMMA);
-    std::string means;
-    for (int j = 0; j < 4; ++j) means += (j ? ", " : "") + num(root * e4.drift[j]);
+    std::vector<double> mu;
+    for (int j = 0; j < 4; ++j) mu.push_back(root * e4.drift[j]);
+    const std::string means = dv_list(mu);
     const double rmst_se = std::sqrt(rm.var[0] / n1 + rm.var[1] / n2);
     const double ncp = d.test == Test::Rmst ? (rmst_se > 0 ? rm.diff / rmst_se : 0) : root * e1.drift[0];
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Assumed model", model, values});
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back({"Assumed model", model, values});
       if (d.test == Test::Rmst) {
-        out.push_back({"RMST difference", "ΔRMST = ∫₀^τ S1(t) dt − ∫₀^τ S2(t) dt",
-                       "τ = " + num(d.tau) + ": ΔRMST = " + num(r.num("drmst"))});
-        out.push_back({"Standard error",
-                       "SE = √(v1/N1 + v2/N2), v_g = ∫₀^τ (∫_t^τ S_g(u) du)² λ_g(t) / (S_g(t) G(t)) dt, G(t) the "
-                       "chance of still being observed t after entry",
-                       "v1 = " + num(rm.var[0]) + ", v2 = " + num(rm.var[1]) + "; " + sizes + ": SE = " +
-                           num(rmst_se)});
-        out.push_back({"Noncentrality", "λ = −ΔRMST / SE, oriented like the log hazard ratio",
-                       num(rm.diff) + " / " + num(rmst_se) + " = " + num(ncp)});
+        out.steps.push_back({"RMST difference", "ΔRMST = ∫₀^τ S1(t) dt − ∫₀^τ S2(t) dt",
+                             "τ = " + gv(d.tau) + ": ΔRMST = " + dv(r.num("drmst"))});
+        out.steps.push_back({"Standard error",
+                             "SE = √(v1/N1 + v2/N2), v_g = ∫₀^τ (∫_t^τ S_g(u) du)² λ_g(t) / (S_g(t) G(t)) dt, G(t) the "
+                             "chance of still being observed t after entry",
+                             "v1 = " + dv(rm.var[0]) + ", v2 = " + dv(rm.var[1]) + "; " + sizes + ": SE = " +
+                                 dv(rmst_se)});
+        out.steps.push_back({"Noncentrality", "λ = −ΔRMST / SE, oriented like the log hazard ratio",
+                             dvs(rm.diff) + " / " + dv(rmst_se) + " = " + dv(ncp)});
       } else {
-        out.push_back({"Expected events",
-                       "D = N ∫ (p λ1 S1 + (1 − p) λ2 S2) G dt over the study, G(t) the chance of still being "
-                       "observed t after entry; AHR = exp(the mean log hazard ratio over the events)",
-                       "N = " + fint(N) + ", p = " + num(p) + ": D = " + num(r.num("events"), 1) + ", AHR = " +
-                           num(r.num("ahr"))});
+        out.steps.push_back({"Expected events",
+                             "D = N ∫ (p λ1 S1 + (1 − p) λ2 S2) G dt over the study, G(t) the chance of still being "
+                             "observed t after entry; AHR = exp(the mean log hazard ratio over the events)",
+                             "N = " + dvi(N) + ", p = " + dv(p) + ": D = " + dv(r.num("events"), 1) + ", AHR = " +
+                                 dv(r.num("ahr"))});
         if (d.test == Test::MaxCombo)
-          out.push_back({"Means of the four statistics",
-                         "μj = √N × " + drift + ", for " + fh +
-                             ", w = S̄^ρ (1 − S̄)^γ at the expected pooled survival S̄",
-                         "μ = " + means});
+          out.steps.push_back({"Means of the four statistics",
+                               "μj = √N × " + drift + ", for " + fh +
+                                   ", w = S̄^ρ (1 − S̄)^γ at the expected pooled survival S̄",
+                               "μ = " + means});
         else
-          out.push_back({"Noncentrality", "λ = √N × " + drift + ", " + weight,
-                         "√" + fint(N) + " × " + sub(e1.drift[0]) + " = " + num(ncp)});
+          out.steps.push_back({"Noncentrality", "λ = √N × " + drift + ", " + weight,
+                               weights + "√" + dvi(N) + " × " + dvs(e1.drift[0]) + " = " + dv(ncp)});
       }
       if (d.test == Test::MaxCombo) {
-        out.push_back({"Critical value of the maximum",
-                       "c with P(max_j Tj ≥ c) = α for Z ~ N(0, R), Tj = " +
-                           std::string(a == Alt::Two ? "|Zj|" : (a == Alt::Lower ? "−Zj" : "Zj")) +
-                           ", R the statistics' correlation from the expected events (p = 1/(1 + r))",
-                       "c = " + num(combo.c)});
-        out.push_back({"Power", "P(max_j Tj ≥ c) for Z ~ N(μ, R), by Genz's multivariate normal probability",
-                       "P(max_j Tj ≥ " + num(combo.c) + ") = " + prob(r.num("power"))});
+        out.steps.push_back({"Critical value of the maximum",
+                             "c with P(max_j Tj ≥ c) = α for Z ~ N(0, R), Tj = " +
+                                 std::string(a == Alt::Two ? "|Zj|" : (a == Alt::Lower ? "−Zj" : "Zj")) +
+                                 ", R the statistics' correlation from the expected events (p = 1/(1 + r))",
+                             "α = " + gv(alpha) + ", r = " + gv(ratio) + ": c = " + dv(combo.c)});
+        out.steps.push_back({"Power", "P(max_j Tj ≥ c) for Z ~ N(μ, R), by Genz's multivariate normal probability",
+                             "P(max_j Tj ≥ " + dv(combo.c) + ") = " + dvp(r.num("power"))});
       } else {
-        out.push_back(z_critical(alpha, a));
-        out.push_back(z_power_step(ncp, alpha, a));
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_power_step(ncp, alpha, a));
       }
-      if (s.solve == "n")
-        out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      if (solved) out.steps.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated studies", model, values});
-    const std::string level = sim_level(a, alpha) + "; mean events over the studies = " + num(r.num("events"), 1);
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated studies", model, values});
+    const std::string level = sim_level(a, alpha) + "; mean events over the studies = " + dv(r.num("events"), 1);
     switch (d.test) {
       case Test::FH:
-        out.push_back({"Test of each study",
-                       "Fleming–Harrington weighted logrank z = Σ w (d1 − d n1/n) / √(Σ w² V), w = Ŝ(t−)^ρ (1 − "
-                       "Ŝ(t−))^γ with Ŝ the pooled Kaplan–Meier estimate, V the hypergeometric variance; H0 rejected "
-                       "when p < α",
-                       "ρ = " + num(d.rho) + ", γ = " + num(d.gamma) + "; " + level});
+        out.steps.push_back({"Test of each study",
+                             "Fleming–Harrington weighted logrank z = Σ w (d1 − d n1/n) / √(Σ w² V), w = Ŝ(t−)^ρ (1 − "
+                             "Ŝ(t−))^γ with Ŝ the pooled Kaplan–Meier estimate, V the hypergeometric variance; H0 "
+                             "rejected when p < α",
+                             "ρ = " + gv(d.rho) + ", γ = " + gv(d.gamma) + "; " + level});
         break;
       case Test::MaxCombo:
-        out.push_back({"Test of each study",
-                       "MaxCombo: the largest of the " + fh + " weighted logrank z statistics, its p-value from their "
-                       "joint normal distribution with the correlation estimated from the data; H0 rejected when p < α",
-                       level});
+        out.steps.push_back({"Test of each study",
+                             "MaxCombo: the largest of the " + fh + " weighted logrank z statistics, its p-value from "
+                             "their joint normal distribution with the correlation estimated from the data; H0 "
+                             "rejected when p < α",
+                             level});
         break;
       case Test::Rmst:
-        out.push_back({"Test of each study",
-                       "z = (RMST2 − RMST1) / √(Var1 + Var2), each RMST the area under the group's Kaplan–Meier curve "
-                       "up to τ with the variance Σ A_j² d_j / (n_j (n_j − d_j)); H0 rejected when p < α",
-                       "τ = " + num(d.tau) + "; " + level});
+        out.steps.push_back({"Test of each study",
+                             "z = (RMST2 − RMST1) / √(Var1 + Var2), each RMST the area under the group's Kaplan–Meier "
+                             "curve up to τ with the variance Σ A_j² d_j / (n_j (n_j − d_j)); H0 rejected when p < α",
+                             "τ = " + gv(d.tau) + "; " + level});
         break;
       default:
-        out.push_back({"Test of each study",
-                       "logrank z = Σ (d1 − d n1/n) / √(Σ V) over the event times, V the hypergeometric variance; H0 "
-                       "rejected when p < α",
-                       level});
+        out.steps.push_back({"Test of each study",
+                             "logrank z = Σ (d1 − d n1/n) / √(Σ V) over the event times, V the hypergeometric "
+                             "variance; H0 rejected when p < α",
+                             level});
     }
-    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "n") {
-      const double lo = smallest_n1(ratio);
-      const double start = approx_n1(approx, target, lo, std::fmax(lo, largest_n1(ratio)), nullptr);
-      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target));
+    SimSize zs;
+    if (solved) {
+      zs.sym = "N1";
+      zs.n = n1;
+      zs.lo = smallest_n1(ratio);
+      zs.start = approx_n1(approx, target, zs.lo, std::fmax(zs.lo, largest_n1(ratio)), nullptr);
+      zs.start_power = approx(zs.start);
+      zs.target = target;
+      zs.design = [ratio](double x) { return "N1 = " + dvi(x) + ", N2 = " + dvi(solve::round_up(ratio * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0",
+                                    solved ? zs.at(n1) : ""),
+                     solved ? &zs : nullptr);
     if (std::isfinite(r.num("approx_power"))) {
       const double ap = r.num("approx_power");
       if (d.test == Test::MaxCombo)
-        out.push_back({"Approximation (for comparison)",
-                       "P(max_j Tj ≥ c), the four statistics jointly normal with means √N × " + drift +
-                           " and the correlation from the expected events",
-                       "c = " + num(combo.c) + ", μ = " + means + ": " + prob(ap)});
+        out.steps.push_back({"Approximation (for comparison)",
+                             "P(max_j Tj ≥ c), the four statistics jointly normal with means √N × " + drift +
+                                 " and the correlation from the expected events",
+                             "c = " + dv(combo.c) + ", μ = " + means + ": " + dvp(ap)});
       else if (d.test == Test::Rmst)
-        out.push_back({"Approximation (for comparison)",
-                       "Φ power with λ = −ΔRMST / √(v1/N1 + v2/N2), v_g the asymptotic variance of a Kaplan–Meier area",
-                       "ΔRMST = " + num(r.num("drmst")) + ", SE = " + num(rmst_se) + ", λ = " + num(ncp) + ": " +
-                           prob(ap)});
+        out.steps.push_back({"Approximation (for comparison)",
+                             "Φ power with λ = −ΔRMST / √(v1/N1 + v2/N2), v_g the asymptotic variance of a "
+                             "Kaplan–Meier area",
+                             "ΔRMST = " + dv(r.num("drmst")) + ", SE = " + dv(rmst_se) + ", λ = " + dv(ncp) + ": " +
+                                 dvp(ap)});
       else
-        out.push_back({"Approximation (for comparison)", "Φ power with λ = √N × " + drift + ", " + weight,
-                       "λ = √" + fint(N) + " × " + sub(e1.drift[0]) + " = " + num(ncp) + ": " + prob(ap)});
+        out.steps.push_back({"Approximation (for comparison)", "Φ power with λ = √N × " + drift + ", " + weight,
+                             "λ = √" + dvi(N) + " × " + dvs(e1.drift[0]) + " = " + dv(ncp) + ": " + dvp(ap)});
     }
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {

@@ -638,8 +638,9 @@ Procedure mmrm_proc() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2");
-    const double target = s.solve == "n" ? s("power") : NAN;
+    const double target = solved ? s("power") : NAN;
     const Design d = design_of(s);
     const Analysis an = s.is("analysis", "completers") ? COMPLETERS : MMRM;
     const bool z = s.is("df", "z");
@@ -648,65 +649,79 @@ Procedure mmrm_proc() {
     const double var = an == MMRM ? expected_variance(d, n1, n2) : 1 / (n1 * keep1) + 1 / (n2 * keep2);
     const double df = n1 * keep1 + n2 * keep2 - 2, ncp = d.delta / d.sd / std::sqrt(var);
     const bool normal = z || !(df > 0);
-    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    const std::string N1 = size(n1, solved), N2 = dvi(n2), sizes = ratio_sizes("N1", "N2", n1, ratio, n2, solved);
+    const std::string unknown = "N1, with N2 = ⌈r × N1⌉ (r = " + gv(ratio) + "),",
+                      at = "with N1 = " + N1 + ", N2 = " + N2 + " randomized";
+    const std::string found = "N1 = " + dvi(n1) + ", N2 = " + dvi(n2) + " (N = " + dvi(n1 + n2) + ") randomized";
     const std::string model = "Y_t ~ N(μ_gt, σ²) at visits t = 1 … T, corr(Y_s, Y_t) = " +
                               std::string(d.ar1 ? "ρ^|s − t| (AR(1))" : "ρ (exchangeable)") +
                               ", μ_1T − μ_2T = δ; a patient of group g is observed through visit t with probability "
                               "π_g(t) = (1 − D_g)^(t/T), then not; N2 = ⌈r N1⌉";
-    const std::string values = "δ = " + num(d.delta) + ", σ = " + num(d.sd) + ", ρ = " + num(d.rho) +
-                               ", T = " + std::to_string(d.visits) + ", D1 = " + num(d.drop[0]) + ", D2 = " +
-                               num(d.drop[1]) + "; " + sizes;
+    const std::string values = "δ = " + gv(d.delta) + ", σ = " + gv(d.sd) + ", ρ = " + gv(d.rho) + ", T = " +
+                               gvi(d.visits) + ", D1 = " + gv(d.drop[0]) + ", D2 = " + gv(d.drop[1]) + "; " + sizes;
     const std::string variance = an == MMRM ? "V = Σ_g Σ_t L_Tt² / (N_g π_g(t)), L the Cholesky factor of the visits' "
                                               "correlation matrix: the expected GLS variance of δ̂/σ"
                                             : "V = 1/(N1 π1(T)) + 1/(N2 π2(T)), the completers' variance of δ̂/σ";
     const std::string completers = "N1 π1(T) + N2 π2(T) − 2 (the expected completers less 2)";
-    Steps out;
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Assumed model", model, values});
-      out.push_back({"Expected completers", "N1 π1(T) + N2 π2(T), π_g(T) = 1 − D_g",
-                     fint(n1) + " × " + num(keep1) + " + " + fint(n2) + " × " + num(keep2) + " = " +
-                         num(r.num("completers"), 2)});
-      out.push_back({"Variance of the difference", variance + (an == MMRM ? " (Lu, Luo & Chen 2008)" : ""),
-                     sizes + ": V = " + num(var)});
-      out.push_back({"Noncentrality", "λ = δ / (σ √V)",
-                     sub(d.delta) + " / (" + num(d.sd) + " × √" + num(var) + ") = " + num(ncp)});
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back({"Assumed model", model, values});
+      out.steps.push_back({"Expected completers", "N1 π1(T) + N2 π2(T), π_g(T) = 1 − D_g",
+                           N1 + " × " + dv(keep1) + " + " + N2 + " × " + dv(keep2) + " = " +
+                               dv(r.num("completers"), 2)});
+      out.steps.push_back({"Variance of the difference", variance + (an == MMRM ? " (Lu, Luo & Chen 2008)" : ""),
+                           sizes + ": V = " + dv(var)});
+      out.steps.push_back({"Noncentrality", "λ = δ / (σ √V)",
+                           gvs(d.delta) + " / (" + gv(d.sd) + " × √" + dv(var) + ") = " + dv(ncp)});
       if (normal) {
-        out.push_back(z_critical(alpha, a));
-        out.push_back(z_power_step(ncp, alpha, a));
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_power_step(ncp, alpha, a));
       } else {
-        out.push_back(t_critical(alpha, df, a, completers));
-        out.push_back(t_power_step(ncp, df, alpha, a));
+        out.steps.push_back(t_critical(alpha, df, a, completers));
+        out.steps.push_back(t_power_step(ncp, df, alpha, a));
       }
-      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(d, an, ratio), "N1"));
+      if (solved) out.steps.push_back(n_search(approx, n1, target, smallest_n1(d, an, ratio), "N1"));
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated trials", model, values});
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated trials", model, values});
     const std::string level = sim_level(a, alpha);
     if (an == MMRM)
-      out.push_back({"Analysis of each trial",
-                     "REML fit of the MMRM (a mean for every group and visit, unstructured covariance); " +
-                         std::string(z ? "z = δ̂ / SE(δ̂), normal" :
-                                         "t = δ̂ / SE(δ̂) with ν = the patients observed at the last visit − 2") +
-                         "; H0 rejected when p < α",
-                     level + (r.has("mean_df") ? "; mean ν over the trials = " + num(r.num("mean_df"), 2) : "")});
+      out.steps.push_back({"Analysis of each trial",
+                           "REML fit of the MMRM (a mean for every group and visit, unstructured covariance); " +
+                               std::string(z ? "z = δ̂ / SE(δ̂), normal"
+                                             : "t = δ̂ / SE(δ̂) with ν = the patients observed at the last visit − 2") +
+                               "; H0 rejected when p < α",
+                           level + (r.has("mean_df") ? "; mean ν over the trials = " + dv(r.num("mean_df"), 2) : "")});
     else
-      out.push_back({"Analysis of each trial",
-                     "pooled t-test of the patients observed at the last visit (the completers), t = (Ȳ1 − Ȳ2) / (s "
-                     "√(1/n1 + 1/n2))" + std::string(z ? ", normal" : " with ν = n1 + n2 − 2") +
-                         "; H0 rejected when p < α",
-                     level + "; mean completers over the trials = " + num(r.num("completers"), 2)});
-    out.push_back(sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "n") {
-      const double lo = smallest_n1(d, an, ratio), start = approx_n1(approx, target, lo, nullptr);
-      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target, "trials"));
+      out.steps.push_back({"Analysis of each trial",
+                           "pooled t-test of the patients observed at the last visit (the completers), t = (Ȳ1 − Ȳ2) / "
+                           "(s √(1/n1 + 1/n2))" +
+                               std::string(z ? ", normal" : " with ν = n1 + n2 − 2") + "; H0 rejected when p < α",
+                           level + "; mean completers over the trials = " + dv(r.num("completers"), 2)});
+    SimSize zs;
+    if (solved) {
+      zs.sym = "N1";
+      zs.n = n1;
+      zs.lo = smallest_n1(d, an, ratio);
+      zs.start = approx_n1(approx, target, zs.lo, nullptr);
+      zs.start_power = approx(zs.start);
+      zs.target = target;
+      zs.design = [ratio](double x) { return "N1 = " + dvi(x) + ", N2 = " + dvi(solve::round_up(ratio * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0",
+                                    solved ? zs.at(n1) : ""),
+                     solved ? &zs : nullptr, "trials");
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)",
-                     std::string(normal ? "Φ" : "noncentral t") + " power with λ = δ / (σ √V), " + variance +
-                         (normal ? "" : ", and ν = " + completers),
-                     "V = " + num(var) + ", λ = " + num(ncp) + (normal ? "" : ", ν = " + num(df, 2)) + ": " +
-                         prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)",
+                           std::string(normal ? "Φ" : "noncentral t") + " power with λ = δ / (σ √V), " + variance +
+                               (normal ? "" : ", and ν = " + completers),
+                           "V = " + dv(var) + ", λ = " + dv(ncp) + (normal ? "" : ", ν = " + dv(df, 2)) + ": " +
+                               dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"N1, N2", "Number of patients randomized to each group; N = N1 + N2."},

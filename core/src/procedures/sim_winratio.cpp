@@ -696,79 +696,95 @@ Procedure winratio() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2");
-    const double target = s.solve == "n" ? s("power") : NAN;
+    const double target = solved ? s("power") : NAN;
     const Design d = design_of(s);
     const Test test = s.is("test", "wr") ? WR : FS;
     const Probabilities pr = cached_pair_probabilities(d);  // drawn once per design: the run's own
     auto approx = [&](double m1) { return approx_power(pr, test, m1, solve::round_up(ratio * m1), alpha, a); };
     const Approx ap = approx_of(pr, test, n1, n2);
-    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    const std::string N1 = size(n1, solved), N2 = dvi(n2), sizes = ratio_sizes("N1", "N2", n1, ratio, n2, solved);
+    const std::string unknown = "N1, with N2 = ⌈r × N1⌉ (r = " + gv(ratio) + "),";
+    const std::string at = "with N1 = " + N1 + ", N2 = " + N2;
+    const std::string found = "N1 = " + dvi(n1) + ", N2 = " + dvi(n2) + " (N = " + dvi(n1 + n2) + ")";
     std::string model = "death exponential with the rate λD = ln 2 / median, times HR_D in the treatment group";
-    std::string values = "median " + num(s("med_d")) + ", HR_D = " + num(d.hr_d);
+    std::string values = "median " + gv(s("med_d")) + ", HR_D = " + gv(d.hr_d);
     if (d.event) {
       model += "; the non-fatal event likewise with λH and HR_H, counted when before death";
-      values += "; median " + num(s("med_h")) + ", HR_H = " + num(d.hr_h);
+      values += "; median " + gv(s("med_h")) + ", HR_H = " + gv(d.hr_h);
     }
     if (d.score) {
       model += "; the measured outcome N(Δ, 1) in the treatment group and N(0, 1) in the control group, among the "
                "patients alive at the end of their follow-up";
-      values += "; Δ = " + num(d.delta) + ", margin " + num(d.margin);
+      values += "; Δ = " + gv(d.delta) + ", margin " + gv(d.margin);
     }
     model += "; entry uniform over the accrual time, analysis at its end plus the follow-up, loss to follow-up at the "
              "rate η; N2 = ⌈r N1⌉";
-    values += "; accrual " + num(d.accrual) + ", follow-up " + num(d.follow) + ", η = " + num(d.eta) + "; " + sizes;
+    values += "; accrual " + gv(d.accrual) + ", follow-up " + gv(d.follow) + ", η = " + gv(d.eta) + "; " + sizes;
     const std::string se_formula =
         test == FS ? "SE(NB̂) = √((1 − P(tie)²) / (3κ(1 − κ)N)), κ = N1/N (Yu & Ganju)"
                    : "SE(log WR̂) = √(4(1 + P(tie)) / (3κ(1 − κ)N(1 − P(tie)))), κ = N1/N (Yu & Ganju)";
     const std::string ncp_formula = test == FS ? "λ = NB / SE(NB̂)" : "λ = log WR / SE(log WR̂)";
-    const std::string pairs = "P(win) = " + prob(pr.win) + ", P(loss) = " + prob(pr.loss) + ", P(tie) = " +
-                              prob(pr.tie);
-    Steps out;
+    const std::string pairs = "P(win) = " + dvp(pr.win) + ", P(loss) = " + dvp(pr.loss) + ", P(tie) = " +
+                              dvp(pr.tie);
+    Derivation out;
     if (approximated(r)) {
-      out.push_back({"Assumed model", model, values});
-      out.push_back({"Pair probabilities",
-                     "P(win), P(loss) and P(tie) of a random treatment–control pair, from 200,000 simulated pairs of a "
-                     "fixed stream; net benefit NB = P(win) − P(loss), win ratio WR = P(win) / P(loss)",
-                     pairs + ": NB = " + num(r.num("nb")) + ", WR = " + num(r.num("wr"))});
-      out.push_back({"Standard error", se_formula, sizes + ": SE = " + num(ap.se)});
-      out.push_back({"Noncentrality", ncp_formula,
-                     (test == FS ? sub(r.num("nb")) : "log " + num(r.num("wr"))) + " / " + num(ap.se) + " = " +
-                         num(ap.ncp)});
-      out.push_back(z_critical(alpha, a));
-      out.push_back(z_power_step(ap.ncp, alpha, a));
-      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      out.find = solved ? find_approx_size(unknown, target) : find_approx_power(at);
+      out.steps.push_back({"Assumed model", model, values});
+      out.steps.push_back({"Pair probabilities",
+                           "P(win), P(loss) and P(tie) of a random treatment–control pair, from 200,000 simulated "
+                           "pairs of a fixed stream; net benefit NB = P(win) − P(loss), win ratio WR = P(win) / P(loss)",
+                           pairs + ": NB = " + dv(r.num("nb")) + ", WR = " + dv(r.num("wr"))});
+      out.steps.push_back({"Standard error", se_formula, sizes + ": SE = " + dv(ap.se)});
+      out.steps.push_back({"Noncentrality", ncp_formula,
+                           (test == FS ? dvs(r.num("nb")) : "log " + dv(r.num("wr"))) + " / " + dv(ap.se) + " = " +
+                               dv(ap.ncp)});
+      out.steps.push_back(z_critical(alpha, a));
+      out.steps.push_back(z_power_step(ap.ncp, alpha, a));
+      if (solved) out.steps.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      out.answer = approx_answer(r, found, solved);
       return out;
     }
-    out.push_back({"Simulated trials", model, values});
+    out.find = solved ? find_sim_size(unknown, target) : find_sim_power(at);
+    out.steps.push_back({"Simulated trials", model, values});
     const std::string compare =
         "every treatment–control pair compared over the time both were followed, on death" +
         std::string(d.event ? ", then on the non-fatal event" : "") +
         (d.score ? ", then on the measured outcome by more than the margin" : "") + ": a win, a loss or a tie; ";
     if (test == FS)
-      out.push_back({"Test of each trial",
-                     compare + "Finkelstein–Schoenfeld z = (wins − losses) / √(N1 N2 / (N(N − 1)) Σ U_k²), U_k a "
-                               "patient's wins less losses against all the others; H0 rejected when p < α",
-                     sim_level(a, alpha) +
-                         (r.has("mean_nb") ? "; mean net benefit over the trials = " + num(r.num("mean_nb")) : "")});
+      out.steps.push_back({"Test of each trial",
+                           compare + "Finkelstein–Schoenfeld z = (wins − losses) / √(N1 N2 / (N(N − 1)) Σ U_k²), U_k a "
+                                     "patient's wins less losses against all the others; H0 rejected when p < α",
+                           sim_level(a, alpha) + (r.has("mean_nb") ? "; mean net benefit over the trials = " +
+                                                                         dv(r.num("mean_nb"))
+                                                                   : "")});
     else
-      out.push_back({"Test of each trial",
-                     compare + "z = log(wins / losses) / SE, SE the two-sample U-statistic (delta-method) estimate; "
-                               "H0 rejected when p < α",
-                     sim_level(a, alpha) +
-                         (r.has("mean_wr") ? "; geometric mean win ratio over the trials = " + num(r.num("mean_wr"))
-                                           : "")});
-    out.push_back(sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0"));
-    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
-    if (s.solve == "n") {
-      const double lo = smallest_n1(ratio);
-      const double start = approx_n1(approx, target, lo, std::fmax(lo, largest_n1(ratio)), nullptr);
-      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target, "trials"));
+      out.steps.push_back({"Test of each trial",
+                           compare + "z = log(wins / losses) / SE, SE the two-sample U-statistic (delta-method) "
+                                     "estimate; H0 rejected when p < α",
+                           sim_level(a, alpha) + (r.has("mean_wr") ? "; geometric mean win ratio over the trials = " +
+                                                                         dv(r.num("mean_wr"))
+                                                                   : "")});
+    SimSize zs;
+    if (solved) {
+      zs.sym = "N1";
+      zs.n = n1;
+      zs.lo = smallest_n1(ratio);
+      zs.start = approx_n1(approx, target, zs.lo, std::fmax(zs.lo, largest_n1(ratio)), nullptr);
+      zs.start_power = approx(zs.start);
+      zs.target = target;
+      zs.design = [ratio](double x) { return "N1 = " + dvi(x) + ", N2 = " + dvi(solve::round_up(ratio * x)); };
     }
+    sim_result_steps(out.steps, r,
+                     sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0",
+                                    solved ? zs.at(n1) : ""),
+                     solved ? &zs : nullptr, "trials");
     if (std::isfinite(r.num("approx_power")))
-      out.push_back({"Approximation (for comparison)", "Φ power with " + ncp_formula + ", " + se_formula,
-                     pairs + " (200,000 pairs); SE = " + num(ap.se) + ", λ = " + num(ap.ncp) + ": " +
-                         prob(r.num("approx_power"))});
+      out.steps.push_back({"Approximation (for comparison)", "Φ power with " + ncp_formula + ", " + se_formula,
+                           pairs + " (200,000 pairs); SE = " + dv(ap.se) + ", λ = " + dv(ap.ncp) + ": " +
+                               dvp(r.num("approx_power"))});
+    out.answer = sim_answer(r, found, solved);
     return out;
   };
   p.definitions = {{"N1, N2", "Number of patients in the treatment and control groups; N = N1 + N2."},
