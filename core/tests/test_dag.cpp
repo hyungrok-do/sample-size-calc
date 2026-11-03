@@ -1,5 +1,6 @@
 #include "dag/model.hpp"
 #include "dag/statistics.hpp"
+#include "dag/learners.hpp"
 #define SSC_STATIC  // Tests link the core directly; do not import a Windows DLL.
 #include "ssc/ssc.h"
 #include "testing.hpp"
@@ -646,4 +647,72 @@ TEST_CASE("dag: log terms, quasi-likelihood tests and the interaction test") {
   try { run_request(object({{"op", "simulate"}, {"graph", zero}, {"options", object({{"n", 200}})}})); }
   catch (const Error &e) { stopped = std::string(e.what()).find("log(x)") != std::string::npos; }
   CHECK(stopped);
+}
+TEST_CASE("dag: relationships of unknown form and the Super Learner") {
+  // Y is almost exactly a smooth unknown function of X1 and X2, of SD 0.8.
+  const auto unknown = [](const J &inputs, double size, double smoothness, int seed) {
+    return object({{"inputs", inputs}, {"size", size}, {"smoothness", smoothness}, {"seed", seed}});
+  };
+  J inputs = J::array(); inputs.push("X1"); inputs.push("X2");
+  J nodes = J::array(), edges = J::array();
+  J y = variable("Y", "continuous", "gaussian", 2);
+  y.set("sd", .01); y.set("unknown", unknown(inputs, .8, 1.5, 4));
+  for (const auto &v : {variable("X1", "continuous", "gaussian"), variable("X2", "continuous", "gaussian"), y}) nodes.push(v);
+  for (const auto &e : {arrow("X1", "Y", 0), arrow("X2", "Y", 0)}) edges.push(e);
+  const J graph = object({{"version", 1}, {"nodes", nodes}, {"edges", edges}});
+  const auto data = run_request(object({{"op", "simulate"}, {"graph", graph}, {"options", object({{"n", 20000}, {"seed", 9}})}}));
+  Vec values;
+  for (const auto &v : data.get("columns").get("Y").elements()) values.push_back(v.as_number());
+  const auto m = moments(values);
+  CHECK_CLOSE(m.mean, 2, 0, .05);                  // centred on the intercept
+  CHECK_CLOSE(std::sqrt(m.variance), .8, .08, 0);  // its SD over the population is the size
+  // the same seed draws the same function; another seed another one
+  const auto again = run_request(object({{"op", "simulate"}, {"graph", graph}, {"options", object({{"n", 50}, {"seed", 9}})}}));
+  CHECK_EQ(again.get("columns").get("Y").at(3).as_number(), data.get("columns").get("Y").at(3).as_number());
+  J other = graph, otherNodes = J::array();
+  for (J v : graph.get("nodes").elements()) { if (v.get("id").as_string() == "Y") v.set("unknown", unknown(inputs, .8, 1.5, 5)); otherNodes.push(v); }
+  other.set("nodes", otherNodes);
+  const auto changed = run_request(object({{"op", "simulate"}, {"graph", other}, {"options", object({{"n", 50}, {"seed", 9}})}}));
+  CHECK(changed.get("columns").get("Y").at(3).as_number() != data.get("columns").get("Y").at(3).as_number());
+  // The Super Learner fits the shape it was not told: its predictions beat a
+  // main-terms regression, and its weights form a convex combination.
+  const auto g = parse_graph(graph);
+  const auto d = simulate(g, 600, 21);
+  std::vector<int> rows(600);
+  for (int i = 0; i < 600; ++i) rows[i] = i;
+  const auto learned = super_learner(d, {0, 1}, d.values[2], rows, "gaussian");
+  const auto linear = fitted_means(model_matrix(d, {Term{0}, Term{1}}, true), d.values[2], rows, "gaussian");
+  double learnedError = 0, linearError = 0, total = 0;
+  for (int i = 0; i < 600; ++i) {
+    learnedError += (learned.prediction[i] - d.values[2][i]) * (learned.prediction[i] - d.values[2][i]);
+    linearError += (linear[i] - d.values[2][i]) * (linear[i] - d.values[2][i]);
+  }
+  for (double w : learned.weights) { CHECK(w >= 0); total += w; }
+  CHECK_CLOSE(total, 1, 0, 1e-9);
+  CHECK(learnedError < .5 * linearError);
+  // Confounding of unknown form: the automatic analysis is TMLE with a Super
+  // Learner and cross-fitting, and recovers the effect.
+  J a = variable("A", "binary", "bernoulli");
+  a.set("unknown", unknown(inputs, 1, 2, 3));
+  J y2 = variable("Y", "continuous", "gaussian");
+  y2.set("unknown", unknown(inputs, 1, 2, 5));
+  J nodes2 = J::array(), edges2 = J::array();
+  for (const auto &v : {variable("X1", "continuous", "gaussian"), variable("X2", "continuous", "gaussian"), a, y2}) nodes2.push(v);
+  for (const auto &e : {arrow("X1", "A", .3), arrow("X2", "A", 0), arrow("X1", "Y", .3), arrow("X2", "Y", .3), arrow("A", "Y", .3)}) edges2.push(e);
+  const J confounded = object({{"version", 1}, {"nodes", nodes2}, {"edges", edges2}});
+  const J plan = run_request(object({{"op", "plan"}, {"graph", confounded}, {"estimand", marginal()}}));
+  CHECK_EQ(plan.get("method").as_string(), std::string("tmle"));
+  CHECK_EQ(plan.get("learner").as_string(), std::string("superlearner"));
+  CHECK_EQ(plan.get("folds").as_number(), 3.0);
+  const auto row = power_of(confounded, marginal(), 400, 60).get("results").at(0).get("alternative");
+  CHECK_CLOSE(row.get("bias").as_number(), 0, 0, .1);
+  CHECK(row.get("targetedDiagnostics").get("learners").get("outcome").size() == LEARNERS.size());
+  // no coefficient describes an effect of unknown form
+  J heterogeneous = confounded, hn = J::array();
+  J withA = inputs; withA.push("A");
+  for (J v : confounded.get("nodes").elements()) { if (v.get("id").as_string() == "Y") v.set("unknown", unknown(withA, .5, 2, 5)); hn.push(v); }
+  heterogeneous.set("nodes", hn);
+  J coefficient = marginal();
+  coefficient.set("kind", "coefficient"); coefficient.set("measure", "coefficient");
+  CHECK(refusal(heterogeneous, coefficient).find("unknown form") != std::string::npos);
 }

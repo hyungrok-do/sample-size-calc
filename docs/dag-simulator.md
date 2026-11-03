@@ -195,6 +195,43 @@ marginal effect or a simulated dataset. Built-in examples demonstrate a
 U-shaped dose response, nonlinear confounding, and a zero average effect
 with heterogeneous subgroup effects.
 
+## Relationships of unknown form
+
+Every term above makes the predictor a fixed combination of known functions:
+`g(E[Y | parents]) = Σ β × term`, linear in its coefficients however curved the
+terms or the link. A variable can also carry a relationship of **unknown
+form**: open **Relationship of unknown form** in its settings, tick the
+parents it involves, and set
+
+- **Size**: the SD, over the population, of the function's contribution on
+  the variable's predictor scale (log odds, log mean, log hazard, or the
+  variable itself);
+- **Smoothness**: roughly how many SDs of a parent one bend spans (1 wiggly,
+  2 moderate, 3 gentle).
+
+The engine draws a smooth random function of the ticked parents jointly (so
+they interact in an arbitrary way): 64 random Fourier features of a Gaussian
+process with a squared-exponential kernel on the parents standardized by
+their population mean and SD, then centred and scaled to the given SD. The
+standardization comes from a pilot draw of the model (4,000 rows, a fixed
+seed) and is carried into the scenarios the engine derives from the graph, so
+the null and calibrated scenarios keep the same function; in the null
+scenario the compared variable is held at its reference level inside it.
+**Draw another shape** changes the shape number (the function's seed). The
+JSON is `"unknown": {"inputs": ["X1", "X2"], "size": 1, "smoothness": 2,
+"seed": 5}` on the variable; the relationship's arrows show `?` and its
+equation `+ f(X1, X2) [unknown form, SD 1]`.
+
+No analysis is told the shape: planned terms (including *Match the generating
+terms*) contain only the known terms, and a coefficient or joint test of an
+effect whose form is unknown is refused. The true effect still comes from
+simulating the full model, so the Checks column shows what a wrong form costs.
+When the compared variable's or the outcome's model has a relationship of
+unknown form and the comparison would use AIPW, **Automatic** analysis uses
+TMLE with Super Learner nuisance models and 3-fold cross-fitting instead (see
+*Super Learner nuisance models* below); the two-arm tests of a randomized comparison model no covariates and
+stay valid.
+
 ## Survival observations
 
 A survival variable `T` always generates its latent event time. Its optional
@@ -411,6 +448,35 @@ probabilities, so they stay within the probability range. Wald standard
 errors use the empirical efficient influence function, with delta-method
 log-scale inference for risk and odds ratios. This is a finite-basis TMLE;
 no automatic machine-learning model selection is performed.
+
+### Super Learner nuisance models
+
+For AIPW and TMLE, **AIPW / TMLE nuisance models** can be *Parametric* (the
+terms chosen below it) or *Super Learner* (van der Laan, Polley & Hubbard
+2007): a library of the training mean, a main-terms GLM, a GLM with all
+pairwise products, additive restricted cubic splines (knots at covariate
+quantiles), gradient-boosted depth-2 trees (shrinkage 0.1, the number of
+rounds chosen by early stopping on a fifth of the training rows) and kernel
+ridge regression on 48 random Fourier features (median-heuristic bandwidth,
+penalty by generalized cross-validation). Each learner's 5-fold cross-validated
+predictions are combined by non-negative least squares into a convex
+combination, and the learners with weight are refitted on the training rows.
+Logistic versions model the propensity and a binary outcome. The Super Learner
+uses the variables of the planned terms, not their forms; the outcome
+regression is one model over both arms with the exposure as a covariate,
+evaluated at each level. With cross-fitting each fold's predictions come from
+learners fitted on the other folds (CV-TMLE). The diagnostics report the mean
+weights each learner received. JSON: `"learner": "superlearner"` in the
+analysis. A Super Learner run takes several times longer than a parametric one.
+
+In checks with two standard Normal confounders whose effects on treatment
+(log-odds SD 1) and outcome (SD 1) both had unknown form, parametric AIPW was
+biased by 0.24–0.32 (true effect 0.3) with 62–75% false positives at n = 500,
+while TMLE with the Super Learner had bias −0.003 to 0.02, coverage 0.92–0.94
+and 5–8% false positives for smoothness 2. For wiggly functions (smoothness 1)
+its bias was 0.08 at n = 500 and 0.04 at n = 2,000: flexible estimation needs
+enough data for the shapes it must learn, and the power analysis shows when it
+does not.
 
 ### Confounded comparisons (AIPW)
 
@@ -773,7 +839,7 @@ about the scenario. Compare plausible generating scenarios independently of the
 planned analysis; this version does not integrate an elicited prior over
 unknown generating parameters or implement empirical resampling from pilot data.
 
-The Study catalog has 42 categorized scenarios, including six TMLE examples and stress tests for rare events, weak overlap, few clusters, skewed outcomes and missingness. Common designs add a baseline-adjusted (ANCOVA) outcome, a 2 × 2 factorial trial, a one-sided non-inferiority comparison and an effect-modification (interaction) test; *Repeated and clustered* adds a cluster randomized trial with one measurement per patient; *Outcome types* covers staggered entry with a common end date, overdispersed counts, event rates over unequal follow-up (a log offset), heavy-tailed and proportion outcomes; *Unmeasured variables* covers unmeasured confounding, a confounder measured with error (adjusting for its recorded proxy), zero-inflated counts from an unrecorded never-at-risk class, and unrecorded responders. `web/tests/scenarios.test.mjs` loads every scenario and checks that the page's analysis plan matches the engine's. Every scenario loads a graph, question and power settings together. The coverage table distinguishes estimator support from sensitivity scenarios and unsupported designs. `web/tests/study.test.mjs`
+The Study catalog has 44 categorized scenarios, including six TMLE examples and stress tests for rare events, weak overlap, few clusters, skewed outcomes and missingness. Common designs add a baseline-adjusted (ANCOVA) outcome, a 2 × 2 factorial trial, a one-sided non-inferiority comparison and an effect-modification (interaction) test; *Repeated and clustered* adds a cluster randomized trial with one measurement per patient; *Outcome types* covers staggered entry with a common end date, overdispersed counts, event rates over unequal follow-up (a log offset), heavy-tailed and proportion outcomes; *Unmeasured variables* covers unmeasured confounding, a confounder measured with error (adjusting for its recorded proxy), zero-inflated counts from an unrecorded never-at-risk class, and unrecorded responders; *Unknown forms* covers confounding of unknown form (TMLE with a Super Learner) and a randomized effect varying in an unknown way. `web/tests/scenarios.test.mjs` loads every scenario and checks that the page's analysis plan matches the engine's. Every scenario loads a graph, question and power settings together. The coverage table distinguishes estimator support from sensitivity scenarios and unsupported designs. `web/tests/study.test.mjs`
 checks analytic covariance at irregular times, independent complete-data
 contrast/variance calculations, LMM trend estimates, cluster influence-function
 variance, missing-outcome exclusion, calibration and null effects, unit counts,

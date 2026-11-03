@@ -53,6 +53,20 @@ struct Node {
   double df = 5, precision = 10, overdispersion = .5;
   // An unmeasured variable is generated but never enters an analysis.
   bool measured = true;
+  // A relationship of unknown form: a smooth random function of some parents
+  // (random Fourier features of a Gaussian process with the given smoothness),
+  // centred and scaled to SD `size` over the population and added to the
+  // predictor. No analysis is told its form.
+  struct Unknown {
+    std::vector<int> inputs;
+    double size = 0, smoothness = 1;
+    std::uint64_t seed = 0;
+    std::map<int, double> fixed;  // inputs held at a level (the null scenario)
+    Vec center, scale;            // inputs' population mean and SD (a pilot draw)
+    Vec omega, phase, weight;     // the features
+    double mean = 0, sd = 1;      // of the raw function over the population
+    bool ready = false;
+  } unknown;
   int censor_index = -1;
   std::uint64_t stream = 0;
   std::vector<Term> terms;
@@ -95,6 +109,8 @@ Data simulate(const Graph &graph, int n, std::uint64_t seed,
 J data_json(const Graph &graph, const Data &data, std::uint64_t seed,
             bool summarize);
 Data read_data(const Graph &graph, const J &value);
+// The unknown-form component of a variable's predictor in one row.
+double unknown_value(const Node &node, const Data &data, int row);
 std::vector<bool> ancestors(const Graph &graph, int node);
 // The terms an analysis can use in place of `terms`: a term on unmeasured
 // variables becomes linear terms in the measured variables they are generated

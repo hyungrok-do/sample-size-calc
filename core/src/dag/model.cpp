@@ -54,6 +54,76 @@ static bool identifier(const std::string &s) {
       return false;
   return true;
 }
+namespace {
+double unknown_raw(const Node::Unknown &u, const Data &d, int row) {
+  const int dims = static_cast<int>(u.inputs.size()), features = static_cast<int>(u.phase.size());
+  double z[8];
+  for (int k = 0; k < dims; ++k) {
+    const auto held = u.fixed.find(u.inputs[k]);
+    const double x = held != u.fixed.end() ? held->second : d.values[u.inputs[k]][row];
+    z[k] = (x - u.center[k]) / u.scale[k];
+  }
+  double sum = 0;
+  for (int m = 0; m < features; ++m) {
+    double dot = u.phase[m];
+    for (int k = 0; k < dims; ++k) dot += u.omega[m * dims + k] * z[k];
+    sum += u.weight[m] * std::cos(dot);
+  }
+  return sum * std::sqrt(2.0 / features);
+}
+// Standardizes each unknown relationship from a pilot draw of the model, in
+// generation order (a relationship's inputs do not depend on it), and records
+// the constants in the graph's JSON for the scenarios derived from it.
+void prepare_unknown(Graph &g) {
+  bool any = false;
+  for (const auto &n : g.nodes) any |= !n.unknown.inputs.empty() && !n.unknown.ready;
+  if (!any) return;
+  constexpr std::uint64_t PILOT = 0x70696c6f74ULL;
+  for (int j : g.order) {
+    auto &u = g.nodes[j].unknown;
+    if (u.inputs.empty() || u.ready) continue;
+    int units = 4000;
+    if (g.study.enabled) {
+      double size = 1;
+      if (!g.study.clusterSizes.empty()) { size = 0; for (int c : g.study.clusterSizes) size += c; size /= g.study.clusterSizes.size(); }
+      units = std::max(1, static_cast<int>(4000 / (size * g.study.times.size())));
+    }
+    const Data pilot = simulate(g, units, PILOT, {}, false);
+    const auto spread = [&](const auto &value, double &mean, double &sd) {
+      double m = 0, m2 = 0;
+      for (int i = 0; i < pilot.n; ++i) { const double x = value(i), delta = x - m; m += delta / (i + 1); m2 += delta * (x - m); }
+      mean = m; sd = pilot.n > 1 ? std::sqrt(std::max(0.0, m2 / (pilot.n - 1))) : 0;
+    };
+    u.center.assign(u.inputs.size(), 0); u.scale.assign(u.inputs.size(), 1);
+    for (std::size_t k = 0; k < u.inputs.size(); ++k) {
+      double sd;
+      spread([&](int i) { return pilot.values[u.inputs[k]][i]; }, u.center[k], sd);
+      u.scale[k] = sd > 0 && std::isfinite(sd) ? sd : 1;
+    }
+    double sd;
+    spread([&](int i) { return unknown_raw(u, pilot, i); }, u.mean, sd);
+    u.sd = sd > 0 && std::isfinite(sd) ? sd : 1;
+    u.ready = true;
+  }
+  J nodes = J::array();
+  for (int i = 0; i < static_cast<int>(g.nodes.size()); ++i) {
+    J node = g.json.get("nodes").at(i);
+    const auto &u = g.nodes[i].unknown;
+    if (!u.inputs.empty()) {
+      J value = node.get("unknown");
+      value.set("center", array(u.center)); value.set("scale", array(u.scale));
+      value.set("mean", u.mean); value.set("sd", u.sd);
+      node.set("unknown", value);
+    }
+    nodes.push(node);
+  }
+  g.json.set("nodes", nodes);
+}
+} // namespace
+double unknown_value(const Node &node, const Data &d, int row) {
+  const auto &u = node.unknown;
+  return u.size * (unknown_raw(u, d, row) - u.mean) / u.sd;
+}
 Graph parse_graph(const J &raw) {
   if (raw.get("version").as_number() != 1)
     fail("Unsupported DAG file version.");
@@ -179,6 +249,58 @@ Graph parse_graph(const J &raw) {
         node.terms.push_back(t);
       }
     }
+    if (v.find("unknown") && !v.get("unknown").is_null()) {
+      const auto &u = v.get("unknown");
+      auto &un = node.unknown;
+      if (!u.is_object() || !u.get("inputs").is_array() || u.get("inputs").size() < 1 || u.get("inputs").size() > 8)
+        fail(node.label + ": a relationship of unknown form needs 1–8 parents.");
+      for (const auto &id : u.get("inputs").elements()) {
+        const int k = g.index(id.as_string());
+        if (!pairs.count({k, i}))
+          fail(node.label + ": a relationship of unknown form can use only the variable's parents.");
+        if (std::find(un.inputs.begin(), un.inputs.end(), k) != un.inputs.end())
+          fail(node.label + ": each parent enters the unknown relationship once.");
+        un.inputs.push_back(k);
+      }
+      un.size = number(u, "size");
+      un.smoothness = number(u, "smoothness");
+      if (!(un.size > 0) || un.size > 50 || !(un.smoothness > 0) || un.smoothness > 100)
+        fail(node.label + ": the unknown relationship needs a size in (0, 50] and a smoothness in (0, 100].");
+      un.seed = static_cast<std::uint64_t>(integer(u, "seed", 0, 1000000000, 0));
+      if (u.find("fixed")) {
+        if (!u.get("fixed").is_object()) fail("Fixed inputs must be an object.");
+        for (const auto &kv : u.get("fixed").items()) {
+          const int k = g.index(kv.first);
+          if (std::find(un.inputs.begin(), un.inputs.end(), k) == un.inputs.end()) fail("A fixed input must be an input.");
+          un.fixed[k] = number(u.get("fixed"), kv.first);
+        }
+      }
+      // Standardization carried by graphs the engine derives (null and
+      // calibrated scenarios), so that they keep the same function.
+      if (u.find("center")) {
+        const auto &c = u.get("center"), &s = u.get("scale");
+        if (!c.is_array() || !s.is_array() || c.size() != un.inputs.size() || s.size() != un.inputs.size())
+          fail("Invalid unknown-relationship standardization.");
+        for (std::size_t k = 0; k < un.inputs.size(); ++k) {
+          un.center.push_back(c.at(k).as_number());
+          un.scale.push_back(s.at(k).as_number());
+          if (!std::isfinite(un.center.back()) || !(un.scale.back() > 0)) fail("Invalid unknown-relationship standardization.");
+        }
+        un.mean = number(u, "mean"); un.sd = number(u, "sd");
+        if (!(un.sd > 0)) fail("Invalid unknown-relationship standardization.");
+        un.ready = true;
+      }
+      constexpr int FEATURES = 64;
+      const int dims = static_cast<int>(un.inputs.size());
+      sim::Rng rng(un.seed, node.stream ^ 0x756e6b6e6f776eULL, 0);
+      un.omega.resize(static_cast<std::size_t>(FEATURES) * dims);
+      un.phase.resize(FEATURES); un.weight.resize(FEATURES);
+      for (int m = 0; m < FEATURES; ++m) {
+        for (int k = 0; k < dims; ++k) un.omega[m * dims + k] = rng.normal() / un.smoothness;
+        un.phase[m] = 6.283185307179586 * rng.uniform();
+        un.weight[m] = rng.normal();
+      }
+    }
     if (node.kind != "survival")
       continue;
     if (node.censor == "variable") {
@@ -196,6 +318,7 @@ Graph parse_graph(const J &raw) {
     for(const auto &kv:v.get("repeated").items()) if(number(v.get("repeated"),kv.first)!=0) fail("Repeated effects require study structure.");
   }
   parse_study(g);
+  prepare_unknown(g);
   return g;
 }
 static double poisson(double mean, sim::Rng &rng) {
@@ -313,6 +436,8 @@ Data simulate(const Graph &g, int n, std::uint64_t seed,
       for (const auto &t : node.terms)
         eta += t.coefficient * term_value(t, data.values[t.left][i],
                t.right < 0 ? 1 : data.values[t.right][i]);
+      if (node.unknown.ready)
+        eta += unknown_value(node, data, i);
       if (!std::isfinite(eta))
         throw Error("generation_error",
                     node.label + ": a conditional predictor overflowed.");
@@ -552,6 +677,18 @@ J null_graph(const Graph &g, const J &e) {
         functions.push(term);
       }
       node.set("functions", functions);
+    }
+    if (node.find("unknown") && !node.get("unknown").is_null() &&
+        before[g.index(node.get("id").as_string())]) {
+      J value = node.get("unknown");
+      bool uses = false;
+      for (const auto &id : value.get("inputs").elements()) uses |= id.as_string() == a;
+      if (uses) {
+        J fixed = value.find("fixed") ? value.get("fixed") : J::object();
+        fixed.set(a, e.get("reference"));
+        value.set("fixed", fixed);
+        node.set("unknown", value);
+      }
     }
     if(node.find("lags")) {
       J lags=J::array(); for(J lag:node.get("lags").elements()) {

@@ -131,7 +131,7 @@ test('continuous TMLE recovers with either nuisance model and exposes double mis
 });
 
 test('every catalog entry carries a compatible, explicit design, and new scenarios execute in C++', () => {
-  assert.equal(SCENARIOS.length,42);
+  assert.equal(SCENARIOS.length,44);
   for(const s of SCENARIOS) {
     const {graph,estimand,power}=scenarioDesign(s.id);
     if(!estimand) { assert.equal(s.id,'empty'); continue; }

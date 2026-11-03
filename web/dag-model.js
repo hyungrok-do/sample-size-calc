@@ -63,6 +63,15 @@ export function validateGraph(graph) {
       if (!finite(node[param]) || node[param] <= 0) fail(`${node.label}: ${param} must be positive and finite.`);
     if (node.family === 'student' && !(node.df > 1)) fail(`${node.label}: a Student t variable needs more than 1 degree of freedom, so that its mean exists.`);
     if (node.measured != null && typeof node.measured !== 'boolean') fail(`${node.label}: measured must be true or false.`);
+    if (node.unknown != null) {
+      const u = node.unknown, parents = new Set((graph.edges ?? []).filter((e) => e.target === node.id).map((e) => e.source));
+      if (typeof u !== 'object' || !Array.isArray(u.inputs) || u.inputs.length < 1 || u.inputs.length > 8 || new Set(u.inputs).size !== u.inputs.length)
+        fail(`${node.label}: a relationship of unknown form needs 1–8 different parents.`);
+      if (u.inputs.some((id) => !parents.has(id))) fail(`${node.label}: a relationship of unknown form can use only the variable's parents.`);
+      if (!(finite(u.size) && u.size > 0 && u.size <= 50) || !(finite(u.smoothness) && u.smoothness > 0 && u.smoothness <= 100))
+        fail(`${node.label}: the unknown relationship needs a size in (0, 50] and a smoothness in (0, 100].`);
+      if (!Number.isInteger(u.seed ?? 0) || (u.seed ?? 0) < 0 || (u.seed ?? 0) > 1e9) fail(`${node.label}: the unknown relationship's shape number must be a whole number.`);
+    }
     if (!finite(node.x) || !finite(node.y) || node.x < 0 || node.x > CANVAS_LIMIT.x || node.y < 0 || node.y > CANVAS_LIMIT.y)
       fail(`${node.label}: invalid canvas position.`);
     if (!Array.isArray(node.interactions) || node.interactions.length > MAX_NODES * MAX_NODES) fail(`${node.label}: invalid interaction list.`);
@@ -129,6 +138,7 @@ export function parseGraph(input) {
       ...Object.fromEntries(Object.entries(EXTRA_PARAMETERS).filter(([key]) => DISTRIBUTIONS[n.family].parameters.includes(key))
         .map(([key, value]) => [key, finite(n[key]) && n[key] > 0 ? n[key] : value])),
       ...(n.measured === false ? { measured: false } : {}),
+      ...(n.unknown ? { unknown: { inputs: [...n.unknown.inputs], size: n.unknown.size, smoothness: n.unknown.smoothness, seed: n.unknown.seed ?? 0 } } : {}),
       x: n.x, y: n.y,
       ...(raw.study ? { scope: n.scope ?? 'subject', repeated: Object.fromEntries(['subjectSD', 'slopeSD', 'slopeCorrelation', 'clusterSD', 'residualCorrelation'].map((k) => [k, n.repeated?.[k] ?? 0])),
         lags: (n.lags ?? []).map((l) => ({ source: l.source, lag: l.lag, coefficient: l.coefficient, initial: l.initial ?? 0 })) } : {}),
@@ -143,23 +153,31 @@ export function addEdge(graph, source, target, coefficient = 0.5) {
   const next = { ...graph, edges: [...graph.edges, { source, target, coefficient }] };
   validateGraph(next); return next;
 }
+// A variable without `id` among its unknown relationship's inputs (and without the relationship when none remain).
+function withoutInput(n, id) {
+  if (!n.unknown?.inputs.includes(id)) return {};
+  const inputs = n.unknown.inputs.filter((x) => x !== id);
+  return { unknown: inputs.length ? { ...n.unknown, inputs } : undefined };
+}
 export function removeNode(graph, id) {
   return { ...graph, ...(graph.study ? { study: updateStudyReferences(graph.study, id, null) } : {}), nodes: graph.nodes.filter((n) => n.id !== id).map((n) => ({ ...n,
     ...(n.lags ? { lags: n.lags.filter((l) => l.source !== id) } : {}),
     censoring: n.censoring?.mode === 'variable' && n.censoring.variable === id ? { mode: 'none', time: 20, variable: '' } : n.censoring,
     ...(n.functions ? { functions: n.functions.filter((t) => t.left !== id && t.right !== id) } : {}),
+    ...withoutInput(n, id),
     interactions: n.interactions.filter((t) => t.left !== id && t.right !== id) })),
   edges: graph.edges.filter((e) => e.source !== id && e.target !== id) };
 }
 export function removeEdge(graph, source, target) {
   return { ...graph, edges: graph.edges.filter((e) => e.source !== source || e.target !== target),
-    nodes: graph.nodes.map((n) => n.id !== target ? n : { ...n, ...(n.functions ? { functions: n.functions.filter((t) => t.left !== source && t.right !== source) } : {}), interactions: n.interactions.filter((t) => t.left !== source && t.right !== source) }) };
+    nodes: graph.nodes.map((n) => n.id !== target ? n : { ...n, ...(n.functions ? { functions: n.functions.filter((t) => t.left !== source && t.right !== source) } : {}), ...withoutInput(n, source), interactions: n.interactions.filter((t) => t.left !== source && t.right !== source) }) };
 }
 export function renameNode(graph, oldId, newId) {
   const next = { ...graph, ...(graph.study ? { study: updateStudyReferences(graph.study, oldId, newId) } : {}), nodes: graph.nodes.map((n) => ({ ...n, id: n.id === oldId ? newId : n.id,
     ...(n.lags ? { lags: n.lags.map((l) => ({ ...l, source: l.source === oldId ? newId : l.source })) } : {}),
     censoring: n.censoring?.mode === 'variable' && n.censoring.variable === oldId ? { ...n.censoring, variable: newId } : n.censoring,
     ...(n.functions ? { functions: n.functions.map((t) => ({ ...t, left: t.left === oldId ? newId : t.left, ...(t.right ? { right: t.right === oldId ? newId : t.right } : {}) })) } : {}),
+    ...(n.unknown ? { unknown: { ...n.unknown, inputs: n.unknown.inputs.map((x) => x === oldId ? newId : x) } } : {}),
     interactions: n.interactions.map((t) => ({ ...t, left: t.left === oldId ? newId : t.left, right: t.right === oldId ? newId : t.right })) })),
     edges: graph.edges.map((e) => ({ ...e, source: e.source === oldId ? newId : e.source, target: e.target === oldId ? newId : e.target })) };
   validateGraph(next); return next;
@@ -232,6 +250,7 @@ export function equation(graph, node) {
     ...node.interactions.map((t) => ({ value: t.coefficient, name: `${t.left} × ${t.right}` })),
     ...(node.functions ?? []).map((t) => ({ value: t.coefficient, name: termText(t) }))])
     predictor += ` ${term.value < 0 ? '−' : '+'} ${shown(Math.abs(term.value))} × ${term.name}`;
+  if (node.unknown) predictor += ` + f(${node.unknown.inputs.join(', ')}) [unknown form, SD ${node.unknown.size}]`;
   if (graph.study) {
     for (const l of node.lags ?? []) predictor += ` + ${l.coefficient} × ${l.source}[visit − ${l.lag}] (initial ${l.initial ?? 0})`;
     const r = node.repeated ?? {};

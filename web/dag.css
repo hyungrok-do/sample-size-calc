@@ -218,6 +218,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-legend-bias::before { content: ''; display: inline-block; width: 18px; height: 0; border-top: 3px dashed var(--path); vertical-align: middle; margin: 0 6px 2px 12px; }
 .dag-autosave { margin: 8px 0 4px; }
 .dag-field.dag-check label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.dag-unknown { margin: 10px 0; }
+.dag-unknown > summary { cursor: pointer; font-weight: 600; font-size: 13px; padding: 6px 0; }
+.dag-check-row { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0 8px; }
+.dag-check-row label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
 .dag-field.dag-check p { margin: 2px 0 0; }
 .dag-node { cursor: grab; user-select: none; }
 .dag-empty { fill: var(--muted); font-size: 20px; }

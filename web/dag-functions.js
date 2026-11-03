@@ -81,6 +81,10 @@ export function parseAnalysis(raw = {}) {
   const out = { ...parseBasis(raw), method: raw.method ?? 'auto', folds: raw.folds ?? 1 };
   if (!['auto', 'gformula', 'aipw', 'tmle', 'mmrm', 'lmm', 'trajectory'].includes(out.method)) fail('Choose automatic analysis, g-computation, AIPW or TMLE.');
   if (!Number.isInteger(out.folds) || out.folds < 1 || out.folds > 10) fail('Use 1–10 cross-fitting folds.');
+  if (raw.learner != null) {
+    if (!['glm', 'superlearner'].includes(raw.learner)) fail('Choose parametric or Super Learner nuisance models.');
+    out.learner = raw.learner;
+  }
   out.propensityBound = raw.propensityBound ?? 0;
   if (!Number.isFinite(out.propensityBound) || out.propensityBound < 0 || out.propensityBound >= .5) fail('The propensity bound must be in [0, 0.5).');
   if (raw.outcomeBounds != null) {

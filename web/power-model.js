@@ -50,6 +50,10 @@ export function measuredTerms(graph, terms) {
   }
   return out;
 }
+const unknownForm = (node) => (node?.unknown?.inputs?.length ?? 0) > 0;
+const unknownNote = (node) => `${node.id} depends on ${node.unknown.inputs.join(', ')} through a relationship of unknown form that the planned parametric models do not represent; inspect bias and coverage.`;
+const SUPER_LEARNER_NOTE = 'Nuisance models are fitted by a Super Learner: a 5-fold cross-validated, non-negative weighted ensemble of the training mean, main-terms and pairwise-product GLMs, additive restricted cubic splines, boosted depth-2 trees and kernel ridge regression. It uses the variables of the planned terms, not their functional forms.';
+const AUTO_LEARNER_NOTE = 'Automatic analysis chose TMLE with a Super Learner and cross-fitting: a nuisance model has a relationship of unknown form.';
 const modelFamily = (family) => ['bernoulli', 'beta'].includes(family) ? 'bernoulli' : ['poisson', 'negbin'].includes(family) ? 'poisson' : family === 'gamma' ? 'gamma' : 'gaussian';
 const quasi = (family) => ['beta', 'negbin'].includes(family);
 const jointTerm = (t, a, measure) => measure === 'nonlinearity' ? nonlinearIn(t, a) : measure === 'interaction' ? Boolean(t.right) && (t.left === a || t.right === a) : t.left === a || t.right === a;
@@ -124,6 +128,7 @@ function gformulaPlan(graph, estimand, exposure, outcome, notes) {
     const v = node(m.node);
     if (v.kind === 'survival' && v.censoring.mode === 'variable' && descendants(graph, v.id).has(v.censoring.variable)) addNote(notes, informativeNote(v));
   }
+  for (const m of models) if (unknownForm(node(m.node))) addNote(notes, unknownNote(node(m.node)));
   if (outcome.kind === 'survival' && outcome.censoring.mode === 'administrative' && estimand.horizon > outcome.censoring.time)
     addNote(notes, `The horizon ${estimand.horizon} lies past the follow-up cutoff ${outcome.censoring.time}; the Weibull model extrapolates beyond the data.`);
   return { method: 'gformula', label, terms: models.at(-1).terms, models, notes,
@@ -176,6 +181,7 @@ function defaultPlan(graph, estimand) {
     terms = measuredTerms(graph, nodeTerms(graph, outcome));
     const hidden = unmeasuredNote(graph, exposure.id, outcome.id);
     if (hidden) addNote(notes, hidden);
+    if (unknownForm(outcome)) addNote(notes, unknownNote(outcome));
     terms.forEach((t, j) => {
       if (t.right || t.transform) return;
       if (t.left === exposure.id) targetIndex = j;
@@ -215,12 +221,20 @@ function configureTargeted(graph, e, p, spec) {
     } else if (spec.outcomeBounds) p.outcomeBounds = spec.outcomeBounds;
     p.outcomeModel = binary && !graph.study ? 'bernoulli' : 'gaussian';
     addNote(p.notes, p.outcomeBounds ? 'TMLE uses a logistic fluctuation within known outcome-summary bounds. Initial scaled predictions are clipped to [0.000001, 0.999999]; observed outcomes outside the prespecified bounds fail the analysis.' : 'TMLE uses a least-squares initial regression and an identity-link fluctuation for an unbounded outcome mean. It does not constrain predictions to a probability range.');
-    addNote(p.notes, 'TMLE is a semiparametric estimator, but these nuisance regressions use the chosen finite-dimensional bases. Cross-fitting is available; a Super Learner library is not implemented. Power still depends on the simulated data-generating model.');
+    if (p.learner !== 'superlearner') addNote(p.notes, 'TMLE is a semiparametric estimator, but these nuisance regressions use the chosen finite-dimensional bases; choose the Super Learner to fit them without a functional form. Power still depends on the simulated data-generating model.');
   }
+  if (p.learner === 'superlearner') addNote(p.notes, SUPER_LEARNER_NOTE);
+  else for (const v of [a, y]) if (unknownForm(v)) addNote(p.notes, unknownNote(v));
   if (spec.propensityBound > 0) addNote(p.notes, 'Propensity truncation is enabled. The reported truncation count and largest inverse weight show its use; truncation can introduce bias and does not repair lack of overlap.');
   addNote(p.notes, 'Influence-function Wald inference is asymptotic. Rare outcomes, weak overlap and few independent units can give poor coverage. Inspect null rejection, coverage and failed fits.');
-  p.label = `${p.method === 'tmle' ? 'TMLE' : 'Doubly robust AIPW'}${graph.study ? ' of the complete trajectory contrast' : ` Wald test of the marginal ${measureScale(e, y)}`}` + (spec.folds > 1 ? ` with ${spec.folds}-fold cross-fitting` : '');
-  p.formula = `Propensity ${a.id} ~ ${termText(p.propensityTerms)} (logistic); arm-specific outcome ${y.id} ~ ${termText(p.terms)} (${p.outcomeModel})`;
+  p.label = `${p.method === 'tmle' ? 'TMLE' : 'Doubly robust AIPW'}${graph.study ? ' of the complete trajectory contrast' : ` Wald test of the marginal ${measureScale(e, y)}`}` + (p.folds > 1 ? ` with ${p.folds}-fold cross-fitting` : '')
+    + (p.learner === 'superlearner' ? `${p.folds > 1 ? ' and' : ' with'} Super Learner nuisance models` : '');
+  const learned = (terms) => {
+    const used = new Set(terms.flatMap((t) => [t.left, ...(t.right ? [t.right] : [])])), names = graph.nodes.filter((n) => used.has(n.id)).map((n) => n.id);
+    return `Super Learner(${names.length ? names.join(', ') : 'no covariates'})`;
+  };
+  p.formula = p.learner === 'superlearner' ? `Propensity ${a.id} ~ ${learned(p.propensityTerms)}; arm-specific outcome ${y.id} ~ ${learned(p.terms)}`
+    : `Propensity ${a.id} ~ ${termText(p.propensityTerms)} (logistic); arm-specific outcome ${y.id} ~ ${termText(p.terms)} (${p.outcomeModel})`;
   return p;
 }
 export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
@@ -232,7 +246,7 @@ export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
     if (p.method === 'tmle') {
       const a = graph.nodes.find((n) => n.id === estimand.exposure), y = graph.nodes.find((n) => n.id === estimand.outcome);
       if (descendants(graph, y.id).has(a.id)) fail('The outcome cannot be upstream of treatment for TMLE.');
-      p = { ...p, ...aipwPlan(graph, estimand, a, y, p.notes), method: 'tmle', folds: spec.folds };
+      p = { ...p, ...aipwPlan(graph, estimand, a, y, p.notes), method: 'tmle', folds: spec.folds, learner: spec.learner ?? 'glm' };
       configureTargeted(graph, estimand, p, spec);
     }
     return p;
@@ -241,13 +255,24 @@ export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
   let p = defaultPlan(graph, estimand);
   const a = graph.nodes.find((n) => n.id === estimand.exposure), y = graph.nodes.find((n) => n.id === estimand.outcome);
   if (estimand.kind !== 'marginal' && spec.method !== 'auto') fail('Conditional and joint targets use a regression test.');
-  if (spec.method === 'gformula') p = { ...p, ...gformulaPlan(graph, estimand, a, y, p.notes) };
+  if (spec.method === 'gformula') {
+    p = { ...p, ...gformulaPlan(graph, estimand, a, y, p.notes) };
+    delete p.propensityTerms; delete p.outcomeModel;  // the g-formula has no treatment model
+  }
   if (['aipw', 'tmle'].includes(spec.method)) {
     if (a.kind !== 'binary' || y.kind === 'survival' || descendants(graph, y.id).has(a.id))
       fail('AIPW/TMLE require a binary exposure, a nonsurvival outcome, and an outcome downstream or unrelated to exposure.');
     p = { ...p, ...aipwPlan(graph, estimand, a, y, p.notes), method: spec.method };
   }
   p.analysis = spec; p.folds = spec.folds;
+  // the analyst knows which variables matter but not how: TMLE with a Super Learner and cross-fitting needs no form
+  let learner = spec.learner ?? 'glm';
+  if (spec.method === 'auto' && p.method === 'aipw' && (unknownForm(a) || unknownForm(y))) {
+    p.method = 'tmle'; learner = 'superlearner'; if (p.folds === 1) p.folds = 3;
+    addNote(p.notes, AUTO_LEARNER_NOTE);
+  }
+  if (learner === 'superlearner' && !['aipw', 'tmle'].includes(p.method)) fail('The Super Learner fits the nuisance models of AIPW and TMLE. Select one of those methods.');
+  if (['aipw', 'tmle'].includes(p.method)) p.learner = learner;
   if (p.folds > 1 && !['aipw', 'tmle'].includes(p.method)) fail('Cross-fitting is available for AIPW and TMLE. Select one of those methods.');
   if (['aipw', 'tmle'].includes(p.method)) configureTargeted(graph, estimand, p, spec);
   else p.terms = analysisTerms(graph, p.terms, spec, y.id);
@@ -275,6 +300,8 @@ export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
     p.formula = `${y.family === 'lognormal' ? `log(${y.id})` : y.id} ~ ${termText(p.terms)}`;
   }
   if (spec.basis !== 'match' || spec.propensity || spec.models) addNote(p.notes, 'Analysis terms are specified separately from the generating model. Inspect bias, interval coverage and null rejection when they differ.');
+  if (estimand.kind === 'marginal' && !['gformula', 'aipw', 'tmle'].includes(p.method) && unknownForm(y))
+    addNote(p.notes, `${y.id} depends on its inputs through a relationship of unknown form; the two-arm test does not model it, so it stays valid.`);
   if (estimand.kind === 'marginal' && !['gformula', 'aipw', 'tmle'].includes(p.method) && (spec.basis !== 'match' || spec.propensity || spec.models))
     addNote(p.notes, 'The automatic two-arm test does not fit covariate models. Select g-computation, AIPW or TMLE to use the specified regression terms.');
   return p;

@@ -371,6 +371,17 @@ try {
   assert.match(await page.textContent('#dag-paths'), /A ← U → Y\s*back-door · blocked/);
   await page.click('#dag-undo');
   await page.waitForSelector('#dag-canvas .dag-node.unmeasured');
+  // a relationship of unknown form: "?" on its arrows, a new shape on request, and TMLE with a Super Learner
+  await page.selectOption('#dag-example', 'unknown-confounding');
+  await page.click('#dag-example-load');
+  await page.waitForFunction(() => /\?/.test(document.querySelector('[data-edge="X1>Y"] .dag-edge-label')?.textContent ?? ''));
+  assert.match(await page.textContent('#power-method'), /TMLE.*Super Learner/);
+  await page.selectOption('#dag-node-select', 'Y');
+  assert.match(await page.textContent('#dag-unknown summary'), /Unknown form: f\(X1, X2\)/);
+  assert.match(await page.textContent('#dag-unknown-redraw'), /now #6/);
+  await page.click('#dag-unknown-redraw');
+  await page.waitForFunction(() => /now #7/.test(document.querySelector('#dag-unknown-redraw')?.textContent ?? ''));
+  await page.click('#dag-undo');
   await page.selectOption('#dag-example', 'binary');
   await page.click('#dag-example-load');
   await page.click('#dag-simulate');

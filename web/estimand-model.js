@@ -52,6 +52,8 @@ export function validateEstimand(graph, value) {
       if (value.kind === 'joint' && value.measure === 'nonlinearity' && exposure.kind === 'binary') fail('A binary predictor has no nonlinear dose-response component.');
       if (!graph.edges.some((e) => e.source === exposure.id && e.target === outcome.id))
         fail('A conditional coefficient requires an arrow from the selected predictor to the outcome.');
+      if (outcome.unknown?.inputs?.includes(exposure.id))
+        fail(`The effect of ${exposure.id} on ${outcome.id} has an unknown form, so no coefficient describes it. Compare groups or doses instead.`);
     } else {
       if (!finite(value.reference) || !finite(value.active) || value.reference === value.active) fail('Enter two different, finite comparison levels.');
       for (const level of [value.reference, value.active]) {

@@ -134,6 +134,7 @@ Data simulate_study(const Graph &g, int units, std::uint64_t seed,
             double eta=node.intercept;
             for(const auto &t:node.terms) eta+=t.coefficient*term_value(t,d.values[t.left][r],t.right<0?1:d.values[t.right][r]);
             for(const auto &l:node.lags) eta+=l.coefficient*(v>=l.lag ? d.values[l.source][r-l.lag] : l.initial);
+            if(node.unknown.ready) eta+=unknown_value(node,d,r);
             const std::uint64_t identity=node.scope=="cluster" ? c : subject;
             sim::Rng rng(seed,node.stream,sim::stream_seed(identity,static_cast<std::uint64_t>(v),0));
             double z=NAN;

@@ -291,7 +291,8 @@ export function mountDag(root) {
       const key = `${edge.source}>${edge.target}`, { d, mid } = edgePath(map.get(edge.source), map.get(edge.target));
       // the arrow's linear coefficient, and a mark for each response-curve term of the source in the child
       const shapes = [...new Set((map.get(edge.target).functions ?? []).filter((t) => t.left === edge.source || t.right === edge.source)
-        .map((t) => t.right ? '×' : TERM_MARK[t.transform?.kind] ?? 'f'))];
+        .map((t) => t.right ? '×' : TERM_MARK[t.transform?.kind] ?? 'f')
+        .concat(map.get(edge.target).unknown?.inputs.includes(edge.source) ? ['?'] : []))];
       const number = short(edge.coefficient) + (shapes.length ? ` + ${shapes.join(', ')}` : ''), width = 7.6 * number.length + 12;
       const isSelected = key === selectedEdge, kind = effect.has(key) ? 'effect' : biased.has(key) ? 'bias' : '';
       const group = svg('g', { class: `dag-edge${edge.target === selected && !selectedEdge ? ' selected' : ''}${isSelected ? ' chosen' : ''}${kind ? ` ${kind}` : ''}`,
@@ -375,6 +376,7 @@ export function mountDag(root) {
       const tip = [`${node.id} · ${node.label}${node.measured === false ? ' (unmeasured: no analysis can use it)' : ''}`, `${kindNames[node.kind]}: ${summary(graph, node)}`,
         ...(node.kind === 'survival' && node.censoring.mode !== 'none' ? [node.censoring.mode === 'variable' ? `Censored by ${node.censoring.variable}` : `Follow-up ends at ${short(node.censoring.time)}`] : []),
         ...(r.residualCorrelation ? [`Residual correlation ${short(r.residualCorrelation)} per unit time`] : []),
+        ...(node.unknown ? [`Unknown form: f(${node.unknown.inputs.join(', ')}), SD ${short(node.unknown.size)}, smoothness ${short(node.unknown.smoothness)}`] : []),
         ...(inferred ? [`${inferred[0].toUpperCase()}${inferred.slice(1)}: ${roleHelp[inferred].toLowerCase()}`] : []),
         ...(sketched ? [sketched.title] : [])].join('\n');
       const group = svg('g', { class: `dag-node ${node.kind}${node.measured === false ? ' unmeasured' : ''}${node.id === selected ? ' selected' : ''}${node.id === connecting ? ' connecting' : ''}`
@@ -851,6 +853,30 @@ export function mountDag(root) {
         catch (error) { status(error.message, true); }
       });
       box.append(interaction);
+    }
+    // A relationship of unknown form: parents that enter a smooth function no analysis is told about.
+    const parentIds = graph.edges.filter((e) => e.target === node.id).map((e) => e.source);
+    if (parentIds.length && !(graph.study && scopeOf(node) === 'time')) {
+      const u = node.unknown;
+      const checks = parentIds.map((pid) => el('input', { type: 'checkbox', value: pid, id: `dag-unknown-${pid}`, checked: Boolean(u?.inputs.includes(pid)) }));
+      const size = numeric('dag-unknown-size', u?.size ?? 0.5, { min: 0 }), smoothness = numeric('dag-unknown-smoothness', u?.smoothness ?? 2, { min: 0 });
+      const saveUnknown = (seed = u?.seed ?? 0) => {
+        try {
+          const inputs = checks.filter((c) => c.checked).map((c) => c.value), { unknown: _, ...rest } = node;
+          const changed = inputs.length ? { ...rest, unknown: { inputs, size: inputNumber(size, 'Size'), smoothness: inputNumber(smoothness, 'Smoothness'), seed } } : rest;
+          apply({ ...graph, nodes: graph.nodes.map((n) => n.id === node.id ? changed : n) },
+            inputs.length ? `${node.id} depends on ${inputs.join(', ')} through a relationship of unknown form; no analysis is told its shape.` : `${node.id} has no relationship of unknown form.`);
+        } catch (error) { status(error.message, true); }
+      };
+      const unknownBox = el('details', { id: 'dag-unknown', class: 'dag-unknown', open: Boolean(u) },
+        el('summary', {}, u ? `Unknown form: f(${u.inputs.join(', ')})` : 'Relationship of unknown form'),
+        el('p', { class: 'small muted' }, 'Adds a smooth random function of the chosen parents to this variable, which no analysis is told about. Size is its SD over the population on this variable’s predictor scale; smoothness is roughly how many SDs of a parent one bend spans (1 is wiggly, 3 gentle). Its arrows show “?”.'),
+        el('div', { class: 'dag-check-row', role: 'group', 'aria-label': 'Parents in the relationship of unknown form' },
+          ...checks.map((c) => el('label', { for: c.id }, c, ` ${c.value}`))),
+        el('div', { class: 'dag-pair' }, field('Size (SD)', size), field('Smoothness', smoothness)),
+        ...(u ? [el('button', { type: 'button', class: 'secondary', id: 'dag-unknown-redraw', onclick: () => saveUnknown((u.seed ?? 0) + 1) }, `Draw another shape (now #${(u.seed ?? 0) + 1})`)] : []));
+      unknownBox.addEventListener('change', (event) => { if (event.target.matches('input')) saveUnknown(); });
+      box.append(unknownBox);
     }
     mountFunctions(box, { graph, node, onChange: (next) => apply(next), onError: (message) => status(message, true) });
     box.append(el('button', { type: 'button', class: 'secondary dag-delete', onclick: () => apply(removeNode(graph, selected), 'Variable and its arrows removed. Any observation rule using it was reset. Undo restores them.') }, 'Delete variable'));

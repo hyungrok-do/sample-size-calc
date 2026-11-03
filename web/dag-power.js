@@ -93,6 +93,9 @@ const levelsFit = (node, a, b) => Number.isFinite(a) && Number.isFinite(b) && a 
   node.kind === 'binary' ? v === 0 || v === 1 : node.kind === 'count' ? Number.isInteger(v) && v >= 0 : node.kind === 'survival' ? v > 0 : true);
 
 // A ready-to-run target for a graph: a binary variable that affects others, compared on a variable it affects.
+// The learners carrying weight, largest first: "gbm 0.62, kernel 0.21, gam 0.17".
+const learnerWeights = (learners, model) => learners.names.map((name, i) => [name, learners[model][i]]).filter(([, w]) => w >= .005)
+  .sort((a, b) => b[1] - a[1]).map(([name, w]) => `${name} ${w.toFixed(2)}`).join(', ');
 export function defaultTarget(graph) {
   if (graph.nodes.length < 2) return null;
   const binary = graph.nodes.filter((n) => n.kind === 'binary' && n.measured !== false && (!graph.study || ['subject', 'cluster'].includes(scopeOf(n))));
@@ -239,7 +242,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     }
     for (const row of answer.results) for (const name of ['alternative', 'null']) {
       const d = row[name]?.targetedDiagnostics;
-      if (d) diagnostics.push(el('li', {}, `N=${row.n}, ${name}, successful targeted fits: largest inverse weight ${fmt(d.maxInverseWeight)}; ${d.propensityTruncated} subject propensities truncated; ${d.initialPredictionsClipped} initial outcome predictions clipped across replicates.`));
+      if (d) diagnostics.push(el('li', {}, `N=${row.n}, ${name}, successful targeted fits: largest inverse weight ${fmt(d.maxInverseWeight)}; ${d.propensityTruncated} subject propensities truncated; ${d.initialPredictionsClipped} initial outcome predictions clipped across replicates.`
+        + (d.learners ? ` Mean Super Learner weights, outcome: ${learnerWeights(d.learners, 'outcome')}; propensity: ${learnerWeights(d.learners, 'propensity')}.` : '')));
     }
     if (answer.nullScenario) diagnostics.push(el('li', {}, `${answer.nullScenario.exactNull ? 'Null scenario' : 'Reference scenario'}: ${answer.nullScenario.construction} Its effect: ${fmt(answer.nullScenario.truth.estimate)}.`));
     diagnostics.push(el('li', { id: 'power-engine' }, `Computed by the C++/WebAssembly engine · ${answer.engine.threads} thread${answer.engine.threads === 1 ? '' : 's'} · ${answer.engine.rng}.`));
@@ -298,6 +302,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     const analysisBasis = select('analysis-basis', [...BASES, ...(currentAnalysis.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.basis);
     const propensityBasis = select('analysis-propensity', [['same', 'Use the analysis basis'], ...BASES, ...(currentAnalysis.propensity?.basis === 'custom' ? [['custom', 'Custom imported terms']] : [])], currentAnalysis.propensity?.basis ?? 'same');
     const folds = numeric('analysis-folds', currentAnalysis.folds, { min: 1, max: 10, step: 1 });
+    const learner = select('analysis-learner', [['glm', 'Parametric: the terms chosen below'], ['superlearner', 'Super Learner: a cross-validated ensemble, no functional form']], currentAnalysis.learner ?? 'glm');
     const propensityBound = numeric('analysis-propensity-bound', currentAnalysis.propensityBound ?? 0, { min: 0, max: .499, step: .01 });
     const outcomeBounds = el('input', { id: 'analysis-outcome-bounds', type: 'text', value: (currentAnalysis.outcomeBounds ?? []).join(', '), placeholder: 'Unbounded, or e.g. 0, 100' });
     const targetedOptions = el('div', { class: 'dag-grid' }, field('Propensity bound (0 = none)', propensityBound, 'Explicitly limit treatment probabilities to [b, 1−b]. This may add bias; inspect diagnostics.'),
@@ -318,11 +323,14 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       choice.addEventListener('change', visibility); visibility();
       return el('div', { class: 'dag-grid' }, field(`Model for ${n.id}`, choice), k, inter);
     });
+    const learnerField = field('AIPW / TMLE nuisance models', learner, 'The Super Learner weighs a mean, GLMs, additive splines, boosted trees and kernel ridge regression by 5-fold cross-validation; it uses the variables of the terms below, not their form. Automatic analysis chooses it, with TMLE and 3-fold cross-fitting, when a treatment or outcome model has a relationship of unknown form.');
     const knotsField = field('Analysis spline knots', knots, 'Fixed knots in the original predictor units; includes linear terms.'),
       propensityKnotsField = field('Propensity spline knots', propensityKnots);
     function analysisFields() {
       if (graph.study) { timeBasis.disabled = randomSlope.disabled = analysisMethod.value !== 'lmm'; nuisancePanel.hidden = analysisMethod.value !== 'tmle'; trajectoryAnalysis.hidden = analysisMethod.value === 'tmle'; }
       targetedOptions.hidden = !['aipw', 'tmle'].includes(analysisMethod.value);
+      learnerField.hidden = !['aipw', 'tmle'].includes(analysisMethod.value);
+      if (learnerField.hidden) learner.value = 'glm';
       knotsField.hidden = analysisBasis.value !== 'spline'; propensityKnotsField.hidden = propensityBasis.value !== 'spline';
       folds.disabled = !['auto', 'aipw', 'tmle'].includes(analysisMethod.value);
       if (folds.disabled) folds.value = 1;
@@ -338,6 +346,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
         ...(analysisBasis.value === 'spline' ? { knots: parseKnots(knots) } : {}) };
       delete config.models; delete config.propensity; delete config.outcomeBounds;
       if (['aipw', 'tmle'].includes(analysisMethod.value)) config.propensityBound = Number(propensityBound.value);
+      if (['aipw', 'tmle'].includes(analysisMethod.value) && learner.value === 'superlearner') config.learner = 'superlearner';
       if (analysisMethod.value === 'tmle' && outcomeBounds.value.trim()) config.outcomeBounds = parseKnots(outcomeBounds);
       if (propensityBasis.value !== 'same') config.propensity = { ...(propensityBasis.value === 'custom' ? currentAnalysis.propensity : {}), basis: propensityBasis.value,
         interactions: propensityInteractions.checked, ...(propensityBasis.value === 'spline' ? { knots: parseKnots(propensityKnots) } : {}) };
@@ -348,7 +357,8 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       return parseAnalysis(config);
     };
     const nuisancePanel = el('div', {},
-      el('p', { class: 'small muted' }, 'These settings change the fitted analysis, independently of the generating graph. Cross-fitting applies to AIPW and TMLE. For repeated data, adjustments use baseline covariates and folds keep entire subjects or clusters together. TMLE uses the selected regression bases; no Super Learner is fitted.'),
+      el('p', { class: 'small muted' }, 'These settings change the fitted analysis, independently of the generating graph. Cross-fitting applies to AIPW and TMLE. For repeated data, adjustments use baseline covariates and folds keep entire subjects or clusters together.'),
+      learnerField,
       el('div', { class: 'dag-grid' }, field('Outcome / mediator terms', analysisBasis), field('Cross-fitting folds (1 = none)', folds), knotsField),
       el('label', {}, interactions, 'Include pairwise interactions with linear, quadratic or spline terms'),
       el('div', { class: 'dag-grid' }, field('Propensity terms (AIPW / TMLE)', propensityBasis), propensityKnotsField),

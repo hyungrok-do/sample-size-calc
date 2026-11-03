@@ -3,8 +3,8 @@ import test from 'node:test';
 import { native, simulateGraph } from './dag-engine.mjs';
 import { SCENARIOS, scenarioDesign } from '../dag-scenarios.js';
 import { compilePowerPlan, measuredTerms } from '../power-model.js';
-import { parseGraph, validateGraph, equation, makeNode } from '../dag-model.js';
-import { nodeTerms } from '../dag-functions.js';
+import { parseGraph, validateGraph, equation, makeNode, removeEdge, removeNode, renameNode } from '../dag-model.js';
+import { nodeTerms, parseAnalysis } from '../dag-functions.js';
 import { validateEstimand } from '../estimand-model.js';
 
 test('every scenario loads as a valid design, and its analysis plan matches the engine', () => {
@@ -62,4 +62,32 @@ test('the interaction test covers only the terms that multiply the compared vari
   const plan = compilePowerPlan(d.graph, d.estimand, d.power.analysis);
   assert.equal(plan.label, 'Wald test of the interaction (1 df)');
   assert.deepEqual(plan.testedIndices.map((i) => plan.terms[i - 1]), [{ left: 'A', right: 'X' }]);
+});
+
+test('a relationship of unknown form is kept, renamed and removed with its parents, and no analysis is told its shape', () => {
+  const d = scenarioDesign('unknown-confounding');
+  const y = d.graph.nodes.find((n) => n.id === 'Y');
+  assert.deepEqual(y.unknown, { inputs: ['X1', 'X2'], size: 1, smoothness: 2, seed: 5 });
+  assert.match(equation(d.graph, y), /\+ f\(X1, X2\) \[unknown form, SD 1\]/);
+  // the automatic analysis: TMLE with a Super Learner and 3-fold cross-fitting
+  const plan = compilePowerPlan(d.graph, d.estimand, d.power.analysis);
+  assert.equal(plan.method, 'tmle'); assert.equal(plan.learner, 'superlearner'); assert.equal(plan.folds, 3);
+  assert.match(plan.formula, /Super Learner\(X1, X2\)/);
+  // a parametric choice keeps parametric models and says what they miss
+  const parametric = compilePowerPlan(d.graph, d.estimand, { method: 'aipw' });
+  assert.equal(parametric.learner, 'glm');
+  assert.ok(parametric.notes.some((n) => /Y depends on X1, X2 through a relationship of unknown form/.test(n)));
+  assert.throws(() => compilePowerPlan(d.graph, d.estimand, { method: 'gformula', learner: 'superlearner' }), /Super Learner fits the nuisance models of AIPW and TMLE/);
+  assert.throws(() => parseAnalysis({ learner: 'forest' }), /parametric or Super Learner/);
+  // inputs follow renames and removals; the relationship goes with its last input
+  const renamed = renameNode(d.graph, 'X1', 'Age');
+  assert.deepEqual(renamed.nodes.find((n) => n.id === 'Y').unknown.inputs, ['Age', 'X2']);
+  const fewer = removeEdge(d.graph, 'X2', 'Y');
+  assert.deepEqual(fewer.nodes.find((n) => n.id === 'Y').unknown.inputs, ['X1']);
+  const none = removeNode(removeNode(d.graph, 'X1'), 'X2');
+  assert.equal(parseGraph(none).nodes.find((n) => n.id === 'Y').unknown, undefined);
+  assert.throws(() => validateGraph({ ...d.graph, nodes: d.graph.nodes.map((n) => n.id === 'Y' ? { ...n, unknown: { ...n.unknown, inputs: ['A', 'Z'] } } : n) }), /only the variable's parents/);
+  // an effect of unknown form has no coefficient
+  const h = scenarioDesign('unknown-heterogeneity');
+  assert.throws(() => validateEstimand(h.graph, { ...h.estimand, kind: 'coefficient', measure: 'coefficient', horizon: null }), /unknown form, so no coefficient describes it/);
 });

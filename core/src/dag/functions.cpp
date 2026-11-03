@@ -144,6 +144,10 @@ J parse_analysis(const J &raw) {
         !(b.at(0).as_number()<b.at(1).as_number()))
       fail("Supply finite, increasing prespecified outcome bounds.");
   }
+  if (out.find("learner")) {
+    const auto learner = out.get("learner").as_string();
+    if (learner != "glm" && learner != "superlearner") fail("Choose parametric or Super Learner nuisance models.");
+  }
   if (out.find("propensity")) out.set("propensity",basis(out.get("propensity")));
   if (out.find("models")) {
     if (!out.get("models").is_object() || out.get("models").size()>40) fail("Invalid analysis model overrides.");

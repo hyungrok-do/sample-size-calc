@@ -1,4 +1,5 @@
 #include "gformula.hpp"
+#include "learners.hpp"
 #include "model.hpp"
 #include "study.hpp"
 #include "sim/random.hpp"
@@ -37,6 +38,13 @@ bool joint_term(const Term &t, int a, const std::string &measure) {
   if (measure == "interaction") return t.right >= 0 && (t.left == a || t.right == a);
   return t.left == a || t.right == a;
 }
+bool unknown_form(const Graph &g, int v) { return !g.nodes[v].unknown.inputs.empty(); }
+std::string unknown_note(const Graph &g, int v) {
+  std::string inputs;
+  for (int k : g.nodes[v].unknown.inputs) inputs += (inputs.empty() ? "" : ", ") + g.nodes[k].id;
+  return g.nodes[v].id + " depends on " + inputs + " through a relationship of unknown form that the planned parametric models do not represent; inspect bias and coverage.";
+}
+const char *const SUPER_LEARNER_NOTE = "Nuisance models are fitted by a Super Learner: a 5-fold cross-validated, non-negative weighted ensemble of the training mean, main-terms and pairwise-product GLMs, additive restricted cubic splines, boosted depth-2 trees and kernel ridge regression. It uses the variables of the planned terms, not their functional forms.";
 std::string unmeasured_note(const Graph &g, int a, int y) {
   std::string names;
   const auto before = ancestors(g, y);
@@ -87,6 +95,9 @@ void validate_estimand(const Graph &g, const J &e) {
     if (!arrow)
       fail("A conditional coefficient requires an arrow from the selected "
            "predictor to the outcome.");
+    for (int k : outcome.unknown.inputs)
+      if (k == a)
+        fail("The effect of " + exposure.id + " on " + outcome.id + " has an unknown form, so no coefficient describes it. Compare groups or doses instead.");
     compatible = measure == "coefficient" ||
                  (measure == "exponentiated_coefficient" &&
                   outcome.family != "gaussian" && outcome.family != "uniform" &&
@@ -145,7 +156,7 @@ void validate_estimand(const Graph &g, const J &e) {
     fail("The planning alternative must differ from the null value.");
 }
 struct Plan {
-  std::string method, label, formula, testScale, family, outcomeModel;
+  std::string method, label, formula, testScale, family, outcomeModel, learner = "glm";
   int exposure = 0, outcome = 0, targetIndex = -1, folds = 1;
   bool bounded = false;
   double lower = 0, upper = 1;
@@ -333,6 +344,8 @@ void plan_gformula(const Graph &g, const J &e, Plan &p) {
     if (node.censor == "variable" && descendants(g, c.node)[node.censor_index])
       note(p, informative_note(g, node));
   }
+  for (const auto &c : p.chain)
+    if (unknown_form(g, c.node)) note(p, unknown_note(g, c.node));
   if (y.censor == "administrative" && e.get("horizon").as_number() > y.cutoff)
     note(p, "The horizon " + e.get("horizon").to_text() +
                 " lies past the follow-up cutoff " + J(y.cutoff).to_text() +
@@ -433,6 +446,7 @@ Plan default_plan(const Graph &g, const J &e) {
     p.terms = measured_terms(g, y.terms);
     if (const auto text = unmeasured_note(g, p.exposure, p.outcome); !text.empty())
       note(p, text);
+    if (unknown_form(g, p.outcome)) note(p, unknown_note(g, p.outcome));
     for (int j = 0; j < static_cast<int>(p.terms.size()); ++j) {
       const auto &t = p.terms[j];
       if (t.right >= 0 || t.transform.kind != "identity")
@@ -477,7 +491,6 @@ Plan default_plan(const Graph &g, const J &e) {
 // independent rows and not conditioned on post-treatment visit variables.
 void configure_targeted(const Graph &g, const J &e, Plan &p) {
   const auto &spec=p.specification;
-  p.folds=integer(spec,"folds",1,10,1);
   p.terms=analysis_terms(g,p.terms,spec,p.outcome);
   p.propensity=analysis_terms(g,p.propensity,spec,p.exposure,true);
   const auto affected=descendants(g,p.exposure);
@@ -502,12 +515,23 @@ void configure_targeted(const Graph &g, const J &e, Plan &p) {
     // logistic fluctuation, without clipping observed responses.
     p.outcomeModel=binary && !g.study.enabled ? "bernoulli" : "gaussian";
     note(p,p.bounded ? "TMLE uses a logistic fluctuation within known outcome-summary bounds. Initial scaled predictions are clipped to [0.000001, 0.999999]; observed outcomes outside the prespecified bounds fail the analysis." : "TMLE uses a least-squares initial regression and an identity-link fluctuation for an unbounded outcome mean. It does not constrain predictions to a probability range.");
-    note(p,"TMLE is a semiparametric estimator, but these nuisance regressions use the chosen finite-dimensional bases. Cross-fitting is available; a Super Learner library is not implemented. Power still depends on the simulated data-generating model.");
+    if(p.learner!="superlearner") note(p,"TMLE is a semiparametric estimator, but these nuisance regressions use the chosen finite-dimensional bases; choose the Super Learner to fit them without a functional form. Power still depends on the simulated data-generating model.");
   }
+  if(p.learner=="superlearner") note(p,SUPER_LEARNER_NOTE);
+  else for(int v:{p.exposure,p.outcome}) if(unknown_form(g,v)) note(p,unknown_note(g,v));
   if(spec.get("propensityBound").as_number()>0) note(p,"Propensity truncation is enabled. The reported truncation count and largest inverse weight show its use; truncation can introduce bias and does not repair lack of overlap.");
   note(p,"Influence-function Wald inference is asymptotic. Rare outcomes, weak overlap and few independent units can give poor coverage. Inspect null rejection, coverage and failed fits.");
   p.label=(p.method=="tmle" ? "TMLE" : "Doubly robust AIPW")+std::string(g.study.enabled ? " of the complete trajectory contrast" : " Wald test of the marginal ")+ (g.study.enabled ? "" : measure_scale(e,g.nodes[p.outcome]))+
-    (p.folds>1 ? " with "+std::to_string(p.folds)+"-fold cross-fitting" : "");
+    (p.folds>1 ? " with "+std::to_string(p.folds)+"-fold cross-fitting" : "")+(p.learner=="superlearner" ? std::string(p.folds>1 ? " and" : " with")+" Super Learner nuisance models" : "");
+  if(p.learner=="superlearner") {
+    const auto variables=[&](const std::vector<Term> &terms) {
+      std::vector<bool> used(g.nodes.size()); std::string out;
+      for(const auto &t:terms) { used[t.left]=true; if(t.right>=0) used[t.right]=true; }
+      for(int v=0;v<static_cast<int>(g.nodes.size());++v) if(used[v]) out+=(out.empty()?"":", ")+g.nodes[v].id;
+      return "Super Learner("+(out.empty() ? std::string("no covariates") : out)+")";
+    };
+    p.formula="Propensity "+g.nodes[p.exposure].id+" ~ "+variables(p.propensity)+"; arm-specific outcome "+g.nodes[p.outcome].id+" ~ "+variables(p.terms);
+  } else
   p.formula="Propensity "+g.nodes[p.exposure].id+" ~ "+term_text(g,p.propensity)+" (logistic); arm-specific outcome "+g.nodes[p.outcome].id+" ~ "+term_text(g,p.terms)+" ("+p.outcomeModel+")";
 }
 Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
@@ -522,7 +546,9 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
     for(const auto &n:p0.get("notes").elements()) p.notes.push_back(n.as_string());
     if(p.method=="tmle") {
       if(descendants(g,p.outcome)[p.exposure]) fail("The outcome cannot be upstream of treatment for TMLE.");
-      plan_aipw(g,e,p); p.method="tmle"; configure_targeted(g,e,p);
+      plan_aipw(g,e,p); p.method="tmle";
+      p.folds=integer(spec,"folds",1,10,1); p.learner=spec.find("learner") ? spec.get("learner").as_string() : "glm";
+      configure_targeted(g,e,p);
     }
     return p;
   }
@@ -540,6 +566,15 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
   }
   p.specification=spec;
   p.folds=integer(spec,"folds",1,10,1);
+  p.learner=spec.find("learner") ? spec.get("learner").as_string() : "glm";
+  // The analyst knows which variables matter but not how: TMLE with a Super
+  // Learner and cross-fitting needs no functional form for them.
+  if(method=="auto" && p.method=="aipw" && (unknown_form(g,p.exposure) || unknown_form(g,p.outcome))) {
+    p.method="tmle"; p.learner="superlearner"; if(p.folds==1) p.folds=3;
+    note(p,"Automatic analysis chose TMLE with a Super Learner and cross-fitting: a nuisance model has a relationship of unknown form.");
+  }
+  if(p.learner=="superlearner" && p.method!="aipw" && p.method!="tmle")
+    fail("The Super Learner fits the nuisance models of AIPW and TMLE. Select one of those methods.");
   if(p.folds>1 && p.method!="aipw" && p.method!="tmle")
     fail("Cross-fitting is available for AIPW and TMLE. Select one of those methods.");
   if(p.method=="aipw" || p.method=="tmle") configure_targeted(g,e,p);
@@ -576,6 +611,8 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
   }
   if(spec.get("basis").as_string()!="match" || spec.find("propensity") || spec.find("models"))
     note(p,"Analysis terms are specified separately from the generating model. Inspect bias, interval coverage and null rejection when they differ.");
+  if(kind=="marginal" && p.method!="gformula" && p.method!="aipw" && p.method!="tmle" && unknown_form(g,p.outcome))
+    note(p,y.id+" depends on its inputs through a relationship of unknown form; the two-arm test does not model it, so it stays valid.");
   if(kind=="marginal" && p.method!="gformula" && p.method!="aipw" && p.method!="tmle" &&
       (spec.get("basis").as_string()!="match" || spec.find("propensity") || spec.find("models")))
     note(p,"The automatic two-arm test does not fit covariate models. Select g-computation, AIPW or TMLE to use the specified regression terms.");
@@ -609,6 +646,7 @@ J plan_json(const Graph &g, const Plan &p) {
   if (p.method == "aipw" || p.method == "tmle") {
     out.set("propensityTerms", terms_json(g, p.propensity));
     out.set("outcomeModel", p.outcomeModel);
+    out.set("learner", p.learner);
     if(p.bounded) out.set("outcomeBounds",array({p.lower,p.upper}));
   }
   if (p.method == "gformula") {
@@ -646,7 +684,33 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
     }
   }
   if(rows[0].size()<2 || rows[1].size()<2) throw Error("empty_arm","An analysis arm has fewer than two observations.");
-  const auto pm=model_matrix(d,p.propensity,true), om=model_matrix(d,p.terms,true);
+  const bool learned=p.learner=="superlearner";
+  const auto pm=learned ? Matrix{} : model_matrix(d,p.propensity,true), om=learned ? Matrix{} : model_matrix(d,p.terms,true);
+  const auto variables=[&](const std::vector<Term> &terms) {
+    std::vector<int> out;
+    for(const auto &t:terms) for(int v:{t.left,t.right}) if(v>=0 && std::find(out.begin(),out.end(),v)==out.end()) out.push_back(v);
+    std::sort(out.begin(),out.end());
+    return out;
+  };
+  const auto pv=variables(p.propensity);
+  Vec propensityWeights(LEARNERS.size()), outcomeWeights(LEARNERS.size());
+  // The Super Learner's outcome model is one regression of Y on the exposure
+  // and the covariates over both arms, evaluated with the exposure set to each
+  // level: the data are stacked as observed, at the reference level and at the
+  // active level, and only observed rows are fitted.
+  Data stacked;
+  auto ov=variables(p.terms);
+  if(learned) {
+    if(std::find(ov.begin(),ov.end(),p.exposure)==ov.end()) ov.push_back(p.exposure);
+    std::sort(ov.begin(),ov.end());
+    stacked.n=3*n; stacked.values.resize(d.values.size());
+    for(int v:ov) {
+      auto &column=stacked.values[v]; column.resize(3*n);
+      for(int s=0;s<3;++s) for(int i=0;i<n;++i) column[s*n+i]=v==p.exposure ? (s==0 ? z[i] : s-1) : d.values[v][i];
+    }
+  }
+  Vec stackedY(learned ? 3*n : 0);
+  for(int i=0;i<n && learned;++i) stackedY[i]=y[i];
   const int units=clustered ? d.units : n;
   if(units<=2 || (p.folds>1 && units<p.folds)) throw Error("few_units","Too few independent units for this analysis or fold count.");
   std::vector<int> unitArm(units,-1), unitFold(units), fold(n);
@@ -663,8 +727,19 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
     for(int i=0;i<n;++i) if(p.folds==1 || fold[i]!=k) {
       train.push_back(i); arms[static_cast<int>(z[i])].push_back(i);
     }
-    const auto prob=fitted_means(pm,z,train,"bernoulli"),
-               q0=fitted_means(om,y,arms[0],p.outcomeModel), q1=fitted_means(om,y,arms[1],p.outcomeModel);
+    Vec prob,q0,q1;
+    if(learned) {
+      const std::string family=p.outcomeModel=="bernoulli" ? "bernoulli" : "gaussian";
+      const auto a=super_learner(d,pv,z,train,"bernoulli"), b=super_learner(stacked,ov,stackedY,train,family);
+      prob=a.prediction;
+      q0.assign(b.prediction.begin()+n,b.prediction.begin()+2*n); q1.assign(b.prediction.begin()+2*n,b.prediction.end());
+      for(std::size_t l=0;l<LEARNERS.size();++l) {
+        propensityWeights[l]+=a.weights[l]/p.folds; outcomeWeights[l]+=b.weights[l]/p.folds;
+      }
+    } else {
+      prob=fitted_means(pm,z,train,"bernoulli");
+      q0=fitted_means(om,y,arms[0],p.outcomeModel); q1=fitted_means(om,y,arms[1],p.outcomeModel);
+    }
     for(int i=0;i<n;++i) if(p.folds==1 || fold[i]==k) { pi[i]=prob[i]; m0[i]=q0[i]; m1[i]=q1[i]; }
   }
   const double bound=p.specification.get("propensityBound").as_number();
@@ -738,7 +813,7 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
     double variance=0; for(double v:sums) variance+=v*v;
     out.se=std::sqrt(variance*units/(units-1.0)); out.df=units-2;
   } else out.se=std::sqrt(moments(influence).variance/n);
-  out.diagnostics=object({{"minPropensity",minProp},{"maxPropensity",maxProp},{"propensityTruncated",truncated},
+  out.diagnostics=object({{"propensityLearners",learned ? array(propensityWeights) : J()},{"outcomeLearners",learned ? array(outcomeWeights) : J()},{"minPropensity",minProp},{"maxPropensity",maxProp},{"propensityTruncated",truncated},
     {"maxInverseWeight",maxWeight},{"initialPredictionsClipped",clipped},{"targetingScore",maxScore},
     {"independentUnits",units},{"subjects",n},{"referenceMean",psi0},{"activeMean",psi1}});
   return out;
@@ -1307,8 +1382,9 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
           parse_graph((scenario ? nullScenario : alternative).get("graph"));
       sim::Accumulator accumulator;
       std::map<std::string, int> reasons;
-      int coverageCount=0, truncatedCount=0, clippedCount=0;
+      int coverageCount=0, truncatedCount=0, clippedCount=0, learnedCount=0;
       double largestWeight=0;
+      Vec propensityLearners(LEARNERS.size()), outcomeLearners(LEARNERS.size());
       const bool scalar=e.get("kind").as_string()!="joint";
       const double truth=(scenario ? nullScenario : alternative).get("truth").get("estimate").as_number();
       // Batches keep progress responsive and aggregation in replicate order,
@@ -1355,6 +1431,13 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
           truncatedCount+=static_cast<int>(diagnostics[i].get("propensityTruncated").as_number());
           clippedCount+=static_cast<int>(diagnostics[i].get("initialPredictionsClipped").as_number());
           largestWeight=std::max(largestWeight,diagnostics[i].get("maxInverseWeight").as_number());
+          if(diagnostics[i].is_object() && diagnostics[i].get("outcomeLearners").is_array()) {
+            ++learnedCount;
+            for(std::size_t l=0;l<LEARNERS.size();++l) {
+              propensityLearners[l]+=diagnostics[i].get("propensityLearners").at(l).as_number();
+              outcomeLearners[l]+=diagnostics[i].get("outcomeLearners").at(l).as_number();
+            }
+          }
           if (!failures[i].empty())
             ++reasons[failures[i]];
         }
@@ -1387,7 +1470,15 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
                {"estimateSD", scalar ? J(summary.sd_estimate) : J()},
                {"meanSE", scalar ? J(summary.mean_se) : J()},
                {"failureReasons", failures},
-               {"targetedDiagnostics",(plan.method=="tmle" || plan.method=="aipw") ? object({{"maxInverseWeight",largestWeight},{"propensityTruncated",truncatedCount},{"initialPredictionsClipped",clippedCount}}) : J()},
+               {"targetedDiagnostics",(plan.method=="tmle" || plan.method=="aipw") ? [&] {
+                 J d=object({{"maxInverseWeight",largestWeight},{"propensityTruncated",truncatedCount},{"initialPredictionsClipped",clippedCount}});
+                 if(learnedCount) {
+                   J names=J::array(); for(const auto &name:LEARNERS) names.push(name);
+                   for(auto &w:propensityLearners) w/=learnedCount;
+                   for(auto &w:outcomeLearners) w/=learnedCount;
+                   d.set("learners",object({{"names",names},{"propensity",array(propensityLearners)},{"outcome",array(outcomeLearners)}}));
+                 }
+                 return d; }() : J()},
                 {"bias",scalar && summary.reps>summary.failures ? J(summary.mean_estimate-truth) : J()},
                 {"coverage",scalar && summary.reps>summary.failures ? J(static_cast<double>(coverageCount)/(summary.reps-summary.failures)) : J()},
                 {"coverageValid",summary.reps-summary.failures}}));
