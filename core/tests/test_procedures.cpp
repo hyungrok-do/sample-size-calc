@@ -383,15 +383,19 @@ TEST_CASE("procedures: every input has a help text") {
 }
 
 TEST_CASE("procedures: a derivation's steps agree with the answer they explain") {
-  // Each procedure's derivation (its own plug-in) shows how a row's numbers came about. Run every procedure's
-  // example for every quantity it solves for, and check that the steps are complete, contain no undefined value, and
-  // contain the answer: the row's power and, when a sample size was solved for, that size.
+  // Each procedure's derivation (its own plug-in) shows how a row's numbers came about; every procedure has one. Run
+  // every procedure's example for every quantity it solves for, and check that the steps are complete, contain no
+  // undefined value, and contain the answer: the row's power and, when a sample size was solved for, that size.
   const json::Value cat = catalog_json();
   int explained = 0;
   for (const auto& p : cat.get("procedures").elements()) {
     const std::string id = p.get("id").as_string();
     const Procedure* proc = find_procedure(id);
-    if (!proc->derivation) continue;
+    ::ssc::test::count_check();
+    if (!proc->derivation) {  // every procedure shows how its answer came about
+      ::ssc::test::report_failure(id + ": no derivation", __FILE__, __LINE__);
+      continue;
+    }
     const json::Value schema = json::parse(procedure_json(*proc).dump());
     for (const auto& solve : schema.get("solve_for").elements()) {
       json::Value req = json::Value::object();

@@ -3,6 +3,7 @@
 #include "procedures/apart.hpp"
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
+#include "procedures/derive_props.hpp"
 #include "procedures/proportion_ci.hpp"
 
 namespace ssc::procs {
@@ -71,22 +72,30 @@ Region one_prop_region(const std::string& test, int n, double p0, double alpha, 
   return r;
 }
 
-double one_prop_power_normal(const std::string& test, double n, double p0, double p1, double alpha, Alt a) {
+// The normal approximation's power and its parts (which the derivation shows): the difference, the continuity
+// correction, the standard errors under H0 and H1, the critical value and each tail.
+struct OnePropNormal {
+  double d, cc, s0, s1, z, up, lo, power;
+};
+
+OnePropNormal one_prop_normal(const std::string& test, double n, double p0, double p1, double alpha, Alt a) {
   using namespace stats;
   const double q0 = 1 - p0, q1 = 1 - p1;
-  const double cc = (test == "zp0cc" || test == "zphatcc") ? 0.5 / n : 0;
+  OnePropNormal r;
+  r.cc = (test == "zp0cc" || test == "zphatcc") ? 0.5 / n : 0;
   const bool score = (test == "zp0" || test == "zp0cc" || test == "exact");
-  const double s0 = std::sqrt((score ? p0 * q0 : p1 * q1) / n);
-  const double s1 = std::sqrt(p1 * q1 / n);
-  const double d = p1 - p0;
-  auto upper = [&](double z) { return pnorm((d - cc - z * s0) / s1); };
-  auto lower = [&](double z) { return pnorm((-d - cc - z * s0) / s1); };
-  if (a == Alt::Two) {
-    const double z = qnorm(half_alpha(alpha), false);
-    return std::min(1.0, upper(z) + lower(z));
-  }
-  const double z = qnorm(alpha, false);
-  return a == Alt::Upper ? upper(z) : lower(z);
+  r.s0 = std::sqrt((score ? p0 * q0 : p1 * q1) / n);
+  r.s1 = std::sqrt(p1 * q1 / n);
+  r.d = p1 - p0;
+  r.z = qnorm(tail_alpha(alpha, a), false);
+  r.up = pnorm((r.d - r.cc - r.z * r.s0) / r.s1);
+  r.lo = pnorm((-r.d - r.cc - r.z * r.s0) / r.s1);
+  r.power = a == Alt::Two ? std::min(1.0, r.up + r.lo) : (a == Alt::Upper ? r.up : r.lo);
+  return r;
+}
+
+double one_prop_power_normal(const std::string& test, double n, double p0, double p1, double alpha, Alt a) {
+  return one_prop_normal(test, n, p0, p1, alpha, a).power;
 }
 
 struct OnePropResult {
@@ -117,6 +126,134 @@ std::string region_text(const Region& r, int n) {
   if (r.cl >= 0) t += "X\u00a0≤\u00a0" + std::to_string(r.cl);
   if (r.cu <= n) t += std::string(t.empty() ? "" : " or ") + "X\u00a0≥\u00a0" + std::to_string(r.cu);
   return t.empty() ? "never rejects" : t;
+}
+
+// ------------------------------------------------------------------ derivation
+// The z statistic of a count x, in symbols and with the count's numbers.
+std::string z_formula(const std::string& test) {
+  const bool hat = test == "zphat" || test == "zphatcc", cc = test == "zp0cc" || test == "zphatcc";
+  const std::string se = hat ? "√(p̂(1 − p̂)/N)" : "√(P0(1 − P0)/N)";
+  if (cc) return "Z = (|p̂ − P0| − 1/(2N)) / " + se + " with the sign of p̂ − P0, p̂ = X/N";
+  return "Z = (p̂ − P0) / " + se + ", p̂ = X/N";
+}
+
+std::string z_numbers(const std::string& test, int x, int n, double p0) {
+  using derive::num;
+  const bool hat = test == "zphat" || test == "zphatcc", cc = test == "zp0cc" || test == "zphatcc";
+  const double ph = static_cast<double>(x) / n;
+  const std::string at = std::to_string(x) + "/" + std::to_string(n);
+  const std::string se = "√(" + (hat ? num(ph) + " × " + num(1 - ph) : num(p0) + " × " + num(1 - p0)) + "/" +
+                         std::to_string(n) + ")";
+  const std::string top =
+      cc ? "(|" + at + " − " + num(p0) + "| − 1/" + fint(2.0 * n) + ")" : "(" + at + " − " + num(p0) + ")";
+  return "Z(" + std::to_string(x) + ") = " + top + " / " + se + " = " + num(z_stat(test, x, n, p0));
+}
+
+// The tail probabilities of a rejection region under X ~ Binomial(n, p), and their sum `total` as the run gives it.
+std::string region_prob(const Region& g, int n, double p, double total) {
+  using derive::prob;
+  std::string t, v;
+  if (g.cl >= 0) {
+    t = "P(X ≤ " + std::to_string(g.cl) + ")";
+    v = prob(stats::pbinom(g.cl, n, p, true));
+  }
+  if (g.cu <= n) {
+    t += (t.empty() ? "" : " + ") + std::string("P(X ≥ ") + std::to_string(g.cu) + ")";
+    v += (v.empty() ? "" : " + ") + prob(stats::pbinom(g.cu - 1, n, p, false));
+  }
+  if (t.empty()) return "no count rejects: 0";
+  return "X ~ Binomial(" + std::to_string(n) + ", " + derive::num(p) + "): " + t + " = " +
+         (v.find('+') == std::string::npos ? "" : v + " = ") + prob(total);
+}
+
+derive::Steps one_prop_steps(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const std::string& test = s.s("test");
+  const Alt a = alt(s);
+  const int n = static_cast<int>(r.num("n"));
+  const double p0 = r.num("p0"), p1 = r.num("p1"), alpha = s("alpha"), target = s.get("power", NAN);
+  const bool exact_power = test == "exact" || s.is("method", "exact");
+  Steps out;
+  if (!exact_power) {
+    const OnePropNormal q = one_prop_normal(test, n, p0, p1, alpha, a);
+    const bool cc = q.cc > 0;
+    out.push_back({"Difference to detect", "δ = P1 − P0", num(p1) + " − " + num(p0) + " = " + num(q.d)});
+    if (test == "zphat" || test == "zphatcc") {
+      out.push_back({"Standard error", "σ0 = σ1 = √(P1(1 − P1)/N), the Wald statistic's at P1",
+                     "√(" + num(p1) + " × " + num(1 - p1) + "/" + fint(n) + ") = " + sig(q.s1)});
+    } else {
+      out.push_back({"Standard error under H0", "σ0 = √(P0(1 − P0)/N)",
+                     "√(" + num(p0) + " × " + num(1 - p0) + "/" + fint(n) + ") = " + sig(q.s0)});
+      out.push_back({"Standard error under H1", "σ1 = √(P1(1 − P1)/N)",
+                     "√(" + num(p1) + " × " + num(1 - p1) + "/" + fint(n) + ") = " + sig(q.s1)});
+    }
+    if (cc) out.push_back({"Continuity correction", "c = 1/(2N)", "1/(2 × " + fint(n) + ") = " + sig(q.cc)});
+    out.push_back(z_critical(alpha, a));
+    out.push_back(
+        tails_power(a, "δ", cc ? "c" : "", "σ0", "σ1", q.d, q.cc, q.z, q.s0, q.s1, q.up, q.lo, r.num("power")));
+    if (s.solve == "n")
+      out.push_back(n_search([&](double x) { return one_prop_eval(s, static_cast<int>(x), p1).power; }, n, target, 1));
+  } else {
+    // the rejection region by enumeration of the counts, its exact size and the power as binomial sums
+    const OnePropResult res = one_prop_eval(s, n, p1);
+    const Region& g = res.region;
+    const double side = tail_alpha(alpha, a);
+    const std::string level = a == Alt::Two ? "α/2" : "α";
+    if (test == "exact") {
+      if (a != Alt::Lower) {
+        const std::string cu = std::to_string(g.cu);
+        out.push_back(
+            {"Upper critical count", "c_U = the smallest c with P(X ≥ c) ≤ " + level + ", X ~ Binomial(N, P0)",
+             g.cu > n ? "P(X ≥ " + std::to_string(n) + ") = " + prob(stats::pbinom(n - 1, n, p0, false), side) + " > " +
+                            num(side) + ": no count rejects, c_U = " + fint(n + 1.0)
+                      : "P(X ≥ " + std::to_string(g.cu - 1) + ") = " +
+                            prob(stats::pbinom(g.cu - 2, n, p0, false), side) + " > " + num(side) + " ≥ P(X ≥ " + cu +
+                            ") = " + prob(stats::pbinom(g.cu - 1, n, p0, false), side) + ": c_U = " + cu});
+      }
+      if (a != Alt::Upper) {
+        const std::string cl = std::to_string(g.cl);
+        out.push_back({"Lower critical count", "c_L = the largest c with P(X ≤ c) ≤ " + level + ", X ~ Binomial(N, P0)",
+                       g.cl < 0 ? "P(X ≤ 0) = " + prob(stats::pbinom(0, n, p0, true), side) + " > " + num(side) +
+                                      ": no count rejects, c_L = −1"
+                                : "P(X ≤ " + cl + ") = " + prob(stats::pbinom(g.cl, n, p0, true), side) + " ≤ " +
+                                      num(side) + " < P(X ≤ " + std::to_string(g.cl + 1) +
+                                      ") = " + prob(stats::pbinom(g.cl + 1, n, p0, true), side) + ": c_L = " + cl});
+      }
+    } else {
+      out.push_back(z_critical(alpha, a));
+      const double z = stats::qnorm(side, false);
+      // the statistic at the first count that rejects (or the last one when none does)
+      const int shown = a != Alt::Lower ? std::min(g.cu, n) : std::max(g.cl, 0);
+      out.push_back({"Test statistic", z_formula(test), z_numbers(test, shown, n, p0)});
+      auto zx = [&](int x) { return "Z(" + std::to_string(x) + ") = " + num(z_stat(test, x, n, p0)); };
+      if (a != Alt::Lower) {
+        const std::string cu = std::to_string(g.cu);
+        out.push_back({"Upper critical count", "c_U = the smallest count X whose Z exceeds z",
+                       g.cu > n    ? zx(n) + " ≤ " + num(z) + ": no count rejects, c_U = " + fint(n + 1.0)
+                       : g.cu == 0 ? zx(0) + " > " + num(z) + ": every count rejects, c_U = 0"
+                                   : zx(g.cu - 1) + " ≤ " + num(z) + " < " + zx(g.cu) + ": c_U = " + cu});
+      }
+      if (a != Alt::Upper) {
+        const std::string cl = std::to_string(g.cl);
+        out.push_back({"Lower critical count", "c_L = the largest count X whose Z lies below −z",
+                       g.cl < 0    ? zx(0) + " ≥ " + num(-z) + ": no count rejects, c_L = −1"
+                       : g.cl >= n ? zx(n) + " < " + num(-z) + ": every count rejects, c_L = " + std::to_string(n)
+                                   : zx(g.cl) + " < " + num(-z) + " ≤ " + zx(g.cl + 1) + ": c_L = " + cl});
+      }
+    }
+    const std::string region =
+        a == Alt::Two ? "P(X ≤ c_L) + P(X ≥ c_U)" : (a == Alt::Upper ? "P(X ≥ c_U)" : "P(X ≤ c_L)");
+    out.push_back({"Actual alpha", "α* = " + region + ", X ~ Binomial(N, P0)",
+                   region_prob(g, n, p0, r.num("actual_alpha"))});
+    out.push_back({"Power", region + ", X ~ Binomial(N, P1)", region_prob(g, n, p1, r.num("power"))});
+    if (s.solve == "n")
+      out.push_back(size_step("Sample size",
+                              sawtooth_rule("N = the smallest whole number whose power reaches the target"),
+                              "N = " + fint(n), r.num("power"), n > 1 ? "N = " + fint(n - 1) : "",
+                              n > 1 ? one_prop_eval(s, n - 1, p1).power : NAN, target));
+  }
+  if (s.solve == "p1") out.push_back(effect_search("P1", p1, r.num("power"), target));
+  return out;
 }
 
 Procedure one_prop() {
@@ -251,6 +388,7 @@ Procedure one_prop() {
     if (r.has("actual_alpha")) t += " (actual significance level " + fprob(r.num("actual_alpha")) + ")";
     return t + ".";
   };
+  p.derivation = one_prop_steps;
   p.definitions = {{"N", "Number of subjects (Bernoulli trials)."},
                    {"P0", "Proportion under the null hypothesis."},
                    {"P1", "Actual proportion at which power is evaluated."},
@@ -293,6 +431,109 @@ bool near_estimate(double w, double p) { return std::fabs(w) <= 1e-13 * p; }
 const char* const JEFFREYS_WRONG_SIDE =
     "the Jeffreys bound is a quantile of the posterior distribution, whose middle lies between the estimate and 1/2, "
     "further from the estimate than the bound's margin reaches at this confidence";
+
+// How the interval's limits come about at the anticipated count, in the method's own formula, and its width.
+derive::Steps one_ci_steps(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const std::string& m = s.s("method");
+  const double n = r.num("n"), p = r.num("p"), conf = r.num("conf"), x = n * p;
+  const bool two = s.is("sides", "two"), up = s.is("sides", "upper"), lo = s.is("sides", "lower");
+  const double a = two ? (1 - conf) / 2 : 1 - conf, z = stats::qnorm(a, false);
+  const Interval ci = prop_ci(m, n, x, conf, two);
+  const std::string N = fint(n), level = two ? "α/2" : "α";
+  // "L = …, U = …" or the one limit a one-sided interval has
+  auto limits = [&](const std::string& l, const std::string& u) {
+    return two ? l + "; " + u : (up ? u : l);
+  };
+  auto lval = [&] { return "L = " + num(ci.lo); };
+  auto uval = [&] { return "U = " + num(ci.hi); };
+  Steps out;
+  out.push_back({"Anticipated count", "x = N P", N + " × " + num(p) + " = " + num(x)});
+  if (m != "exact" && m != "jeffreys")
+    out.push_back({"Critical value", "z = Φ⁻¹(1 − " + level + "), α = 1 − confidence",
+                   "Φ⁻¹(1 − " + num(a) + ") = " + num(z)});
+  const std::string clamp = ", kept within 0 and 1";
+  if (m == "wald") {
+    const double h = z * std::sqrt(p * (1 - p) / n);
+    const std::string pm = two ? " ± " : up ? " + " : " − ";
+    out.push_back({"Limits", std::string(two ? "" : up ? "U = " : "L = ") + "P̂" + pm + "z √(P̂(1 − P̂)/N)" + clamp,
+                   num(p) + pm + num(z) + " × √(" + num(p) + " × " + num(1 - p) + "/" + N + ") = " + num(p) + pm +
+                       num(h) + ": " + limits(lval(), uval())});
+  } else if (m == "wilson" || m == "ac") {
+    const double z2 = z * z;
+    double c, h;
+    std::string formula, numbers;
+    if (m == "wilson") {
+      const double den = 1 + z2 / n;
+      c = (p + z2 / (2 * n)) / den;
+      h = z / den * std::sqrt(p * (1 - p) / n + z2 / (4 * n * n));
+      formula = ", C = (P̂ + z²/(2N))/(1 + z²/N), H = z/(1 + z²/N) × √(P̂(1 − P̂)/N + z²/(4N²))";
+      numbers = "C = (" + num(p) + " + " + num(z2) + "/" + fint(2 * n) + ")/(1 + " + num(z2) + "/" + N + ") = " +
+                num(c) + ", H = " + num(z) + "/" + num(den) + " × √(" + num(p) + " × " + num(1 - p) + "/" + N + " + " +
+                num(z2) + "/" + fnum(4 * n * n) + ") = " + num(h);
+    } else {
+      const double nt = n + z2;
+      c = (x + z2 / 2) / nt;
+      h = z * std::sqrt(c * (1 - c) / nt);
+      formula = ", C = (x + z²/2)/Ñ, H = z √(C(1 − C)/Ñ), Ñ = N + z²";
+      numbers = "Ñ = " + num(nt) + ", C = (" + num(x) + " + " + num(z2 / 2) + ")/" + num(nt) + " = " + num(c) +
+                ", H = " + num(z) + " × √(" + num(c) + " × " + num(1 - c) + "/" + num(nt) + ") = " + num(h);
+    }
+    formula = (two ? "C ± H" : up ? "U = C + H" : "L = C − H") + formula;
+    out.push_back({"Limits", formula + clamp, numbers + ": " + limits(lval(), uval())});
+  } else if (m == "wilsoncc") {
+    const double z2 = z * z, qh = 1 - p;
+    const double rl = std::max(0.0, z2 - 2 - 1 / n + 4 * p * (n * qh + 1)),
+                 ru = std::max(0.0, z2 + 2 - 1 / n + 4 * p * (n * qh - 1));
+    const std::string l = "L = (2NP̂ + z² − 1 − z √(z² − 2 − 1/N + 4P̂(N(1 − P̂) + 1)))/(2(N + z²))",
+                      u = "U = (2NP̂ + z² + 1 + z √(z² + 2 − 1/N + 4P̂(N(1 − P̂) − 1)))/(2(N + z²))";
+    const std::string common = num(2 * n * p) + " + " + num(z2), den = ")/(2 × " + num(n + z2) + ")";
+    out.push_back({"Limits", limits(l, u) + clamp,
+                   limits("L = (" + common + " − 1 − " + num(z) + " × √" + num(rl) + den + " = " + num(ci.lo),
+                          "U = (" + common + " + 1 + " + num(z) + " × √" + num(ru) + den + " = " + num(ci.hi))});
+  } else {
+    // Jeffreys and Clopper–Pearson: quantiles of Beta distributions
+    const bool jeff = m == "jeffreys";
+    const std::string sl = jeff ? "x + ½, N − x + ½" : "x, N − x + 1", su = jeff ? "x + ½, N − x + ½" : "x + 1, N − x";
+    const std::string nl = jeff ? num(x + 0.5) + ", " + num(n - x + 0.5) : num(x) + ", " + num(n - x + 1),
+                      nu = jeff ? num(x + 0.5) + ", " + num(n - x + 0.5) : num(x + 1) + ", " + num(n - x);
+    out.push_back({"Limits",
+                   limits("L = B⁻¹(" + level + "; " + sl + ")", "U = B⁻¹(1 − " + level + "; " + su + ")") +
+                       ", B⁻¹ the quantile of the Beta distribution (" +
+                       limits("L = 0 when x = 0", "U = 1 when x = N") + ")",
+                   limits(x <= 0 ? "L = 0" : "L = B⁻¹(" + num(a) + "; " + nl + ") = " + num(ci.lo),
+                          x >= n ? "U = 1" : "U = B⁻¹(1 − " + num(a) + "; " + nu + ") = " + num(ci.hi))});
+  }
+  const double w = r.num("width"), target = s.get("width", NAN);
+  // the two values with the digits that tell them apart, and the width with those that tell it from the target
+  const std::string wt = s.solve == "n" ? prob(w, target) : num(w);
+  if (two)
+    out.push_back({"Width", "W = U − L", difference(ci.hi, ci.lo, wt) + " = " + wt});
+  else if (up)
+    out.push_back({"Width", "W = U − P", difference(ci.hi, p, wt) + " = " + wt});
+  else if (lo)
+    out.push_back({"Width", "W = P − L", difference(p, ci.lo, wt) + " = " + wt});
+  if (s.solve == "n") {
+    const std::string rule = "N = the smallest size from which the width stays at or below the target";
+    if (n <= 1) {
+      out.push_back({"Sample size", rule,
+                     "N = 1 is the smallest size, and its width is already " + prob(w, target) + " ≤ " + fnum(target)});
+    } else {
+      const double below = ci_width(s, n - 1);
+      const std::string at = "width at N = " + N + ": " + prob(w, target);
+      if (below > target)
+        out.push_back({"Sample size", rule,
+                       "width at N = " + fint(n - 1) + ": " + prob(below, target) + " > " + fnum(target) + " ≥ " + at});
+      else  // a one-sided bound on the wrong side of the estimate, or within a rounding error of it
+        out.push_back({"Sample size", rule + ", with the bound beyond the estimate",
+                       "at N = " + fint(n - 1) + " the bound lies " +
+                           (near_estimate(below, p) ? "within a rounding error of the estimate"
+                                                    : "on the wrong side of the estimate (W = " + num(below) + ")") +
+                           "; " + at + " ≤ " + fnum(target)});
+    }
+  }
+  return out;
+}
 
 Procedure one_prop_ci() {
   Procedure p;
@@ -436,6 +677,7 @@ Procedure one_prop_ci() {
            level_text(r.num("conf")) + " " + names.at(s.s("method")) + " confidence interval " + where +
            " when the observed proportion equals " + fnum_fine(r.num("p")) + ".";
   };
+  p.derivation = one_ci_steps;
   p.definitions = {{"N", "Sample size."},
                    {"Width", "Upper minus lower limit (two-sided) or distance from P to the bound (one-sided)."},
                    {"P", "Anticipated sample proportion at which the interval is evaluated."}};

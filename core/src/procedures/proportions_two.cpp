@@ -11,6 +11,7 @@
 #include "procedures/apart.hpp"
 #include "procedures/binomial_tools.hpp"
 #include "procedures/common.hpp"
+#include "procedures/derive_props.hpp"
 #include "procedures/proportion_ci.hpp"
 #include "procedures/proportion_effect.hpp"
 #include "util/parallel.hpp"
@@ -107,25 +108,34 @@ void fisher_region(int n1, int n2, int t, double alpha, Alt alt, int& lo, int& h
   }
 }
 
-double two_prop_normal(const TwoPropTest& T, double n1, double n2, double p1, double p2) {
+// The normal approximation's power and its parts (which the derivation shows): the pooled proportion, the standard
+// errors under H0 and H1, the continuity correction, the critical value and each tail.
+struct TwoPropNormal {
+  double d, pb, s0, s1, cc, z, up, lo, power;
+};
+
+TwoPropNormal two_prop_normal_parts(const TwoPropTest& T, double n1, double n2, double p1, double p2) {
   using namespace stats;
+  TwoPropNormal r;
   const double q1 = 1 - p1, q2 = 1 - p2;
-  const double pb = (n1 * p1 + n2 * p2) / (n1 + n2), qb = 1 - pb;
-  const double s1 = std::sqrt(p1 * q1 / n1 + p2 * q2 / n2);
-  const double s0 = T.test == "zunpool" ? s1 : std::sqrt(pb * qb * (1 / n1 + 1 / n2));
-  const double cc = (T.test == "zpoolcc" || T.test == "fisher") ? 0.5 * (1 / n1 + 1 / n2) : 0;
-  const double d = p1 - p2;
+  r.pb = (n1 * p1 + n2 * p2) / (n1 + n2);
+  const double qb = 1 - r.pb;
+  r.s1 = std::sqrt(p1 * q1 / n1 + p2 * q2 / n2);
+  r.s0 = T.test == "zunpool" ? r.s1 : std::sqrt(r.pb * qb * (1 / n1 + 1 / n2));
+  r.cc = (T.test == "zpoolcc" || T.test == "fisher") ? 0.5 * (1 / n1 + 1 / n2) : 0;
+  r.d = p1 - p2;
   // variances P(1 − P)/n that underflow to 0 (proportions near 5e-324) would make a difference between them
   // infinitely significant, a power of 1 (an infinite count, which makes them no number, is said by the runner)
-  if (d != 0 && (s0 == 0 || s1 == 0)) throw CalcError("the proportions are too small to compute with");
-  auto up = [&](double z) { return pnorm((d - cc - z * s0) / s1); };
-  auto lo = [&](double z) { return pnorm((-d - cc - z * s0) / s1); };
-  if (T.alt == Alt::Two) {
-    const double z = qnorm(half_alpha(T.alpha), false);
-    return std::min(1.0, up(z) + lo(z));
-  }
-  const double z = qnorm(T.alpha, false);
-  return T.alt == Alt::Upper ? up(z) : lo(z);
+  if (r.d != 0 && (r.s0 == 0 || r.s1 == 0)) throw CalcError("the proportions are too small to compute with");
+  r.z = qnorm(tail_alpha(T.alpha, T.alt), false);
+  r.up = pnorm((r.d - r.cc - r.z * r.s0) / r.s1);
+  r.lo = pnorm((-r.d - r.cc - r.z * r.s0) / r.s1);
+  r.power = T.alt == Alt::Two ? std::min(1.0, r.up + r.lo) : (T.alt == Alt::Upper ? r.up : r.lo);
+  return r;
+}
+
+double two_prop_normal(const TwoPropTest& T, double n1, double n2, double p1, double p2) {
+  return two_prop_normal_parts(T, n1, n2, p1, p2).power;
 }
 
 constexpr double MAX_CELLS = 6e7;
@@ -208,6 +218,161 @@ double two_prop_exact(const TwoPropTest& T, double n1d, double n2d, double p1, d
   double s = 0;
   for (double v : part) s += v;
   return stats::clamp01(s);
+}
+
+// ------------------------------------------------------------------ derivation
+// The groups' symbols: 1 and 2 (treatment and control), or 1 and 0 (cases and controls).
+struct Groups {
+  std::string a, b;
+};
+
+// The power as the runs compute it: by enumeration where asked for and not too large, else the normal approximation.
+double two_prop_power(const TwoPropTest& T, double n1, double n2, double p1, double p2, bool enumerated,
+                      const RunContext& ctx) {
+  if (enumerated) {
+    const double pw = two_prop_exact(T, n1, n2, p1, p2, ctx);
+    if (!std::isnan(pw)) return pw;
+  }
+  return two_prop_normal(T, n1, n2, p1, p2);
+}
+
+// The z statistic of a table (as z_two), in symbols and with the table's numbers.
+std::string z_two_formula(const std::string& test, const Groups& g) {
+  const std::string h1 = "p̂" + g.a, h2 = "p̂" + g.b, n1 = "N" + g.a, n2 = "N" + g.b;
+  const std::string props = ", " + h1 + " = x" + g.a + "/" + n1 + ", " + h2 + " = x" + g.b + "/" + n2;
+  const std::string pooled = "√(p̄(1 − p̄)(1/" + n1 + " + 1/" + n2 + ")), p̄ = (x" + g.a + " + x" + g.b + ")/(" + n1 +
+                             " + " + n2 + ")";
+  if (test == "zunpool")
+    return "Z = (" + h1 + " − " + h2 + ")/√(" + h1 + "(1 − " + h1 + ")/" + n1 + " + " + h2 + "(1 − " + h2 + ")/" + n2 +
+           ")" + props;
+  if (test == "zpoolcc")
+    return "Z = (|" + h1 + " − " + h2 + "| − (1/" + n1 + " + 1/" + n2 + ")/2)/" + pooled + ", with the sign of " + h1 +
+           " − " + h2 + props;
+  return "Z = (" + h1 + " − " + h2 + ")/" + pooled + props;
+}
+
+std::string z_two_numbers(const std::string& test, int x1, int n1, int x2, int n2) {
+  using derive::num;
+  const double h1 = static_cast<double>(x1) / n1, h2 = static_cast<double>(x2) / n2;
+  const std::string f = std::to_string(x1) + "/" + std::to_string(n1) + " − " + std::to_string(x2) + "/" +
+                        std::to_string(n2);
+  const double pb = static_cast<double>(x1 + x2) / (n1 + n2);
+  const std::string se =
+      test == "zunpool"
+          ? "√(" + num(h1) + " × " + num(1 - h1) + "/" + std::to_string(n1) + " + " + num(h2) + " × " + num(1 - h2) +
+                "/" + std::to_string(n2) + ")"
+          : "√(" + num(pb) + " × " + num(1 - pb) + " × (1/" + std::to_string(n1) + " + 1/" + std::to_string(n2) + "))";
+  const std::string top =
+      test == "zpoolcc" ? "(|" + f + "| − " + num(0.5 * (1.0 / n1 + 1.0 / n2)) + ")" : "(" + f + ")";
+  return top + "/" + se + " = " + num(z_two(test, x1, n1, x2, n2));
+}
+
+// Fisher's conditional test at the table total t: the values of x1 it rejects (as fisher_region finds them) and
+// their conditional size.
+std::string fisher_text(int n1, int n2, int t, double alpha, Alt a, const std::string& x) {
+  int lo, hi;
+  std::vector<char> rej;
+  std::vector<double> f;
+  fisher_region(n1, n2, t, alpha, a, lo, hi, rej, f);
+  const int m = hi - lo + 1;
+  int i = 0, j = m - 1;  // rejected: [0, i) at the bottom and (j, m) at the top
+  while (i < m && rej[static_cast<std::size_t>(i)]) ++i;
+  while (j >= i && rej[static_cast<std::size_t>(j)]) --j;
+  double size = 0;
+  for (int k = 0; k < m; ++k)
+    if (rej[static_cast<std::size_t>(k)]) size += f[static_cast<std::size_t>(k)];
+  std::string region;
+  if (i > 0) region = x + " ≤ " + std::to_string(lo + i - 1);
+  if (j < m - 1) region += (region.empty() ? "" : " or ") + x + " ≥ " + std::to_string(lo + j + 1);
+  if (region.empty()) return "no value of " + x + " is rejected, a conditional size of 0";
+  return "reject when " + region + ", a conditional size of " + derive::prob(size);
+}
+
+// How the power of a test of two independent proportions comes about, by enumeration (`enumerated`) or by the normal
+// approximation (`fell_back`: in place of an enumeration too large), and the enumeration's size where the row has it.
+void two_prop_power_steps(const TwoPropTest& T, double n1, double n2, double p1, double p2, bool enumerated,
+                          bool fell_back, const Row& r, const Groups& g, derive::Steps& out) {
+  using namespace derive;
+  const std::string N1 = "N" + g.a, N2 = "N" + g.b, P1 = "P" + g.a, P2 = "P" + g.b, X1 = "x" + g.a, X2 = "x" + g.b;
+  const std::string m1 = fint(n1), m2 = fint(n2);
+  if (!enumerated) {
+    const TwoPropNormal q = two_prop_normal_parts(T, n1, n2, p1, p2);
+    out.push_back({"Difference to detect", "δ = " + P1 + " − " + P2, num(p1) + " − " + num(p2) + " = " + num(q.d)});
+    const std::string s1 = "√(" + P1 + "(1 − " + P1 + ")/" + N1 + " + " + P2 + "(1 − " + P2 + ")/" + N2 + ")";
+    const std::string v1 = "√(" + num(p1) + " × " + num(1 - p1) + "/" + m1 + " + " + num(p2) + " × " + num(1 - p2) +
+                           "/" + m2 + ") = " + sig(q.s1);
+    if (T.test == "zunpool") {
+      out.push_back({"Standard error", "σ0 = σ1 = " + s1, v1});
+    } else {
+      out.push_back({"Standard error under H0",
+                     "σ0 = √(p̄(1 − p̄)(1/" + N1 + " + 1/" + N2 + ")), p̄ = (" + N1 + " " + P1 + " + " + N2 + " " + P2 +
+                         ")/(" + N1 + " + " + N2 + ")",
+                     "p̄ = (" + m1 + " × " + num(p1) + " + " + m2 + " × " + num(p2) + ")/" + fint(n1 + n2) + " = " +
+                         num(q.pb) + ", σ0 = √(" + num(q.pb) + " × " + num(1 - q.pb) + " × (1/" + m1 + " + 1/" + m2 +
+                         ")) = " + sig(q.s0)});
+      out.push_back({"Standard error under H1", "σ1 = " + s1, v1});
+    }
+    if (q.cc > 0)
+      out.push_back({"Continuity correction",
+                     "c = (1/" + N1 + " + 1/" + N2 + ")/2" +
+                         (T.test == "fisher" ? ", Fisher's exact test approximated by the corrected z-test" : ""),
+                     "(1/" + m1 + " + 1/" + m2 + ")/2 = " + sig(q.cc)});
+    out.push_back(z_critical(T.alpha, T.alt));
+    Step pw = tails_power(T.alt, "δ", q.cc > 0 ? "c" : "", "σ0", "σ1", q.d, q.cc, q.z, q.s0, q.s1, q.up, q.lo,
+                          r.num("power"));
+    if (fell_back) pw.formula += ", the normal approximation (the samples are too large for exact enumeration)";
+    out.push_back(pw);
+    return;
+  }
+  // the exact power: the probability, under P1 and P2, of the tables that the test rejects
+  const int i1 = static_cast<int>(n1), i2 = static_cast<int>(n2);
+  std::string over;
+  if (T.test == "fisher") {
+    const int t = static_cast<int>(std::lround(n1 * p1 + n2 * p2));
+    const std::string given = "given the table's total t = " + X1 + " + " + X2 + ", " + X1 +
+                              " is hypergeometric under H0, and the test rejects ";
+    out.push_back(
+        {"Conditional test",
+         given + (T.alt == Alt::Two     ? "its least probable values, whose probabilities add up to at most α"
+                  : T.alt == Alt::Upper ? "when P(X ≥ " + X1 + " | t) ≤ α"
+                                        : "when P(X ≤ " + X1 + " | t) ≤ α"),
+         "at the expected total t = " + std::to_string(t) + ": " + fisher_text(i1, i2, t, T.alpha, T.alt, X1)});
+    over = "over the tables the conditional test rejects";
+  } else {
+    out.push_back(z_critical(T.alpha, T.alt));
+    const int x1 = static_cast<int>(std::clamp(std::lround(n1 * p1), 0L, static_cast<long>(i1))),
+              x2 = static_cast<int>(std::clamp(std::lround(n2 * p2), 0L, static_cast<long>(i2)));
+    out.push_back({"Test statistic", z_two_formula(T.test, g),
+                   "at the expected counts " + X1 + " = " + std::to_string(x1) + ", " + X2 + " = " +
+                       std::to_string(x2) + ": " + z_two_numbers(T.test, x1, i1, x2, i2)});
+    over = T.alt == Alt::Two ? "over the tables with |Z| > z" : (T.alt == Alt::Upper ? "over the tables with Z > z"
+                                                                                     : "over the tables with Z < −z");
+  }
+  auto windows = [&](double a, double b) {
+    return "Σ over " + X1 + " = " + window_text(i1, a) + ", " + X2 + " = " + window_text(i2, b);
+  };
+  if (r.has("actual_alpha"))
+    out.push_back({"Actual alpha", "α* = the same sum with " + P1 + " = " + P2,
+                   windows(p2, p2) + " = " + prob(r.num("actual_alpha"))});
+  out.push_back({"Power", table_sum(g.a, g.b, over), windows(p1, p2) + " = " + prob(r.num("power"))});
+}
+
+derive::Steps two_prop_steps(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const TwoPropTest T{s.s("test"), alt(s), s("alpha")};
+  const double n1 = r.num("n1"), n2 = r.num("n2"), p1 = r.num("p1"), p2 = r.num("p2"), target = s.get("power", NAN);
+  const bool fell_back = has_note(r, FELL_BACK), enumerated = s.is("method", "exact") && !fell_back;
+  Steps out;
+  if (s.solve != "p1") p1_step(s, p1, p2, out);
+  two_prop_power_steps(T, n1, n2, p1, p2, enumerated, fell_back, r, {"1", "2"}, out);
+  RunContext ctx;
+  if (s.solve == "n")
+    out.push_back(two_group_step(
+        s, [&](double a1, double a2) { return two_prop_power(T, a1, a2, p1, p2, enumerated, ctx); }, {n1, n2},
+        r.num("power"), target, 2, enumerated));
+  else if (s.solve == "p1")
+    out.push_back(effect_search("P1", p1, r.num("power"), target));
+  return out;
 }
 
 Procedure two_props() {
@@ -406,6 +571,7 @@ Procedure two_props() {
     const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
     return t + (enumerated ? "; power was computed by exact enumeration." : "; power uses the normal approximation.");
   };
+  p.derivation = two_prop_steps;
   p.definitions = {{"N1, N2", "Sample sizes of groups 1 and 2."},
                    {"P1, P2", "Response proportions in groups 1 (treatment) and 2 (control/reference)."},
                    {"D1, R1, OR1", "Difference, ratio and odds ratio of P1 relative to P2."},
@@ -483,6 +649,97 @@ bool near_estimate(double w, double p1, double p2) { return std::fabs(w) <= 1e-1
 const char* const AC_WRONG_SIDE =
     "the success and failure that the Agresti–Caffo interval adds to each group pull each group's proportion toward "
     "1/2, which moves its center from the estimate by more than its margin at this confidence";
+
+// How the limits for P1 − P2 come about at the anticipated counts, in the method's own formula, and the width.
+derive::Steps diff_ci_steps(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const std::string& m = s.s("method");
+  const double n1 = r.num("n1"), n2 = r.num("n2"), p1 = r.num("p1"), p2 = r.num("p2"), conf = r.num("conf");
+  const bool two = s.is("sides", "two"), up = s.is("sides", "upper");
+  const double x1 = n1 * p1, x2 = n2 * p2, h1 = x1 / n1, h2 = x2 / n2, d = h1 - h2;
+  const double a = two ? (1 - conf) / 2 : 1 - conf, z = stats::qnorm(a, false);
+  const Interval ci = diff_ci(m, n1, x1, n2, x2, conf, two);
+  const std::string N1 = fint(n1), N2 = fint(n2);
+  // both limits, or the one a one-sided interval has
+  auto limits = [&](const std::string& l, const std::string& u) { return two ? l + "; " + u : (up ? u : l); };
+  const std::string lims = limits("L = " + num(ci.lo), "U = " + num(ci.hi));
+  Steps out;
+  out.push_back({"Group 2 size", "N2 = ⌈R × N1⌉", "⌈" + num(s("r")) + " × " + N1 + "⌉ = " + N2});
+  out.push_back(
+      {"Anticipated counts", "x1 = N1 P1, x2 = N2 P2",
+       "x1 = " + N1 + " × " + num(p1) + " = " + num(x1) + ", x2 = " + N2 + " × " + num(p2) + " = " + num(x2)});
+  out.push_back({"Critical value", std::string("z = Φ⁻¹(1 − ") + (two ? "α/2" : "α") + "), α = 1 − confidence",
+                 "Φ⁻¹(1 − " + num(a) + ") = " + num(z)});
+  if (m == "newcombe" || m == "newcombecc") {
+    const std::string one = m == "newcombe" ? "wilson" : "wilsoncc";
+    const Interval c1 = prop_ci(one, n1, x1, conf, two), c2 = prop_ci(one, n2, x2, conf, two);
+    out.push_back({"Limits of each proportion",
+                   std::string("[l1, u1] and [l2, u2], the Wilson score intervals") +
+                       (m == "newcombecc" ? " with continuity correction" : "") + " for P1 and P2 at confidence 1 − α",
+                   "l1 = " + num(c1.lo) + ", u1 = " + num(c1.hi) + ", l2 = " + num(c2.lo) + ", u2 = " + num(c2.hi)});
+    out.push_back({"Limits",
+                   limits("L = D − √((P̂1 − l1)² + (u2 − P̂2)²)", "U = D + √((u1 − P̂1)² + (P̂2 − l2)²)") +
+                       ", D = P̂1 − P̂2, P̂i = xi/Ni",
+                   limits("L = " + num(d) + " − √((" + num(h1) + " − " + num(c1.lo) + ")² + (" + num(c2.hi) + " − " +
+                              num(h2) + ")²) = " + num(ci.lo),
+                          "U = " + num(d) + " + √((" + num(c1.hi) + " − " + num(h1) + ")² + (" + num(h2) + " − " +
+                              num(c2.lo) + ")²) = " + num(ci.hi))});
+  } else if (m == "ac") {
+    const double t1 = (x1 + 1) / (n1 + 2), t2 = (x2 + 1) / (n2 + 2);
+    const double h = z * std::sqrt(t1 * (1 - t1) / (n1 + 2) + t2 * (1 - t2) / (n2 + 2));
+    out.push_back({"Adjusted proportions", "P̃i = (xi + 1)/(Ni + 2), a success and a failure added to each group",
+                   "P̃1 = (" + num(x1) + " + 1)/" + fint(n1 + 2) + " = " + num(t1) + ", P̃2 = (" + num(x2) + " + 1)/" +
+                       fint(n2 + 2) + " = " + num(t2)});
+    out.push_back({"Limits",
+                   std::string(two ? "P̃1 − P̃2 ± H" : up ? "U = P̃1 − P̃2 + H" : "L = P̃1 − P̃2 − H") +
+                       ", H = z √(P̃1(1 − P̃1)/(N1 + 2) + P̃2(1 − P̃2)/(N2 + 2)), kept within −1 and 1",
+                   "H = " + num(z) + " × √(" + num(t1) + " × " + num(1 - t1) + "/" + fint(n1 + 2) + " + " + num(t2) +
+                       " × " + num(1 - t2) + "/" + fint(n2 + 2) + ") = " + num(h) + ": " + lims});
+  } else {
+    const bool cc = m == "waldcc";
+    double h = z * std::sqrt(h1 * (1 - h1) / n1 + h2 * (1 - h2) / n2);
+    if (cc) h += 0.5 * (1 / n1 + 1 / n2);
+    out.push_back({"Limits",
+                   std::string(two ? "D ± H" : up ? "U = D + H" : "L = D − H") +
+                       ", H = z √(P̂1(1 − P̂1)/N1 + P̂2(1 − P̂2)/N2)" + (cc ? " + (1/N1 + 1/N2)/2" : "") +
+                       ", D = P̂1 − P̂2, kept within −1 and 1",
+                   "D = " + num(d) + ", H = " + num(z) + " × √(" + num(h1) + " × " + num(1 - h1) + "/" + N1 + " + " +
+                       num(h2) + " × " + num(1 - h2) + "/" + N2 + ")" +
+                       (cc ? " + (1/" + N1 + " + 1/" + N2 + ")/2" : "") + " = " + num(h) + ": " + lims});
+  }
+  const double w = r.num("width"), target = s.get("width", NAN);
+  const std::string wt = s.solve == "n" ? prob(w, target) : num(w);
+  if (two)
+    out.push_back({"Width", "W = U − L", difference(ci.hi, ci.lo, wt) + " = " + wt});
+  else if (up)
+    out.push_back({"Width", "W = U − (P1 − P2)", difference(ci.hi, p1 - p2, wt) + " = " + wt});
+  else
+    out.push_back({"Width", "W = (P1 − P2) − L", difference(p1 - p2, ci.lo, wt) + " = " + wt});
+  if (s.solve == "n") {
+    const std::string rule =
+        "N1 = the smallest size from which the width stays at or below the target, with N2 = ⌈R × N1⌉";
+    const std::string at = "width at N1 = " + N1 + ", N2 = " + N2 + ": " + prob(w, target);
+    if (n1 <= 1) {
+      out.push_back({"Sample size", rule,
+                     "at N1 = 1, N2 = " + N2 + ", the smallest sizes, the width is already " + prob(w, target) + " ≤ " +
+                         fnum(target)});
+    } else {
+      const DiffCi below = diff_ci_at(s, n1 - 1);
+      const std::string less = "N1 = " + fint(n1 - 1) + ", N2 = " + fint(below.n2);
+      if (below.width > target)
+        out.push_back({"Sample size", rule,
+                       "width at " + less + ": " + prob(below.width, target) + " > " + fnum(target) + " ≥ " + at});
+      else  // a one-sided bound on the wrong side of the estimate, or within a rounding error of it
+        out.push_back({"Sample size", rule + ", with the bound beyond the estimate",
+                       "at " + less + " the bound lies " +
+                           (near_estimate(below.width, p1, p2)
+                                ? "within a rounding error of the estimate"
+                                : "on the wrong side of the estimate (W = " + num(below.width) + ")") +
+                           "; " + at + " ≤ " + fnum(target)});
+    }
+  }
+  return out;
+}
 
 Procedure two_props_ci() {
   Procedure p;
@@ -652,6 +909,7 @@ Procedure two_props_ci() {
            " confidence interval for the difference of two proportions " + where + " when the observed proportions "
            "equal " + p1 + " and " + p2 + ".";
   };
+  p.derivation = diff_ci_steps;
   p.definitions = {{"N1, N2", "Group sample sizes; N2 = R·N1 rounded up."},
                    {"Width", "Upper minus lower limit (two-sided) or distance from P1 − P2 to the bound (one-sided)."},
                    {"P1, P2", "Anticipated proportions at which the interval is evaluated."}};
@@ -719,6 +977,41 @@ ParamDef or_direction_param() {
 
 const char* REF_SCHLESSELMAN = "Schlesselman, J. J. (1982). Case-Control Studies: Design, Conduct, Analysis. Oxford "
                                "University Press.";
+
+// The cases as group 1 and the controls as group 0 of the test of two proportions.
+derive::Steps case_control_steps(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const TwoPropTest T{s.s("test"), alt(s), s("alpha")};
+  const double nc = r.num("ncase"), nk = r.num("nctrl"), p1 = r.num("p1"), p0 = r.num("p0"), m = r.num("m");
+  const double odds_ratio = r.num("or"), target = s.get("power", NAN);
+  const bool fell_back = has_note(r, FELL_BACK), enumerated = s.is("method", "exact") && !fell_back;
+  Steps out;
+  if (s.solve != "or" && s.is("es", "or"))
+    out.push_back({"Exposure among cases", "P1 = OR P0/(1 − P0 + OR P0)",
+                   num(odds_ratio) + " × " + num(p0) + "/(" + num(1 - p0) + " + " + num(odds_ratio) + " × " + num(p0) +
+                       ") = " + num(p1)});
+  out.push_back({"Controls", "N0 = ⌈M × N1⌉ for N1 cases and M controls per case",
+                 "⌈" + num(m) + " × " + fint(nc) + "⌉ = " + fint(nk)});
+  two_prop_power_steps(T, nc, nk, p1, p0, enumerated, fell_back, r, {"1", "0"}, out);
+  if (s.solve == "n") {
+    RunContext ctx;
+    const double less = nc - 1, less_ctrl = solve::round_up(m * less);
+    auto sizes = [](double a, double b) {
+      return "N1 = " + fint(a) + ", N0 = " + fint(b) + " (N = " + fint(a + b) + ")";
+    };
+    const std::string rule = "N1 = the smallest number of cases whose power reaches the target, with N0 = ⌈M × N1⌉";
+    out.push_back(size_step(
+        "Cases and controls", enumerated ? sawtooth_rule(rule) : rule, sizes(nc, nk), r.num("power"),
+        less < 2 || less_ctrl < 2 ? "" : sizes(less, less_ctrl),
+        less < 2 || less_ctrl < 2 ? NAN : two_prop_power(T, less, less_ctrl, p1, p0, enumerated, ctx), target));
+  } else if (s.solve == "or") {
+    out.push_back(
+        {"Odds ratio", "OR = (P1/(1 − P1)) / (P0/(1 − P0))",
+         "(" + num(p1) + "/" + num(1 - p1) + ") / (" + num(p0) + "/" + num(1 - p0) + ") = " + num(odds_ratio)});
+    out.push_back(effect_search("OR", odds_ratio, r.num("power"), target));
+  }
+  return out;
+}
 
 Procedure case_control() {
   Procedure p;
@@ -891,6 +1184,7 @@ Procedure case_control() {
     const bool enumerated = s.is("method", "exact") && std::find(r.notes.begin(), r.notes.end(), FELL_BACK) == r.notes.end();
     return t + (enumerated ? "; power was computed by exact enumeration." : "; power uses the normal approximation.");
   };
+  p.derivation = case_control_steps;
   p.definitions = {{"Cases, Controls", "People with and without the disease; controls = M × cases, rounded up."},
                    {"P1, P0", "Shares of cases and of controls who were exposed."},
                    {"OR", "Odds ratio of exposure, P1/(1 − P1) divided by P0/(1 − P0)."},
@@ -915,6 +1209,7 @@ SSC_REGISTER(case_control);
 // t·OR/(t·OR + M − t + 1) (t/(M + 1) under H0); sets with no or all members exposed carry no information.
 struct Matched {
   double delta = 0, v0 = 0, v1 = 0;  // per set: mean of (case exposed − expected under H0), null and true variance
+  double pp = 0, pm = 0;             // a control's exposure when its case is exposed, and when not
 };
 
 Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
@@ -927,6 +1222,8 @@ Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
     throw CalcError("the correlation φ is too large in size for these exposures: the exposure of a control given its "
                     "case's would fall outside 0 to 1");
   Matched mo;
+  mo.pp = pp;
+  mo.pm = pm;
   for (int t = 1; t <= M; ++t) {
     // the chance that a set has t exposed members: the case and t − 1 controls, or t controls
     const double pt = p1 * std::exp(stats::lchoose(M, t - 1)) * std::pow(pp, t - 1) * std::pow(1 - pp, M - t + 1) +
@@ -939,17 +1236,65 @@ Matched matched_moments(double odds_ratio, double p0, double phi, int M) {
   return mo;
 }
 
-double matched_power(double n, double odds_ratio, double p0, double phi, int M, double alpha, Alt a) {
+// The power and its parts (which the derivation shows): the per-set moments, √n, their SDs, the critical value and
+// each tail.
+struct MatchedPower {
+  Matched mo;
+  double rn, s0, s1, z, up = NAN, lo = NAN, power = NAN;
+};
+
+MatchedPower matched_power_parts(double n, double odds_ratio, double p0, double phi, int M, double alpha, Alt a) {
   using namespace stats;
-  const Matched mo = matched_moments(odds_ratio, p0, phi, M);
-  const double rn = std::sqrt(n), s0 = std::sqrt(mo.v0), s1 = std::sqrt(mo.v1);
-  if (!(s1 > 0)) return NAN;
-  auto tail = [&](double d, double z) { return pnorm((rn * d - z * s0) / s1); };
-  if (a == Alt::Two) {
-    const double z = qnorm(half_alpha(alpha), false);
-    return std::min(1.0, tail(mo.delta, z) + tail(-mo.delta, z));
-  }
-  return tail(a == Alt::Upper ? mo.delta : -mo.delta, qnorm(alpha, false));
+  MatchedPower r;
+  r.mo = matched_moments(odds_ratio, p0, phi, M);
+  r.rn = std::sqrt(n);
+  r.s0 = std::sqrt(r.mo.v0);
+  r.s1 = std::sqrt(r.mo.v1);
+  r.z = qnorm(tail_alpha(alpha, a), false);
+  if (!(r.s1 > 0)) return r;
+  r.up = pnorm((r.rn * r.mo.delta - r.z * r.s0) / r.s1);
+  r.lo = pnorm((r.rn * -r.mo.delta - r.z * r.s0) / r.s1);
+  r.power = a == Alt::Two ? std::min(1.0, r.up + r.lo) : (a == Alt::Upper ? r.up : r.lo);
+  return r;
+}
+
+double matched_power(double n, double odds_ratio, double p0, double phi, int M, double alpha, Alt a) {
+  return matched_power_parts(n, odds_ratio, p0, phi, M, alpha, a).power;
+}
+
+derive::Steps matched_steps(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const Alt a = alt(s);
+  const double n = r.num("n"), odds_ratio = r.num("or"), p0 = r.num("p0"), p1 = r.num("p1"), phi = r.num("phi");
+  const double alpha = s("alpha"), target = s.get("power", NAN);
+  const int M = static_cast<int>(r.num("mctl"));
+  const MatchedPower q = matched_power_parts(n, odds_ratio, p0, phi, M, alpha, a);
+  Steps out;
+  out.push_back({"Exposure among cases", "P1 = OR P0/(1 − P0 + OR P0)",
+                 num(odds_ratio) + " × " + num(p0) + "/(" + num(1 - p0) + " + " + num(odds_ratio) + " × " + num(p0) +
+                     ") = " + num(p1)});
+  out.push_back(
+      {"Exposure of a control given its case's",
+       "p₊ = P0 + φ √((1 − P1) P0 (1 − P0)/P1) when the case is exposed, p₋ = P0 − φ √(P1 P0 (1 − P0)/(1 − P1)) "
+       "when not",
+       "p₊ = " + num(p0) + " + " + sub(phi) + " × √(" + num(1 - p1) + " × " + num(p0) + " × " + num(1 - p0) + "/" +
+           num(p1) + ") = " + num(q.mo.pp) + ", p₋ = " + num(p0) + " − " + sub(phi) + " × √(" + num(p1) + " × " +
+           num(p0) + " × " + num(1 - p0) + "/" + num(1 - p1) + ") = " + num(q.mo.pm)});
+  out.push_back({"Per-set moments",
+                 "δ = Σₜ πₜ (eₜ − t/(M + 1)), v0 = Σₜ πₜ t/(M + 1) × (1 − t/(M + 1)), v1 = Σₜ πₜ eₜ (M − t + 1)/(t OR "
+                 "+ M − t + 1), for sets with t = 1 to M exposed members (πₜ their chance from P1, p₊ and p₋), eₜ = "
+                 "t OR/(t OR + M − t + 1) the chance that the case is one of them",
+                 "M = " + std::to_string(M) + ": δ = " + sig(q.mo.delta) + ", v0 = " + sig(q.mo.v0) +
+                     ", v1 = " + sig(q.mo.v1)});
+  out.push_back(z_critical(alpha, a));
+  out.push_back(tails_power(a, "√n δ", "", "√v0", "√v1", q.rn * q.mo.delta, 0, q.z, q.s0, q.s1, q.up, q.lo,
+                            r.num("power")));
+  if (s.solve == "n")
+    out.push_back(n_search([&](double x) { return matched_power(x, odds_ratio, p0, phi, M, alpha, a); }, n, target, 1,
+                           "n"));
+  else if (s.solve == "or")
+    out.push_back(effect_search("OR", odds_ratio, r.num("power"), target));
+  return out;
 }
 
 Procedure matched_case_control() {
@@ -1080,6 +1425,7 @@ Procedure matched_case_control() {
            " among controls, correlation of exposure within sets " + fnum_fine(r.num("phi")) + ") using a " +
            alt_words(alt(s)) + " conditional test at α = " + fnum(r.num("alpha")) + ".";
   };
+  p.derivation = matched_steps;
   p.definitions = {{"Sets", "Matched sets: one case with M matched controls."},
                    {"P1, P0", "Shares of cases and of controls who were exposed."},
                    {"OR", "Odds ratio of exposure, P1/(1 − P1) divided by P0/(1 − P0)."},

@@ -9,6 +9,7 @@
 
 #include "procedures/apart.hpp"
 #include "procedures/common.hpp"
+#include "procedures/derive.hpp"
 
 namespace ssc::procs {
 namespace {
@@ -285,6 +286,64 @@ void put_design(Row& r, const Design& d) {
   r.set("en1", d.en1);
 }
 
+// The design's exact error rates and expected size, and for a searched design how the search chose it, from the
+// admissible designs of the row's table (the search is not repeated).
+derive::Steps simon_steps(const Scenario& s, const Row& r) {
+  using namespace derive;
+  const int r1 = static_cast<int>(r.num("r1")), n1 = static_cast<int>(r.num("n1")), rr = static_cast<int>(r.num("r")),
+            n = static_cast<int>(r.num("n"));
+  const double p0 = r.num("p0"), p1 = r.num("p1"), alpha = r.num("alpha");
+  const std::string N1 = std::to_string(n1), N2 = std::to_string(n - n1), R1 = std::to_string(r1);
+  const std::string x1 = "x1 = " + std::to_string(r1 + 1) + "–" + N1;
+  Steps out;
+  out.push_back({"Design",
+                 "stop after stage 1 if X1 ≤ r1 of the n1 patients respond; otherwise treat n − n1 more and call the "
+                 "treatment promising if X1 + X2 > r",
+                 "r1/n1 = " + ratio(r1, n1) + ", r/n = " + ratio(rr, n) + ", n − n1 = " + N2});
+  out.push_back({"Early stopping under P0", "PET(P0) = P(X1 ≤ r1), X1 ~ Binomial(n1, P0)",
+                 "P(X1 ≤ " + R1 + "), X1 ~ Binomial(" + N1 + ", " + num(p0) + ") = " + prob(r.num("pet0"))});
+  out.push_back({"Expected size under P0", "E(N | P0) = n1 + (1 − PET(P0))(n − n1)",
+                 N1 + " + (1 − " + num(r.num("pet0")) + ") × " + N2 + " = " + num(r.num("en0"))});
+  out.push_back({"Type I error",
+                 "α* = Σ b(x1; n1, P0) P(X2 > r − x1) over x1 = r1 + 1 to n1, X2 ~ Binomial(n − n1, P0), b the "
+                 "binomial probability; at most α",
+                 "Σ over " + x1 + ", X2 ~ Binomial(" + N2 + ", " + num(p0) + ") = " + prob(r.num("actual_alpha"))});
+  out.push_back({"Power", "the same sum at P1: Σ b(x1; n1, P1) P(X2 > r − x1), X2 ~ Binomial(n − n1, P1)",
+                 "Σ over " + x1 + ", X2 ~ Binomial(" + N2 + ", " + num(p1) + ") = " + prob(r.num("power"))});
+  if (s.solve != "n") return out;
+  // the range searched, as search() sets it, and the other end of the admissible designs from the row's table
+  const double power = s("power");
+  const int lo = lower_bound_n(p0, p1, alpha, power), nmax = static_cast<int>(s("nmax"));
+  const int single = single_stage_n(p0, p1, alpha, power, lo);
+  const int hi = nmax > 0 ? nmax : std::max(single + 15, static_cast<int>(std::ceil(1.6 * single)));
+  std::string other;
+  for (const auto& t : r.tables)
+    if (t.title == "Minimax, Admissible and Optimal Designs" && t.rows.size() > 1) {
+      const auto& row = s.is("criterion", "minimax") ? t.rows.back() : t.rows.front();
+      const std::string* a = std::get_if<std::string>(&row[2]);
+      const std::string* b = std::get_if<std::string>(&row[3]);
+      const double* en0 = std::get_if<double>(&row[4]);
+      if (a && b && en0)
+        other = std::string("; the ") + (s.is("criterion", "minimax") ? "optimal" : "minimax") + " design (r1/n1 = " +
+                *a + ", r/n = " + *b + ") has E(N | P0) = " + num(*en0);
+    }
+  const std::string meets = "among the designs with α* ≤ α and power ≥ the target, found by exhaustive search over "
+                            "n = n_lo to n_hi (n_lo: the size the most powerful single-stage test needs)";
+  if (s.is("criterion", "minimax"))
+    out.push_back({"Minimax design", "the smallest maximum size n (ties: the smallest E(N | P0)) " + meets,
+                   "n = " + std::to_string(n) +
+                       (n > lo + 1   ? ": no design with n from " + std::to_string(lo) + " to " +
+                                         std::to_string(n - 1) + " meets both error rates"
+                        : n == lo + 1 ? ": no design with n = " + std::to_string(lo) + " meets both error rates"
+                                      : ", n_lo itself") +
+                       other});
+  else
+    out.push_back({"Optimal design", "the smallest expected size E(N | P0) " + meets,
+                   "E(N | P0) = " + num(r.num("en0")) + ", the smallest over n = " + std::to_string(lo) + " to " +
+                       std::to_string(hi) + other});
+  return out;
+}
+
 Procedure simon() {
   Procedure p;
   p.id = "prop.one.simon";
@@ -446,6 +505,7 @@ Procedure simon() {
            ". When P = P0 the trial stops after stage 1 with probability " + pet_text +
            " and the expected sample size is " + fnum(r.num("en0"), 1) + ".";
   };
+  p.derivation = simon_steps;
   p.definitions = {
       {"r1, n1", "Stage 1: treat n1 patients; stop for futility if at most r1 respond."},
       {"r, n", "Treat n patients in total; the treatment is promising if more than r respond."},
