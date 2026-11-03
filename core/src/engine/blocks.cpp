@@ -207,6 +207,16 @@ TwoN solve_two_group_n(const Scenario& s, const std::function<double(double, dou
   throw CalcError("unsupported allocation: " + a);
 }
 
+TwoN smaller_two_group(const Scenario& s, const TwoN& n) {
+  const std::string& a = s.s("alloc");
+  if (a == "equal") return {n.n1 - 1, n.n2 - 1};
+  if (a == "ratio") return {n.n1 - 1, ratio_n2(n.n1 - 1, s("r"))};
+  if (a == "n1") return {n.n1, n.n2 - 1};
+  if (a == "n2") return {n.n1 - 1, n.n2};
+  if (a == "pct") return split_pct(n.total() - 1, s("pct1"));
+  return {0, 0};
+}
+
 void put_two_group(Row& r, const TwoN& n) {
   r.set("n1", n.n1);
   r.set("n2", n.n2);

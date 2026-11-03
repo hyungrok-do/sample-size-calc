@@ -55,6 +55,11 @@ TwoN solve_two_group_n(const Scenario& s, const std::function<double(double, dou
                        double min_n, double guess_n1, bool monotone, const RunContext& ctx,
                        double max_n = 1e8);
 
+/// The next smaller design under the allocation rule that was solved for (both groups less one for equal groups,
+/// N1 less one and N2 = ⌈r N1⌉ for a ratio, the free group less one when the other is fixed, the total less one for
+/// a percentage): the sizes just short of a solved answer, for showing how it was found.
+TwoN smaller_two_group(const Scenario& s, const TwoN& n);
+
 void put_two_group(Row& r, const TwoN& n);
 std::vector<Column> two_group_columns();
 

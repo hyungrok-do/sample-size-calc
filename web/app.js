@@ -7,7 +7,7 @@ import { cell } from './format.js?v=dev';
 
 const $ = (id) => document.getElementById(id);
 const engine = new Engine();
-const state = { catalog: null, proc: null, solve: '', fields: new Map(), busy: false, form: 0 };
+const state = { catalog: null, proc: null, solve: '', fields: new Map(), busy: false, form: 0, derivationOpen: false };
 const schemas = new Map();  // procedure id → its description, so opening a method never waits on a calculation
 const MAX_ROWS = 1000;      // rows of an answer drawn in the table
 let guide;
@@ -421,6 +421,35 @@ function details(rows) {
   return [...parts, box];
 }
 
+// How the numbers were derived: the method's own steps with one scenario's numbers in place (computed by the
+// engine with the functions that gave the answer), then its symbols and references. Kept open across answers once
+// opened.
+function derivation(res, rows) {
+  const which = rows.map((r, i) => i).filter((i) => rows[i]._derivation?.length);
+  const defs = res.definitions ?? [], refs = res.references ?? [];
+  if (!which.length && !defs.length && !refs.length) return [];
+  const parts = [];
+  if (which.length) {
+    const steps = el('ol', { class: 'steps' });
+    const show = (i) => steps.replaceChildren(...rows[i]._derivation.map((st) => el('li', {},
+      el('strong', {}, `${st.what}: `), el('span', { class: 'step-formula' }, st.formula),
+      el('span', { class: 'step-numbers' }, st.numbers))));
+    if (rows.length > 1) {
+      const pick = el('select', { id: 'derivation-row', onchange: (e) => show(Number(e.target.value)) },
+        which.map((i) => el('option', { value: String(i) }, `Scenario ${i + 1}`)));
+      parts.push(el('div', { class: 'details' }, el('label', { for: 'derivation-row' }, 'Steps for'), pick));
+    }
+    show(which[0]);
+    parts.push(steps);
+  }
+  if (defs.length) parts.push(el('h4', {}, 'Symbols'), el('dl', { class: 'symbols' }, defs.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])));
+  if (refs.length) parts.push(el('h4', {}, 'References'), el('ol', { class: 'refs' }, refs.map((r) => el('li', {}, r))));
+  const box = el('details', { class: 'derivation', id: 'derivation' }, el('summary', {}, 'How this was calculated'), ...parts);
+  box.open = state.derivationOpen;
+  box.addEventListener('toggle', () => { state.derivationOpen = box.open; });
+  return [box];
+}
+
 // A message as shown: the engine quotes typed text briefly, and this keeps any other long word from costing the
 // page seconds of layout in an error box (which breaks words anywhere).
 const brief = (text) => (text.length > 500 ? `${text.slice(0, 500)}…` : text);
@@ -456,6 +485,7 @@ function renderResult(res, engineMs) {
   }
   out.append(...details(rows));
   if (res.notes?.length) out.append(el('ul', { class: 'notes' }, res.notes.map((n) => el('li', {}, n))));
+  out.append(...derivation(res, rows));
 }
 
 // A scenario that ran out of memory (the engine's message for it)

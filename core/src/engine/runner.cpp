@@ -650,6 +650,17 @@ json::Value run_request(const json::Value& req, Token* token) {
                 throw CalcError("the answer cannot be computed for these inputs: a count would be infinite or "
                                 "beyond 10^15; check for an extreme value");
             if (proc->statement) r.statement = proc->statement(scen[i], r);
+            // how the numbers came about, for the rows that keep their details; a step that cannot be computed at
+            // an extreme input leaves the answer standing without its derivation
+            if (proc->derivation && i < MAX_TABLE_ROWS) {
+              try {
+                r.derivation = proc->derivation(scen[i], r);
+              } catch (const Cancelled&) {
+                throw;
+              } catch (const std::exception&) {
+                r.derivation.clear();
+              }
+            }
             // 20,000 rows of group-sequential boundaries would take a gigabyte
             if (i >= MAX_TABLE_ROWS && !r.tables.empty()) {
               r.tables.clear();
@@ -738,6 +749,17 @@ json::Value run_request(const json::Value& req, Token* token) {
     if (!r.error.empty()) x.set("_error", r.error);
     if (!r.detail.empty()) x.set("_detail", r.detail);
     if (!r.statement.empty()) x.set("_statement", r.statement);
+    if (!r.derivation.empty()) {
+      json::Value steps = json::Value::array();
+      for (const auto& st : r.derivation) {
+        json::Value one = json::Value::object();
+        one.set("what", st.what);
+        one.set("formula", st.formula);
+        one.set("numbers", st.numbers);
+        steps.push(std::move(one));
+      }
+      x.set("_derivation", std::move(steps));
+    }
     if (!r.notes.empty()) {
       json::Value nn = json::Value::array();
       for (const auto& n : r.notes) nn.push(n);

@@ -8,6 +8,7 @@
 #include <new>
 #include <sstream>
 
+#include "engine/blocks.hpp"
 #include "engine/parse.hpp"
 #include "engine/runner.hpp"
 #include "testing.hpp"
@@ -379,4 +380,54 @@ TEST_CASE("procedures: every input has a help text") {
     }
   }
   CHECK(params > 700);
+}
+
+TEST_CASE("procedures: a derivation's steps agree with the answer they explain") {
+  // Each procedure's derivation (its own plug-in) shows how a row's numbers came about. Run every procedure's
+  // example for every quantity it solves for, and check that the steps are complete, contain no undefined value, and
+  // contain the answer: the row's power and, when a sample size was solved for, that size.
+  const json::Value cat = catalog_json();
+  int explained = 0;
+  for (const auto& p : cat.get("procedures").elements()) {
+    const std::string id = p.get("id").as_string();
+    const Procedure* proc = find_procedure(id);
+    if (!proc->derivation) continue;
+    const json::Value schema = json::parse(procedure_json(*proc).dump());
+    for (const auto& solve : schema.get("solve_for").elements()) {
+      json::Value req = json::Value::object();
+      req.set("procedure", id);
+      req.set("solve_for", solve.get("value").as_string());
+      req.set("inputs", schema.get("example").get("inputs"));
+      Token token;
+      const json::Value res = run_request(req, &token);
+      if (!res.get("ok").as_bool()) continue;  // inputs the example does not give for this quantity
+      int row = 0;
+      for (const auto& r : res.get("rows").elements()) {
+        if (r.find("_error") || row++ >= 3) continue;
+        const std::string where = id + " (solving for " + solve.get("value").as_string() + "): ";
+        ::ssc::test::count_check();
+        if (!r.find("_derivation") || r.get("_derivation").size() == 0) {
+          ::ssc::test::report_failure(where + "no derivation", __FILE__, __LINE__);
+          continue;
+        }
+        std::string all;
+        for (const auto& st : r.get("_derivation").elements()) {
+          for (const char* key : {"what", "formula", "numbers"})
+            if (st.get(key).as_string().empty()) ::ssc::test::report_failure(where + "a step without its " + key, __FILE__, __LINE__);
+          all += st.get("numbers").as_string() + " | ";
+        }
+        if (all.find("—") != std::string::npos || all.find("nan") != std::string::npos)
+          ::ssc::test::report_failure(where + "an undefined value in " + all, __FILE__, __LINE__);
+        if (r.find("power") && r.get("power").is_number() && all.find(blocks::fnum(r.get("power").as_number(), 4)) == std::string::npos)
+          ::ssc::test::report_failure(where + "the power " + blocks::fnum(r.get("power").as_number(), 4) + " is not in " + all,
+                                      __FILE__, __LINE__);
+        const char* size = r.find("n1") ? "n1" : "n";
+        if (solve.get("value").as_string() == "n" && r.find(size) && r.get(size).is_number() &&
+            all.find(blocks::fint(r.get(size).as_number())) == std::string::npos)
+          ::ssc::test::report_failure(where + "the sample size is not in " + all, __FILE__, __LINE__);
+        ++explained;
+      }
+    }
+  }
+  CHECK(explained > 0);
 }

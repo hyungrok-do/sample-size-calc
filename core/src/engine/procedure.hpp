@@ -167,6 +167,14 @@ struct Table {
   std::vector<std::vector<Cell>> rows;
 };
 
+/// One step of how a row's numbers came about: the quantity, its formula in symbols, and the same formula with the
+/// row's numbers in place, ending in its value ("λ = δ√N / σ" and "0.5 × √34 / 1 = 2.9155").
+struct Step {
+  std::string what;
+  std::string formula;
+  std::string numbers;
+};
+
 struct Row {
   std::vector<std::pair<std::string, Cell>> cells;
   std::string error;
@@ -174,6 +182,7 @@ struct Row {
   std::string statement;
   std::vector<std::string> notes;
   std::vector<Table> tables;
+  std::vector<Step> derivation;
 
   void set(const std::string& key, double v);
   void set(const std::string& key, const std::string& v);
@@ -249,6 +258,9 @@ struct Procedure {
   std::function<void(const Scenario&, Row&, RunContext&)> run;
   std::function<std::vector<Column>(const Scenario&)> columns;
   std::function<std::string(const Scenario&, const Row&)> statement;
+  /// How a row's numbers were derived, in this procedure's own steps, computed with the same functions as `run` so
+  /// that they cannot disagree with the answer (a plug-in per procedure; none for a procedure without one).
+  std::function<std::vector<Step>(const Scenario&, const Row&)> derivation;
 
   std::vector<std::string> references;
   std::vector<std::pair<std::string, std::string>> definitions;
