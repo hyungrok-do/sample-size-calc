@@ -14,9 +14,10 @@ import { chromium, firefox, webkit } from 'playwright';
 import { policy, watchViolations } from './csp.mjs';
 
 const site = resolve(process.argv[2] ?? '.');
-// SCREENSHOTS=<folder>: also save pictures of the DAG canvas there (CI uploads them for review)
+// SCREENSHOTS=<folder>: also save pictures of the DAG canvas and of the whole DAG page there (CI uploads them for review)
 const shots = process.env.SCREENSHOTS;
 const shoot = async (page, name) => { if (shots) await page.locator('.dag-scroll:has(#dag-canvas)').screenshot({ path: join(shots, `${name}.png`) }); };
+const shootPage = async (page, name) => { if (shots) await page.screenshot({ path: join(shots, `${name}.png`), fullPage: true }); };
 assert.ok(existsSync(join(site, 'index.html')), 'usage: node tests/site.mjs <site dir made by web/assemble.sh>');
 const text = (file) => readFile(join(site, file), 'utf8');
 
@@ -207,48 +208,43 @@ try {
 
   // An independent tab: no calculator scripts or engine, with the same offline/versioning guarantees.
   await page.getByRole('link', { name: 'DAG simulator', exact: true }).click();
-  await page.waitForSelector('#dag[data-view="study"]');
+  await page.waitForSelector('#dag-example option', { state: 'attached' });
   const desktopViewport = page.viewportSize();
   await page.setViewportSize({ width: 390, height: 844 });
-  const fitsViewport = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'the guided layout fits a narrow viewport');
+  const fitsViewport = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'the panel fits a narrow viewport');
   await fitsViewport();
-  assert.equal(await page.isVisible('#dag-canvas'), false, 'the initial screen focuses on choosing a study');
-  // a blank start opens an empty model; a starting point opens its model, the next thing to check
-  await page.click('[data-template="empty"]');
-  assert.equal(await page.getAttribute('#dag', 'data-view'), 'model');
+  // one panel, top to bottom: no steps or tabs, and the graph, the question and power are all on the page
+  assert.equal(await page.locator('[data-step], [data-dag-step], #dag-show-all, #dag-step-next').count(), 0, 'no steps or tabs');
+  assert.equal(await page.isVisible('#dag-canvas'), true);
+  // a blank start opens an empty model; a starting point opens its model, question and analysis together
+  await page.selectOption('#dag-example', 'empty');
+  await page.click('#dag-example-load');
   assert.equal(await page.locator('#dag-canvas .dag-node').count(), 0);
-  await page.click('[data-step="study"]');
-  await page.click('[data-template="trial"]');
-  assert.match(await page.textContent('#dag-design-summary'), /2 variables.*sample size counts observations/);
-  assert.equal(await page.isVisible('#dag-canvas'), true, 'choosing a starting point opens its model');
+  await page.selectOption('#dag-example', 'trial');
+  await page.click('#dag-example-load');
+  assert.match(await page.textContent('#dag-node-count'), /2 variables.*sample size counts observations/);
   await fitsViewport();
-  assert.equal(await page.isVisible('#power-run'), false);
-  await page.click('#dag-step-next');
+  assert.equal(await page.isVisible('#power-run'), true, 'power is on the same panel as the graph');
   assert.match(await page.textContent('#power-question-summary'), /Outcome.*Treatment.*1 versus 0.*mean difference/);
   // the effect the model implies is shown before anything runs
   await page.waitForFunction(() => /mean difference 0\.5/.test(document.querySelector('#estimand-implied')?.textContent ?? ''));
   assert.equal(await page.getAttribute('#estimand-alternative', 'placeholder'), 'As drawn (0.5)');
-  await fitsViewport();
   assert.equal(await page.isVisible('#estimand-active'), true, 'comparison levels are a primary control');
   assert.equal(await page.isVisible('#analysis-method'), true, 'the selected analysis is visible without a disclosure');
-  await page.click('[data-step="study"]');
-  await page.click('[data-template="repeated"]');
-  await page.click('[data-step="question"]');
+  await page.selectOption('#dag-example', 'repeated');
+  await page.click('#dag-example-load');
+  assert.equal(await page.isVisible('#dag-study'), true, 'a structured study shows its settings');
   await page.selectOption('#estimand-trajectory', 'change');
   assert.match(await page.textContent('#power-question-summary'), /change in Outcome from time 0 to 12/);
-  await page.click('#dag-step-next');
-  assert.equal(await page.isVisible('#power-run'), true);
   await fitsViewport();
-  assert.equal(await page.isVisible('#estimand-outcome'), false);
-  assert.match(await page.textContent('#power-review-question'), /change in Outcome from time 0 to 12/);
+  await shootPage(page, 'dag-page-narrow');
   await page.reload();
   await page.waitForSelector('#power-run');
-  assert.equal(await page.getAttribute('[data-step="power"]', 'aria-current'), 'step', 'the current view survives reload');
-  assert.equal(await page.inputValue('#estimand-trajectory'), 'change', 'navigation retains the scientific target');
+  assert.equal(await page.inputValue('#estimand-trajectory'), 'change', 'a reload retains the scientific target');
   await page.setViewportSize(desktopViewport);
-  await page.check('#dag-show-all');
   assert.equal(await page.isVisible('#dag-canvas'), true);
   assert.equal(await page.isVisible('#estimand-outcome'), true);
+  await shootPage(page, 'dag-page-repeated');
   await page.selectOption('#dag-example', 'mediation');
   await page.click('#dag-example-load');
   await page.waitForSelector('#dag-equations li', { state: 'attached' });
@@ -413,11 +409,8 @@ try {
   const refine = page.locator('#power-answer .dag-power-next');
   if (await refine.count()) assert.match(await refine.getAttribute('data-sizes'), /^\d+(,\d+)+$/);
   const displayedPower = await page.textContent('#power-table');
-  await page.click('[data-step="model"]');
-  assert.equal(await page.isVisible('#power-table'), false);
-  await page.click('[data-step="power"]');
-  assert.equal(await page.textContent('#power-table'), displayedPower, 'navigation preserves calculated results');
-  await page.check('#dag-show-all');
+  await page.selectOption('#dag-node-select', 'X');
+  assert.equal(await page.textContent('#power-table'), displayedPower, 'selecting a variable keeps calculated results');
   assert.match(await page.textContent('#power-calibration'), /planning effect 0.1/);
   const powerEvent = page.waitForEvent('download');
   await page.click('#power-json');
@@ -520,11 +513,9 @@ try {
   assert.deepEqual(await page.locator('#dag-canvas .dag-plate').evaluateAll((g) => g.map((p) => p.dataset.plate)), ['cluster', 'subject', 'visit']);
   assert.equal(await page.getAttribute('#dag-level-clusters', 'aria-pressed'), 'true');
   assert.equal(await page.locator('#dag-canvas .dag-random').count(), 3, 'subject intercept, subject slope and cluster effects');
-  await page.check('#dag-show-all');
   await shoot(page, 'dag-canvas-clustered-repeated');
   // Scenarios load the question, estimator and independent-unit sizes together.
-  await page.selectOption('#dag-scenario-category', 'TMLE');
-  assert.equal(await page.locator('#dag-example option').count(), 6);
+  assert.equal(await page.locator('#dag-example optgroup[label="TMLE"] option').count(), 6);
   await page.selectOption('#dag-example', 'tmle-repeated');
   assert.match(await page.textContent('#dag-scenario-description'), /no time-varying treatment or dropout/);
   await page.click('#dag-example-load');
