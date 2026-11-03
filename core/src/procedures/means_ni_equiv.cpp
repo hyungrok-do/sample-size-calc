@@ -71,6 +71,14 @@ std::string margin_hypothesis(const Scenario& s, const MarginTest& mt, const std
          fnum(mt.delta0);
 }
 
+// The null bound δ0 as the steps write it: the margin given, with its sign, "−0.5" (substituted after a minus,
+// "(−0.5)").
+std::string bound_text(const Scenario& s, const MarginTest& mt, bool substituted) {
+  const std::string m = derive::gv(std::fabs(s("margin")));
+  if (!(mt.delta0 < 0)) return m;
+  return substituted ? "(−" + m + ")" : "−" + m;
+}
+
 // How the margin M sets the null bound δ0 and the side of the one-sided test, as a step of a derivation.
 Step margin_step(const Scenario& s, const MarginTest& mt, const std::string& d) {
   const std::string kind = std::string(s.is("testtype", "ni") ? "non-inferiority" : "superiority by a margin") +
@@ -78,7 +86,12 @@ Step margin_step(const Scenario& s, const MarginTest& mt, const std::string& d) 
   return {"Null bound", std::string("δ0 = ") + (mt.delta0 < 0 ? "−M" : "M") + ", testing H0: " + d +
                             (mt.upper ? " ≤ " : " ≥ ") + "δ0 against H1: " + d + (mt.upper ? " > " : " < ") + "δ0 (" +
                             kind + ")",
-          "δ0 = " + derive::num(mt.delta0)};
+          "δ0 = " + bound_text(s, mt, false)};
+}
+
+// The distance δ − δ0 of the true difference from the null bound, as substituted: "(0 − (−0.5))".
+std::string distance_text(const Scenario& s, const MarginTest& mt) {
+  return "(" + derive::gv(s("delta")) + " − " + bound_text(s, mt, true) + ")";
 }
 
 // The powers of the one-sided tests against the margin, at the noncentrality (δ − δ0)√n/σ for one mean and
@@ -176,18 +189,35 @@ Procedure one_ni() {
            " and the standard deviation is " + fnum(r.num("sigma")) + ", at significance level " +
            fnum(r.num("alpha")) + ".";
   };
+  // The one-sided test against the margin has noncentrality λ = (δ − δ0) √N / σ: solving for N, at the N found and
+  // one below; solving for power, at the N given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const MarginTest mt = margin_test(s);
-    const double n = r.num("n"), delta = r.num("delta"), sigma = r.num("sigma");
+    const bool solved = s.solve == "n";
+    const double n = r.num("n"), delta = r.num("delta"), sigma = r.num("sigma"), target = s.get("power", NAN);
     const double ncp = (delta - mt.delta0) * std::sqrt(n) / sigma;
-    Steps out;
-    out.push_back(margin_step(s, mt, "δ"));
-    out.push_back({"Noncentrality", "λ = (δ − δ0) √N / σ",
-                   "(" + num(delta) + " − " + sub(mt.delta0) + ") × √" + fint(n) + " / " + num(sigma) + " = " +
-                       num(ncp)});
-    one_sided_steps(out, s, mt, ncp, n - 1, "N − 1");
-    if (s.solve == "n") out.push_back(n_search([&](double x) { return one_ni_power(s, x); }, n, s("power"), 2));
+    Derivation out;
+    out.find = solved ? find_size("N", target) : find_power("with N = " + gvi(n));
+    out.steps.push_back(margin_step(s, mt, "δ"));
+    if (solved) {  // the closed form of a z-test, beside the exact answer below
+      const double za = stats::qnorm(s("alpha"), false), zb = stats::qnorm(target), dd = delta - mt.delta0;
+      out.steps.push_back({"Normal approximation",
+                           "N ≈ (z(1 − α) + z(1 − β))² σ² / (δ − δ0)², for comparison; the steps below give the "
+                           "answer",
+                           "(" + dv(za) + " + " + dv(zb) + ")² × " + gv(sigma) + "² / " + distance_text(s, mt) +
+                               "² = " + dv((za + zb) * (za + zb) * sigma * sigma / (dd * dd))});
+    }
+    out.steps.push_back({"Noncentrality", "λ = (δ − δ0) √N / σ",
+                         distance_text(s, mt) + " × √" + size(n, solved) + " / " + gv(sigma) + " = " + dv(ncp)});
+    one_sided_steps(out.steps, s, mt, ncp, n - 1, "N − 1");
+    const double power = one_ni_power(s, n);
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return one_ni_power(s, x); }, n, target, 2));
+      out.answer = "N = " + dvi(n) + ", with power " + dvp(power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"Margin", "Non-inferiority (NIM) or superiority (SM) margin, entered as a positive number."},
@@ -270,21 +300,37 @@ Procedure two_ni() {
            ") when the true difference is " + fnum(r.num("delta")) + " and the common standard deviation is " +
            fnum(r.num("sigma")) + ", at significance level " + fnum(r.num("alpha")) + ".";
   };
+  // The one-sided test against the margin has noncentrality λ = (δ − δ0) / SE, SE = σ √(1/N1 + 1/N2): solving for
+  // N, at the sizes found and the next smaller; solving for power, at the sizes given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const MarginTest mt = margin_test(s);
-    const double n1 = r.num("n1"), n2 = r.num("n2"), delta = r.num("delta"), sigma = r.num("sigma");
-    const double se = two_se(sigma, n1, n2), ncp = (delta - mt.delta0) / se;
-    Steps out;
-    out.push_back(margin_step(s, mt, "μ1 − μ2"));
-    out.push_back({"Standard error", "SE = σ √(1/N1 + 1/N2)",
-                   num(sigma) + " × √(1/" + fint(n1) + " + 1/" + fint(n2) + ") = " + num(se)});
-    out.push_back({"Noncentrality", "λ = (δ − δ0) / SE",
-                   "(" + num(delta) + " − " + sub(mt.delta0) + ") / " + num(se) + " = " + num(ncp)});
-    one_sided_steps(out, s, mt, ncp, n1 + n2 - 2, "N1 + N2 − 2");
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return two_ni_power(s, x1, x2); }, {n1, n2}, s("power"), 2));
+    const bool solved = s.solve == "n";
+    const blocks::TwoN n{r.num("n1"), r.num("n2")};
+    const double delta = r.num("delta"), sigma = r.num("sigma"), target = s.get("power", NAN);
+    const double se = two_se(sigma, n.n1, n.n2), ncp = (delta - mt.delta0) / se;
+    const auto [N1, N2] = means_group_sizes(s, n, solved);
+    Derivation out;
+    out.find = solved ? find_size(two_group_unknown(s), target) : find_power("with " + means_sizes_at(s, n));
+    out.steps.push_back(margin_step(s, mt, "μ1 − μ2"));
+    if (solved)
+      means_alloc_approx(out.steps, s, mt.upper ? Alt::Upper : Alt::Lower, {"σ²", gv(sigma) + "²", sigma * sigma},
+                         {"(δ − δ0)", distance_text(s, mt), delta - mt.delta0});
+    else
+      means_alloc_step(out.steps, s, n);
+    out.steps.push_back({"Standard error", "SE = σ √(1/N1 + 1/N2)",
+                         gv(sigma) + " × √(1/" + N1 + " + 1/" + N2 + ") = " + dv(se)});
+    out.steps.push_back(
+        {"Noncentrality", "λ = (δ − δ0) / SE", distance_text(s, mt) + " / " + dv(se) + " = " + dv(ncp)});
+    one_sided_steps(out.steps, s, mt, ncp, n.n1 + n.n2 - 2, "N1 + N2 − 2");
+    const double power = two_ni_power(s, n.n1, n.n2);
+    if (solved) {
+      out.steps.push_back(
+          means_two_search(s, [&](double x1, double x2) { return two_ni_power(s, x1, x2); }, n, target, 2));
+      out.answer = means_two_answer(s, n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"N1, N2", "Sample sizes of the treatment (1) and reference (2) groups."},
@@ -348,6 +394,13 @@ std::pair<double, double> limits(const Scenario& s) {
     return {el, eu};
   }
   return {-s("e"), s("e")};
+}
+
+// The limits and the true difference as the steps write them: −E and E from a margin E, or the limits entered.
+derive::TostShown limits_shown(const Scenario& s) {
+  using namespace derive;
+  if (s.is("limits", "asym")) return {gv(s("el")), gv(s("eu")), gv(s("delta"))};
+  return {"−" + gv(s("e")), gv(s("e")), gv(s("delta"))};
 }
 
 // The TOST power with the standard error of one mean, σ/√n, or of a difference of two, σ√(1/n1 + 1/n2), estimated
@@ -437,15 +490,31 @@ Procedure one_equiv() {
            " and " + fnum(r.num("eu")) + ", the true difference is " + fnum(r.num("delta")) +
            " and the standard deviation is " + fnum(r.num("sigma")) + ".";
   };
+  // The two one-sided tests with SE = σ / √N: solving for N, at the N found and one below; solving for power, at the
+  // N given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
-    const double n = r.num("n"), sigma = r.num("sigma"), se = one_se(sigma, n);
-    Steps out;
-    out.push_back({"Standard error", "SE = σ / √N", num(sigma) + " / √" + fint(n) + " = " + num(se)});
-    for (auto& st : tost_steps(r.num("el"), r.num("eu"), r.num("delta"), se, s.is("test", "z") ? INFINITY : n - 1,
-                               s("alpha"), "N − 1", {"EL", "EU", "δ"}))
-      out.push_back(st);
-    if (s.solve == "n") out.push_back(n_search([&](double x) { return one_equiv_power(s, x); }, n, s("power"), 2));
+    const bool solved = s.solve == "n";
+    const double n = r.num("n"), sigma = r.num("sigma"), se = one_se(sigma, n), target = s.get("power", NAN);
+    const double el = r.num("el"), eu = r.num("eu"), delta = r.num("delta");
+    const TostSymbols sym{"EL", "EU", "δ"};
+    const TostShown shown = limits_shown(s);
+    Derivation out;
+    out.find = solved ? find_size("N", target) : find_power("with N = " + gvi(n));
+    if (solved)
+      out.steps.push_back(
+          means_tost_approx(el, eu, delta, s("alpha"), target, sym, shown, "N", "σ²", gv(sigma) + "²", sigma * sigma));
+    out.steps.push_back({"Standard error", "SE = σ / √N", gv(sigma) + " / √" + size(n, solved) + " = " + dv(se)});
+    for (auto& st :
+         tost_steps(el, eu, delta, se, s.is("test", "z") ? INFINITY : n - 1, s("alpha"), "N − 1", sym, shown))
+      out.steps.push_back(st);
+    const double power = one_equiv_power(s, n);
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return one_equiv_power(s, x); }, n, target, 2));
+      out.answer = "N = " + dvi(n) + ", with power " + dvp(power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"EL, EU", "Equivalence limits for the difference."},
@@ -533,19 +602,42 @@ Procedure two_equiv() {
            fnum(r.num("el")) + " and " + fnum(r.num("eu")) + ", the true difference is " + fnum(r.num("delta")) +
            " and the common standard deviation is " + fnum(r.num("sigma")) + ".";
   };
+  // The two one-sided tests with SE = σ √(1/N1 + 1/N2): solving for N, at the sizes found and the next smaller;
+  // solving for power, at the sizes given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
-    const double n1 = r.num("n1"), n2 = r.num("n2"), sigma = r.num("sigma"), se = two_se(sigma, n1, n2);
-    Steps out;
-    out.push_back({"Standard error", "SE = σ √(1/N1 + 1/N2)",
-                   num(sigma) + " × √(1/" + fint(n1) + " + 1/" + fint(n2) + ") = " + num(se)});
-    for (auto& st : tost_steps(r.num("el"), r.num("eu"), r.num("delta"), se,
-                               s.is("test", "z") ? INFINITY : n1 + n2 - 2, s("alpha"), "N1 + N2 − 2",
-                               {"EL", "EU", "δ"}))
-      out.push_back(st);
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return two_equiv_power(s, x1, x2); }, {n1, n2}, s("power"), 2));
+    const bool solved = s.solve == "n";
+    const blocks::TwoN n{r.num("n1"), r.num("n2")};
+    const double sigma = r.num("sigma"), se = two_se(sigma, n.n1, n.n2), target = s.get("power", NAN);
+    const double el = r.num("el"), eu = r.num("eu"), delta = r.num("delta");
+    const TostSymbols sym{"EL", "EU", "δ"};
+    const TostShown shown = limits_shown(s);
+    const auto [N1, N2] = means_group_sizes(s, n, solved);
+    Derivation out;
+    out.find = solved ? find_size(two_group_unknown(s), target) : find_power("with " + means_sizes_at(s, n));
+    const std::string& alloc = s.s("alloc");
+    if (solved && (alloc == "equal" || alloc == "ratio")) {  // where group 2 follows group 1
+      const bool equal = alloc == "equal";
+      const double k = equal ? 1 : s("r");
+      out.steps.push_back(means_tost_approx(el, eu, delta, s("alpha"), target, sym, shown, equal ? "N1 = N2" : "N1",
+                                            equal ? "2σ²" : "σ²(1 + 1/r)",
+                                            equal ? "2 × " + gv(sigma) + "²" : gv(sigma) + "² × (1 + 1/" + gv(k) + ")",
+                                            sigma * sigma * (1 + 1 / k)));
+    }
+    if (!solved) means_alloc_step(out.steps, s, n);
+    out.steps.push_back({"Standard error", "SE = σ √(1/N1 + 1/N2)",
+                         gv(sigma) + " × √(1/" + N1 + " + 1/" + N2 + ") = " + dv(se)});
+    for (auto& st : tost_steps(el, eu, delta, se, s.is("test", "z") ? INFINITY : n.n1 + n.n2 - 2, s("alpha"),
+                               "N1 + N2 − 2", sym, shown))
+      out.steps.push_back(st);
+    const double power = two_equiv_power(s, n.n1, n.n2);
+    if (solved) {
+      out.steps.push_back(
+          means_two_search(s, [&](double x1, double x2) { return two_equiv_power(s, x1, x2); }, n, target, 2));
+      out.answer = means_two_answer(s, n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"EL, EU", "Equivalence limits for μ1 − μ2."},

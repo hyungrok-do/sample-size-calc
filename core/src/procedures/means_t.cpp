@@ -528,7 +528,7 @@ Procedure two_sample(bool welch) {
     const bool z = s.is("test", "z"), solved = s.solve == "n";
     const blocks::TwoN n{r.num("n1"), r.num("n2")};
     const double diff = r.num("delta"), alpha = s("alpha"), mu1 = r.num("mu1"), mu2 = r.num("mu2");
-    const std::string N1 = size(n.n1, solved), N2 = size(n.n2, solved);
+    const std::string N1 = size(n.n1, group1_solved(s, solved)), N2 = size(n.n2, group2_solved(s, solved));
     Derivation out;
     // the standard error and degrees of freedom at the group sizes (given, or the ones found)
     double se, df;
@@ -596,7 +596,7 @@ Procedure two_sample(bool welch) {
     const auto power = [&](double x1, double x2) { return two_mean_power(s, x1, x2, diff, welch); };
     if (solved) {
       out.steps.push_back(two_group_search(s, power, n, s("power"), 2));
-      out.answer = two_sizes(n, true) + " (N = " + dvi(n.total()) + "), with power " + dvp(power(n.n1, n.n2));
+      out.answer = two_sizes(s, n, true) + " (N = " + dvi(n.total()) + "), with power " + dvp(power(n.n1, n.n2));
     } else {
       out.answer = "power = " + dvp(power(n.n1, n.n2));
     }

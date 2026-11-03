@@ -142,14 +142,22 @@ inline Step n_search(const std::function<double(double)>& power, double n, doubl
 inline std::string two_group_unknown(const Scenario& s) {
   const std::string& a = s.s("alloc");
   if (a == "equal") return "N1 = N2";
-  if (a == "ratio") return "N1, with N2 = ⌈r × N1⌉ (r = " + gv(s("r")) + ")";
-  if (a == "n1") return "N2, with N1 = " + gvi(s("n1")) + " fixed";
-  if (a == "n2") return "N1, with N2 = " + gvi(s("n2")) + " fixed";
-  return "N, with " + gv(s("pct1")) + "% of it (rounded) in group 1";
+  if (a == "ratio") return "N1 (with N2 = ⌈r × N1⌉, r = " + gv(s("r")) + ")";
+  if (a == "n1") return "N2 (with N1 = " + gvi(s("n1")) + " fixed)";
+  if (a == "n2") return "N1 (with N2 = " + gvi(s("n2")) + " fixed)";
+  return "N (with " + gv(s("pct1")) + "% of it, rounded, in group 1)";
 }
 /// Two group sizes as written, given or derived.
 inline std::string two_sizes(const blocks::TwoN& n, bool solved) {
   return "N1 = " + size(n.n1, solved) + ", N2 = " + size(n.n2, solved);
+}
+/// Whether each group's size was solved for: neither when solving for power or an effect, and when solving for the
+/// sizes, not a group the allocation holds fixed at a size typed in.
+inline bool group1_solved(const Scenario& s, bool solved) { return solved && !s.is("alloc", "n1"); }
+inline bool group2_solved(const Scenario& s, bool solved) { return solved && !s.is("alloc", "n2"); }
+/// Two group sizes as written under the scenario's allocation: a group held fixed stays given.
+inline std::string two_sizes(const Scenario& s, const blocks::TwoN& n, bool solved) {
+  return "N1 = " + size(n.n1, group1_solved(s, solved)) + ", N2 = " + size(n.n2, group2_solved(s, solved));
 }
 
 /// Solving for two group sizes under the scenario's allocation rule (see blocks::smaller_two_group): the power at
@@ -167,11 +175,11 @@ inline Step two_group_search(const Scenario& s, const std::function<double(doubl
   const blocks::TwoN less = blocks::smaller_two_group(s, n);
   if (less.n1 < min_n || less.n2 < min_n)
     return {"Smallest sizes", rule,
-            two_sizes(n, true) + " are the smallest sizes allowed, and their power is already " + dvp(at, target) +
+            two_sizes(s, n, true) + " are the smallest sizes allowed, and their power is already " + dvp(at, target) +
                 " ≥ " + gv(target)};
   return {"Smallest sizes", rule,
-          "power at " + two_sizes(less, true) + ": " + dvp(power(less.n1, less.n2), target) + " < " + gv(target) +
-              " ≤ power at " + two_sizes(n, true) + ": " + dvp(at, target)};
+          "power at " + two_sizes(s, less, true) + ": " + dvp(power(less.n1, less.n2), target) + " < " + gv(target) +
+              " ≤ power at " + two_sizes(s, n, true) + ": " + dvp(at, target)};
 }
 
 /// Solving for an effect by search (where no noncentrality step applies): the value at which the power equals the

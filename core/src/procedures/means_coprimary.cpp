@@ -210,43 +210,51 @@ Procedure coprimary() {
            (s.is("test", "t") ? "t-tests" : "z-tests") + " at α = " + fnum(r.num("alpha")) +
            " each; the weakest endpoint alone would have " + power_text(r.num("pmin")) + " power.";
   };
+  // Every endpoint's one-sided test has noncentrality δk √(N1 N2 / (N1 + N2)), and the power is that all of them
+  // reject: solving for N, at the sizes found and the next smaller; solving for power, at the sizes given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const std::vector<double> d = standardized_effects(s);
     const int K = static_cast<int>(d.size());
-    const double n1 = r.num("n1"), n2 = r.num("n2"), alpha = s("alpha"), rho = s("rho"), df = n1 + n2 - 2;
-    const bool t = s.is("test", "t");
-    const double scale = effect_scale(n1, n2);
-    const std::vector<double> each = marginal_powers(d, n1, n2, alpha, t);
-    Steps out;
-    if (s.is("es", "raw")) {
+    const blocks::TwoN n{r.num("n1"), r.num("n2")};
+    const double alpha = s("alpha"), rho = s("rho"), df = n.n1 + n.n2 - 2, target = s.get("power", NAN);
+    const bool t = s.is("test", "t"), raw = s.is("es", "raw"), solved = s.solve == "n";
+    const double scale = effect_scale(n.n1, n.n2);
+    const std::vector<double> each = marginal_powers(d, n.n1, n.n2, alpha, t);
+    const auto [N1, N2] = means_group_sizes(s, n, solved);
+    Derivation out;
+    out.find = (solved ? find_size(two_group_unknown(s), target) : find_power("with " + means_sizes_at(s, n))) +
+               ", the power being that all " + gvi(K) + " endpoints' tests reject";
+    if (raw) {
       const auto& diff = s.v("diffs");
       const auto& sd = s.v("sds");
       std::vector<std::string> v;
-      for (int k = 0; k < K; ++k) v.push_back(sub(diff[k]) + " / " + num(sd[k]) + " = " + num(d[k]));
-      out.push_back({"Standardized effects", "δk = (μ1 − μ2)k / σk", joined(v, ", ")});
+      for (int k = 0; k < K; ++k) v.push_back(gvs(diff[k]) + " / " + gv(sd[k]) + " = " + dv(d[k]));
+      out.steps.push_back({"Standardized effects", "δk = (μ1 − μ2)k / σk", joined(v, ", ")});
     }
+    if (!solved) means_alloc_step(out.steps, s, n);
     std::vector<std::string> lam, pw, lo, cut;
     const double crit = t ? stats::qt(alpha, df, false) : stats::qnorm(alpha, false);
     for (int k = 0; k < K; ++k) {
-      const std::string i = std::to_string(k + 1), ncp = num(d[k] * scale);
-      lam.push_back("λ" + i + " = " + num(d[k]) + " × " + num(scale) + " = " + ncp);
-      pw.push_back(t ? "P(T′" + i + " > " + num(crit) + ") = " + prob(each[k])
-                     : "Φ(" + ncp + " − " + num(crit) + ") = " + prob(each[k]));
+      const std::string i = std::to_string(k + 1), ncp = dv(d[k] * scale);
+      lam.push_back("λ" + i + " = " + (raw ? dv(d[k]) : gv(d[k])) + " × " + dv(scale) + " = " + ncp);
+      pw.push_back(t ? "P(T′" + i + " > " + dv(crit) + ") = " + dvp(each[k])
+                     : "Φ(" + ncp + " − " + dv(crit) + ") = " + dvp(each[k]));
       // as all_reject: endpoint k's statistic, standard normal, exceeds this with its power alone
       const double z = stats::qnorm(each[k], false);
-      lo.push_back(num(z));
-      cut.push_back("X" + i + " > " + num(z));
+      lo.push_back(dv(z));
+      cut.push_back("X" + i + " > " + dv(z));
     }
-    out.push_back({"Noncentralities", "λk = δk √(N1 N2 / (N1 + N2))",
-                   "√(" + fint(n1) + " × " + fint(n2) + " / " + fint(n1 + n2) + ") = " + num(scale) + "; " +
-                       joined(lam, ", ")});
+    out.steps.push_back({"Noncentralities", "λk = δk √(N1 N2 / (N1 + N2))",
+                         "√(" + N1 + " × " + N2 + " / " + dvi(n.total()) + ") = " + dv(scale) + "; " +
+                             joined(lam, ", ")});
     if (t) {
-      out.push_back(t_critical(alpha, df, Alt::Upper, "N1 + N2 − 2"));
-      out.push_back({"Each endpoint's power alone", "P(T′k > t), T′k ~ noncentral t(ν, λk)", joined(pw, ", ")});
+      out.steps.push_back(t_critical(alpha, df, Alt::Upper, "N1 + N2 − 2"));
+      out.steps.push_back(
+          {"Each endpoint's power alone", "P(T′k > t), T′k ~ noncentral t(ν, λk)", joined(pw, ", ")});
     } else {
-      out.push_back(z_critical(alpha, Alt::Upper));
-      out.push_back({"Each endpoint's power alone", "Φ(λk − z)", joined(pw, ", ")});
+      out.steps.push_back(z_critical(alpha, Alt::Upper));
+      out.steps.push_back({"Each endpoint's power alone", "Φ(λk − z)", joined(pw, ", ")});
     }
     // the probability that every test rejects, as all_reject computes it
     std::string how =
@@ -258,13 +266,17 @@ Procedure coprimary() {
       how += ", = ∫ φ(u) Πk Φ((√ρ u − zk)/√(1 − ρ)) du";
     else
       how += ", a multivariate normal probability by a lattice rule (to about 5e-4)";
-    out.push_back({"Power", "P(all tests reject) = P(X1 > z1, …, XK > zK), " + how,
-                   "z = " + joined(lo, ", ") + "; P(" + joined(cut, ", ") + "; ρ = " + num(rho) + ") = " +
-                       prob(all_reject(each, rho))});
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return coprimary_power(d, x1, x2, alpha, t, rho); }, {n1, n2}, s("power"),
-          2));
+    const double power = all_reject(each, rho);
+    out.steps.push_back({"Power", "P(all tests reject) = P(X1 > z1, …, XK > zK), " + how,
+                         "z = " + joined(lo, ", ") + "; P(" + joined(cut, ", ") + "; ρ = " + gv(rho) + ") = " +
+                             dvp(power)});
+    if (solved) {
+      out.steps.push_back(means_two_search(
+          s, [&](double x1, double x2) { return coprimary_power(d, x1, x2, alpha, t, rho); }, n, target, 2));
+      out.answer = means_two_answer(s, n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"δ", "Standardized effect of an endpoint: (μ1 − μ2)/σ."},

@@ -154,28 +154,58 @@ Procedure ancova() {
                                   fnum(r.num("sigma"))) +
            "), " + alt_words(alt(s)) + " at α = " + fnum(r.num("alpha")) + ".";
   };
+  // The adjusted t-test has noncentrality λ = δ / SE, SE = σ √((1 − R²)(1/N1 + 1/N2)): solving for N, at the sizes
+  // found and the next smaller; for power, at the sizes given; for μ1, the target power gives λ, and λ the difference.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
-    const double n1 = r.num("n1"), n2 = r.num("n2"), mu1 = r.num("mu1"), mu2 = r.num("mu2"), diff = mu1 - mu2;
+    const bool solved = s.solve == "n";
+    const blocks::TwoN n{r.num("n1"), r.num("n2")};
+    const double mu1 = r.num("mu1"), mu2 = r.num("mu2"), diff = mu1 - mu2, target = s.get("power", NAN);
     const double sigma = s("sigma"), r2 = s("r2"), q = s("ncov"), alpha = s("alpha");
-    const double se = ancova_se(n1, n2, sigma, r2), ncp = diff / se, df = n1 + n2 - 2 - q;
-    Steps out;
-    out.push_back({"Residual SD", "σres = σ √(1 − R²)",
-                   num(sigma) + " × √(1 − " + num(r2) + ") = " + num(r.num("sadj"))});
-    out.push_back({"Difference to detect", "δ = μ1 − μ2", num(mu1) + " − " + sub(mu2) + " = " + num(diff)});
-    out.push_back({"Standard error", "SE = σ √((1 − R²)(1/N1 + 1/N2))",
-                   num(sigma) + " × √((1 − " + num(r2) + ") × (1/" + fint(n1) + " + 1/" + fint(n2) + ")) = " +
-                       num(se)});
-    out.push_back({"Noncentrality", "λ = δ / SE", sub(diff) + " / " + num(se) + " = " + num(ncp)});
-    out.push_back(t_critical(alpha, df, a, "N1 + N2 − 2 − q (q = " + fint(q) + ", the number of covariates)"));
-    out.push_back(t_power_step(ncp, df, alpha, a));
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return ancova_search_power(x1, x2, diff, sigma, r2, q, alpha, a); }, {n1, n2},
-          s("power"), 3));
-    else if (s.solve == "mu1")
-      out.push_back(effect_search("μ1", mu1, ancova_power(n1, n2, diff, sigma, r2, q, alpha, a), s("power")));
+    const double se = ancova_se(n.n1, n.n2, sigma, r2), ncp = diff / se, df = n.n1 + n.n2 - 2 - q;
+    const auto [N1, N2] = means_group_sizes(s, n, solved);
+    Derivation out;
+    if (solved)
+      out.find = find_size(two_group_unknown(s), target);
+    else if (s.solve == "power")
+      out.find = find_power("with " + means_sizes_at(s, n));
+    else
+      out.find = find_effect("μ1", target, "with " + means_sizes_at(s, n));
+    out.steps.push_back({"Residual SD", "σres = σ √(1 − R²)",
+                         gv(sigma) + " × √(1 − " + gv(r2) + ") = " + dv(r.num("sadj"))});
+    if (s.solve != "mu1")
+      out.steps.push_back({"Difference to detect", "δ = μ1 − μ2", gv(mu1) + " − " + gvs(mu2) + " = " + dv(diff)});
+    if (solved)  // Borm et al.'s closed form
+      means_alloc_approx(out.steps, s, a,
+                         {"σ²(1 − R²)", gv(sigma) + "² × (1 − " + gv(r2) + ")", sigma * sigma * (1 - r2)},
+                         {"δ", dvs(diff), diff});
+    else
+      means_alloc_step(out.steps, s, n);
+    out.steps.push_back({"Standard error", "SE = σ √((1 − R²)(1/N1 + 1/N2))",
+                         gv(sigma) + " × √((1 − " + gv(r2) + ") × (1/" + N1 + " + 1/" + N2 + ")) = " + dv(se)});
+    const Step critical =
+        t_critical(alpha, df, a, "N1 + N2 − 2 − q (q = " + gvi(q) + ", the number of covariates)");
+    if (s.solve == "mu1") {  // the target power gives λ, λ the difference, the difference μ1
+      out.steps.push_back(critical);
+      out.steps.push_back(t_ncp_needed(ncp, df, alpha, a, target));
+      out.steps.push_back({"Difference detected", "δ = λ × SE", dvs(ncp) + " × " + dv(se) + " = " + dv(diff)});
+      out.steps.push_back({"Mean detected", "μ1 = μ2 + δ", gv(mu2) + " + " + dvs(diff) + " = " + dv(mu1)});
+      out.answer = "μ1 = " + dv(mu1) + " (δ = " + dv(diff) + ")";
+      return out;
+    }
+    out.steps.push_back({"Noncentrality", "λ = δ / SE", dvs(diff) + " / " + dv(se) + " = " + dv(ncp)});
+    out.steps.push_back(critical);
+    out.steps.push_back(t_power_step(ncp, df, alpha, a));
+    const double power = ancova_power(n.n1, n.n2, diff, sigma, r2, q, alpha, a);
+    if (solved) {
+      out.steps.push_back(means_two_search(
+          s, [&](double x1, double x2) { return ancova_search_power(x1, x2, diff, sigma, r2, q, alpha, a); }, n,
+          target, 3));
+      out.answer = means_two_answer(s, n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.notes = {"The formula (Borm et al.) leaves out the chance imbalance of the covariates between the groups, so it "
@@ -607,36 +637,43 @@ Procedure anova2() {
            " for the main effect of B (f = " + fnum(r.num("fb"), 3) + ") and " + fnum(r.num("pab"), 4) +
            " for the interaction (f = " + fnum(r.num("fab"), 3) + ").";
   };
+  // Each F-test has noncentrality n times its effects' sum of squares over σ²: solving for n, the tests at the n found
+  // and the power that decides the design there and one below; solving for power, at the n given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Factorial f = factorial(s);
     const double sigma = s("sigma"), alpha = s("alpha"), n = r.num("n"), dfe = f.a * f.b * (n - 1);
-    const std::string goal = factorial_goal(s);
+    const bool solved = s.solve == "n";
+    const std::string goal = factorial_goal(s), goal_name = goal == "AB" ? "A × B" : goal;
     const FactorialPower lambda = factorial_lambda(f, n, sigma), pw = factorial_power(f, n, sigma, alpha);
     const FactorialPresent has = factorial_present(f, sigma);
     const double power = factorial_goal_power(f, n, sigma, alpha, goal);
-    Steps out;
-    out.push_back({"Effects of the cell means",
-                   "Σαᵢ², Σβⱼ², Σ(αβ)ᵢⱼ² for the effects αᵢ = μᵢ· − μ··, βⱼ = μ·ⱼ − μ··, "
-                   "(αβ)ᵢⱼ = μᵢⱼ − μᵢ· − μ·ⱼ + μ··",
-                   "Σαᵢ² = " + num_sig(f.ssa) + ", Σβⱼ² = " + num_sig(f.ssb) +
-                       ", Σ(αβ)ᵢⱼ² = " + num_sig(f.ssab)});
+    const std::string decides = goal == "all" ? "the least power of the tests of the effects present"
+                                              : "the power of the test of " + goal_name;
+    Derivation out;
+    out.find = (solved ? find_size("n per cell", s("power")) : find_power("with n = " + gvi(n) + " per cell")) +
+               ", the power being " + decides;
+    out.steps.push_back({"Effects of the cell means",
+                         "Σαᵢ², Σβⱼ², Σ(αβ)ᵢⱼ² for the effects αᵢ = μᵢ· − μ··, βⱼ = μ·ⱼ − μ··, "
+                         "(αβ)ᵢⱼ = μᵢⱼ − μᵢ· − μ·ⱼ + μ··",
+                         "Σαᵢ² = " + derived(num_sig(f.ssa)) + ", Σβⱼ² = " + derived(num_sig(f.ssb)) +
+                             ", Σ(αβ)ᵢⱼ² = " + derived(num_sig(f.ssab))});
     // each F-test: its noncentrality, critical value and power, against the error's AB(n − 1) degrees of freedom
     const auto test = [&](const std::string& what, const std::string& lambda_formula, const std::string& df_formula,
                           const std::string& lambda_numbers, double df1, double l, double p) {
       const double fc = stats::qf(alpha, df1, dfe, false);
-      out.push_back({what,
-                     "λ = " + lambda_formula + ", power P(F′ > F(1 − α; " + df_formula +
-                         ", AB(n − 1))), F′ ~ noncentral F with noncentrality λ",
-                     "λ = " + lambda_numbers + " = " + num(l) + "; P(F′ > F(1 − " + num(alpha) + "; " + num(df1) +
-                         ", " + num(dfe) + ") = " + num(fc) + ") = " + prob(p)});
+      out.steps.push_back({what,
+                           "λ = " + lambda_formula + ", power P(F′ > F(1 − α; " + df_formula +
+                               ", AB(n − 1))), F′ ~ noncentral F with noncentrality λ",
+                           "λ = " + lambda_numbers + " = " + dv(l) + "; P(F′ > F(1 − " + gv(alpha) + "; " + dv(df1) +
+                               ", " + dv(dfe) + ") = " + dv(fc) + ") = " + dvp(p)});
     };
-    const std::string nn = fint(n), s2 = " / " + num(sigma) + "²";
-    test("Test of A", "n B Σαᵢ²/σ²", "A − 1", nn + " × " + fint(f.b) + " × " + num_sig(f.ssa) + s2, f.a - 1,
+    const std::string nn = size(n, solved), s2 = " / " + gv(sigma) + "²";
+    test("Test of A", "n B Σαᵢ²/σ²", "A − 1", nn + " × " + gvi(f.b) + " × " + derived(num_sig(f.ssa)) + s2, f.a - 1,
          lambda.a, pw.a);
-    test("Test of B", "n A Σβⱼ²/σ²", "B − 1", nn + " × " + fint(f.a) + " × " + num_sig(f.ssb) + s2, f.b - 1,
+    test("Test of B", "n A Σβⱼ²/σ²", "B − 1", nn + " × " + gvi(f.a) + " × " + derived(num_sig(f.ssb)) + s2, f.b - 1,
          lambda.b, pw.b);
-    test("Test of A × B", "n Σ(αβ)ᵢⱼ²/σ²", "(A − 1)(B − 1)", nn + " × " + num_sig(f.ssab) + s2,
+    test("Test of A × B", "n Σ(αβ)ᵢⱼ²/σ²", "(A − 1)(B − 1)", nn + " × " + derived(num_sig(f.ssab)) + s2,
          (f.a - 1) * (f.b - 1), lambda.ab, pw.ab);
     if (goal == "all") {
       std::vector<std::string> names, powers;
@@ -644,24 +681,28 @@ Procedure anova2() {
                                              std::tuple{has.ab, "A × B", pw.ab}})
         if (present) {
           names.push_back(name);
-          powers.push_back(prob(p));
+          powers.push_back(dvp(p));
         }
       if (names.empty())
-        out.push_back({"Power", "with no effect present, the power is α", "α = " + prob(power)});
+        out.steps.push_back({"Power", "with no effect present, the power is α", "α = " + gv(power)});
       else if (names.size() == 1)
-        out.push_back({"Power", "the power of the test of the one effect present, " + names[0],
-                       "power of the test of " + names[0] + " = " + prob(power)});
+        out.steps.push_back({"Power", "the power of the test of the one effect present, " + names[0],
+                             "power of the test of " + names[0] + " = " + dvp(power)});
       else
-        out.push_back({"Power", "the least power of the tests of the effects present (" + joined(names, ", ") + ")",
-                       "min(" + joined(powers, ", ") + ") = " + prob(power)});
+        out.steps.push_back({"Power",
+                             "the least power of the tests of the effects present (" + joined(names, ", ") + ")",
+                             "min(" + joined(powers, ", ") + ") = " + dvp(power)});
     } else {
-      const std::string name = goal == "AB" ? "A × B" : goal;
-      out.push_back({"Power", "the power of the test the study is sized for, of " + name,
-                     "power of the test of " + name + " = " + prob(power)});
+      out.steps.push_back({"Power", "the power of the test the study is sized for, of " + goal_name,
+                           "power of the test of " + goal_name + " = " + dvp(power)});
     }
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return factorial_goal_power(f, x, sigma, alpha, goal); }, n, s("power"),
-                             2, "n"));
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return factorial_goal_power(f, x, sigma, alpha, goal); }, n,
+                                   s("power"), 2, "n"));
+      out.answer = "n = " + dvi(n) + " per cell (N = " + dvi(r.num("N")) + "), with power " + dvp(power);
+    } else {
+      out.answer = "power = " + dvp(power) + " (A: " + dvp(pw.a) + ", B: " + dvp(pw.b) + ", A × B: " + dvp(pw.ab) + ")";
+    }
     return out;
   };
   p.definitions = {{"n per Cell", "Subjects in each of the A × B cells (balanced design)."},
@@ -837,33 +878,42 @@ Procedure rm_anova() {
            " between measurements and a sphericity correction ε = " + fnum(r.num("eps")) +
            ", using the repeated-measures F-test at α = " + fnum(r.num("alpha")) + ".";
   };
+  // The F-test has noncentrality λ = ε N m f² / (1 − ρ): solving for N, at the N found and one below; solving for
+  // power, at the N given.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const double n = r.num("n"), m = r.num("m"), f = r.num("f"), rho = r.num("rho"), eps = r.num("eps");
     const double alpha = s("alpha");
+    const bool by_f = s.is("estype", "f"), solved = s.solve == "n";
     const RmTest t = rm_test(n, m, f, rho, eps);
-    Steps out;
-    if (s.is("estype", "means")) {
+    Derivation out;
+    out.find = solved ? find_size("N", s("power")) : find_power("with N = " + gvi(n));
+    if (!by_f) {
       const auto& mu = s.v("means");
       const MeansSpread spread = means_spread(mu);
       const double mbar = mu[0] + spread.offset;
       std::vector<std::string> sum, dev;
       for (double v : mu) {
-        sum.push_back(sub(v));
-        dev.push_back("(" + num(v) + " − " + sub(mbar) + ")²");
+        sum.push_back(gvs(v));
+        dev.push_back("(" + gv(v) + " − " + dvs(mbar) + ")²");
       }
-      out.push_back(
-          {"Mean of the means", "μ̄ = Σ μⱼ / m", "(" + joined(sum, " + ") + ") / " + fint(m) + " = " + num(mbar)});
-      out.push_back({"Effect size", "f = √(Σ (μⱼ − μ̄)² / m) / σ",
-                     "√((" + joined(dev, " + ") + ") / " + fint(m) + ") / " + num(s("sigma")) + " = " + num(f)});
+      out.steps.push_back(
+          {"Mean of the means", "μ̄ = Σ μⱼ / m", "(" + joined(sum, " + ") + ") / " + gvi(m) + " = " + dv(mbar)});
+      out.steps.push_back({"Effect size", "f = √(Σ (μⱼ − μ̄)² / m) / σ",
+                           "√((" + joined(dev, " + ") + ") / " + gvi(m) + ") / " + gv(s("sigma")) + " = " + dv(f)});
     }
-    out.push_back({"Noncentrality", "λ = ε N m f² / (1 − ρ)",
-                   num(eps) + " × " + fint(n) + " × " + fint(m) + " × " + num(f) + "² / (1 − " + sub(rho) + ") = " +
-                       num(t.lambda)});
-    out.push_back(f_critical(alpha, t.df1, t.df2, "ν1 = (m − 1)ε and ν2 = (N − 1)(m − 1)ε"));
-    out.push_back(f_power_step(t.df1, t.df2, t.lambda, alpha));
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return rm_power(x, m, f, rho, eps, alpha); }, n, s("power"), 2));
+    out.steps.push_back({"Noncentrality", "λ = ε N m f² / (1 − ρ)",
+                         gv(eps) + " × " + size(n, solved) + " × " + gvi(m) + " × " + (by_f ? gv(f) : dv(f)) +
+                             "² / (1 − " + gvs(rho) + ") = " + dv(t.lambda)});
+    out.steps.push_back(f_critical(alpha, t.df1, t.df2, "ν1 = (m − 1)ε and ν2 = (N − 1)(m − 1)ε"));
+    out.steps.push_back(f_power_step(t.df1, t.df2, t.lambda, alpha));
+    const double power = rm_power(n, m, f, rho, eps, alpha);
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return rm_power(x, m, f, rho, eps, alpha); }, n, s("power"), 2));
+      out.answer = "N = " + dvi(n) + ", with power " + dvp(power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"f", "SD of the m means (divisor m) divided by the SD of a single measurement."},
@@ -1075,41 +1125,66 @@ Procedure slopes() {
            fnum(r.num("sde")) + ", using a " + alt_words(alt(s)) + " " + (s.is("test", "z") ? "z-test" : "t-test") +
            " on the subjects' slopes at significance level α = " + fnum(r.num("alpha")) + ".";
   };
+  // The test of the subjects' slopes has noncentrality λ = δ / SE, SE = σs √(1/N1 + 1/N2): solving for N, at the
+  // sizes found and the next smaller; for power, at the sizes given; for δ, the target power gives λ, and λ the
+  // difference.
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const Alt a = alt(s);
-    const double n1 = r.num("n1"), n2 = r.num("n2"), delta = r.num("delta"), alpha = s("alpha");
-    const double sxx = slope_sxx(s), sd = r.num("sds"), se = slopes_se(s, n1, n2), ncp = delta / se;
-    Steps out;
+    const bool z = s.is("test", "z"), solved = s.solve == "n";
+    const blocks::TwoN n{r.num("n1"), r.num("n2")};
+    const double delta = r.num("delta"), alpha = s("alpha"), target = s.get("power", NAN);
+    const double sxx = slope_sxx(s), sd = r.num("sds"), se = slopes_se(s, n.n1, n.n2), ncp = delta / se;
+    const double df = n.n1 + n.n2 - 2;
+    const auto [N1, N2] = means_group_sizes(s, n, solved);
+    Derivation out;
+    if (solved)
+      out.find = find_size(two_group_unknown(s), target);
+    else if (s.solve == "power")
+      out.find = find_power("with " + means_sizes_at(s, n));
+    else
+      out.find = find_effect("difference in mean slopes δ", target, "with " + means_sizes_at(s, n));
     if (s.is("timing", "custom")) {
       const auto& t = s.v("times");
       const double mean = times_mean(t);
       std::vector<std::string> dev;
-      for (double x : t) dev.push_back("(" + num(x) + " − " + sub(mean) + ")²");
-      out.push_back({"Spread of the times", "Sxx = Σ (tⱼ − t̄)²", joined(dev, " + ") + " = " + num(sxx)});
+      for (double x : t) dev.push_back("(" + gv(x) + " − " + dvs(mean) + ")²");
+      out.steps.push_back({"Spread of the times", "Sxx = Σ (tⱼ − t̄)²", joined(dev, " + ") + " = " + dv(sxx)});
     } else {
-      const double m = s("m");
-      out.push_back({"Spread of the times", "Sxx = D² M(M + 1) / (12(M − 1)), for M times equally spaced over D",
-                     num(s("duration")) + "² × " + fint(m) + " × " + fint(m + 1) + " / (12 × " + fint(m - 1) +
-                         ") = " + num(sxx)});
+      const std::string m = gvi(s("m"));
+      out.steps.push_back({"Spread of the times",
+                           "Sxx = D² M(M + 1) / (12(M − 1)), for M times equally spaced over D",
+                           gv(s("duration")) + "² × " + m + " × (" + m + " + 1) / (12 × (" + m + " − 1)) = " +
+                               dv(sxx)});
     }
-    out.push_back({"SD of a subject's slope", "σs = √(σb² + σe²/Sxx)",
-                   "√(" + num(s("sdb")) + "² + " + num(s("sde")) + "²/" + num(sxx) + ") = " + num(sd)});
-    out.push_back({"Standard error", "SE = σs √(1/N1 + 1/N2)",
-                   num(sd) + " × √(1/" + fint(n1) + " + 1/" + fint(n2) + ") = " + num(se)});
-    out.push_back({"Noncentrality", "λ = δ / SE", sub(delta) + " / " + num(se) + " = " + num(ncp)});
-    if (s.is("test", "z")) {
-      out.push_back(z_critical(alpha, a));
-      out.push_back(z_power_step(ncp, alpha, a));
-    } else {
-      out.push_back(t_critical(alpha, n1 + n2 - 2, a, "N1 + N2 − 2"));
-      out.push_back(t_power_step(ncp, n1 + n2 - 2, alpha, a));
+    out.steps.push_back({"SD of a subject's slope", "σs = √(σb² + σe²/Sxx)",
+                         "√(" + gv(s("sdb")) + "² + " + gv(s("sde")) + "²/" + dv(sxx) + ") = " + dv(sd)});
+    if (solved)
+      means_alloc_approx(out.steps, s, a, {"σs²", dv(sd) + "²", sd * sd}, {"δ", gvs(delta), delta});
+    else
+      means_alloc_step(out.steps, s, n);
+    out.steps.push_back({"Standard error", "SE = σs √(1/N1 + 1/N2)",
+                         dv(sd) + " × √(1/" + N1 + " + 1/" + N2 + ") = " + dv(se)});
+    const auto critical = [&] {
+      out.steps.push_back(z ? z_critical(alpha, a) : t_critical(alpha, df, a, "N1 + N2 − 2"));
+    };
+    if (s.solve == "delta") {  // the target power gives λ, and λ the difference
+      critical();
+      out.steps.push_back(z ? z_ncp_needed(ncp, alpha, a, target) : t_ncp_needed(ncp, df, alpha, a, target));
+      out.steps.push_back({"Difference detected", "δ = λ × SE", dvs(ncp) + " × " + dv(se) + " = " + dv(delta)});
+      out.answer = "δ = " + dv(delta);
+      return out;
     }
+    out.steps.push_back({"Noncentrality", "λ = δ / SE", gvs(delta) + " / " + dv(se) + " = " + dv(ncp)});
+    critical();
+    out.steps.push_back(z ? z_power_step(ncp, alpha, a) : t_power_step(ncp, df, alpha, a));
     const auto power = [&](double x1, double x2) { return slopes_power(s, x1, x2, delta); };
-    if (s.solve == "n")
-      out.push_back(two_group_search(s, power, {n1, n2}, s("power"), 2));
-    else if (s.solve == "delta")
-      out.push_back(effect_search("δ", delta, power(n1, n2), s("power")));
+    if (solved) {
+      out.steps.push_back(means_two_search(s, power, n, target, 2));
+      out.answer = means_two_answer(s, n, power(n.n1, n.n2));
+    } else {
+      out.answer = "power = " + dvp(power(n.n1, n.n2));
+    }
     return out;
   };
   p.definitions = {{"N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."},
