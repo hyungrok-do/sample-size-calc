@@ -208,7 +208,7 @@ try {
 
   // An independent tab: no calculator scripts or engine, with the same offline/versioning guarantees.
   await page.getByRole('link', { name: 'DAG simulator', exact: true }).click();
-  await page.waitForSelector('#dag-example option');
+  await page.waitForSelector('#dag-example option', { state: 'attached' });
   const desktopViewport = page.viewportSize();
   await page.setViewportSize({ width: 390, height: 844 });
   const fitsViewport = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'the panel fits a narrow viewport');
@@ -599,7 +599,7 @@ try {
     // and the new page at the same size, from a fresh start with the same design
     const after = await (await browser.newContext()).newPage();
     await after.goto(new URL('dag.html', url).href);
-    await after.waitForSelector('#dag-example option');
+    await after.waitForSelector('#dag-example option', { state: 'attached' });
     await after.screenshot({ path: join(shots, 'after-1-first-visit.png'), fullPage: true });
     await after.selectOption('#dag-example', 'repeated');
     await after.click('#dag-example-load');
