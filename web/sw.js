@@ -15,11 +15,12 @@ const FILES = ['./', 'app.js?v=dev', 'engine.js?v=dev', 'worker.js?engine=ssc_we
   'engine/ssc_web.wasm?v=dev', 'guide.js?v=dev', 'guide-data.js?v=dev', 'guide-state.js?v=dev', 'selection.js?v=dev',
   'format.js?v=dev', 'dag.html?v=dev', 'dag.css?v=dev', 'dag-entry.js?v=dev', 'dag.js?v=dev', 'dag-scenarios.js?v=dev',
   'dag-function-editor.js?v=dev', 'dag-functions.js?v=dev', 'dag-model.js?v=dev', 'dag-view.js?v=dev', 'dag-canvas.js?v=dev', 'estimand-model.js?v=dev',
-  'dag-study.js?v=dev', 'dag-study-editor.js?v=dev', 'dag-workflow.js?v=dev', 'power-settings.js?v=dev', 'power-model.js?v=dev', 'dag-power.js?v=dev', 'dag-results.js?v=dev', 'lean.html?v=dev', 'lean.css?v=dev', 'lean.js?v=dev', 'lean-examples.js?v=dev'];
+  'dag-study.js?v=dev', 'dag-study-editor.js?v=dev', 'dag-workflow.js?v=dev', 'power-settings.js?v=dev', 'power-model.js?v=dev', 'dag-power.js?v=dev', 'dag-results.js?v=dev', 'lean.html?v=dev', 'lean.css?v=dev', 'lean.js?v=dev', 'lean-examples.js?v=dev', 'lean-native-examples.js?v=dev', 'study.html?v=dev', 'study.js?v=dev'];
 // The only copies kept, each under the one address the page asks for it by: any other address (another query
 // string on a visit, a link to a file with ?x= added) is answered from the network and not stored, so links
 // cannot fill the site's storage with copies.
 const PAGE = new URL('./', self.location).href;
+const STUDY_PAGE = new URL('study.html?v=dev', self.location).href;
 const LEAN_PAGE = new URL('lean.html?v=dev', self.location).href;
 const DAG_PAGE = new URL('dag.html?v=dev', self.location).href;
 const KEPT = new Set([...FILES, 'worker.js?engine=ssc_web_mt&v=dev', 'engine/ssc_web_mt.mjs?v=dev',
@@ -31,6 +32,7 @@ function keptAs(request) {
   if (request.mode !== 'navigate') return KEPT.has(url.href) ? url.href : null;
   // a visit to the page, whatever its query, is kept as the page; a visit to any other file is not
   const path = url.origin + url.pathname;
+  if (path === STUDY_PAGE.split('?')[0]) return STUDY_PAGE;
   if (path === LEAN_PAGE.split('?')[0]) return LEAN_PAGE;
   if (path === DAG_PAGE.split('?')[0]) return DAG_PAGE;
   return path === PAGE || path === `${PAGE}index.html` ? PAGE : null;
@@ -65,12 +67,13 @@ function isolated(response, request) {
   headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   headers.set('Cross-Origin-Resource-Policy', 'same-origin');
   headers.set('Content-Security-Policy', POLICY);
-  if ([DAG_PAGE, LEAN_PAGE].some(page => new URL(request.url).pathname === new URL(page).pathname)) headers.set('Content-Security-Policy', DAG_POLICY);
+  if ([DAG_PAGE, LEAN_PAGE, STUDY_PAGE].some(page => new URL(request.url).pathname === new URL(page).pathname)) headers.set('Content-Security-Policy', DAG_POLICY);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 self.addEventListener('fetch', (event) => {
   const request = event.request;
+  if (new URL(request.url).pathname.startsWith('/api/')) return;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
   event.respondWith((async () => {
     try {

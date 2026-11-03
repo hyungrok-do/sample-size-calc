@@ -37,7 +37,7 @@ async function solve() {
   await page.waitForFunction(() => document.getElementById('lean-status').textContent === 'Calculation complete.');
 }
 try {
-  await page.goto(`${base}/lean.html?engine=single`);
+  await page.goto(`${base}/study.html?engine=single`);
   assert.equal(await page.locator('.workspace-tabs a').count(), 3);
   assert.equal(await page.locator('#lean-solve').isDisabled(), true);
   assert.match(await page.locator('#syntax-help').textContent(), /solve for x : Real/);

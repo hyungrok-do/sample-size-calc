@@ -1,6 +1,10 @@
-# Lean-style study language
+> This is the earlier custom language at `web/study.html`. The third tab now
+> opens the [native Lean equation compiler](lean-compiler.md), which accepts
+> actual Lean source and checks generated theorems in Lean's kernel.
 
-The independent **Lean compiler** tab accepts user-defined formulas and random
+# Browser study language sandbox
+
+The **browser study sandbox** at `web/study.html` accepts user-defined formulas and random
 models. Imports and headers are optional: the mathematical runtime is built in.
 The syntax borrows `def`, typed parameters, `let`, `if`, and `fun` from Lean.
 `solve for`, `evaluate`, `probability`, and `simulation` are this compiler's own
