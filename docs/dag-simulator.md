@@ -10,13 +10,16 @@ selecting generic variables for it.
 
 ## Workflow
 
-1. Start with an empty canvas and add variables with the **+ Continuous**,
-   **+ Binary**, **+ Count** and **+ Event time** chips (click one, or drag it
-   onto the canvas where the variable should go; double-clicking the empty
-   canvas adds a continuous variable), or load an example. New variables are
-   placed where they overlap nothing.
+1. In **Study**, choose a starting point (one measurement, repeated visits,
+   groups of subjects, or a blank canvas) or a scenario from the catalog; the
+   choice opens in **Model**, the next step to check. Add variables with the
+   **+ Continuous**, **+ Binary**, **+ Count** and **+ Event time** chips (click
+   one, or drag it onto the canvas where the variable should go; double-clicking
+   the empty canvas adds a continuous variable). New variables are placed where
+   they overlap nothing.
 2. Select the variable and edit its identifier, label, type, distribution and
-   parameters. Changes apply as you make them (the **Apply** button remains).
+   parameters. Changes apply as you make them; Enter applies a typed value at
+   once.
    Renaming updates arrows, interactions and censoring references.
 3. Connect variables by dragging from a box's plus port onto another box, or
    by clicking the port and then the other box, or with **Add** under *New
@@ -55,7 +58,12 @@ selecting generic variables for it.
    design (total sample sizes, studies per size, alpha, the test's sides and
    target power), then **Calculate power**. The panel starts from a runnable
    choice and shows the analysis it will fit, with notes on what it assumes,
-   as you edit.
+   as you edit. Next to **Effect to detect** it shows the effect the model
+   implies (the arrow's coefficient for a coefficient target; otherwise a
+   population simulation of 5,000 draws, marked ≈), which a blank field uses.
+   When the automatic analysis is an unadjusted two-group test although other
+   causes of the outcome are drawn, it says so and points to g-computation or
+   AIPW.
    Null value, comparison levels, seed, calibration and the null-scenario check
    are under **More settings**. Inspect uncertainty and failed fits.
 6. Export/import the design as JSON. The graph, estimand and power settings are saved in browser storage
@@ -499,8 +507,34 @@ null rejection rates. Scalar targets also report bias and confidence-interval
 coverage at the known generating target, among valid fits. The interval level
 is `1 - alpha`, even for a one-sided power test. Bias is on the reported effect
 scale; coverage uses the test scale (log for ratios). Joint tests have no
-single effect estimate or interval coverage. The reported sample size is the first **tested** N whose
-point estimate reaches target power; intermediate sizes are not inferred.
+single effect estimate or interval coverage.
+
+The results open with an answer. When the target power lies between two tested
+sizes, the page estimates the size that reaches it by interpolating linearly in
+probit power against log size between those two sizes, labels it as an estimate
+that was not simulated, and offers to simulate three sizes around it (85%, 100%
+and 115% of the estimate) with one click; repeating narrows it further. When
+every tested size already reaches the target, or none does, it offers smaller
+(⅛, ¼, ½ of the smallest) or larger (2, 4, 8 times the largest) sizes. The
+engine's own `firstTestedN`, the first tested size whose point estimate reaches
+target power, is unchanged and is still marked in the table.
+
+Each tested size is checked, and the **Checks** column flags it when the
+evidence is clear against the simulation's own Monte Carlo error:
+
+- *type I error*: the null scenario's 95% interval lies entirely above α;
+- *coverage*: interval coverage below `1 − α` by more than three binomial
+  standard errors (with at least 50 valid fits);
+- *bias*: mean bias above 10% of the effect and above three Monte Carlo SEs
+  (not judged for ratio measures, whose bias is reported on the ratio scale);
+- *failures*: more than 5% of the size's simulated studies failed.
+
+When a size the answer relies on is flagged, the answer is marked "not reliable
+yet", the refine button is withheld and the reasons are listed: power from a
+test that over-rejects, or from biased estimates, overstates what a study would
+achieve. **Text for a protocol or grant** gives a paragraph with the question,
+assumed effect, analysis, α, number of simulated studies and seed, every tested
+size's power and interval and the null rejection rate, ready to copy.
 
 Download the complete JSON report or the power table as CSV. The JSON is a
 superset of the design envelope, with the original graph, saved estimand,

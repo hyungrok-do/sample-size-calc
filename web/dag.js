@@ -692,8 +692,8 @@ export function mountDag(root) {
     family.addEventListener('change', params); censorMode.addEventListener('change', observationFields);
     families(node.family);
     const studyFields = nodeStudyFields(graph, node, () => setTimeout(() => save(true)));
-    form.append(studyFields.element, parameters, observation, el('p', { class: 'small muted dag-autosave' }, 'Changes apply as you make them.'),
-      el('button', { type: 'submit', class: 'secondary' }, 'Apply'));
+    form.append(studyFields.element, parameters, observation, el('p', { class: 'small muted dag-autosave' }, 'Changes apply as you make them; press Enter to apply a typed value at once.'));
+    form.addEventListener('keydown', (event) => { if (event.key === 'Enter' && event.target.matches('input')) { event.preventDefault(); save(false); } });
     // Every change applies at once (after focus has moved, so the field the person went to keeps the focus).
     form.addEventListener('change', (event) => { if (event.target.closest('.dag-field, .dag-grid, details')) setTimeout(() => save(true)); });
     form.addEventListener('submit', (event) => { event.preventDefault(); save(false); });
@@ -974,11 +974,15 @@ export function mountDag(root) {
   }
   $('dag-undo').addEventListener('click', () => timeTravel(history, future));
   $('dag-redo').addEventListener('click', () => timeTravel(future, history));
+  // a starting point is the Study step's choice, so the next thing to do is to look at its model
+  const advance = () => { if (root.dataset.view !== 'all') workflow.go('model'); };
   function loadExample(name) {
     const next = scenarioDesign(name);
-    apply(next.graph, 'Scenario loaded with its question and analysis. All values are editable example assumptions.', { estimand: next.estimand, power: next.power, fit: true });
+    const label = SCENARIOS.find((s) => s.id === name)?.label ?? 'Scenario';
+    if (!apply(next.graph, `${label} loaded with its question and analysis. All values are editable example assumptions.`, { estimand: next.estimand, power: next.power, fit: true })) return;
     $('dag-scenario-category').value = 'all'; renderScenarioOptions(name);
     $('dag-example').value = name;
+    advance();
   }
   const category = $('dag-scenario-category');
   for (const value of [...new Set(SCENARIOS.map((s) => s.category))]) category.append(new Option(value, value));

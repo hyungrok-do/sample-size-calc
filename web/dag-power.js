@@ -6,6 +6,7 @@ import { DEFAULT_POWER, parsePowerSettings, powerCompatibility } from './power-m
 import { MEASURES, availableMeasures, validateEstimand, describeEstimand, copyEstimand } from './estimand-model.js?v=dev';
 import { Engine } from './engine.js?v=dev';
 import { questionSummary } from './dag-workflow.js?v=dev';
+import { estimateSize, nextSizes, rowChecks, effectText, summaryText } from './dag-results.js?v=dev';
 
 const POPULATION = 'Population represented by the data generating process';
 const SHORT = { mean_difference: 'Mean difference', risk_difference: 'Risk difference', risk_ratio: 'Risk ratio', odds_ratio: 'Odds ratio',
@@ -34,8 +35,8 @@ const numeric = (id, value, attrs = {}) => el('input', { id, type: 'number', ste
 const fmt = (value) => value == null || !Number.isFinite(value) ? '—' : Number(value.toPrecision(5)).toString();
 const pct = (value) => `${(100 * value).toFixed(1)}%`;
 
-// Map engine results to the display. No power calculation or interpolation is performed here.
-function powerPlot(answer) {
+// Map engine results to the display; the estimated size, when there is one, is drawn as an estimate.
+function powerPlot(answer, estimate) {
   const rows = answer.results.filter((row) => row.alternative.valid > 0);
   if (!rows.length) return [];
   const svg = (tag, attrs, ...children) => {
@@ -44,7 +45,9 @@ function powerPlot(answer) {
     node.append(...children); return node;
   };
   const min = Math.min(...rows.map((r) => r.n)), max = Math.max(...rows.map((r) => r.n));
-  const x = (n) => min === max ? 350 : 60 + (n - min) / (max - min) * 580, y = (p) => 225 - p * 190;
+  // doubling sizes sit evenly on a log axis; a narrow range reads better on a linear one
+  const log = max / min >= 4, scale = (n) => log ? Math.log(n) : n;
+  const x = (n) => min === max ? 350 : 60 + (scale(n) - scale(min)) / (scale(max) - scale(min)) * 580, y = (p) => 225 - p * 190;
   const plot = svg('svg', { id: 'power-plot', viewBox: '0 0 700 285', role: 'img', 'aria-labelledby': 'power-plot-title power-plot-desc' },
     svg('title', { id: 'power-plot-title' }, 'Estimated power at each tested sample size'),
     svg('desc', { id: 'power-plot-desc' }, 'Dots show simulated power, bars show 95% Monte Carlo intervals, and the dashed line shows target power. Exact values are in the table below.'));
@@ -52,6 +55,8 @@ function powerPlot(answer) {
     svg('text', { x: 48, y: y(p) + 4, 'text-anchor': 'end' }, `${p * 100}%`));
   plot.append(svg('line', { x1: 60, y1: y(answer.power.targetPower), x2: 640, y2: y(answer.power.targetPower), class: 'power-plot-target' }),
     svg('text', { x: 640, y: 18, 'text-anchor': 'end', class: 'power-plot-target-label' }, `Dashed line: target ${pct(answer.power.targetPower)}`));
+  if (estimate.status === 'between') plot.append(svg('line', { x1: x(estimate.n), y1: 30, x2: x(estimate.n), y2: 225, class: 'power-plot-estimate' }),
+    svg('text', { x: x(estimate.n) + 6, y: 40, class: 'power-plot-estimate-label' }, `≈ ${estimate.n} (estimate)`));
   rows.forEach((row, i) => {
     const px = x(row.n), a = row.alternative, lo = y(a.interval[0]), hi = y(a.interval[1]);
     plot.append(svg('path', { d: `M ${px} ${lo} V ${hi} M ${px - 5} ${lo} H ${px + 5} M ${px - 5} ${hi} H ${px + 5}`, class: 'power-plot-interval' }),
@@ -59,7 +64,7 @@ function powerPlot(answer) {
     // Dense grids retain their exact sizes in the table and hover text.
     if (rows.length <= 8 || i === 0 || i === rows.length - 1) plot.append(svg('text', { x: px, y: 247, 'text-anchor': 'middle' }, String(row.n)));
   });
-  plot.append(svg('text', { x: 350, y: 275, 'text-anchor': 'middle' }, answer.graph.study ? `Number of ${answer.sizeUnit}` : 'Total independent observations'));
+  plot.append(svg('text', { x: 350, y: 275, 'text-anchor': 'middle' }, (answer.graph.study ? `Number of ${answer.sizeUnit}` : 'Total independent observations') + (log ? ' (log scale)' : '')));
   return [el('div', { class: 'power-plot-wrap' }, plot), el('p', { class: 'small muted' }, 'Dots: estimated power · bars: 95% Monte Carlo intervals. Only the displayed sample sizes were simulated.')];
 }
 function download(value, mime, filename) {
@@ -107,6 +112,34 @@ export function defaultTarget(graph) {
 
 export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = () => {}, onRun = () => {} }) {
   let worker = null, generation = 0, result = null, ready = false, assign = () => false;
+  // the effect the model implies for the current question, computed in the background without a run
+  const hint = { engine: null, timer: 0, token: 0, key: '', text: '', number: '' };
+  function implied(graph, value, show) {
+    clearTimeout(hint.timer);
+    const name = (SHORT[value.measure] ?? value.measure).toLowerCase(), digits = (x) => Number(x.toPrecision(3)).toString();
+    if (value.kind === 'joint') return show('');
+    if (value.kind === 'coefficient') {
+      const edge = graph.edges.find((e) => e.source === value.exposure && e.target === value.outcome);
+      const c = edge && fmt(value.measure === 'exponentiated_coefficient' ? Math.exp(edge.coefficient) : edge.coefficient);
+      return show(edge ? `${name} ${c}` : '', edge ? c : '');
+    }
+    const key = JSON.stringify([graph, { ...value, alternative: null, nullValue: null }]);
+    if (key === hint.key) return show(hint.text, hint.number);
+    show('', '');
+    hint.timer = setTimeout(async () => {
+      const token = ++hint.token, instance = new Engine();
+      hint.engine?.dispose(); hint.engine = instance;
+      try {
+        const truth = await instance.dag({ op: 'population', graph, estimand: { ...value, alternative: null }, options: { n: graph.study ? 400 : 5000, seed: 1 } });
+        if (token !== hint.token) return;
+        const approximate = truth.mcSE > 1e-9 * Math.max(1, Math.abs(truth.estimate));
+        hint.key = key; hint.number = Number.isFinite(truth.estimate) ? `${approximate ? '≈ ' : ''}${digits(truth.estimate)}` : '';
+        hint.text = hint.number ? `${name} ${hint.number}` : '';
+        show(hint.text, hint.number);
+      } catch { if (token === hint.token) show('', ''); }
+      finally { if (hint.engine === instance) { instance.dispose(); hint.engine = null; } }
+    }, 400);
+  }
   const $ = (id) => root.querySelector(`#${id}`);
   const idle = 'Each simulated study draws data from the graph, fits the analysis above and applies its test.';
   function stop() {
@@ -120,29 +153,63 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     for (const id of ['power-json', 'power-csv']) if ($(id)) $(id).disabled = true;
     if ($('power-progress')) $('power-progress').textContent = '';
   }
+  // simulates a new set of sizes from the results: the sizes field takes them and the form runs again
+  function simulateSizes(list) {
+    const input = $('power-sizes');
+    if (!input || !list.length) return;
+    input.value = list.join(', ');
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    $('power-form').requestSubmit();
+  }
+  function headline(answer, estimate, doubtful) {
+    const unit = answer.graph.study ? answer.sizeUnit : 'in total', target = pct(answer.power.targetPower);
+    const truth = answer.alternative.truth, null0 = answer.estimand.nullValue;
+    // refining the size of a test that does not hold its level would only refine a misleading number
+    const action = (label, list) => list.length && !doubtful ? [el('button', { type: 'button', class: 'dag-power-next', 'data-sizes': list.join(','),
+      onclick: () => simulateSizes(list) }, `${label}: ${list.join(', ')}`)] : [];
+    const caution = doubtful ? ' — not reliable yet' : '';
+    if (answer.estimand.kind !== 'joint' && truth && Number.isFinite(truth.estimate)
+      && Math.abs(truth.estimate - null0) <= Math.max(2 * (truth.mcSE ?? 0), 1e-12 * Math.max(1, Math.abs(null0))))
+      return [el('p', { class: 'dag-power-answer' }, 'Your model has no effect to detect.'),
+        el('p', { class: 'small' }, 'The true effect in the graph equals the null value, so no sample size gives more than the false-positive rate. Change the effect in the Model or the Question step.')];
+    if (estimate.status === 'between') {
+      const { lower, upper } = estimate;
+      return [el('p', { class: 'dag-power-answer' }, `About ${estimate.n} ${unit} for ${target} power${caution}`),
+        el('p', { class: 'small' }, `Estimated between the tested sizes ${lower.n} (${pct(lower.alternative.probability)}) and ${upper.n} (${pct(upper.alternative.probability)}); ${estimate.n} itself has not been simulated. ${upper.n} is the smallest tested size that reaches the target.`),
+        ...action('Simulate sizes around the estimate', nextSizes(estimate))];
+    }
+    if (estimate.status === 'below') return [el('p', { class: 'dag-power-answer' }, `${estimate.upper.n} ${unit} already gives ${pct(estimate.upper.alternative.probability)} power${caution}`),
+      el('p', { class: 'small' }, doubtful ? 'Read the check below before relying on this size.' : `Every tested size reaches ${target}; a smaller study may be enough.`), ...action('Try smaller sizes', nextSizes(estimate))];
+    if (estimate.status === 'above') return [el('p', { class: 'dag-power-answer' }, `Not reached: ${estimate.lower.n} ${unit} gives ${pct(estimate.lower.alternative.probability)} power${caution}`),
+      el('p', { class: 'small' }, doubtful ? `No tested size reaches ${target}, and the check below questions even that.` : `No tested size reaches ${target}.`), ...action('Try larger sizes', nextSizes(estimate))];
+    return [el('p', { class: 'dag-power-answer' }, 'No analysis succeeded'), el('p', { class: 'small' }, 'See the failures below before changing the sample sizes.')];
+  }
   function display(answer) {
-    const header = [answer.graph.study ? `Number of ${answer.sizeUnit}` : 'Total N', ...(answer.graph.study ? ['Subjects', 'Measurement rows'] : []), 'Power', '95% MC interval', 'Failed', ...(answer.nullScenario ? ['Null rejection'] : [])];
-    const rows = answer.results.map((row) => el('tr', { class: row.n === answer.firstTestedN ? 'reached' : null },
-      ...[row.n, ...(answer.graph.study ? [row.subjects, row.measurementRows] : []), row.alternative.valid ? pct(row.alternative.probability) : 'No valid analyses',
-        `${pct(row.alternative.interval[0])}–${pct(row.alternative.interval[1])}`,
-        `${row.alternative.failures} / ${row.alternative.repetitions}`,
-        ...(row.null ? [row.null.valid ? pct(row.null.probability) : 'No valid analyses'] : [])]
-        .map((value) => el('td', {}, String(value)))));
-    const first = answer.results.find((row) => row.n === answer.firstTestedN);
-    const nodes = [el('p', { class: 'dag-power-recommendation' }, first
-      ? `${answer.graph.study ? answer.sizeUnit : 'N'} = ${first.n} is the first tested size with power ≥ ${pct(answer.power.targetPower)} (estimated ${pct(first.alternative.probability)}). Sizes between the tested values were not simulated.`
-      : answer.alternative.truth.estimate === answer.estimand.nullValue
-        ? 'The true effect equals the null value, so no sample size gives more than the false-positive rate.'
-        : `No tested sample size reached ${pct(answer.power.targetPower)} power. Try larger sizes.`),
-    ...powerPlot(answer), el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
-      el('table', { id: 'power-table' }, el('thead', {}, el('tr', {}, header.map((title) => el('th', { scope: 'col' }, title)))), el('tbody', {}, rows)))];
+    const estimate = estimateSize(answer), checks = new Map(answer.results.map((row) => [row.n, rowChecks(answer, row)]));
+    const header = [answer.graph.study ? `Number of ${answer.sizeUnit}` : 'Total N', ...(answer.graph.study ? ['Subjects', 'Measurement rows'] : []), 'Power', '95% MC interval', 'Failed', ...(answer.nullScenario ? ['Null rejection'] : []), 'Checks'];
+    const rows = answer.results.map((row) => {
+      const found = checks.get(row.n);
+      return el('tr', { class: [row.n === answer.firstTestedN ? 'reached' : '', found.length ? 'flagged' : ''].join(' ').trim() || null },
+        ...[row.n, ...(answer.graph.study ? [row.subjects, row.measurementRows] : []), row.alternative.valid ? pct(row.alternative.probability) : 'No valid analyses',
+          `${pct(row.alternative.interval[0])}–${pct(row.alternative.interval[1])}`,
+          `${row.alternative.failures} / ${row.alternative.repetitions}`,
+          ...(row.null ? [row.null.valid ? `${pct(row.null.probability)} (${pct(row.null.interval[0])}–${pct(row.null.interval[1])})` : 'No valid analyses'] : [])]
+          .map((value) => el('td', {}, String(value))),
+        el('td', { class: found.length ? 'dag-check-flag' : 'dag-check-ok' }, found.length ? `⚠ ${found.map((c) => c.short).join(' · ')}` : 'OK'));
+    });
+    // a size whose test does not hold its level or whose estimates are off does not support its power
+    const relevant = estimate.status === 'between' ? [estimate.lower, estimate.upper] : estimate.status === 'below' ? [estimate.upper] : estimate.status === 'above' ? [estimate.lower] : [];
+    const doubtful = relevant.flatMap((row) => checks.get(row.n).map((c) => `at ${row.n}, ${c.text}`));
+    const nodes = [el('div', { class: `dag-power-recommendation${doubtful.length ? ' doubtful' : ''}`, id: 'power-answer' }, ...headline(answer, estimate, doubtful.length > 0))];
+    if (doubtful.length) nodes.push(el('p', { class: 'dag-power-warning', role: 'note' }, `Check before using this size: ${doubtful.join('; ')}. Power from a test that over-rejects or from biased estimates overstates what a study would achieve; choose a different analysis in the Question step or inspect Diagnostics.`));
+    nodes.push(...powerPlot(answer, estimate), el('div', { class: 'table-wrap', tabindex: 0, 'aria-label': 'Simulated power by sample size' },
+      el('table', { id: 'power-table' }, el('thead', {}, el('tr', {}, header.map((title) => el('th', { scope: 'col' }, title)))), el('tbody', {}, rows))));
     const truth = answer.alternative.truth, facts = [];
-    facts.push(el('li', { id: 'power-truth' }, answer.estimand.kind === 'joint' ? `Generating predictor-block coefficients: ${truth.coefficients?.map(fmt).join(', ') || 'none'}. The hypothesis concerns the specified regression basis.` : truth.exact ? `True effect in the graph: ${fmt(truth.estimate)} (model coefficient).`
-      : `True effect in the graph: ${fmt(truth.estimate)} (Monte Carlo SE ${fmt(truth.mcSE)}).`));
+    facts.push(el('li', { id: 'power-truth' }, answer.estimand.kind === 'joint' ? `Generating predictor-block coefficients: ${truth.coefficients?.map(fmt).join(', ') || 'none'}. The hypothesis concerns the specified regression basis.`
+      : `True effect in the graph: ${effectText(answer)}${truth.exact ? ' (model coefficient)' : ''}.`));
     const parameter = answer.alternative.parameter;
     if (parameter) facts.push(el('li', { id: 'power-calibration' }, `${parameter.edge.replace('>', ' → ')} set to ${fmt(parameter.used)} (drawn ${fmt(parameter.drawn)}) to give the planning effect ${fmt(answer.alternative.target)}; the drawn graph is unchanged.`));
     facts.push(el('li', {}, `${answer.power.repetitions} studies per size · ${answer.power.side} test at α = ${answer.power.alpha} · intervals show simulation error only. ${answer.denominator}`));
-    facts.push(el('li', { id: 'power-engine' }, `C++/WebAssembly · ${answer.engine.threads} thread${answer.engine.threads === 1 ? '' : 's'} · ${answer.engine.rng}`));
     nodes.push(el('ul', { class: 'dag-power-facts small muted' }, facts));
     if (answer.assumptions && !answer.graph.study) nodes.push(el('p', { class: 'dag-power-note' }, answer.assumptions));
     // the analysis's own notes read as notes; anything else the run found, as a warning
@@ -152,6 +219,15 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     if (answer.results.some((row) => row.alternative.failures || row.null?.failures)) messages.push('Some studies could not be generated or analyzed. They count as non-rejections; check the failures before reading power.');
     if (!answer.results.some((row) => row.alternative.valid > 0)) messages.push('No analysis succeeded, so these results do not establish power for this design.');
     for (const message of messages) nodes.push(el('p', { class: 'error' }, message));
+    // a paragraph to paste into a protocol, from the numbers shown
+    const text = summaryText(answer, questionSummary(answer.graph, answer.estimand));
+    const copied = el('span', { class: 'small muted', role: 'status', 'aria-live': 'polite' });
+    nodes.push(el('details', { class: 'dag-power-summary-text' }, el('summary', {}, 'Text for a protocol or grant'),
+      el('p', { id: 'power-summary' }, text),
+      el('button', { type: 'button', id: 'power-copy', onclick: async () => {
+        try { await navigator.clipboard.writeText(text); copied.textContent = 'Copied.'; }
+        catch { const range = document.createRange(); range.selectNodeContents($('power-summary')); getSelection().removeAllRanges(); getSelection().addRange(range); copied.textContent = 'Selected · press Ctrl+C or ⌘C to copy.'; }
+      } }, 'Copy text'), copied));
     const diagnostics = [];
     for (const row of answer.results) for (const name of ['alternative', 'null']) if (row[name]) {
       const item = row[name];
@@ -163,12 +239,13 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       if (d) diagnostics.push(el('li', {}, `N=${row.n}, ${name}, successful targeted fits: largest inverse weight ${fmt(d.maxInverseWeight)}; ${d.propensityTruncated} subject propensities truncated; ${d.initialPredictionsClipped} initial outcome predictions clipped across replicates.`));
     }
     if (answer.nullScenario) diagnostics.push(el('li', {}, `${answer.nullScenario.exactNull ? 'Null scenario' : 'Reference scenario'}: ${answer.nullScenario.construction} Its effect: ${fmt(answer.nullScenario.truth.estimate)}.`));
+    diagnostics.push(el('li', { id: 'power-engine' }, `Computed by the C++/WebAssembly engine · ${answer.engine.threads} thread${answer.engine.threads === 1 ? '' : 's'} · ${answer.engine.rng}.`));
     nodes.push(el('details', {}, el('summary', {}, 'Diagnostics'), el('ul', {}, diagnostics)));
     $('power-results').replaceChildren(...nodes); $('power-json').disabled = false; $('power-csv').disabled = false;
   }
 
   function refresh(saved, savedSettings = null) {
-    stop();
+    stop(); clearTimeout(hint.timer); hint.token++; hint.engine?.dispose(); hint.engine = null;
     const graph = getGraph();
     let settings;
     try { settings = parsePowerSettings(savedSettings ?? DEFAULT_POWER); } catch { settings = parsePowerSettings(); }
@@ -284,6 +361,9 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     sizesField.classList.add('dag-wide');
     const calibration = el('div', { class: 'dag-grid' }, field('Arrow set to the effect to detect', edge), field('Lowest value', lower), field('Highest value', upper));
     const formula = el('p', { id: 'power-estimand', class: 'dag-power-formula' }), method = el('p', { id: 'power-method' });
+    const impliedText = el('span', { id: 'estimand-implied' });
+    const adjustNote = el('p', { id: 'analysis-adjust-note', class: 'dag-adjust-note small', hidden: true });
+    let impliedValue = '';
     const notes = el('ul', { id: 'power-notes', class: 'dag-power-notes', hidden: true });
     const question = el('p', { id: 'power-question-summary', class: 'dag-question-summary' });
     const review = el('p', { id: 'power-review-question' }), reviewMethod = el('p', { id: 'power-review-method', class: 'small' }),
@@ -294,9 +374,10 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       heading('03 / Question', 'dag-question-title', 'What do you want to detect?', 'Choose the outcome, comparison and analysis for every simulated study.'), question,
       el('div', { class: 'dag-grid dag-question-grid' }, field('Type of question', kind), field('Compare', exposure), field('Outcome', outcome), field('Measure', measure)),
       el('div', { class: 'dag-grid dag-question-grid' }, ...levelsFields, horizonField,
-        field('Effect to detect', alternative, 'Leave blank to use the effect implied by your model.')),
+        el('div', { class: 'dag-field' }, el('label', { for: 'estimand-alternative' }, 'Effect to detect'), alternative,
+          el('p', { class: 'small muted' }, 'Leave blank to use the effect implied by your model', impliedText, '.'))),
       trajectoryPanel,
-      el('div', { class: 'dag-analysis-choice' }, field('Analysis method', analysisMethod), method), analysisPanel,
+      el('div', { class: 'dag-analysis-choice' }, field('Analysis method', analysisMethod), method), adjustNote, analysisPanel,
       el('details', { class: 'dag-question-details' }, el('summary', {}, 'Formal target and assumptions'),
         field('Null value', nullValue), formula, notes));
     const powerPane = el('section', { 'data-dag-step': 'power' },
@@ -311,7 +392,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
         el('div', { class: 'dag-grid' }, field('Random seed', seed), field('Population draws for the true effect', population)),
         calibration, field('Reference / null construction', nullMode),
         el('label', { class: 'dag-power-check', for: 'power-null-check' }, nullCheck, 'Also simulate the null scenario (type I error check)')),
-      el('p', { class: 'small muted' }, 'Power is conditional on your generating model, dependence and missingness assumptions. Monte Carlo intervals measure simulation error, not uncertainty about those assumptions.'),
+      ...(graph.study ? [el('p', { class: 'small muted' }, 'Power is conditional on your generating model, dependence and missingness assumptions. Monte Carlo intervals measure simulation error, not uncertainty about those assumptions.')] : []),
       el('div', { class: 'dag-actions' }, el('button', { id: 'power-run', type: 'submit', class: 'primary' }, 'Calculate power'),
         el('button', { id: 'power-stop', type: 'button', hidden: true }, 'Stop'),
         el('button', { id: 'power-json', type: 'button', disabled: true }, 'Download report'),
@@ -373,8 +454,20 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       method.className = problem ? 'error' : '';
       method.textContent = problem ?? `Analysis: ${plan.label}.`;
       question.textContent = review.textContent = questionSummary(graph, value);
-      reviewEffect.textContent = value.kind === 'joint' ? 'Effect to detect: the predictor block specified in your model.'
-        : `Effect to detect: ${value.alternative == null ? 'as implied by your model' : value.alternative}. Null value: ${value.nullValue}.`;
+      const renderEffect = () => { reviewEffect.textContent = value.kind === 'joint' ? 'Effect to detect: the predictor block specified in your model.'
+        : `Effect to detect: ${value.alternative == null ? `as implied by your model${impliedValue ? ` (${impliedValue})` : ''}` : value.alternative}. Null value: ${value.nullValue}.`; };
+      renderEffect();
+      if (!problem) implied(graph, value, (text, number) => {
+        impliedValue = text; impliedText.textContent = text ? `: ${text}` : '';
+        alternative.placeholder = number ? `As drawn (${number})` : 'As drawn'; renderEffect();
+      });
+      else { impliedText.textContent = ''; alternative.placeholder = 'As drawn'; }
+      // an unadjusted test leaves out the outcome's other causes; say so where the analysis is chosen
+      const unadjusted = !problem && value.kind === 'marginal' && ['welch', 'risk_score', 'risk_wald', 'risk_ratio', 'odds_ratio', 'km_survival', 'km_rmst'].includes(plan.method);
+      const affected = below(graph, value.exposure);
+      const prognostic = unadjusted ? graph.edges.filter((e) => e.target === value.outcome && e.source !== value.exposure && !affected.has(e.source)).map((e) => e.source) : [];
+      adjustNote.hidden = !prognostic.length;
+      adjustNote.textContent = prognostic.length ? `This test is unadjusted: ${prognostic.join(', ')} ${prognostic.length === 1 ? 'also causes' : 'also cause'} ${value.outcome} but ${prognostic.length === 1 ? 'is' : 'are'} not used. Adjusting for ${prognostic.length === 1 ? 'it' : 'them'} (choose g-computation or AIPW) usually needs fewer participants.` : '';
       reviewMethod.textContent = method.textContent;
       reviewMethod.className = problem ? 'error' : 'small';
       formula.textContent = problem ? '' : describeEstimand(graph, value).formula + (value.kind === 'joint' ? '' : `. H₀: θ = ${value.nullValue}.`);

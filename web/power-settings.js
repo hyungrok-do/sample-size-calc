@@ -8,10 +8,10 @@ export function parsePowerSettings(raw = {}) {
   const sizes = Array.isArray(x.sampleSizes) ? x.sampleSizes.map(Number) : String(x.sampleSizes).trim().split(/[\s,]+/).filter(Boolean).map(Number);
   x.sampleSizes = [...new Set(sizes)].sort((a, b) => a - b);
   if (!x.sampleSizes.length || x.sampleSizes.length > 10 || x.sampleSizes.some((n) => !Number.isInteger(n) || n < 4 || n > 50000)) fail('Choose 1–10 total sample sizes, each a whole number from 4 to 50,000.');
-  for (const [key, min, max] of [['repetitions', 10, 10000], ['populationSize', 1000, 50000], ['seed', 0, 4294967295]]) {
-    x[key] = Number(x[key]); if (!Number.isInteger(x[key]) || x[key] < min || x[key] > max) fail(`${key} must be an integer from ${min} to ${max}.`);
+  for (const [key, label, min, max] of [['repetitions', 'Simulated studies per size', 10, 10000], ['populationSize', 'Population draws for the true effect', 1000, 50000], ['seed', 'Random seed', 0, 4294967295]]) {
+    x[key] = Number(x[key]); if (!Number.isInteger(x[key]) || x[key] < min || x[key] > max) fail(`${label} must be a whole number from ${min.toLocaleString('en-US')} to ${max.toLocaleString('en-US')}.`);
   }
-  for (const key of ['alpha', 'targetPower']) { x[key] = Number(x[key]); if (!(x[key] > 0 && x[key] < 1)) fail(`${key} must be strictly between 0 and 1.`); }
+  for (const [key, label] of [['alpha', 'The significance level α'], ['targetPower', 'Target power']]) { x[key] = Number(x[key]); if (!(x[key] > 0 && x[key] < 1)) fail(`${label} must be strictly between 0 and 1 (for example 0.05 or 0.8).`); }
   for (const key of ['calibrationLower', 'calibrationUpper']) { x[key] = Number(x[key]); if (!Number.isFinite(x[key])) fail('Calibration bounds must be finite.'); }
   if (x.calibrationLower >= x.calibrationUpper) fail('The lower calibration bound must be smaller than the upper bound.');
   if (!['two-sided', 'greater', 'less'].includes(x.side)) fail('Choose a two-sided, greater-than, or less-than test.');

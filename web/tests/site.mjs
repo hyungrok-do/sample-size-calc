@@ -213,14 +213,21 @@ try {
   const fitsViewport = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'the guided layout fits a narrow viewport');
   await fitsViewport();
   assert.equal(await page.isVisible('#dag-canvas'), false, 'the initial screen focuses on choosing a study');
+  // a blank start opens an empty model; a starting point opens its model, the next thing to check
+  await page.click('[data-template="empty"]');
+  assert.equal(await page.getAttribute('#dag', 'data-view'), 'model');
+  assert.equal(await page.locator('#dag-canvas .dag-node').count(), 0);
+  await page.click('[data-step="study"]');
   await page.click('[data-template="trial"]');
   assert.match(await page.textContent('#dag-design-summary'), /2 variables.*sample size counts observations/);
-  await page.click('#dag-step-next');
-  assert.equal(await page.isVisible('#dag-canvas'), true);
+  assert.equal(await page.isVisible('#dag-canvas'), true, 'choosing a starting point opens its model');
   await fitsViewport();
   assert.equal(await page.isVisible('#power-run'), false);
   await page.click('#dag-step-next');
   assert.match(await page.textContent('#power-question-summary'), /Outcome.*Treatment.*1 versus 0.*mean difference/);
+  // the effect the model implies is shown before anything runs
+  await page.waitForFunction(() => /mean difference 0\.5/.test(document.querySelector('#estimand-implied')?.textContent ?? ''));
+  assert.equal(await page.getAttribute('#estimand-alternative', 'placeholder'), 'As drawn (0.5)');
   await fitsViewport();
   assert.equal(await page.isVisible('#estimand-active'), true, 'comparison levels are a primary control');
   assert.equal(await page.isVisible('#analysis-method'), true, 'the selected analysis is visible without a disclosure');
@@ -369,6 +376,12 @@ try {
   await page.waitForSelector('#power-table');
   assert.equal(await page.locator('#power-table tbody tr').count(), 2);
   assert.equal(await page.locator('#power-plot .power-plot-dot').count(), 2);
+  // the results lead with an answer, check each size's test, and offer the next sizes and a protocol paragraph
+  assert.match(await page.textContent('#power-answer'), /for 80\.0% power|already gives|Not reached/);
+  assert.match(await page.textContent('#power-table thead'), /Checks/);
+  assert.match(await page.textContent('#power-summary'), /Question: Compare.*With 60 participants in total, estimated power is/);
+  const next = page.locator('#power-answer .dag-power-next');
+  if (await next.count()) assert.match(await next.getAttribute('data-sizes'), /^\d+(,\d+)+$/);
   const displayedPower = await page.textContent('#power-table');
   await page.click('[data-step="model"]');
   assert.equal(await page.isVisible('#power-table'), false);
