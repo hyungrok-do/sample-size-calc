@@ -1,0 +1,5 @@
+-- An arbitrary equation, with no predefined statistical procedure.
+def objective (x : Real) : Real := x^2 + 2*x
+
+solve for x : Real in [0, 10]
+where objective(x) = 8

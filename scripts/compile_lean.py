@@ -7,9 +7,41 @@ program on this computer. The browser compiler accepts the documented subset.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
+
+
+def native_source(source):
+    """Supply the implicit module, preserving the already-validated declaration."""
+    position = 0
+    while position < len(source):
+        if source[position].isspace():
+            position += 1
+        elif source.startswith('--', position):
+            end = source.find('\n', position)
+            position = len(source) if end < 0 else end
+        elif source.startswith('/-', position):
+            depth = 1
+            position += 2
+            while depth:
+                if source.startswith('/-', position):
+                    depth += 1
+                    position += 2
+                elif source.startswith('-/', position):
+                    depth -= 1
+                    position += 2
+                else:
+                    position += 1
+        else:
+            token = re.match(r'[A-Za-z_.]+', source[position:])
+            if token is None:
+                raise ValueError('Expected a validated study declaration')
+            if token.group() == 'def':
+                return 'import DesignCompiler.Input\nopen DesignCompiler\n' + source[position:]
+            position += len(token.group())
+    raise ValueError('Missing study declaration')
 
 
 def main():
@@ -33,7 +65,7 @@ def main():
     compiled = json.loads(native.stdout)["result"]
     with tempfile.TemporaryDirectory(prefix="ssc-study-") as temp:
         path = Path(temp) / "Study.lean"
-        path.write_text(source + "\n\ndef main : IO Unit := IO.println (DesignCompiler.compileInput study).compress\n", encoding="utf-8")
+        path.write_text(native_source(source) + "\n\ndef main : IO Unit := IO.println (DesignCompiler.compileInput study).compress\n", encoding="utf-8")
         result = subprocess.run(["lake", "env", "lean", "--run", str(path)], cwd=root / "lean",
                                 capture_output=True, text=True, check=False, timeout=120)
         if result.returncode:

@@ -1,0 +1,6 @@
+-- Composite Simpson quadrature, with an explicit even panel count.
+def area (upper : Real) : Real :=
+  integrate(fun x => exp(-x*x), 0, upper, 200)
+
+solve for upper : Real in [0, 3]
+where area(upper) = 0.7

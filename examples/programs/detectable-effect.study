@@ -1,0 +1,9 @@
+-- n is fixed. Solve the user-defined power equation for a treatment effect.
+def n : Real := 63
+def critical : Real := normalQuantile(0.975)
+
+def power (effect : Real) : Real :=
+  probability(abs(normal(effect * sqrt(n / 2), 1)) > critical)
+
+solve for effect : Real in [0.01, 2] tolerance 0.00000001
+where power(effect) = 0.80

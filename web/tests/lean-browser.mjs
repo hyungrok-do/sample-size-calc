@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { chromium } from 'playwright';
-import { examples } from '../lean-examples.js';
+import { examples, programs } from '../lean-examples.js';
 
 const root = resolve(process.argv[2] || new URL('..', import.meta.url).pathname);
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm' };
@@ -40,11 +40,29 @@ try {
   await page.goto(`${base}/lean.html?engine=single`);
   assert.equal(await page.locator('.workspace-tabs a').count(), 3);
   assert.equal(await page.locator('#lean-solve').isDisabled(), true);
+  assert.match(await page.locator('#syntax-help').textContent(), /solve for x : Real/);
+  assert.match(await page.locator('#lean-source').inputValue(), /solve for n : Nat/);
   await compile(); await solve();
   assert.equal(await page.locator('#lean-answer').textContent(), '63');
-  assert.match(await page.locator('#lean-result-detail').textContent(), /126 participants total/);
+  assert.match(await page.locator('#lean-derivation').textContent(), /Gaussian/i);
+  assert.match(await page.locator('#lean-result-detail').textContent(), /supplied grid/);
   assert.match(await page.locator('#lean-cpp').textContent(), /int main\(\)/);
   if (process.env.SCREENSHOTS) await page.screenshot({ path: resolve(process.env.SCREENSHOTS, 'lean-desktop.png'), fullPage: true });
+  await page.locator('#lean-example').selectOption('equation'); await page.locator('#lean-load').click();
+  assert.equal(await page.locator('#lean-result').isVisible(), false);
+  await compile(); await solve();
+  assert.equal(await page.locator('#lean-answer').textContent(), '2');
+  assert.match(await page.locator('#lean-basis').textContent(), /Algebraic quadratic/);
+  assert.match(await page.locator('#lean-derivation').textContent(), /x = 2 ∨ x = -4/);
+  assert.match(await page.locator('#lean-proof-source').textContent(), /theorem domain_solution/);
+  assert.equal(await page.locator('#lean-cpp-details').getAttribute('open'), null);
+  if (process.env.SCREENSHOTS) await page.screenshot({ path: resolve(process.env.SCREENSHOTS, 'lean-derivation.png'), fullPage: true });
+  await page.locator('#lean-example').selectOption('simulation'); await page.locator('#lean-load').click();
+  await compile(); await solve();
+  assert.equal(await page.locator('#lean-answer').textContent(), '20');
+  assert.equal(await page.locator('#lean-trace-rows tr').count(), 2);
+  assert.match(await page.locator('#lean-result-table').textContent(), /Monte Carlo bounds/);
+  await page.locator('#lean-example').selectOption('normal'); await page.locator('#lean-load').click();
   await page.locator('#lean-target').selectOption('power');
   assert.equal(await page.locator('#lean-solve').isDisabled(), true);
   assert.equal(await page.locator('#lean-result').isVisible(), false);
@@ -66,6 +84,7 @@ try {
   assert.match(await page.locator('#lean-basis').textContent(), /asymptotic/);
   await page.reload(); assert.equal(await page.locator('#lean-source').inputValue(), examples.influence);
   assert.equal(await page.locator('#lean-solve').isDisabled(), true);
+  await page.locator('#lean-example').selectOption('normalPower'); await page.locator('#lean-load').click();
   await page.setViewportSize({ width: 390, height: 844 }); await compile(); await solve();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   if (process.env.SCREENSHOTS) await page.screenshot({ path: resolve(process.env.SCREENSHOTS, 'lean-mobile.png'), fullPage: true });
@@ -74,7 +93,7 @@ try {
   await page.waitForFunction(async () => (await caches.keys()).length > 0);
   await page.waitForFunction(async () => !!(await caches.match('lean-examples.js?v=dev', { ignoreSearch: true })), null, { timeout: 60000 });
   await context.setOffline(true); await page.reload(); await compile(); await solve();
-  assert.equal(await page.locator('#lean-answer').textContent(), '126');
+  assert.equal(await page.locator('#lean-answer').textContent(), '63');
   assert.deepEqual(errors, []); assert.deepEqual(violations, []);
-  console.log('Lean tab: compile, three solve targets, invalidation, errors, storage, responsive layout and offline execution passed.');
+  console.log('Lean tab: code-based solving, method explanations, simulation bounds, legacy targets, storage, mobile layout and offline execution passed.');
 } finally { await context.close(); await browser.close(); server.close(); }

@@ -1,4 +1,5 @@
 #include "plan.hpp"
+#include "program.hpp"
 #include "stats/stats.hpp"
 #include "util/numtext.hpp"
 #include <algorithm>
@@ -77,6 +78,7 @@ J verification(const char* basis) {
 } // namespace
 
 J execute(const J& p, Token* token) {
+  if (p.get("schema").as_string() == "ssc.expression-plan") return execute_program(p, token);
   if (token) token->check();
   if (p.get("schema").as_string() != "ssc.design-plan" ||
       !p.get("version").is_number() || p.get("version").as_number() != 1)

@@ -121,9 +121,13 @@ and they install with `python -m pip install sample_size_calculator-*.whl`.
 
 ## Usage
 
-The web interface has a separate **Lean compiler** tab: write a supported Lean
-study declaration, generate downloadable C++, and solve for sample size, power,
-or detectable effect. See [the workflow and verification scope](docs/lean-compiler.md).
+The web interface has a separate **Lean compiler** tab: write Lean-style functions,
+random models and a `solve for` query, then inspect the solution derivation and
+download a Lean proof for supported algebraic equations. Standalone C++17 is an
+optional output. It supports
+algebraic equations, numerical roots, Gaussian probability reduction and Monte Carlo
+fallback with uncertainty bounds. Imports are optional. See the [language guide](docs/study-language.md)
+and [workflow and verification scope](docs/lean-compiler.md).
 The DAG simulator remains a separate tab.
 
 ### Web page

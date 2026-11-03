@@ -36,7 +36,18 @@ endif()
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE SSC_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/src/*.cpp")
 
+# Embed the same runtime used by the engine in standalone generated C++.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/core/src/sim/random.hpp" SSC_RANDOM_SOURCE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/core/src/design/program_runtime.hpp" SSC_PROGRAM_RUNTIME)
+string(REPLACE "#pragma once" "" SSC_RANDOM_SOURCE "${SSC_RANDOM_SOURCE}")
+string(REPLACE "#pragma once" "" SSC_PROGRAM_RUNTIME "${SSC_PROGRAM_RUNTIME}")
+string(REPLACE "#include \"sim/random.hpp\"" "" SSC_PROGRAM_RUNTIME "${SSC_PROGRAM_RUNTIME}")
+configure_file(core/src/design/program_sources.hpp.in generated/program_sources.hpp @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  core/src/sim/random.hpp core/src/design/program_runtime.hpp)
+
 add_library(ssc_obj OBJECT ${SSC_SOURCES})
+target_include_directories(ssc_obj PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_include_directories(ssc_obj PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/core/include"
                                           "${CMAKE_CURRENT_SOURCE_DIR}/core/src")
 target_compile_definitions(ssc_obj PRIVATE SSC_BUILDING)

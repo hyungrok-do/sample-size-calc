@@ -1,0 +1,4 @@
+-- Events with nonlinear random transformations automatically use simulation.
+def event (shift : Real) : Bool := exp(normal(0, 1)) + shift > 2
+simulation { replicates := 20000, seed := 19, confidence := 0.95 }
+evaluate probability(event(0.2))
