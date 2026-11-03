@@ -1,0 +1,9 @@
+// Source modules also live in examples/lean-equations/.
+export const examples = {
+  "branches": "noncomputable def response (x : ℝ) : ℝ := (3 * x - 1)^2\n\nsolve two_roots for x : ℝ where response x = 16\n\n#check two_roots\n",
+  "composition": "-- This is Lean code. The CLI supplies `import DesignCompiler.Solve`.\nnoncomputable def response (x : ℝ) : ℝ := Real.exp (2 * x + 1)\n\nsolve response_solution for x : ℝ where response x = 5\n\n-- The generated theorem is available to subsequent Lean code.\n#check response_solution\n",
+  "custom-rule": "-- Users can extend equation solving by proving a theorem in Lean.\nnoncomputable def cubeLink (x : ℝ) : ℝ := x^3 + x\n\n@[equation_rule] theorem cubeLink_zero (x : ℝ) : cubeLink x = 0 ↔ x = 0 := by\n  unfold cubeLink\n  constructor\n  · intro h\n    have factor : x * (x^2 + 1) = 0 := by nlinarith [h]\n    rcases mul_eq_zero.mp factor with hzero | himpossible\n    · exact hzero\n    · nlinarith [sq_nonneg x]\n  · intro h; simp [h]\n\nsolve custom_solution for x : ℝ where cubeLink (2*x - 3) = 0\n\n#check custom_solution\n",
+  "numerical": "-- The bounded proof search may leave this equation unresolved.\n-- Its elaborated expression can still be lowered to numerical C++.\nsolve fixed_point for x : ℝ where Real.cos x = x\n\n-- CLI numerical fallback, with a sign-changing bracket:\n-- python scripts/lean_equations.py examples/lean-equations/numerical.lean \\\n--   --cpp /tmp/equation.cpp --run --lower 0 --upper 1\n",
+  "parameters": "section\nvariable (a b y : ℝ) (ha : a ≠ 0) (hy : 0 < y)\n\nsolve parameter_solution for x : ℝ where Real.exp (a * x + b) = y\n\n#check parameter_solution\nend\n",
+  "quadratic": "solve quadratic_solution for x : ℝ where x^2 + 2*x = 8\n\n-- Use the generated theorem in an ordinary Lean proof.\nexample (x : ℝ) (h : x^2 + 2*x = 8) : x = 2 ∨ x = -4 := by\n  exact (quadratic_solution x).mp h\n"
+};

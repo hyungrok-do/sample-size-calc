@@ -39,7 +39,7 @@ function reference(raw, from) {
     if (path !== 'sw.js' && !new URLSearchParams(query).getAll('v').includes(version)) unversioned.push(`${ref} (from ${from})`);
   }
 }
-for (const file of ['index.html', 'dag.html', 'lean.html'])
+for (const file of ['index.html', 'dag.html', 'lean.html', 'study.html'])
   for (const m of (await text(file)).matchAll(/(?:src|href)="([^"#]+)"/g)) if (!/^https?:/.test(m[1])) reference(m[1], file);
 for (const file of scripts) {
   const code = await text(file);

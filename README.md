@@ -121,14 +121,17 @@ and they install with `python -m pip install sample_size_calculator-*.whl`.
 
 ## Usage
 
-The web interface has a separate **Lean compiler** tab: write Lean-style functions,
-random models and a `solve for` query, then inspect the solution derivation and
-download a Lean proof for supported algebraic equations. Standalone C++17 is an
-optional output. It supports
-algebraic equations, numerical roots, Gaussian probability reduction and Monte Carlo
-fallback with uncertainty bounds. Imports are optional. See the [language guide](docs/study-language.md)
-and [workflow and verification scope](docs/lean-compiler.md).
-The DAG simulator remains a separate tab.
+The separate **Lean compiler** tab accepts actual Lean definitions and a custom
+`solve answer for x : ℝ where equation` command. Lean elaborates the source,
+searches over composable proved equivalences, and kernel-checks a reusable
+solution theorem. Users can extend the solver with `@[equation_rule]` theorems.
+The tab uses a [local native compiler service](docs/lean-compiler.md); the static
+host is an editor and does not run Lean. Imports are supplied by a default prelude.
+An optional C++17 backend evaluates closed solutions or attempts bracketed
+numerical root finding for supported real expressions. Proof search is bounded.
+The earlier [browser study sandbox](docs/study-language.md) remains available
+for Gaussian calculations and Monte Carlo simulation. Its custom language is
+separate from native Lean. The DAG simulator remains a separate tab.
 
 ### Web page
 

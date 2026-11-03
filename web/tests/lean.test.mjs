@@ -51,7 +51,13 @@ test('compiler rejects unsupported Lean and incompatible study fields', () => {
 test('third tab has separate navigation and offline files', async () => {
   for (const page of ['index.html', 'dag.html', 'lean.html']) assert.match(await readFile(new URL(`../${page}`, import.meta.url), 'utf8'), /href="lean\.html\?v=dev"/);
   const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
-  for (const file of ['lean.html', 'lean.css', 'lean.js', 'lean-examples.js']) assert.ok(sw.includes(`${file}?v=dev`));
+  for (const file of ['lean.html', 'lean.css', 'lean.js', 'lean-examples.js', 'lean-native-examples.js', 'study.html', 'study.js']) assert.ok(sw.includes(`${file}?v=dev`));
+});
+
+test('native editor examples are the actual Lean modules checked in CI', async () => {
+  const { examples: native } = await import('../lean-native-examples.js');
+  for (const [name, source] of Object.entries(native))
+    assert.equal(source, await readFile(new URL(`../../examples/lean-equations/${name}.lean`, import.meta.url), 'utf8'));
 });
 
 test('expression examples compile and execute through the real C++ runtime', async () => {

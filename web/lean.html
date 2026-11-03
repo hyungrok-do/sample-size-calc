@@ -4,99 +4,103 @@
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; worker-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lean Compiler · Sample Size Calculator</title>
-<meta name="description" content="Write Lean-style functions and solve queries, generate C++, and solve analytically, numerically, or by simulation.">
+<title>Lean Equation Compiler · Sample Size Calculator</title>
+<meta name="description" content="Write actual Lean, derive equation solutions, and check the resulting theorem in Lean's kernel.">
 <link rel="stylesheet" href="lean.css?v=dev">
 </head>
 <body>
-<a class="skip" href="#lean-source">Skip to study editor</a>
+<a class="skip" href="#lean-source">Skip to Lean editor</a>
 <header class="top">
   <h1>Sample Size Calculator</h1>
   <nav class="workspace-tabs" aria-label="Workspace tabs">
-    <a href="./">Calculator</a>
-    <a href="dag.html?v=dev">DAG simulator</a>
+    <a href="./">Calculator</a><a href="dag.html?v=dev">DAG simulator</a>
     <a href="lean.html?v=dev" aria-current="page">Lean compiler</a>
   </nav>
-  <p class="muted small">Private · runs in your browser</p>
+  <p class="muted small">Native Lean · local compilation</p>
 </header>
 <main class="compiler-page">
-  <div class="intro"><h2>Lean study compiler <span class="badge">Experimental</span></h2>
-    <p>Write your model and what to solve for. See the derivation, inspect its Lean proof when available, and run the calculation. Headers are optional.</p>
-    <p class="small">Derivation uses supported symbolic rules. Exact Lean proofs currently cover rational linear and quadratic equations; general Lean proof search is not implemented.</p>
+  <div class="intro">
+    <h2>Lean equation compiler <span class="badge">Experimental</span></h2>
+    <p>Define a function in Lean. Ask for its solution. Get a derivation and a theorem checked by Lean’s kernel.</p>
+    <p class="small">The <code>solve</code> command searches for a proof using composable theorems. Add your own with <code>@[equation_rule]</code>.</p>
   </div>
+  <section id="lean-connection" class="panel connection" aria-live="polite">
+    <p id="lean-connection-status">Checking the native compiler…</p>
+    <div id="lean-setup" hidden>
+      <p>This hosted page is an editor. To compile Lean, start the local service from a checkout with Python 3 and the pinned Lean toolchain:</p>
+      <pre class="command">cd lean
+lake exe cache get
+lake build DesignCompiler.Solve
+cd ..
+python scripts/serve_lean.py</pre>
+      <p>Then open <a href="http://127.0.0.1:8765/lean.html">the local Lean editor</a>. Run code you trust: Lean modules can perform IO.</p>
+    </div>
+    <div class="actions"><button id="lean-reconnect" type="button">Check connection</button><a href="study.html?v=dev">Browser study sandbox &amp; simulation</a></div>
+  </section>
   <div class="workbench">
     <section class="panel editor-panel" aria-labelledby="source-heading">
-      <div class="section-heading"><h3 id="source-heading"><span class="step">1</span> Lean-style source</h3>
-        <span class="small muted">Functions · probability · solve for</span></div>
+      <h3 id="source-heading"><span class="step">1</span> Lean source</h3>
       <div class="toolbar">
-        <label for="lean-example" class="sr-only">Study example</label>
-        <select id="lean-example"><optgroup label="Write your own calculation"><option value="normalPower">Derive Gaussian power and solve n</option><option value="effectEquation">Solve for detectable effect</option><option value="equation">Solve a custom equation</option><option value="simulation">Nonlinear outcome simulation</option><option value="integration">Numerical integration and solving</option><option value="estimate">Estimate a probability</option></optgroup><optgroup label="Earlier study templates"><option value="normal">Two-arm normal comparison</option><option value="influence">ATE influence variance</option><option value="cluster">Cluster influence variance</option></optgroup></select>
+        <label for="lean-example" class="sr-only">Lean example</label>
+        <select id="lean-example">
+          <option value="composition">Compose functions: exponential equation</option>
+          <option value="branches">Find both roots of a square</option>
+          <option value="parameters">Derive a formula with parameters</option>
+          <option value="custom-rule">Teach it a new function with a theorem</option>
+          <option value="quadratic">Complete the square</option>
+          <option value="numerical">Equation needing numerical fallback</option>
+        </select>
         <button id="lean-load" type="button">Load</button>
-        <label for="lean-import" class="file-button">Open source</label><input id="lean-import" type="file" accept=".study,.lean,text/plain" class="sr-only">
+        <label for="lean-import" class="file-button">Open .lean</label><input id="lean-import" type="file" accept=".lean,text/plain" class="sr-only">
         <button id="lean-save" type="button">Save source</button>
       </div>
-      <label class="sr-only" for="lean-source">Lean study declaration</label>
+      <label class="sr-only" for="lean-source">Lean module</label>
       <textarea id="lean-source" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" aria-describedby="syntax-help"></textarea>
-      <details id="syntax-help" open><summary>How to write “solve for”</summary>
-        <pre class="command">def objective (x : Real) : Real := x^2 + 2*x
+      <details id="syntax-help"><summary>Lean syntax and extending the solver</summary>
+        <pre class="command">noncomputable def response (x : ℝ) : ℝ :=
+  Real.exp (2*x + 1)
 
-solve for x : Real in [0, 10]
-where objective(x) = 8</pre>
-        <p>Use <code>Nat</code> for integer searches, <code>Real</code> for equation roots, or <code>Grid</code> with <code>step</code> for a finite grid. To calculate a value directly, write <code>evaluate power(63)</code>.</p>
-        <p>Write <code>probability(event)</code> around a Boolean event generated by your random model. The compiler derives supported Gaussian probabilities analytically and otherwise uses simulation. Before the query, set its precision with <code>simulation { replicates := 20000, seed := 42, confidence := 0.95 }</code>.</p>
-        <p>Supported: typed functions, <code>let</code>, <code>if</code>, arithmetic, arrays, <code>sample(n, fun i =&gt; ...)</code>, <code>map</code>, summary statistics, distributions, and numerical integration. This is a Lean-style study language with its own solve syntax, not the full Lean language or proof kernel.</p>
-        <p>For a normal study, <code>sd</code> is the common <strong>known</strong> standard deviation and counts are per arm. For an influence-function study, <code>variance</code> is the variance coefficient per independent participant or cluster for the planned estimator.</p>
+solve answer for x : ℝ where response x = 5
+#check answer</pre>
+        <p>Use ordinary Lean definitions, notation, namespaces, and section variables. Function application is <code>response x</code>. Real-valued mathematical functions often need <code>noncomputable def</code>.</p>
+        <p>The service supplies <code>import DesignCompiler.Solve</code>. You can add imports for other installed modules. The compiler uses Lean’s parser, elaborator, expression representation, and kernel.</p>
+        <p>Prove an equality or equivalence and mark it <code>@[equation_rule]</code> to make it available to proof search. Assumptions are retained in the theorem; conditions and multiple roots are not silently dropped.</p>
+        <p>Search is bounded. “Unresolved” means the compiler did not find an explicit solution with its current rules and budget.</p>
       </details>
     </section>
     <section class="panel compile-panel" aria-labelledby="compile-heading">
-      <h3 id="compile-heading"><span class="step">2</span> Derive the solution</h3>
-      <div class="solve-controls">
-        <label for="lean-target">Solve for</label>
-        <select id="lean-target"><option value="code">Query written in code</option><option value="sample_size">Sample size</option><option value="power">Power</option><option value="effect">Detectable effect</option></select>
-        <div id="lean-n-field" hidden><label for="lean-n" id="lean-n-label">Participants per arm</label><input id="lean-n" type="number" value="63" min="1" max="10000000" step="1"></div>
-      </div>
-      <div class="actions"><button id="lean-compile" class="primary" type="button">Derive &amp; compile</button><button id="lean-stop" type="button" hidden>Stop</button></div>
-      <p id="lean-status" class="status" role="status" aria-live="polite">Ready to compile the example.</p>
-      <p id="lean-error" class="error" role="alert" hidden></p>
+      <h3 id="compile-heading"><span class="step">2</span> Derive &amp; check</h3>
+      <div class="actions"><button id="lean-compile" class="primary" type="button" disabled>Compile &amp; solve</button><button id="lean-stop" type="button" hidden>Stop</button></div>
+      <p id="lean-status" class="status" role="status" aria-live="polite">Write Lean or choose an example.</p>
+      <pre id="lean-error" class="error" role="alert" hidden></pre>
       <div id="lean-compiled" hidden>
-        <h4 id="lean-derivation-title">Solution derivation</h4>
+        <label for="lean-query">Compiled query</label><select id="lean-query"></select>
+        <p id="lean-proof-status" class="basis"></p>
+        <pre id="lean-solution" class="solution"></pre>
+        <p id="lean-scope" class="small muted"></p>
+        <h4 class="derivation-heading">How Lean derived it</h4>
         <ol id="lean-derivation" class="derivation"></ol>
-        <p id="lean-proof-status" class="small muted"></p>
-        <details id="lean-proof" hidden><summary>Lean proof of the derivation</summary>
-          <button id="lean-proof-save" type="button">Download proof .lean</button>
-          <pre class="cpp"><code id="lean-proof-source"></code></pre>
-          <p>Check this proof with the pinned Lean environment:</p>
-          <pre class="command">python scripts/compile_study.py study.study --lean derivation.lean --check-lean</pre>
+        <details id="lean-theorem"><summary>Compiled theorem and proof</summary>
+          <pre class="cpp"><code id="lean-theorem-type"></code></pre>
+          <p>The theorem is available to subsequent Lean code in the same module.</p>
+          <button id="lean-proof-save" type="button">Download checked module</button>
+          <details><summary>Proof term (pretty-printed)</summary><pre class="cpp"><code id="lean-proof-term"></code></pre></details>
+          <p id="lean-axioms" class="small"></p>
         </details>
-        <details><summary>How this will be executed</summary><ol id="lean-method-steps"></ol></details>
-        <details id="lean-lowered"><summary>Lowered expression</summary><pre class="cpp"><code id="lean-expression"></code></pre></details>
-        <details id="lean-cpp-details"><summary>Generated C++ (optional)</summary>
-          <button id="lean-cpp-save" type="button">Download .cpp</button>
-          <pre class="cpp"><code id="lean-cpp"></code></pre>
-          <p class="small muted">The downloaded C++ contains your compiled expression and builds independently with a C++17 compiler. Browser Solve executes the typed expression plan in the C++/WebAssembly runtime.</p>
+        <details id="lean-cpp-details"><summary>C++ numerical evaluation (optional)</summary>
+          <p id="lean-cpp-status"></p>
+          <div id="lean-cpp-output" hidden>
+            <button id="lean-cpp-save" type="button">Download .cpp</button>
+            <pre class="cpp"><code id="lean-cpp"></code></pre>
+            <pre id="lean-cpp-command" class="command"></pre>
+            <p>Binary64 evaluation is approximate. The Lean theorem certifies the symbolic derivation. Numerical root finding needs a continuous, sign-changing bracket and does not prove uniqueness.</p>
+          </div>
         </details>
-        <details><summary>Compilation and proof checks</summary>
-          <p>The compiler checks the supported syntax, types, and numerical domains. For supported algebraic equations it also generates a separate Lean proof. The browser exports that proof; the native check runs Lean’s kernel. The earlier declaration templates support their own native Lean check.</p>
-          <p>Generate, compile, and run a native executable from this study:</p>
-          <pre class="command">python scripts/compile_study.py study.study --cpp study.cpp --run</pre>
-          <p>Numerical evaluation uses ordinary floating-point arithmetic.</p>
-        </details>
+        <details><summary>Compiler diagnostics</summary><pre id="lean-diagnostics" class="cpp"></pre></details>
+        <div class="actions"><button id="lean-result-save" type="button">Download result JSON</button></div>
       </div>
     </section>
   </div>
-  <section class="panel result-panel" aria-labelledby="solve-heading">
-    <div class="section-heading"><h3 id="solve-heading"><span class="step">3</span> Solve</h3><button id="lean-solve" class="primary" type="button" disabled>Solve sample size</button></div>
-    <p id="lean-prompt" class="muted">Compile the study to enable solving.</p>
-    <div id="lean-result" hidden aria-live="polite">
-      <p id="lean-basis" class="basis"></p>
-      <div class="answer"><strong id="lean-answer"></strong><span id="lean-answer-unit"></span></div>
-      <p id="lean-result-detail"></p>
-      <div class="result-grid"><div><h4>Calculation</h4><table><tbody id="lean-result-table"></tbody></table></div>
-      <div><h4>Assumptions</h4><ul id="lean-assumptions"></ul></div></div>
-      <button id="lean-result-save" type="button">Download result</button>
-      <details id="lean-trace" hidden><summary>Simulation search and uncertainty</summary><div class="trace-scroll"><table><thead><tr><th>Candidate</th><th>Estimate</th><th>Lower bound</th><th>Upper bound</th><th>Replicates</th></tr></thead><tbody id="lean-trace-rows"></tbody></table></div></details>
-    </div>
-  </section>
 </main>
 <script type="module" src="lean.js?v=dev"></script>
 </body>

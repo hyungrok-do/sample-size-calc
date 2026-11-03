@@ -1,56 +1,169 @@
-# Lean study compiler
+# Native Lean equation compiler
 
-The **Lean compiler** is a separate third tab at `web/lean.html`:
-**Lean-style source → Derive & compile → solution derivation → Run query**.
-The Calculator and DAG simulator retain their existing workflows.
+The third tab, `web/lean.html`, accepts **actual Lean 4**. The `solve` command is a
+Lean language extension: Lean parses and elaborates the module, the solver
+transforms Lean expressions while constructing proofs, and the kernel checks a
+new theorem. The editor displays that derivation before any optional C++ output.
 
-## Use the tab
+## Run it
 
-Write the objective and the query together, without imports:
-
-```lean
-def power (n : Real) : Real :=
-  let z := normal(0.5 * sqrt(n / 2), 1)
-  probability(abs(z) > normalQuantile(0.975))
-
-solve for n : Nat in [2, 10000]
-where power(n) >= 0.80
-```
-
-This selects **63 per arm**. The compiler parses and checks functions, expands
-calls with their evaluation semantics, derives the Gaussian event probability,
-and generates the expression as standalone C++17. **Solution derivation**
-shows the selected reduction and search. The editor's **How to write “solve for”**
-section provides a source example. `solve`, `probability`, and `simulation` are
-compiler-defined extensions, not commands supplied by Lean itself.
-
-Load the custom-equation, integration, or nonlinear-simulation examples to try
-the other routes. Analytic linear/quadratic equations use validated algebraic
-roots; other continuous equations use bracketed bisection. Random events outside
-the Gaussian rules use reproducible Monte Carlo on a finite search grid, with
-simultaneous uncertainty bounds and explicit unresolved outcomes.
-
-See the [study language reference](study-language.md) for syntax, supported
-functions, error limits, probability semantics, and execution details.
+Install the toolchain pinned by `lean/lean-toolchain` (Lean 4.19.0), then:
 
 ```sh
-python scripts/compile_study.py examples/programs/normal-power.study --cpp study.cpp --run
+cd lean
+lake exe cache get
+lake build DesignCompiler.Solve
+cd ..
+python scripts/serve_lean.py
 ```
 
-The browser checks syntax/types and executes a typed plan in C++/WASM. It does
-not invoke Lean's proof kernel or compile C++ on the device. The downloadable
-C++ contains the actual generated expression and the shared numerical runtime;
-it builds and runs independently. General expression programs are not covered
-by the older Lean library's proof claims.
+Open `http://127.0.0.1:8765/lean.html`. The service requires Python 3.9 or later
+on a POSIX host. It serves the editor and compiler from the same loopback origin.
+The GitHub Pages version cannot execute the native toolchain and says so;
+it never substitutes the old C++ parser for Lean.
 
-For rational linear/quadratic equations, the tab also emits exact algebraic
-steps and a Lean proof of the roots and supported domain restrictions. C++ is
-collapsed by default. Check a generated derivation with
-`python scripts/compile_study.py examples/programs/equation.study --lean derivation.lean --check-lean`.
-The browser labels the proof as not kernel checked; the native command invokes
-Lean. See [proof scope and supported algebra](study-language.md#lean-proofs-of-the-derivation).
+Lean modules can perform IO. This service is for trusted local code, not a public
+sandbox. It rejects other origins/hosts, allows one compilation at a time, and
+limits source size, compiler output, and wall time. **Stop** kills the compiler
+process group and invalidates the pending result. A public compiler service would
+need an isolated execution environment.
+
+## Write and solve actual Lean
+
+The service supplies `import DesignCompiler.Solve`, so no header is required in
+the editor. Additional imports may refer to installed Lean modules.
+
+```lean
+noncomputable def response (x : ℝ) : ℝ := Real.exp (2*x + 1)
+
+solve response_solution for x : ℝ where response x = 5
+#check response_solution
+```
+
+The generated declaration has type:
+
+```lean
+response_solution (x : ℝ) :
+  response x = 5 ↔ x = (Real.log 5 - 1) / 2
+```
+
+Definitions, namespaces, structures, notation, and ordinary Lean theorems are
+elaborated by Lean. Function application uses `response x`, not the custom study
+language's `response(x)` convention. Mathematical real functions often require
+`noncomputable def`. `solve for x : ℝ where ...` also works, with an automatically
+assigned theorem name. A module can contain multiple solve commands.
+
+Parameters and assumptions belong in ordinary sections:
+
+```lean
+section
+variable (a b y : ℝ) (ha : a ≠ 0) (hy : 0 < y)
+solve formula for x : ℝ where Real.exp (a*x+b) = y
+-- formula includes a, b, y, ha, hy and proves x = (Real.log y - b) / a.
+end
+```
+
+Without those hypotheses, the compiler can retain conditions and degenerate
+branches instead of dividing by a potentially zero coefficient. Square equations
+return both roots, or `False` when no real root exists. A result of `True` means
+all values satisfy the equation under the stated assumptions.
+
+## Teach the compiler a new function
+
+`@[equation_rule]` registers a **proved Lean equality or equivalence** for search.
+For example, `examples/lean-equations/custom-rule.lean` defines
+`cubeLink x = x^3 + x`, proves `cubeLink x = 0 ↔ x = 0`, and solves
+`cubeLink (2*x-3) = 0` as `x = 3/2`. This requires no C++ parser or solver change.
+The generated theorem can be used by subsequent proofs in the source module.
+
+The built-in rules cover arithmetic rearrangement, exponential/logarithm
+inversion with hypotheses, squares, square roots, absolute values, products,
+zero-coefficient cases, and completing the square. These are mathematical
+primitives, not complete-example printouts. Search composes their proofs on the
+actual elaborated expression; Lean simplification, exact arithmetic, and ring
+normalization provide further transformations. Each displayed step is drawn
+from the proof-producing transformation that ran.
+
+Search explores at most 96 states, favors expressions closer to isolating the
+unknown, and has heartbeat/time limits. It is not a complete computer algebra
+system or an arbitrary theorem prover. It currently rewrites the first matching
+occurrence per rule, so rule ordering and expression form can affect discovery.
+An **unresolved** result is a checked partial equivalence, not a proof that an
+analytic solution is impossible. Unsupported functions can be handled by adding
+proved rules or by extending numerical lowering.
+
+The final theorem is kernel checked with kernel checking enabled. Its transitive
+axiom dependencies must be a subset of `propext`, `Classical.choice`, and
+`Quot.sound`; derivations relying on `sorryAx` or user axioms are rejected. As with
+ordinary Lean use, this trusts the installed toolchain, imported modules, and
+local metaprogramming environment. Pretty-printed proof terms are explanatory;
+the downloadable module reproduces the actual checked declaration.
+
+## Command line and C++
+
+```sh
+python scripts/lean_equations.py examples/lean-equations/composition.lean \
+  --output result.json --olean Checked.olean --cpp equation.cpp --run
+```
+
+The Python adapter supplies the prelude, invokes Lean, and transports its report.
+It does not parse equations. The Lean backend lowers elaborated real expressions
+to numeric C++ expressions; Python packages these into a standalone executable.
+The generated code checks for finite values. Its standard real arithmetic
+instances are checked before lowering, and helpers preserve Lean's totalized
+`Real.log`, `Real.sqrt`, and division semantics (including exceptional arguments).
+
+For an unresolved equation that has numerical lowering:
+
+```sh
+python scripts/lean_equations.py examples/lean-equations/numerical.lean \
+  --cpp equation.cpp --run --lower 0 --upper 1
+```
+
+This attempts `cos x = x` with bracketed bisection. It requires a continuous,
+sign-changing bracket, checks the residual, and reports failure if the bracket
+or precision is inadequate. It does not establish uniqueness or prove the
+absence of other roots. C++17 and a `c++` command are required for `--run`.
+
+The C++ backend currently supports closed real arithmetic, constant natural
+powers, exp/log/sqrt, sin/cos, and absolute value. Parameterized formulas remain
+symbolic until values are supplied. Binary64 evaluation, numerical roots, the
+transport layer, and the C++ compiler are **not certified by the Lean theorem**.
+The theorem certifies exact symbolic equivalence over the stated Lean types.
+
+Monte Carlo models remain in the separate [browser study sandbox](study-language.md),
+accessible from this tab at `web/study.html`. The native equation compiler does
+not yet lower Lean probability distributions to simulation. The sandbox retains
+its previous offline study language and C++/WASM runtime.
+
+## Implementation and validation
+
+- `lean/DesignCompiler/Solve.lean`: command elaboration, proof search, checked
+  theorem construction, and report export.
+- `lean/DesignCompiler/Solve/Attribute.lean`: extensible theorem registry.
+- `lean/DesignCompiler/Solve/Rules.lean`: independently proved transformations.
+- `lean/DesignCompiler/Solve/Lower.lean`: lowering from typed Lean expressions.
+- `scripts/lean_equations.py`, `lean_cpp.py`, `serve_lean.py`: native transport,
+  C++ packaging, and local editor service.
+
+```sh
+cd lean && lake build && cd ..
+python scripts/check_lean_equations.py
+cd web && npm ci && npx playwright install chromium
+npm run test:lean-native-browser
+npm test
+npm run test:lean-browser
+```
+
+Tests invoke the actual Lean kernel and compile emitted C++ independently. They
+cover user-defined functions/rules, namespaces/structures/notation, theorem
+reuse, parameters, degenerate cases, both roots, no roots, invalid proofs and
+axioms, unresolved equations, numerical evaluation, and process cancellation.
+The native browser test checks the actual service, mobile layout, CSP, multiple
+queries, stale-result invalidation, and the static-host unavailable state.
 
 ## Earlier Lean declaration templates
+
 
 The earlier `NormalInput` and `InfluenceInput` examples remain available:
 
