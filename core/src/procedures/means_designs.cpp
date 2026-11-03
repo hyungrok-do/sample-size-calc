@@ -2,6 +2,7 @@
 // (difference and bioequivalence ratio), cluster-randomized and
 // repeated-measures comparisons.
 #include "procedures/common.hpp"
+#include "procedures/derive_means.hpp"
 #include "procedures/integrals.hpp"
 
 namespace ssc::procs {
@@ -39,13 +40,19 @@ int anova_k(const Scenario& s) {
   return k;
 }
 
+// the group sizes for n per weight-1 group: n × each weight, rounded up
+std::vector<double> anova_sizes(const Scenario& s, int k, double n) {
+  std::vector<double> sizes;
+  for (double wi : anova_weights(s, k)) sizes.push_back(solve::round_up(n * wi));
+  return sizes;
+}
+
 // effect-size multiplier `scale` stretches the means about their mean (for solving the effect)
 AnovaDesign anova_design(const Scenario& s, double n, double scale_f = NAN) {
   const int k = anova_k(s);
-  const auto w = anova_weights(s, k);
   AnovaDesign d;
   d.k = k;
-  for (double wi : w) d.sizes.push_back(solve::round_up(n * wi));
+  d.sizes = anova_sizes(s, k, n);
   double N = 0;
   for (double x : d.sizes) N += x;
   if (s.is("estype", "f")) {
@@ -238,6 +245,56 @@ Procedure anova() {
            " to detect differences among the group means with effect size f = " + fnum(r.num("f")) +
            " using the one-way ANOVA F-test at significance level " + fnum(r.num("alpha")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double alpha = s("alpha"), n = r.num("n"), N = r.num("N"), f = r.num("f"), lambda = r.num("lambda");
+    const double df1 = r.num("df1"), df2 = r.num("df2");
+    const int k = anova_k(s);
+    const bool ratio = s.is("alloc", "ratio");
+    const std::vector<double> sizes = anova_sizes(s, k, n);
+    Steps out;
+    if (ratio) {
+      const std::vector<double> w = anova_weights(s, k);
+      std::vector<std::string> wt, sz;
+      for (int i = 0; i < k; ++i) {
+        wt.push_back(num(w[i]));
+        sz.push_back(fint(sizes[i]));
+      }
+      out.push_back({"Group sizes", "nᵢ = ⌈n × wᵢ⌉ for the allocation weights wᵢ, N = Σ nᵢ",
+                     "⌈" + fint(n) + " × (" + joined(wt, ", ") + ")⌉ = (" + joined(sz, ", ") + "), N = " + fint(N)});
+    } else {
+      out.push_back({"Total sample size", "N = k × n", fint(k) + " × " + fint(n) + " = " + fint(N)});
+    }
+    if (s.is("estype", "means") && s.solve != "f") {
+      const auto& mu = s.v("means");
+      // the mean of the means as the run takes it, from their differences from the first
+      double mbar = 0;
+      for (int i = 0; i < k; ++i) mbar += sizes[i] * (mu[i] - mu[0]);
+      mbar = mu[0] + mbar / N;
+      std::vector<std::string> sum, dev;
+      for (int i = 0; i < k; ++i) {
+        const std::string times = ratio ? fint(sizes[i]) + " × " : "";
+        sum.push_back(times + sub(mu[i]));
+        dev.push_back(times + "(" + num(mu[i]) + " − " + sub(mbar) + ")²");
+      }
+      const std::string over = fint(ratio ? N : k);
+      out.push_back({"Mean of the group means", ratio ? "μ̄ = Σ nᵢμᵢ / N" : "μ̄ = Σ μᵢ / k",
+                     "(" + joined(sum, " + ") + ") / " + over + " = " + num(mbar)});
+      out.push_back({"SD of the group means", ratio ? "σm = √(Σ nᵢ(μᵢ − μ̄)² / N)" : "σm = √(Σ (μᵢ − μ̄)² / k)",
+                     "√((" + joined(dev, " + ") + ") / " + over + ") = " + num(r.num("sm"))});
+      out.push_back({"Effect size", "f = σm / σ", num(r.num("sm")) + " / " + num(s("sigma")) + " = " + num(f)});
+    }
+    out.push_back({"Noncentrality", "λ = N f²", fint(N) + " × " + num(f) + "² = " + num(lambda)});
+    out.push_back(f_critical(alpha, df1, df2, "ν1 = k − 1 and ν2 = N − k"));
+    out.push_back(f_power_step(df1, df2, lambda, alpha));
+    if (s.solve == "n") {
+      out.push_back(n_search([&](double x) { return anova_power(anova_design(s, x), alpha); }, n, s("power"), 2, "n"));
+    } else if (s.solve == "f") {
+      const AnovaDesign d{sizes, lambda, NAN, f, k};  // the row's design, at the f found
+      out.push_back(effect_search("f", f, anova_power(d, alpha), s("power")));
+    }
+    return out;
+  };
   p.definitions = {{"n, N", "Group size and total sample size."},
                    {"k", "Number of groups."},
                    {"σm", "Standard deviation of the group means: √(Σ nᵢ(μᵢ − μ̄)²/N)."},
@@ -261,6 +318,14 @@ SSC_REGISTER(anova);
 double crossover_sigma_w(const Scenario& s) {
   const double v = s("sigma");
   return s.is("sdtype", "diff") ? v / std::sqrt(2.0) : v;
+}
+
+// The standard error of the treatment difference with n subjects, σw √(2/n), and the power of its test.
+double crossover_se(double sw, double n) { return sw * std::sqrt(2 / n); }
+
+double crossover_power(const Scenario& s, double n, double d) {
+  const double ncp = d / crossover_se(crossover_sigma_w(s), n), alpha = s("alpha");
+  return s.is("test", "z") ? z_power(ncp, alpha, alt(s)) : t_power(ncp, n - 2, alpha, alt(s));
 }
 
 Procedure crossover_diff() {
@@ -314,11 +379,7 @@ Procedure crossover_diff() {
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
     const double sw = crossover_sigma_w(s), alpha = s("alpha");
     const Alt a = alt(s);
-    const bool z = s.is("test", "z");
-    auto P = [&](double n, double d) {
-      const double ncp = d / (sw * std::sqrt(2 / n));
-      return z ? z_power(ncp, alpha, a) : t_power(ncp, n - 2, alpha, a);
-    };
+    auto P = [&](double n, double d) { return crossover_power(s, n, d); };
     double n, d;
     if (s.solve == "n") {
       d = s("delta");
@@ -364,6 +425,30 @@ Procedure crossover_diff() {
            ", using a " + alt_words(alt(s)) + " " + (s.is("test", "z") ? "z-test" : "t-test") + " at α = " +
            fnum(r.num("alpha")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double n = r.num("n"), d = r.num("delta"), sw = r.num("sw"), alpha = s("alpha");
+    const double se = crossover_se(sw, n), ncp = d / se;
+    Steps out;
+    if (s.is("sdtype", "diff"))
+      out.push_back({"Within-subject SD", "σw = σd / √2", num(s("sigma")) + " / √2 = " + num(sw)});
+    out.push_back({"Standard error", "SE = σw √(2/N)", num(sw) + " × √(2/" + fint(n) + ") = " + num(se)});
+    out.push_back({"Noncentrality", "λ = δ / SE", sub(d) + " / " + num(se) + " = " + num(ncp)});
+    if (s.is("test", "z")) {
+      out.push_back(z_critical(alpha, a));
+      out.push_back(z_power_step(ncp, alpha, a));
+    } else {
+      out.push_back(t_critical(alpha, n - 2, a, "N − 2"));
+      out.push_back(t_power_step(ncp, n - 2, alpha, a));
+    }
+    const auto power = [&](double x) { return crossover_power(s, x, d); };
+    if (s.solve == "n")
+      out.push_back(even_n_search(power, n, s("power"), 4, "N/2 in each sequence"));
+    else if (s.solve == "delta")
+      out.push_back(effect_search("δ", d, power(n), s("power")));
+    return out;
+  };
   p.definitions = {{"N", "Total number of subjects; half receive AB and half BA."},
                    {"σw", "Within-subject (residual) standard deviation."},
                    {"σd", "SD of a subject's period difference, √2 σw."},
@@ -384,6 +469,20 @@ SSC_REGISTER(crossover_diff);
 // =====================================================================================
 // Bioequivalence of a ratio of means (log scale, TOST)
 // =====================================================================================
+// The SD on the log scale, √ln(1 + CV²): √ln(1 + CV²) = CV(1 − CV²/4 + …) is CV itself to double precision below
+// 1e-8 (computed, CV² underflows to 0 below about 1e-162, and so did the log-scale SD).
+double be_log_sd(double cv) { return cv < 1e-8 ? cv : std::sqrt(std::log1p(cv * cv)); }
+
+// The standard error of the log ratio with n subjects: σ √(2/n) in a 2×2 cross-over, σ √(4/n) in parallel groups.
+double be_se(const Scenario& s, double sw, double n) {
+  return sw * std::sqrt((s.is("design", "2x2") ? 2.0 : 4.0) / n);
+}
+
+double be_power(const Scenario& s, double sw, double n) {
+  return tost_power(std::log(s("theta1")), std::log(s("theta2")), std::log(s("theta0")), be_se(s, sw, n), n - 2,
+                    s("alpha"));
+}
+
 Procedure bioequivalence() {
   Procedure p;
   p.id = "means.be.ratio";
@@ -445,14 +544,9 @@ Procedure bioequivalence() {
     if (s.solve == "n" ? !(th0 > th1 && th0 < th2) : !(th0 >= th1 && th0 <= th2))
       throw CalcError(s.solve == "n" ? "the true ratio must lie strictly between the limits"
                                      : "the true ratio cannot lie outside the limits");
-    // √ln(1 + CV²) = CV(1 − CV²/4 + …) is CV itself to double precision below 1e-8 (computed, CV² underflows to 0
-    // below about 1e-162, and so did the log-scale SD)
-    const double sw = cv < 1e-8 ? cv : std::sqrt(std::log1p(cv * cv));
+    const double sw = be_log_sd(cv);
     const bool cross = s.is("design", "2x2");
-    auto P = [&](double n) {
-      const double se = sw * std::sqrt((cross ? 2.0 : 4.0) / n);
-      return tost_power(std::log(th1), std::log(th2), std::log(th0), se, n - 2, alpha);
-    };
+    auto P = [&](double n) { return be_power(s, sw, n); };
     double n;
     if (s.solve == "n") {
       solve::NSearch o;
@@ -490,6 +584,25 @@ Procedure bioequivalence() {
            " each, when the true ratio of means is " + fnum(r.num("theta0")) + ", the equivalence limits are " +
            fnum(r.num("theta1")) + " and " + fnum(r.num("theta2")) + ", and the CV is " + fnum(r.num("cv")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const double n = r.num("n"), sw = r.num("sw"), se = be_se(s, sw, n);
+    const double l1 = std::log(r.num("theta1")), l2 = std::log(r.num("theta2")), l0 = std::log(r.num("theta0"));
+    const bool cross = s.is("design", "2x2");
+    Steps out;
+    out.push_back({"SD on the log scale", "σ = √ln(1 + CV²)", "√ln(1 + " + num(r.num("cv")) + "²) = " + num(sw)});
+    out.push_back({"Standard error", cross ? "SE = σ √(2/N)" : "SE = σ √(4/N)",
+                   num(sw) + " × √(" + (cross ? "2" : "4") + "/" + fint(n) + ") = " + num(se)});
+    out.push_back({"Limits and true ratio on the log scale", "ln θL, ln θU, ln θ0",
+                   "ln " + num(r.num("theta1")) + " = " + num(l1) + ", ln " + num(r.num("theta2")) + " = " + num(l2) +
+                       ", ln " + num(r.num("theta0")) + " = " + num(l0)});
+    for (auto& st : tost_steps(l1, l2, l0, se, n - 2, s("alpha"), "N − 2", {"ln θL", "ln θU", "ln θ0"}))
+      out.push_back(st);
+    if (s.solve == "n")
+      out.push_back(even_n_search([&](double x) { return be_power(s, sw, x); }, n, s("power"), 4,
+                                  cross ? "N/2 in each sequence" : "N/2 in each group"));
+    return out;
+  };
   p.definitions = {{"θ0", "True ratio of the test to the reference mean (geometric means)."},
                    {"θL, θU", "Bioequivalence acceptance limits for the ratio."},
                    {"CV", "Coefficient of variation; within-subject for cross-over designs."},
@@ -515,6 +628,22 @@ SSC_REGISTER(bioequivalence);
 // =====================================================================================
 // Cluster-randomized two means
 // =====================================================================================
+// k1 and k2 = ⌈r × k1⌉ clusters of m subjects, whose variance the design effect 1 + (m − 1)ρ inflates.
+struct ClusterMeans {
+  double alpha, m, icc, sigma, kr, de;
+  Alt a;
+  bool z;
+  explicit ClusterMeans(const Scenario& s)
+      : alpha(s("alpha")), m(s("m")), icc(s("icc")), sigma(s("sigma")), kr(s("kr")), de(1 + (m - 1) * icc),
+        a(alt(s)), z(s.is("test", "z")) {}
+  double k2(double k1) const { return solve::round_up(kr * k1); }
+  double se(double k1, double k2) const { return sigma * std::sqrt(de / m * (1 / k1 + 1 / k2)); }
+  double power(double k1, double diff) const {
+    const double clusters2 = k2(k1), error = se(k1, clusters2);
+    return z ? z_power(diff / error, alpha, a) : t_power(diff / error, k1 + clusters2 - 2, alpha, a);
+  }
+};
+
 Procedure cluster_means() {
   Procedure p;
   p.id = "means.two.cluster";
@@ -587,16 +716,11 @@ Procedure cluster_means() {
                 "clusters (the total SD)."),
   };
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    const double alpha = s("alpha"), m = s("m"), icc = s("icc"), sigma = s("sigma"), kr = s("kr");
-    const double de = 1 + (m - 1) * icc;
-    const Alt a = alt(s);
-    const bool z = s.is("test", "z");
-    auto k2_of = [&](double k1) { return solve::round_up(kr * k1); };
-    auto P = [&](double k1, double diff) {
-      const double k2 = k2_of(k1);
-      const double se = sigma * std::sqrt(de / m * (1 / k1 + 1 / k2));
-      return z ? z_power(diff / se, alpha, a) : t_power(diff / se, k1 + k2 - 2, alpha, a);
-    };
+    const ClusterMeans c(s);
+    const double alpha = c.alpha, m = c.m, icc = c.icc, sigma = c.sigma, kr = c.kr, de = c.de;
+    const Alt a = c.a;
+    auto k2_of = [&](double k1) { return c.k2(k1); };
+    auto P = [&](double k1, double diff) { return c.power(k1, diff); };
     double k1, diff;
     if (s.solve == "k") {
       diff = s("mu1") - s("mu2");
@@ -660,6 +784,49 @@ Procedure cluster_means() {
            fnum_fine(r.num("icc")) + ", design effect " + fnum(r.num("de")) + ") with a " + alt_words(alt(s)) + " " +
            (s.is("test", "z") ? "z-test" : "t-test") + " at α = " + fnum(r.num("alpha")) + ".";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const ClusterMeans c(s);
+    const double k1 = r.num("k1"), k2 = r.num("k2"), diff = r.num("delta"), se = c.se(k1, k2), ncp = diff / se;
+    Steps out;
+    out.push_back({"Design effect", "DE = 1 + (m − 1)ρ",
+                   "1 + (" + num(c.m) + " − 1) × " + num(c.icc) + " = " + num(c.de)});
+    if (c.kr != 1)
+      out.push_back({"Clusters in group 2", "k2 = ⌈r × k1⌉", "⌈" + num(c.kr) + " × " + fint(k1) + "⌉ = " + fint(k2)});
+    out.push_back({"Difference to detect", "δ = μ1 − μ2",
+                   num(r.num("mu1")) + " − " + sub(r.num("mu2")) + " = " + num(diff)});
+    out.push_back({"Standard error", "SE = σ √(DE/m × (1/k1 + 1/k2))",
+                   num(c.sigma) + " × √(" + num(c.de) + "/" + num(c.m) + " × (1/" + fint(k1) + " + 1/" + fint(k2) +
+                       ")) = " + num(se)});
+    out.push_back({"Noncentrality", "λ = δ / SE", sub(diff) + " / " + num(se) + " = " + num(ncp)});
+    if (c.z) {
+      out.push_back(z_critical(c.alpha, c.a));
+      out.push_back(z_power_step(ncp, c.alpha, c.a));
+    } else {
+      out.push_back(t_critical(c.alpha, k1 + k2 - 2, c.a, "k1 + k2 − 2"));
+      out.push_back(t_power_step(ncp, k1 + k2 - 2, c.alpha, c.a));
+    }
+    if (s.solve == "k") {
+      // the search's numbers of clusters: k1 from 2 on, with at least 2 clusters in group 2 too
+      const double target = s("power");
+      const std::string rule = c.kr == 1 ? "k1 = k2, the smallest whole number whose power reaches the target"
+                                         : "k1 = the smallest whole number whose power reaches the target, with k2 = "
+                                           "⌈r × k1⌉ (r = " + fnum(c.kr) + ")";
+      const auto sizes = [&](double x) { return "k1 = " + fint(x) + ", k2 = " + fint(c.k2(x)); };
+      const double at = c.power(k1, diff);
+      if (k1 - 1 < 2 || c.k2(k1 - 1) < 2)
+        out.push_back({"Clusters", rule,
+                       sizes(k1) + " are the smallest numbers allowed, and their power is already " + prob(at, target) +
+                           " ≥ " + fnum(target)});
+      else
+        out.push_back({"Clusters", rule,
+                       "power at " + sizes(k1 - 1) + ": " + prob(c.power(k1 - 1, diff), target) + " < " +
+                           fnum(target) + " ≤ power at " + sizes(k1) + ": " + prob(at, target)});
+    } else if (s.solve == "mu1") {
+      out.push_back(effect_search("μ1", r.num("mu1"), c.power(k1, diff), s("power")));
+    }
+    return out;
+  };
   p.definitions = {{"k1, k2", "Number of clusters randomized to each group."},
                    {"m", "Number of subjects per cluster."},
                    {"ICC", "Intracluster correlation coefficient ρ."},
@@ -694,6 +861,15 @@ double avg_var_factor(const Scenario& s) {
     return sum / (m * m);
   }
   return (1 + (m - 1) * rho) / m;
+}
+
+// The standard error of the difference in time-averaged means, σ √(v (1/n1 + 1/n2)) with v the variance factor of a
+// subject's average, and the power of its test.
+double repeated_se(double sigma, double vf, double n1, double n2) { return sigma * std::sqrt(vf * (1 / n1 + 1 / n2)); }
+
+double repeated_power(const Scenario& s, double vf, double n1, double n2, double diff) {
+  const double se = repeated_se(s("sigma"), vf, n1, n2), alpha = s("alpha");
+  return s.is("test", "z") ? z_power(diff / se, alpha, alt(s)) : t_power(diff / se, n1 + n2 - 2, alpha, alt(s));
 }
 
 Procedure repeated() {
@@ -763,11 +939,7 @@ Procedure repeated() {
     const double vf = avg_var_factor(s);
     if (!(vf > 0)) throw CalcError("the correlation structure is not positive definite for these values");
     const Alt a = alt(s);
-    const bool z = s.is("test", "z");
-    auto P = [&](double n1, double n2, double diff) {
-      const double se = sigma * std::sqrt(vf * (1 / n1 + 1 / n2));
-      return z ? z_power(diff / se, alpha, a) : t_power(diff / se, n1 + n2 - 2, alpha, a);
-    };
+    auto P = [&](double n1, double n2, double diff) { return repeated_power(s, vf, n1, n2, diff); };
     TwoN n;
     double diff;
     if (s.solve == "n") {
@@ -815,6 +987,49 @@ Procedure repeated() {
            " and the correlation between measurements is " + fnum_fine(r.num("rho")) + " (" +
            (s.is("struct", "ar1") ? "AR(1)" : "compound symmetry") + "), using a " + alt_words(alt(s)) + " test at α = " +
            fnum(r.num("alpha")) + ".";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double alpha = s("alpha"), sigma = s("sigma"), m = s("m"), rho = s("rho"), vf = avg_var_factor(s);
+    const double n1 = r.num("n1"), n2 = r.num("n2");
+    // the difference the power was computed at: the one given, or the one found
+    const double diff = s.solve == "mu1" ? r.num("mu1") - r.num("mu2") : s("mu1") - s("mu2");
+    const double se = repeated_se(sigma, vf, n1, n2), ncp = diff / se;
+    Steps out;
+    if (s.is("struct", "ar1")) {
+      std::string sum;
+      if (m <= 6) {  // the terms of the sum; beyond, the sum itself
+        std::vector<std::string> t;
+        for (int k = 1; k < static_cast<int>(m); ++k) t.push_back(fint(m - k) + " × " + sub(rho) + superscript(k));
+        sum = t.empty() ? "" : " + 2 × (" + joined(t, " + ") + ")";
+      } else {
+        sum = " + 2 Σₖ (" + fint(m) + " − k) × " + sub(rho) + "ᵏ";
+      }
+      out.push_back({"Variance of a subject's average", "v = Var(Ȳ)/σ² = (m + 2 Σₖ (m − k) ρᵏ) / m², k = 1, …, m − 1",
+                     "(" + fint(m) + sum + ") / " + fint(m) + "² = " + num(vf)});
+    } else {
+      out.push_back({"Variance of a subject's average", "v = Var(Ȳ)/σ² = (1 + (m − 1)ρ) / m",
+                     "(1 + (" + fint(m) + " − 1) × " + sub(rho) + ") / " + fint(m) + " = " + num(vf)});
+    }
+    out.push_back({"Difference to detect", "δ = μ1 − μ2",
+                   num(r.num("mu1")) + " − " + sub(r.num("mu2")) + " = " + num(diff)});
+    out.push_back({"Standard error", "SE = σ √(v (1/N1 + 1/N2))",
+                   num(sigma) + " × √(" + num(vf) + " × (1/" + fint(n1) + " + 1/" + fint(n2) + ")) = " + num(se)});
+    out.push_back({"Noncentrality", "λ = δ / SE", sub(diff) + " / " + num(se) + " = " + num(ncp)});
+    if (s.is("test", "z")) {
+      out.push_back(z_critical(alpha, a));
+      out.push_back(z_power_step(ncp, alpha, a));
+    } else {
+      out.push_back(t_critical(alpha, n1 + n2 - 2, a, "N1 + N2 − 2"));
+      out.push_back(t_power_step(ncp, n1 + n2 - 2, alpha, a));
+    }
+    const auto power = [&](double x1, double x2) { return repeated_power(s, vf, x1, x2, diff); };
+    if (s.solve == "n")
+      out.push_back(two_group_search(s, power, {n1, n2}, s("power"), 2));
+    else if (s.solve == "mu1")
+      out.push_back(effect_search("μ1", r.num("mu1"), power(n1, n2), s("power")));
+    return out;
   };
   p.definitions = {{"m", "Number of repeated measurements per subject."},
                    {"ρ", "Correlation between measurements (between adjacent ones for AR(1))."},

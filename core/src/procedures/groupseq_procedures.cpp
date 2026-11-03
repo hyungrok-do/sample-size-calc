@@ -6,6 +6,7 @@
 
 #include "procedures/apart.hpp"
 #include "procedures/common.hpp"
+#include "procedures/derive_misc.hpp"
 #include "procedures/groupseq.hpp"
 #include "util/memo.hpp"
 #include "util/numtext.hpp"
@@ -321,10 +322,16 @@ double fixed_drift(const Scenario& s, double power, double scale) {
 
 // Drift needed for the target power.  Stop is checked at every analysis of every design it tries: with a tiny alpha
 // or a flat spending function, the finest grid takes some 10 ms an analysis, a second a solve (main checked only
-// between solves, and took up to 10 s to stop a list of such designs).
+// between solves, and took up to 10 s to stop a list of such designs).  Kept by design, power and scale (like the
+// designs), so that a row's derivation shows the drift without searching for it again.
 double target_drift(const Scenario& s, const DesignInfo& info, double scale, const RunContext& ctx) {
   if (scale == 1 && std::isfinite(info.d.eta_design)) return info.d.eta_design;
-  return gs::drift_for_power(info.d, s("power"), scale, 0, [&] { ctx.check(); });
+  static OnceCache<std::string, double> cache(256);
+  const std::string key =
+      design_key(s) + "|" + text::format_roundtrip(s("power")) + "|" + text::format_roundtrip(scale);
+  return *cache.get(
+      key, [&] { return gs::drift_for_power(info.d, s("power"), scale, 0, [&] { ctx.check(); }); },
+      [&] { ctx.check(); });
 }
 
 void check_power_target(const Scenario& s) {
@@ -462,6 +469,129 @@ std::string design_words(const Scenario& s, const Row& r) {
   return w + ")";
 }
 
+// ------------------------------------------------------------------ derivations
+// The spending function `name` of the level `lvl` (a symbol), as gs::spending computes it.
+std::string spending_text(const std::string& name, const std::string& lvl, double param) {
+  using derive::num;
+  if (name == "obf") return lvl + "(t) = 2 − 2Φ(Φ⁻¹(1 − " + lvl + "/2) / √t), O'Brien–Fleming type";
+  if (name == "pocock") return lvl + "(t) = " + lvl + " ln(1 + (e − 1)t), Pocock type";
+  if (name == "power") return lvl + "(t) = " + lvl + " t^ρ (ρ = " + num(param) + ")";
+  if (std::fabs(param) < 1e-10) return lvl + "(t) = " + lvl + " t (Hwang–Shih–DeCani, γ = 0)";
+  return lvl + "(t) = " + lvl + " (1 − e^(−γt)) / (1 − e^(−γ)) (Hwang–Shih–DeCani, γ = " + num(param) + ")";
+}
+
+// How a design's boundaries came about: the efficacy boundaries from their spending function (or the Wang–Tsiatis
+// family), and the futility boundaries.
+void gs_boundary_steps(derive::Steps& out, const Scenario& s, const gs::Design& d) {
+  using namespace derive;
+  const std::string& b = s.s("boundary");
+  const std::string cross = d.two_sided ? "|Z_k| ≥ b_k" : "Z_k ≥ b_k";
+  const std::string tb = "t = " + nums(d.t) + "; b = " + nums(d.b) + "; cumulative α = " + nums(d.alpha_spent);
+  if (b == "wt_obf" || b == "wt_pocock" || b == "wt") {
+    const double delta = b == "wt_obf" ? 0.0 : (b == "wt_pocock" ? 0.5 : s("wtdelta"));
+    out.push_back({"Efficacy boundaries",
+                   "reject at analysis k when " + cross + ", b_k = C t_k^(Δ − ½) (Wang–Tsiatis, Δ = " + num(delta) +
+                       "), C such that P_H0(reject at some analysis) = α",
+                   "C = b_K = " + num(d.b.back()) + "; " + tb});
+  } else {
+    // a two-sided design spends α/2 in each tail with the one-sided function (gs::alpha_spending)
+    const std::string lvl = d.two_sided ? "α′" : "α";
+    const std::string inc = lvl + "(t_k) − " + lvl + "(t_{k−1})";
+    out.push_back({"Efficacy boundaries",
+                   "reject at analysis k when " + cross + ", b_k such that P_H0(no earlier stop, " + cross + ") = " +
+                       (d.two_sided ? "2(" + inc + ")" : inc) + ", " +
+                       spending_text(b, lvl, spending_param(b, s, "rho", "gamma")) +
+                       (d.two_sided ? ", α′ = α/2 for each tail" : ""),
+                   tb});
+  }
+  if (!d.has_futility()) return;
+  const std::vector<double> a(d.a.begin(), d.a.end() - 1);  // the last is b_K
+  const std::string bind = d.binding ? "; binding: the efficacy boundaries spend α among the paths above them"
+                                     : "; non-binding: α is spent as if there were none";
+  if (!d.beta_spent.empty()) {
+    const std::string& bs = s.s("bspend");
+    const std::vector<double> spent(d.beta_spent.begin(), d.beta_spent.end() - 1);
+    out.push_back({"Futility boundaries",
+                   "stop for futility at interim analysis k when Z_k ≤ a_k, a_k such that P_η(no earlier stop, Z_k ≤ "
+                   "a_k) = β(t_k) − β(t_{k−1}) under the drift η at which the boundaries spend β = 1 − power in all, " +
+                       spending_text(bs, "β", spending_param(bs, s, "brho", "bgamma")) + bind,
+                   "β = " + fnum(1 - s("power")) + ", η = " + num(d.eta_design) + "; a = " + nums(a) +
+                       "; cumulative β = " + nums(spent)});
+  } else {
+    out.push_back({"Futility boundaries",
+                   "stop for futility at interim analysis k when Z_k ≤ a_k = min(z_k, b_k), z_k the values given" + bind,
+                   "a = " + nums(a)});
+  }
+}
+
+// The drift for the target power, when solving for N (with the boundaries × the scale s of a pooled statistic).
+Step gs_target_drift_step(const Scenario& s, const gs::Design& d, double eta, double scale) {
+  using namespace derive;
+  if (scale == 1 && std::isfinite(d.eta_design))
+    return {"Drift for the target power",
+            "η = the drift (the mean of Z_K) at which the β-spending boundaries spend β = 1 − power in all, where the "
+            "design's power is 1 − β",
+            "1 − β = " + fnum(s("power")) + " at η = " + num(eta)};
+  return {"Drift for the target power",
+          "η = the drift (the mean of Z_K) at which Σₖ P_η(first crossing of the efficacy boundary at analysis k) = "
+          "1 − β, the target power" +
+              std::string(scale == 1 ? "" : ", with the boundaries × s of the sizes found (by their power) below"),
+          "1 − β = " + fnum(s("power")) + " at η = " + num(eta)};
+}
+
+// What a drift stands for, the size that the inflation factor multiplies: the information I = (η/δ)², or the
+// events D = η²/(w1 (1 − w1) θ²).
+struct GsSize {
+  std::string formula;                         // the size at the drift η_fixed, in symbols
+  std::function<double(double)> value;         // the size at a drift
+  std::function<std::string(double)> numbers;  // the formula with a drift's numbers
+};
+
+// The fixed design's drift for the power p and the inflation factor IF = (η/η_fixed)², as gs_report computes them
+// (when the row has one), with the fixed design's size that IF multiplies.
+void gs_inflation_step(derive::Steps& out, const Scenario& s, const Row& r, double eta, double p, double scale,
+                       const GsSize& size) {
+  using namespace derive;
+  if (!r.has("inflation")) return;
+  const double f = fixed_drift(s, p, scale), inflation = eta * eta / (f * f), fixed = size.value(f);
+  const std::string sz = scale == 1 ? "" : "s ";
+  const std::string szn = scale == 1 ? "" : num(scale) + " × ";
+  std::string law, numbers;
+  if (two_sided(s)) {
+    const double z = stats::qnorm(half_alpha(s("alpha")), false), c = scale * z;
+    law = "η_fixed solves Φ(η − z) + Φ(−η − z) = 1 − β, z = " + sz + "Φ⁻¹(1 − α/2)";
+    numbers = (scale == 1 ? "" : "z = " + szn + num(z) + " = " + num(c) + "; ") + "Φ(" + num(f) + " − " + num(c) +
+              ") + Φ(" + num(-f) + " − " + num(c) + ") = " + prob(p) + " at η_fixed = " + num(f);
+  } else {
+    law = "η_fixed = " + sz + "Φ⁻¹(1 − α) + Φ⁻¹(1 − β)";
+    numbers = "η_fixed = " + szn + num(stats::qnorm(s("alpha"), false)) + " + " + sub(stats::qnorm(p)) + " = " + num(f);
+  }
+  out.push_back({"Inflation factor",
+                 "IF = (η / η_fixed)², " + law + " the drift of a fixed design with the same power 1 − β (" +
+                     prob(p) + "); the maximum size is IF times the fixed design's, " + size.formula,
+                 numbers + "; IF = (" + num(eta) + " / " + num(f) + ")² = " + num(inflation) + "; fixed design: " +
+                     size.numbers(f) + " = " + num(fixed) + ", × IF = " + num(inflation * fixed)});
+}
+
+// The power: the chance of crossing an efficacy boundary at some analysis, under the drift eta (as gs_report).
+Step gs_power_step(const gs::Design& d, double eta, double scale, double power) {
+  using namespace derive;
+  const gs::ExitProbs e = gs::exit_probs(d, eta, scale);
+  std::string parts;
+  for (std::size_t k = 0; k < d.t.size(); ++k) parts += (k ? " + " : "") + prob(e.up[k] + e.lo[k]);
+  return {"Power",
+          "Σₖ P_η(first crossing of the efficacy boundary at analysis k)" +
+              std::string(scale == 1 ? "" : ", with the boundaries × s") +
+              (d.has_futility() ? ", a trial stopped for futility not rejecting" : ""),
+          (d.t.size() > 1 ? parts + " = " : "") + prob(power)};
+}
+
+// "δ = μ1 − μ2" toward the alternative: the difference itself, its negative or its size.
+std::string toward(const Scenario& s, const std::string& sym, const std::string& a, const std::string& b) {
+  if (two_sided(s)) return sym + " = |" + a + " − " + b + "|";
+  return s.is("alternative", "lower") ? sym + " = " + b + " − " + a : sym + " = " + a + " − " + b;
+}
+
 const std::vector<std::string> GS_REFS = {
     "Jennison, C. & Turnbull, B. W. (2000). Group Sequential Methods with Applications to Clinical Trials. Chapman & "
     "Hall/CRC.",
@@ -519,6 +649,11 @@ double gs_cost(const std::vector<Scenario>& scenarios) {
 }
 
 // ======================================================================= two means
+// The drift of the comparison of two means with n1 and n2 subjects: the mean of its z statistic.
+double means_drift(const Scenario& s, double diff, double sigma, double n1, double n2) {
+  return directed(s, diff / (sigma * std::sqrt(1 / n1 + 1 / n2)));
+}
+
 Procedure gs_means() {
   Procedure p;
   p.id = "gs.means";
@@ -555,7 +690,7 @@ Procedure gs_means() {
     const double diff = s("mu1") - s("mu2"), sigma = s("sigma");
     // with no effect the power is the design's type I error, which no sample size raises
     if (diff == 0 && s.solve == "n") throw CalcError("μ1 equals μ2");
-    auto eta_of = [&](double n1, double n2) { return directed(s, diff / (sigma * std::sqrt(1 / n1 + 1 / n2))); };
+    auto eta_of = [&](double n1, double n2) { return means_drift(s, diff, sigma, n1, n2); };
     if (eta_of(10, 10) < 0) throw CalcError("the difference has the sign opposite to the one-sided alternative");
     const DesignPtr info = gs_design(s, ctx);
     TwoN n;
@@ -586,6 +721,35 @@ Procedure gs_means() {
            fnum(r.num("sigma")) + ". The expected total sample size is " + fnum(r.num("en1"), 1) + " under H1 and " +
            fnum(r.num("en0"), 1) + " under H0.";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const RunContext ctx;
+    const DesignPtr info = gs_design(s, ctx);
+    const double diff = r.num("mu1") - r.num("mu2"), sigma = r.num("sigma"), n1 = r.num("n1"), n2 = r.num("n2");
+    const double delta = directed(s, diff), eta = means_drift(s, diff, sigma, n1, n2);
+    const double inf = 1 / (sigma * sigma * (1 / n1 + 1 / n2));
+    const bool solve_n = s.solve == "n";
+    const double target = solve_n ? target_drift(s, *info, 1.0, ctx) : NAN;
+    const GsSize size{"(η_fixed/δ)² of information",
+                      [&](double e) { return (e / delta) * (e / delta); },
+                      [&](double e) { return "(" + num(e) + " / " + num(delta) + ")²"; }};
+    Steps out;
+    gs_boundary_steps(out, s, info->d);
+    if (solve_n) {
+      out.push_back(gs_target_drift_step(s, info->d, target, 1.0));
+      gs_inflation_step(out, s, r, target, s("power"), 1.0, size);
+    }
+    out.push_back({"Drift", "η = δ √I, I = 1 / (σ²(1/N1 + 1/N2)) the information, " + toward(s, "δ", "μ1", "μ2"),
+                   "I = 1 / (" + num(sigma) + "² × (1/" + fint(n1) + " + 1/" + fint(n2) + ")) = " + num(inf) +
+                       "; η = " + num(delta) + " × √" + num(inf) + " = " + num(eta)});
+    if (!solve_n) gs_inflation_step(out, s, r, eta, r.num("power"), 1.0, size);
+    out.push_back(gs_power_step(info->d, eta, 1.0, r.num("power")));
+    if (solve_n)
+      out.push_back(two_group_search_of(
+          s, [&](double x1, double x2) { return means_drift(s, diff, sigma, x1, x2); }, {n1, n2}, target, 2,
+          "drift", "η"));
+    return out;
+  };
   p.definitions = GS_DEFS;
   p.definitions.push_back({"Efficacy / Futility (μ1 − μ2)", "Observed difference in means at a boundary."});
   p.references = GS_REFS;
@@ -601,6 +765,24 @@ Procedure gs_means() {
 SSC_REGISTER(gs_means);
 
 // ======================================================================= two proportions
+// Standard errors of P̂1 − P̂2 under H1 and (pooled) under H0 for group sizes n1, n2.
+double props_se1(double p1, double p2, double n1, double n2) {
+  return std::sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2);
+}
+double props_se0(double p1, double p2, double n1, double n2) {
+  const double pb = (n1 * p1 + n2 * p2) / (n1 + n2);
+  return std::sqrt(pb * (1 - pb) * (1 / n1 + 1 / n2));
+}
+
+// The statistic is (P̂1 − P̂2)/SE; dividing by SE1/SE gives a unit-variance statistic with drift diff/SE1, whose
+// boundaries are multiplied by SE/SE1 (1 for the unpooled statistic).
+double props_scale(bool pooled, double p1, double p2, double n1, double n2) {
+  return pooled ? props_se0(p1, p2, n1, n2) / props_se1(p1, p2, n1, n2) : 1.0;
+}
+double props_drift(const Scenario& s, double p1, double p2, double n1, double n2) {
+  return directed(s, (p1 - p2) / props_se1(p1, p2, n1, n2));
+}
+
 Procedure gs_props() {
   Procedure p;
   p.id = "gs.props";
@@ -643,14 +825,10 @@ Procedure gs_props() {
     if (diff == 0 && s.solve == "n") throw CalcError("P1 equals P2");
     const bool pooled = s.is("stat", "pooled");
     // standard errors under H1 and (pooled) under H0 for group sizes n1, n2
-    auto se1 = [&](double n1, double n2) { return std::sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2); };
-    auto se0 = [&](double n1, double n2) {
-      const double pb = (n1 * p1 + n2 * p2) / (n1 + n2);
-      return std::sqrt(pb * (1 - pb) * (1 / n1 + 1 / n2));
-    };
-    // the statistic is (P̂1 − P̂2)/SE; dividing by SE1/SE gives a unit-variance statistic with drift diff/SE1
-    auto scale_of = [&](double n1, double n2) { return pooled ? se0(n1, n2) / se1(n1, n2) : 1.0; };
-    auto eta_of = [&](double n1, double n2) { return directed(s, diff / se1(n1, n2)); };
+    auto se1 = [&](double n1, double n2) { return props_se1(p1, p2, n1, n2); };
+    auto se0 = [&](double n1, double n2) { return props_se0(p1, p2, n1, n2); };
+    auto scale_of = [&](double n1, double n2) { return props_scale(pooled, p1, p2, n1, n2); };
+    auto eta_of = [&](double n1, double n2) { return props_drift(s, p1, p2, n1, n2); };
     if (eta_of(10, 10) < 0) throw CalcError("the difference has the sign opposite to the one-sided alternative");
     const DesignPtr info = gs_design(s, ctx);
     TwoN n;
@@ -694,6 +872,59 @@ Procedure gs_props() {
            (s.is("stat", "pooled") ? "pooled" : "unpooled") + " z-test. The expected total sample size is " +
            fnum(r.num("en1"), 1) + " under H1 and " + fnum(r.num("en0"), 1) + " under H0.";
   };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const RunContext ctx;
+    const DesignPtr info = gs_design(s, ctx);
+    const double p1 = r.num("p1"), p2 = r.num("p2"), n1 = r.num("n1"), n2 = r.num("n2");
+    const bool pooled = s.is("stat", "pooled"), solve_n = s.solve == "n";
+    const double delta = directed(s, p1 - p2), eta = props_drift(s, p1, p2, n1, n2);
+    const double se1 = props_se1(p1, p2, n1, n2), scale = props_scale(pooled, p1, p2, n1, n2), inf = 1 / (se1 * se1);
+    const double target = solve_n ? target_drift(s, *info, scale, ctx) : NAN;
+    const GsSize size{"(η_fixed/δ)² of information",
+                      [&](double e) { return (e / delta) * (e / delta); },
+                      [&](double e) { return "(" + num(e) + " / " + num(delta) + ")²"; }};
+    Steps out;
+    gs_boundary_steps(out, s, info->d);
+    if (pooled) {
+      const double pb = (n1 * p1 + n2 * p2) / (n1 + n2), se0 = props_se0(p1, p2, n1, n2);
+      out.push_back({"Pooled statistic",
+                     "s = SE0 / SE1, SE0 = √(P̄(1 − P̄)(1/N1 + 1/N2)) with P̄ = (N1 P1 + N2 P2) / (N1 + N2), SE1 = "
+                     "√(P1(1 − P1)/N1 + P2(1 − P2)/N2): (P̂1 − P̂2)/SE0 has SD SE1/SE0 under H1, so the boundaries "
+                     "are multiplied by s",
+                     "P̄ = (" + fint(n1) + " × " + num(p1) + " + " + fint(n2) + " × " + num(p2) + ") / " +
+                         fint(n1 + n2) + " = " + num(pb) + "; SE0 = " + num(se0) + ", SE1 = " + num(se1) + "; s = " +
+                         num(scale)});
+    }
+    if (solve_n) {
+      out.push_back(gs_target_drift_step(s, info->d, target, scale));
+      gs_inflation_step(out, s, r, target, s("power"), scale, size);
+    }
+    out.push_back({"Drift",
+                   "η = δ √I, I = 1 / (P1(1 − P1)/N1 + P2(1 − P2)/N2) the information, " + toward(s, "δ", "P1", "P2"),
+                   "I = 1 / (" + num(p1) + " × " + num(1 - p1) + " / " + fint(n1) + " + " + num(p2) + " × " +
+                       num(1 - p2) + " / " + fint(n2) + ") = " + num(inf) + "; η = " + num(delta) + " × √" + num(inf) +
+                       " = " + num(eta)});
+    if (!solve_n) gs_inflation_step(out, s, r, eta, r.num("power"), scale, size);
+    out.push_back(gs_power_step(info->d, eta, scale, r.num("power")));
+    if (solve_n) {
+      if (pooled)
+        // with the scale changing with the sizes, the search reaches the target power itself
+        out.push_back(two_group_search(
+            s,
+            [&](double x1, double x2) {
+              if (x1 == n1 && x2 == n2) return r.num("power");
+              return gs::exit_probs(info->d, props_drift(s, p1, p2, x1, x2), props_scale(true, p1, p2, x1, x2))
+                  .reject;
+            },
+            {n1, n2}, s("power"), 2));
+      else
+        out.push_back(two_group_search_of(
+            s, [&](double x1, double x2) { return props_drift(s, p1, p2, x1, x2); }, {n1, n2}, target, 2, "drift",
+            "η"));
+    }
+    return out;
+  };
   p.definitions = GS_DEFS;
   p.definitions.push_back({"Efficacy / Futility (P1 − P2)", "Observed difference P̂1 − P̂2 at a boundary (at the "
                                                             "anticipated variance)."});
@@ -720,6 +951,23 @@ double gs_event_prob(double lam, double A, double F) {
                       : x < 1e300 ? (x + std::expm1(-x)) / x
                                   : 1;
   return -std::expm1(-lam * F) + std::exp(-lam * F) * tail;
+}
+
+// The hazards of an exponential survival in each group, and each group's chance of an event by the final analysis.
+struct LogrankRates {
+  double lam1, lam2, pe1, pe2;
+};
+LogrankRates logrank_rates(const Scenario& s) {
+  const double hr = s("hr"), lam2 = std::log(2.0) / s("med2"), lam1 = hr * lam2;
+  return {lam1, lam2, gs_event_prob(lam1, s("accrual"), s("follow")), gs_event_prob(lam2, s("accrual"), s("follow"))};
+}
+
+// The expected events of n1 and n2 subjects, and the logrank statistic's drift √(D w1 w2)·ln HR (Schoenfeld; HR > 1
+// gives positive values).
+double logrank_events(double pe1, double pe2, double n1, double n2) { return n1 * pe1 + n2 * pe2; }
+double logrank_drift(const Scenario& s, double hr, double pe1, double pe2, double n1, double n2) {
+  const double w1 = n1 / (n1 + n2);
+  return directed(s, std::sqrt(logrank_events(pe1, pe2, n1, n2) * w1 * (1 - w1)) * std::log(hr));
 }
 
 Procedure gs_logrank() {
@@ -767,17 +1015,15 @@ Procedure gs_logrank() {
                            "followed for this long.")})
     p.params.push_back(q);
   p.run = [](const Scenario& s, Row& r, RunContext& ctx) {
-    const double hr = s("hr"), lam2 = std::log(2.0) / s("med2"), lam1 = hr * lam2;
+    const double hr = s("hr");
     // with no effect the power is the design's type I error, which no sample size raises
     if (hr == 1 && s.solve == "n") throw CalcError("HR = 1: there is no effect to detect");
     if (s("accrual") + s("follow") <= 0) throw CalcError("the study duration (accrual + follow-up) must be positive");
-    const double pe1 = gs_event_prob(lam1, s("accrual"), s("follow")), pe2 = gs_event_prob(lam2, s("accrual"), s("follow"));
-    auto events = [&](double n1, double n2) { return n1 * pe1 + n2 * pe2; };
+    const LogrankRates rates = logrank_rates(s);
+    const double pe1 = rates.pe1, pe2 = rates.pe2;
+    auto events = [&](double n1, double n2) { return logrank_events(pe1, pe2, n1, n2); };
     // Schoenfeld: the logrank statistic has drift √(D w1 w2)·ln HR (sign: HR > 1 gives positive values)
-    auto eta_of = [&](double n1, double n2) {
-      const double w1 = n1 / (n1 + n2);
-      return directed(s, std::sqrt(events(n1, n2) * w1 * (1 - w1)) * std::log(hr));
-    };
+    auto eta_of = [&](double n1, double n2) { return logrank_drift(s, hr, pe1, pe2, n1, n2); };
     if (eta_of(100, 100) < 0) throw CalcError("the hazard ratio is on the side opposite to the one-sided alternative");
     const DesignPtr info = gs_design(s, ctx);
     TwoN n;
@@ -811,6 +1057,50 @@ Procedure gs_logrank() {
            fint(r.num("n1")) + " and " + fint(r.num("n2")) + " per group) and " + achieves_singular(s, r) +
            " to detect a hazard ratio of " + fnum(r.num("hr")) + "; the expected number of events is " +
            fnum(r.num("en1"), 1) + " under H1 and " + fnum(r.num("en0"), 1) + " under H0.";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const RunContext ctx;
+    const DesignPtr info = gs_design(s, ctx);
+    const LogrankRates rates = logrank_rates(s);
+    const double hr = r.num("hr"), n1 = r.num("n1"), n2 = r.num("n2"), A = s("accrual"), F = s("follow");
+    const double D = logrank_events(rates.pe1, rates.pe2, n1, n2), w1 = n1 / (n1 + n2);
+    const double theta = directed(s, std::log(hr)), eta = logrank_drift(s, hr, rates.pe1, rates.pe2, n1, n2);
+    const bool solve_n = s.solve == "n";
+    const double target = solve_n ? target_drift(s, *info, 1.0, ctx) : NAN;
+    const GsSize size{"η_fixed² / (w1 (1 − w1) θ²) events at this design's w1",
+                      [&](double e) { return e * e / (w1 * (1 - w1) * theta * theta); },
+                      [&](double e) {
+                        return num(e) + "² / (" + num(w1) + " × " + num(1 - w1) + " × " + num(theta) + "²)";
+                      }};
+    Steps out;
+    gs_boundary_steps(out, s, info->d);
+    if (solve_n) {
+      out.push_back(gs_target_drift_step(s, info->d, target, 1.0));
+      gs_inflation_step(out, s, r, target, s("power"), 1.0, size);
+    }
+    const std::string prob_f = A > 0 ? "p = 1 − e^(−λF)(1 − e^(−λA)) / (λA), the chance of an event with entry spread "
+                                       "evenly over the accrual time A and follow-up F after it"
+                                     : "p = 1 − e^(−λF), the chance of an event within the follow-up F";
+    out.push_back({"Expected events",
+                   "D = N1 p1 + N2 p2, " + prob_f + ", λ2 = ln 2 / median2, λ1 = HR λ2",
+                   "λ2 = ln 2 / " + num(s("med2")) + " = " + num(rates.lam2) + ", λ1 = " + num(hr) + " × " +
+                       num(rates.lam2) + " = " + num(rates.lam1) + "; A = " + num(A) + ", F = " + num(F) +
+                       ": p1 = " + num(rates.pe1) + ", p2 = " + num(rates.pe2) + "; D = " + fint(n1) + " × " +
+                       num(rates.pe1) + " + " + fint(n2) + " × " + num(rates.pe2) + " = " + num(D)});
+    out.push_back({"Drift",
+                   "η = θ √(D w1 (1 − w1)), w1 = N1 / N, " +
+                       std::string(two_sided(s) ? "θ = |ln HR|" : s.is("alternative", "lower") ? "θ = −ln HR" : "θ = ln HR") +
+                       " (Schoenfeld)",
+                   "w1 = " + fint(n1) + " / " + fint(n1 + n2) + " = " + num(w1) + "; η = " + num(theta) + " × √(" +
+                       num(D) + " × " + num(w1) + " × " + num(1 - w1) + ") = " + num(eta)});
+    if (!solve_n) gs_inflation_step(out, s, r, eta, r.num("power"), 1.0, size);
+    out.push_back(gs_power_step(info->d, eta, 1.0, r.num("power")));
+    if (solve_n)
+      out.push_back(two_group_search_of(
+          s, [&](double x1, double x2) { return logrank_drift(s, hr, rates.pe1, rates.pe2, x1, x2); }, {n1, n2},
+          target, 1, "drift", "η"));
+    return out;
   };
   p.definitions = GS_DEFS;
   p.definitions.push_back({"Efficacy / Futility (HR)", "Observed hazard ratio at a boundary (Schoenfeld's "

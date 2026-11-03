@@ -22,6 +22,7 @@
 
 #include <algorithm>
 
+#include "procedures/derive_sim.hpp"
 #include "procedures/sim_common.hpp"
 #include "sim/random.hpp"
 #include "stats/numerics.hpp"
@@ -490,6 +491,26 @@ double approx_power(const Design& d, const RmstExpected& rm, const ComboNull& co
   return z_power(root * e.drift[0], alpha, a);
 }
 
+/// The largest N1 of a sample-size search: N1 + N2 up to MAX_N.
+double largest_n1(double ratio) { return std::fmax(2, std::floor(MAX_N / (1 + ratio))); }
+
+/// The smallest N1 of a sample-size search: group 2, N1 × the ratio rounded up, needs 2 subjects.
+double smallest_n1(double ratio) {
+  return solve::first_whole([&](double x) { return solve::round_up(ratio * x) >= 2; },
+                            std::fmax(2, std::floor((1 + 1e-9) / ratio) + 1), largest_n1(ratio),
+                            "the allocation ratio is too small: group 2 would have fewer than 2 subjects");
+}
+
+/// The approximation's N1 for the target power: the answer of an approximation, and where the simulated search
+/// starts.
+template <class F>
+double approx_n1(F&& approx, double target, double lo, double hi, const RunContext* ctx) {
+  solve::NSearch o;
+  o.lo = lo;
+  o.hi = hi;
+  return solve::min_n(approx, target, o, ctx);
+}
+
 /// MaxCombo decision: the largest standardized statistic T = max T_i (T_i = |Z_i| two-sided, −Z_i for HR < 1,
 /// Z_i for HR > 1) against its null distribution, with Z ~ N(0, R) and R estimated from the data.  The p-value
 /// p = P(T ≥ t) is bracketed first by p_min ≤ p ≤ K·p_min (p_min = P(T_i ≥ t)), then by bivariate bounds: the
@@ -771,19 +792,12 @@ Procedure nph() {
       if ((a == Alt::Upper && hmax <= 1) || (a == Alt::Lower && hmin >= 1))
         throw CalcError("the hazard ratios are on the side opposite to the one-sided alternative");
     }
-    const double cap = std::fmax(2, std::floor(MAX_N / (1 + ratio)));
-    const double lo = s.solve != "n" ? 2
-                                     : solve::first_whole([&](double x) { return n2_of(x) >= 2; },
-                                                          std::fmax(2, std::floor((1 + 1e-9) / ratio) + 1), cap,
-                                                          "the allocation ratio is too small: group 2 would have "
-                                                          "fewer than 2 subjects");
+    const double cap = largest_n1(ratio);
+    const double lo = s.solve != "n" ? 2 : smallest_n1(ratio);
     const double hi = std::fmax(lo, cap);
     double n1;
     if (s.solve == "n") {
-      solve::NSearch o;
-      o.lo = lo;
-      o.hi = hi;
-      n1 = solve::min_n(approx, s("power"), o, &ctx);
+      n1 = approx_n1(approx, s("power"), lo, hi, &ctx);
     } else {
       n1 = s("n1");
       if (n2_of(n1) < 2) throw CalcError("group 2 needs at least 2 subjects");
@@ -885,6 +899,132 @@ Procedure nph() {
     t += approx ? "; about " + fint(std::round(r.num("events"))) + " events are expected."
                 : "; the simulated studies have " + fint(std::round(r.num("events"))) + " events on average.";
     return t + simc::method_note(r);
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2"), N = n1 + n2;
+    const double target = s.solve == "n" ? s("power") : NAN;
+    const Design d = nph_design(s);
+    // the approximation's parts, as the run computes them (on one thread, which gives the same values)
+    const RmstExpected rm = d.test == Test::Rmst ? rmst_expected(d) : RmstExpected{};
+    const ComboNull combo = d.test == Test::MaxCombo ? combo_null(d, 1 / (1 + ratio), alpha, a, 1) : ComboNull{};
+    auto approx = [&](double m1) { return approx_power(d, rm, combo, m1, solve::round_up(ratio * m1), alpha, a, 1); };
+    const double p = n1 / N, root = std::sqrt(N);
+    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    const std::string model =
+        "control event times exponential with λ2 = ln 2 / median, the treatment's hazard HR1 λ2 before T* and HR2 λ2 "
+        "from T* on; entry uniform over the accrual time A, analysis at A + F, loss to follow-up at the rate η; N2 = "
+        "⌈r N1⌉";
+    const std::string values = "λ2 = ln 2 / " + num(s("med2")) + " = " + num(d.lam2) + ", HR1 = " + num(d.hr1) +
+                               ", HR2 = " + num(d.hr2) + ", T* = " + num(d.tc) + "; A = " + num(d.A) + ", F = " +
+                               num(d.F) + ", η = " + num(d.eta) + "; " + sizes;
+    const std::string drift = "√(p(1 − p)) ∫ w log HR dD / √(∫ w² dD) over the expected events D per subject, p = N1/N";
+    const std::string weight = d.test == Test::FH ? "w = S̄^ρ (1 − S̄)^γ at the expected pooled survival S̄"
+                                                  : "w = 1 (logrank)";
+    const std::string fh = "FH(0, 0), FH(0, 1), FH(1, 0) and FH(1, 1)";
+    // logrank and FH: one statistic; MaxCombo: four; RMST: the difference in restricted mean survival
+    const Expected e1 = expected(d, p, 1, &d.rho, &d.gamma), e4 = expected(d, p, 4, COMBO_RHO, COMBO_GAMMA);
+    std::string means;
+    for (int j = 0; j < 4; ++j) means += (j ? ", " : "") + num(root * e4.drift[j]);
+    const double rmst_se = std::sqrt(rm.var[0] / n1 + rm.var[1] / n2);
+    const double ncp = d.test == Test::Rmst ? (rmst_se > 0 ? rm.diff / rmst_se : 0) : root * e1.drift[0];
+    Steps out;
+    if (approximated(r)) {
+      out.push_back({"Assumed model", model, values});
+      if (d.test == Test::Rmst) {
+        out.push_back({"RMST difference", "ΔRMST = ∫₀^τ S1(t) dt − ∫₀^τ S2(t) dt",
+                       "τ = " + num(d.tau) + ": ΔRMST = " + num(r.num("drmst"))});
+        out.push_back({"Standard error",
+                       "SE = √(v1/N1 + v2/N2), v_g = ∫₀^τ (∫_t^τ S_g(u) du)² λ_g(t) / (S_g(t) G(t)) dt, G(t) the "
+                       "chance of still being observed t after entry",
+                       "v1 = " + num(rm.var[0]) + ", v2 = " + num(rm.var[1]) + "; " + sizes + ": SE = " +
+                           num(rmst_se)});
+        out.push_back({"Noncentrality", "λ = −ΔRMST / SE, oriented like the log hazard ratio",
+                       num(rm.diff) + " / " + num(rmst_se) + " = " + num(ncp)});
+      } else {
+        out.push_back({"Expected events",
+                       "D = N ∫ (p λ1 S1 + (1 − p) λ2 S2) G dt over the study, G(t) the chance of still being "
+                       "observed t after entry; AHR = exp(the mean log hazard ratio over the events)",
+                       "N = " + fint(N) + ", p = " + num(p) + ": D = " + num(r.num("events"), 1) + ", AHR = " +
+                           num(r.num("ahr"))});
+        if (d.test == Test::MaxCombo)
+          out.push_back({"Means of the four statistics",
+                         "μj = √N × " + drift + ", for " + fh +
+                             ", w = S̄^ρ (1 − S̄)^γ at the expected pooled survival S̄",
+                         "μ = " + means});
+        else
+          out.push_back({"Noncentrality", "λ = √N × " + drift + ", " + weight,
+                         "√" + fint(N) + " × " + sub(e1.drift[0]) + " = " + num(ncp)});
+      }
+      if (d.test == Test::MaxCombo) {
+        out.push_back({"Critical value of the maximum",
+                       "c with P(max_j Tj ≥ c) = α for Z ~ N(0, R), Tj = " +
+                           std::string(a == Alt::Two ? "|Zj|" : (a == Alt::Lower ? "−Zj" : "Zj")) +
+                           ", R the statistics' correlation from the expected events (p = 1/(1 + r))",
+                       "c = " + num(combo.c)});
+        out.push_back({"Power", "P(max_j Tj ≥ c) for Z ~ N(μ, R), by Genz's multivariate normal probability",
+                       "P(max_j Tj ≥ " + num(combo.c) + ") = " + prob(r.num("power"))});
+      } else {
+        out.push_back(z_critical(alpha, a));
+        out.push_back(z_power_step(ncp, alpha, a));
+      }
+      if (s.solve == "n")
+        out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      return out;
+    }
+    out.push_back({"Simulated studies", model, values});
+    const std::string level = sim_level(a, alpha) + "; mean events over the studies = " + num(r.num("events"), 1);
+    switch (d.test) {
+      case Test::FH:
+        out.push_back({"Test of each study",
+                       "Fleming–Harrington weighted logrank z = Σ w (d1 − d n1/n) / √(Σ w² V), w = Ŝ(t−)^ρ (1 − "
+                       "Ŝ(t−))^γ with Ŝ the pooled Kaplan–Meier estimate, V the hypergeometric variance; H0 rejected "
+                       "when p < α",
+                       "ρ = " + num(d.rho) + ", γ = " + num(d.gamma) + "; " + level});
+        break;
+      case Test::MaxCombo:
+        out.push_back({"Test of each study",
+                       "MaxCombo: the largest of the " + fh + " weighted logrank z statistics, its p-value from their "
+                       "joint normal distribution with the correlation estimated from the data; H0 rejected when p < α",
+                       level});
+        break;
+      case Test::Rmst:
+        out.push_back({"Test of each study",
+                       "z = (RMST2 − RMST1) / √(Var1 + Var2), each RMST the area under the group's Kaplan–Meier curve "
+                       "up to τ with the variance Σ A_j² d_j / (n_j (n_j − d_j)); H0 rejected when p < α",
+                       "τ = " + num(d.tau) + "; " + level});
+        break;
+      default:
+        out.push_back({"Test of each study",
+                       "logrank z = Σ (d1 − d n1/n) / √(Σ V) over the event times, V the hypergeometric variance; H0 "
+                       "rejected when p < α",
+                       level});
+    }
+    out.push_back(sim_count_step(r, "Studies rejecting H0", "the studies whose test rejects H0"));
+    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
+    if (s.solve == "n") {
+      const double lo = smallest_n1(ratio);
+      const double start = approx_n1(approx, target, lo, std::fmax(lo, largest_n1(ratio)), nullptr);
+      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target));
+    }
+    if (std::isfinite(r.num("approx_power"))) {
+      const double ap = r.num("approx_power");
+      if (d.test == Test::MaxCombo)
+        out.push_back({"Approximation (for comparison)",
+                       "P(max_j Tj ≥ c), the four statistics jointly normal with means √N × " + drift +
+                           " and the correlation from the expected events",
+                       "c = " + num(combo.c) + ", μ = " + means + ": " + prob(ap)});
+      else if (d.test == Test::Rmst)
+        out.push_back({"Approximation (for comparison)",
+                       "Φ power with λ = −ΔRMST / √(v1/N1 + v2/N2), v_g the asymptotic variance of a Kaplan–Meier area",
+                       "ΔRMST = " + num(r.num("drmst")) + ", SE = " + num(rmst_se) + ", λ = " + num(ncp) + ": " +
+                           prob(ap)});
+      else
+        out.push_back({"Approximation (for comparison)", "Φ power with λ = √N × " + drift + ", " + weight,
+                       "λ = √" + fint(N) + " × " + sub(e1.drift[0]) + " = " + num(ncp) + ": " + prob(ap)});
+    }
+    return out;
   };
   p.definitions = {
       {"N1, N2", "Number of subjects in group 1 (treatment) and group 2 (control); N = N1 + N2."},

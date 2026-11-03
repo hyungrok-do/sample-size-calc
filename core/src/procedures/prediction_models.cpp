@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "procedures/common.hpp"
+#include "procedures/derive.hpp"
 
 namespace ssc::procs {
 namespace {
@@ -44,6 +45,54 @@ double round_to(double x, int decimals) {
 
 // Riley et al.'s criterion (i) and (ii) size: the n at which the expected uniform shrinkage is S, for p parameters.
 double shrinkage_n(double p, double r2cs, double S) { return std::ceil(p / ((S - 1) * std::log(1 - r2cs / S))); }
+
+// The shrinkage that keeps the optimism in the Nagelkerke R² at δ (criterion (ii) of binary and time-to-event outcomes).
+double optimism_shrinkage(double r2cs, double delta, double max_r2) { return r2cs / (r2cs + delta * max_r2); }
+
+// Criterion (iii) of a binary outcome: the overall risk φ within the margin m (1.96, as Riley et al.).
+double risk_n(double phi, double m) { return std::ceil(std::pow(1.96 / m, 2) * phi * (1 - phi)); }
+
+// The largest Cox–Snell R² possible for a binary or time-to-event outcome, and the one used to convert a Nagelkerke
+// R² (for a time-to-event outcome, also the expected events among the 10,000 people of the first).
+struct MaxR2 {
+  double max_r2, max_conv, events;
+};
+MaxR2 max_r2cs(const Scenario& s, bool binary) {
+  if (binary) {
+    const double phi = s("prev");
+    const double m = -std::expm1(2 * (phi * std::log(phi) + (1 - phi) * std::log1p(-phi)));
+    return {m, m, NAN};
+  }
+  // as pmsampsize: the null log-likelihood of an exponential model from 10,000 people with the expected events
+  // rounded up (and, to convert a Nagelkerke R², per person)
+  const double e = std::ceil(s("rate") * s("fup") * 10000);
+  const double e1 = s("rate") * s("fup");
+  return {-std::expm1(2 * (e * std::log(e / 10000) - e) / 10000), -std::expm1(2 * (e1 * std::log(e1) - e1)), e};
+}
+
+// The anticipated Cox–Snell R²: as pmsampsize, a converted one is rounded, to 3 decimals from a Nagelkerke R² and
+// to 4 from a C-statistic.
+double anticipated_r2cs(const Scenario& s, double max_conv) {
+  if (s.is("r2in", "nag")) return round_to(s("r2nag") * max_conv, 3);
+  if (s.is("r2in", "c")) return round_to(cstat_r2cs(s("cstat"), s("prev")), 4);
+  return s("r2cs");
+}
+
+// Van Houwelingen and Le Cessie's expected shrinkage at m subjects of a linear model with p parameters and adjusted
+// R² r2, from the apparent R² that m subjects would give.
+double vh_shrinkage(double r2, double P, double m) {
+  const double app = (r2 * (m - P - 1) + P) / (m - 1);
+  return 1 + (P - 2) / (m * std::log(1 - app));
+}
+
+// The two ends of the 95% interval for a residual SD with d degrees of freedom, as multiples of its estimate.
+double sd_ratio_low(double d) { return std::sqrt(d / stats::qchisq(0.025, d)); }
+double sd_ratio_high(double d) { return std::sqrt(stats::qchisq(0.975, d) / d); }
+
+// The half-width of the 95% interval for the intercept at m subjects.
+double intercept_half(double m, double P, double sd, double r2) {
+  return stats::qt(0.025, m - P - 1, false) * std::sqrt(sd * sd * (1 - r2) / m);
+}
 
 const char* REF_RILEY_I =
     "Riley, R. D., Snell, K. I. E., Ensor, J., Burke, D. L., Harrell, F. E., Moons, K. G. M. & Collins, G. S. "
@@ -231,10 +280,7 @@ Procedure prediction_model() {
     if (outcome == "continuous") {
       const double r2 = s("r2"), sd = s("sdy"), mean = s("mean"), mmoe = s("mmoe"), delta = s("delta");
       // Van Houwelingen and Le Cessie's expected shrinkage at n, from the apparent R² that n subjects would give
-      auto svh = [&](double m) {
-        const double app = (r2 * (m - P - 1) + P) / (m - 1);
-        return 1 + (P - 2) / (m * std::log(1 - app));
-      };
+      auto svh = [&](double m) { return vh_shrinkage(r2, P, m); };
       // (i) as pmsampsize: from p + 2 subjects on, the first n whose expected shrinkage reaches S.  It first falls
       // with n and then rises, so once below S at p + 2 subjects the condition holds from its first n on.
       double n1 = P + 2;
@@ -245,14 +291,12 @@ Procedure prediction_model() {
       const double n2 = std::ceil(1 + P * (1 - r2) / delta);
       // (iii) the residual SD within the multiplicative margin: both ends of its 95% interval (234 + p for 1.1)
       const double df = solve::first_whole(
-          [&](double d) {
-            return std::sqrt(d / stats::qchisq(0.025, d)) <= mmoe && std::sqrt(stats::qchisq(0.975, d) / d) <= mmoe;
-          },
+          [&](double d) { return sd_ratio_low(d) <= mmoe && sd_ratio_high(d) <= mmoe; },
           1, 1e9, "the residual SD cannot be estimated within this margin");
       const double n3 = df + P + 1;
       // (iv) the intercept within the margin of the mean outcome: from the largest size so far, as pmsampsize
       if (mean == 0) throw CalcError("the margin for the intercept is relative to the mean outcome, which cannot be 0");
-      auto half = [&](double m) { return stats::qt(0.025, m - P - 1, false) * std::sqrt(sd * sd * (1 - r2) / m); };
+      auto half = [&](double m) { return intercept_half(m, P, sd, r2); };
       const double n4 = solve::first_whole([&](double m) { return half(m) <= (mmoe - 1) * std::fabs(mean); },
                                            std::max({n1, n2, n3}), 1e9,
                                            "the intercept cannot be estimated within this margin");
@@ -275,28 +319,12 @@ Procedure prediction_model() {
       r.set("int_hi", mean + half(n));
     } else {
       const bool binary = outcome == "binary";
-      double max_r2, max_conv;  // the largest Cox–Snell R² possible, and the one used to convert a Nagelkerke R²
-      if (binary) {
-        const double phi = s("prev");
-        max_r2 = max_conv = -std::expm1(2 * (phi * std::log(phi) + (1 - phi) * std::log1p(-phi)));
-      } else {
-        // as pmsampsize: the null log-likelihood of an exponential model from 10,000 people with the expected
-        // events rounded up (and, to convert a Nagelkerke R², per person)
-        const double e = std::ceil(s("rate") * s("fup") * 10000);
-        max_r2 = -std::expm1(2 * (e * std::log(e / 10000) - e) / 10000);
-        const double e1 = s("rate") * s("fup");
-        max_conv = -std::expm1(2 * (e1 * std::log(e1) - e1));
-      }
+      // the largest Cox–Snell R² possible, and the one used to convert a Nagelkerke R²
+      const MaxR2 largest = max_r2cs(s, binary);
+      const double max_r2 = largest.max_r2;
       if (!(max_r2 > 0))
         throw CalcError("so many events per person leave no room for a Cox–Snell R² (its largest possible value is 0)");
-      // as pmsampsize, a converted R² is rounded: to 3 decimals from a Nagelkerke R², to 4 from a C-statistic
-      double r2cs;
-      if (s.is("r2in", "nag"))
-        r2cs = round_to(s("r2nag") * max_conv, 3);
-      else if (s.is("r2in", "c"))
-        r2cs = round_to(cstat_r2cs(s("cstat"), s("prev")), 4);
-      else
-        r2cs = s("r2cs");
+      const double r2cs = anticipated_r2cs(s, largest.max_conv);
       if (!(r2cs > 0)) throw CalcError("the anticipated Cox–Snell R² rounds to 0: the model would explain nothing");
       if (!(r2cs < max_r2))
         throw CalcError("the anticipated Cox–Snell R² (" + fnum(r2cs) + ") must be below its largest possible value "
@@ -305,7 +333,7 @@ Procedure prediction_model() {
       // (i) expected shrinkage S; (ii) the shrinkage that keeps the optimism in the Nagelkerke R² at δ (0.05 for
       // time-to-event outcomes, as pmsampsize)
       const double delta = binary ? s("delta") : 0.05;
-      const double S2 = r2cs / (r2cs + delta * max_r2);
+      const double S2 = optimism_shrinkage(r2cs, delta, max_r2);
       const double n1 = shrinkage_n(P, r2cs, S), n2 = shrinkage_n(P, r2cs, S2);
       bind(n1, "Shrinkage");
       bind(n2, "Optimism in R²");
@@ -315,7 +343,7 @@ Procedure prediction_model() {
       if (binary) {
         // (iii) the overall risk within the margin (1.96, as Riley et al.)
         const double phi = s("prev"), m = s("margin");
-        const double n3 = std::ceil(std::pow(1.96 / m, 2) * phi * (1 - phi));
+        const double n3 = risk_n(phi, m);
         bind(n3, "Overall risk");
         add("(iii) Overall risk within ± " + fnum(m), n3, final_s);
         r.set("n_risk", n3);
@@ -403,6 +431,114 @@ Procedure prediction_model() {
                    : ", which estimates the risk at time " + fnum(s("tpt")) + " as " + fnum(r.num("risk"), 3) + " (95% "
                      "interval " + fnum(r.num("risk_lo"), 3) + " to " + fnum(r.num("risk_hi"), 3) + ")") +
            set_by;
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const std::string& outcome = s.s("outcome");
+    const double P = r.num("p"), S = s("shrink"), n = r.num("n");
+    const std::string decides = ": the " + text_of(r, "binding") + " criterion sets it";
+    Steps out;
+    if (outcome == "continuous") {
+      const double r2 = r.num("r2"), sd = s("sdy"), mean = s("mean"), mmoe = s("mmoe"), delta = s("delta");
+      const double n1 = r.num("n_shrink"), n2 = r.num("n_opt"), n3 = r.num("n_sd"), n4 = r.num("n_int");
+      // (i): P + 2 subjects when their expected shrinkage already exceeds S, else the first size from P + 3 that
+      // reaches it
+      std::string i_numbers;
+      if (n1 == P + 2) {
+        i_numbers = "S_VH at N = " + fint(n1) + ": " + num(vh_shrinkage(r2, P, n1)) + " > " + fnum(S);
+      } else {
+        const double below = vh_shrinkage(r2, P, n1 - 1);
+        i_numbers = "S_VH at N = " + fint(n1 - 1) + ": " + prob(below, S) + (below < S ? " < " : " ≤ ") + fnum(S) +
+                    " ≤ S_VH at N = " + fint(n1) + ": " + prob(vh_shrinkage(r2, P, n1), S);
+      }
+      out.push_back({"(i) Expected shrinkage",
+                     "N = P + 2 if S_VH(P + 2) > S, else the smallest N from P + 3 with S_VH(N) ≥ S: S_VH(N) = 1 + "
+                     "(P − 2) / (N ln(1 − R²app)), R²app = (R²(N − P − 1) + P) / (N − 1) the apparent R²",
+                     i_numbers});
+      out.push_back({"(ii) Optimism in R²", "N = ⌈1 + P(1 − R²) / δ⌉",
+                     "⌈1 + " + fint(P) + " × (1 − " + num(r2) + ") / " + num(delta) + "⌉ = " + fint(n2)});
+      // (iii): the first degrees of freedom whose interval for the residual SD lies within the margin at both ends
+      const double df = n3 - P - 1;
+      const auto ends = [&](double d) { return prob(sd_ratio_low(d), mmoe) + " and " + prob(sd_ratio_high(d), mmoe); };
+      out.push_back({"(iii) Residual SD",
+                     "N = ν + P + 1, ν the smallest whole number with √(ν / χ²(0.025; ν)) ≤ MMOE and "
+                     "√(χ²(0.975; ν) / ν) ≤ MMOE, χ²(q; ν) the q quantile",
+                     (df > 1 ? "at ν = " + fint(df - 1) + ": " + ends(df - 1) + ", not both ≤ " + fnum(mmoe) + "; " : "") +
+                         "at ν = " + fint(df) + ": " + ends(df) + " ≤ " + fnum(mmoe) + "; N = " + fint(df) + " + " +
+                         fint(P) + " + 1 = " + fint(n3)});
+      // (iv): from the largest size so far, the first whose interval for the intercept is within the margin
+      const double from = std::max({n1, n2, n3}), bound = (mmoe - 1) * std::fabs(mean);
+      const auto half = [&](double m) {
+        return "t(0.975; " + fint(m - P - 1) + ") × √(" + num(sd) + "² × (1 − " + num(r2) + ") / " + fint(m) + ") = " +
+               prob(intercept_half(m, P, sd, r2), bound);
+      };
+      out.push_back({"(iv) Intercept",
+                     "N = the smallest size from the largest of (i)–(iii) whose half-width t(0.975; N − P − 1) "
+                     "√(SD²(1 − R²) / N) ≤ (MMOE − 1)|mean|",
+                     "(MMOE − 1)|mean| = " + num(mmoe - 1) + " × " + num(std::fabs(mean)) + " = " + num(bound) + "; " +
+                         (n4 > from ? "at N = " + fint(n4 - 1) + ": " + half(n4 - 1) + " > " + num(bound) + "; " : "") +
+                         "at N = " + fint(n4) + ": " + half(n4) + " ≤ " + num(bound)});
+      out.push_back({"Minimum sample size", "N = the largest of the criteria's sizes",
+                     "max(" + fint(n1) + ", " + fint(n2) + ", " + fint(n3) + ", " + fint(n4) + ") = " + fint(n) +
+                         decides});
+      return out;
+    }
+    const bool binary = outcome == "binary";
+    const MaxR2 largest = max_r2cs(s, binary);
+    const double r2cs = r.num("r2cs"), max_r2 = largest.max_r2;
+    if (binary) {
+      const double phi = s("prev");
+      out.push_back({"Largest Cox–Snell R²", "max R²CS = 1 − exp(2(φ ln φ + (1 − φ) ln(1 − φ))), φ the prevalence",
+                     "1 − exp(2 × (" + num(phi) + " × ln " + num(phi) + " + " + num(1 - phi) + " × ln " +
+                         num(1 - phi) + ")) = " + num(max_r2)});
+    } else {
+      const double e = largest.events;
+      out.push_back({"Largest Cox–Snell R²",
+                     "max R²CS = 1 − exp(2(E ln(E / 10000) − E) / 10000), E = ⌈rate × follow-up × 10000⌉ the events "
+                     "among 10,000 people (as pmsampsize)",
+                     "E = ⌈" + num(s("rate")) + " × " + num(s("fup")) + " × 10000⌉ = " + fint(e) + "; 1 − exp(2 × (" +
+                         fint(e) + " × ln(" + fint(e) + " / 10000) − " + fint(e) + ") / 10000) = " + num(max_r2)});
+    }
+    if (s.is("r2in", "nag")) {
+      if (binary)
+        out.push_back({"Anticipated Cox–Snell R²", "R²CS = R²Nag × max R²CS, rounded to 3 decimals (as pmsampsize)",
+                       "round(" + num(s("r2nag")) + " × " + num(largest.max_conv) + ", 3) = " + num(r2cs)});
+      else
+        out.push_back({"Anticipated Cox–Snell R²",
+                       "R²CS = R²Nag × (1 − exp(2(e ln e − e))), e = rate × follow-up the events per person, rounded "
+                       "to 3 decimals (as pmsampsize)",
+                       "e = " + num(s("rate")) + " × " + num(s("fup")) + " = " + num(s("rate") * s("fup")) +
+                           "; round(" + num(s("r2nag")) + " × " + num(largest.max_conv) + ", 3) = " + num(r2cs)});
+    } else if (s.is("r2in", "c")) {
+      out.push_back({"Anticipated Cox–Snell R²",
+                     "R²CS = 1 − exp(−2I), I the mutual information of the outcome and a linear predictor that is "
+                     "normal with variance 1 among those with and without it, its means √2 Φ⁻¹(C) apart (Riley et "
+                     "al.), rounded to 4 decimals (as pmsampsize)",
+                     "√2 × Φ⁻¹(" + num(s("cstat")) + ") = " + num(std::sqrt(2.0) * stats::qnorm(s("cstat"))) +
+                         "; round(" + fnum(cstat_r2cs(s("cstat"), s("prev")), 8) + ", 4) = " + num(r2cs)});
+    }
+    const double n1 = r.num("n_shrink"), n2 = r.num("n_opt");
+    const double delta = binary ? s("delta") : 0.05, S2 = optimism_shrinkage(r2cs, delta, max_r2);
+    const auto size = [&](double shrink) {
+      return "⌈" + fint(P) + " / ((" + num(shrink) + " − 1) × ln(1 − " + num(r2cs) + " / " + num(shrink) + "))⌉";
+    };
+    out.push_back({"(i) Expected shrinkage", "N = ⌈P / ((S − 1) ln(1 − R²CS / S))⌉", size(S) + " = " + fint(n1)});
+    out.push_back({"(ii) Optimism in R²",
+                   std::string("S₂ = R²CS / (R²CS + δ max R²CS), the shrinkage that keeps the optimism in the "
+                               "Nagelkerke R² at δ") +
+                       (binary ? "" : " = 0.05 (as pmsampsize)") + "; N = ⌈P / ((S₂ − 1) ln(1 − R²CS / S₂))⌉",
+                   "S₂ = " + num(r2cs) + " / (" + num(r2cs) + " + " + num(delta) + " × " + num(max_r2) + ") = " +
+                       num(S2) + "; " + size(S2) + " = " + fint(n2)});
+    std::string sizes = fint(n1) + ", " + fint(n2);
+    if (binary) {
+      const double phi = s("prev"), m = s("margin"), n3 = r.num("n_risk");
+      out.push_back({"(iii) Overall risk", "N = ⌈(1.96 / margin)² φ(1 − φ)⌉",
+                     "⌈(1.96 / " + num(m) + ")² × " + num(phi) + " × " + num(1 - phi) + "⌉ = " + fint(n3)});
+      sizes += ", " + fint(n3);
+    }
+    out.push_back({"Minimum sample size", "N = the largest of the criteria's sizes",
+                   "max(" + sizes + ") = " + fint(n) + decides});
+    return out;
   };
   p.definitions = {
       {"Parameters", "Candidate predictor parameters: every coefficient considered, before any selection."},

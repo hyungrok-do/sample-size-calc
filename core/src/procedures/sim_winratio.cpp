@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "procedures/derive_sim.hpp"
 #include "procedures/sim_common.hpp"
 #include "util/memo.hpp"
 
@@ -290,6 +291,49 @@ Probabilities cached_pair_probabilities(const Design& d) {
 
 enum Test { FS = 0, WR = 1 };
 
+/// Yu & Ganju (2022): the standard error of the net benefit, (1 − p_tie²)/(3 κ(1 − κ) N) squared, or of the log win
+/// ratio, 4(1 + p_tie)/(3 κ(1 − κ) N (1 − p_tie)) squared, with n1 and n2 patients (κ = n1/N), and the
+/// noncentrality: the net benefit or the log win ratio over it.
+struct Approx {
+  double se, ncp;
+};
+
+Approx approx_of(const Probabilities& pr, Test test, double n1, double n2) {
+  const double total = n1 + n2, kappa = n1 / total;
+  if (test == FS) {
+    const double se = std::sqrt((1 - pr.tie * pr.tie) / (3 * kappa * (1 - kappa) * total));
+    return {se, (pr.win - pr.loss) / se};
+  }
+  const double se = std::sqrt(4 * (1 + pr.tie) / (3 * kappa * (1 - kappa) * total * (1 - pr.tie)));
+  return {se, std::log(pr.win / pr.loss) / se};
+}
+
+/// The quick approximation's power (none for the win ratio without wins or without losses).
+double approx_power(const Probabilities& pr, Test test, double n1, double n2, double alpha, Alt a) {
+  if (test == WR && !(pr.win > 0 && pr.loss > 0)) return NAN;
+  return z_power(approx_of(pr, test, n1, n2).ncp, alpha, a);
+}
+
+/// The largest N1 of a sample-size search: at most 50,000 patients per trial (far beyond any trial analyzed this way;
+/// each costs O(N log N)).
+double largest_n1(double ratio) { return std::fmax(2, std::floor(50000 / (1 + ratio))); }
+
+/// The smallest N1 of a sample-size search: the control group, N1 × the ratio rounded up, needs 2 patients.
+double smallest_n1(double ratio) {
+  return solve::first_whole([&](double x) { return solve::round_up(ratio * x) >= 2; }, 2, largest_n1(ratio),
+                            "the allocation ratio is too small: the control group would have fewer than 2 patients");
+}
+
+/// The approximation's N1 for the target power: the answer of an approximation, and where the simulated search
+/// starts.
+template <class F>
+double approx_n1(F&& approx, double target, double lo, double hi, const RunContext* ctx) {
+  solve::NSearch o;
+  o.lo = lo;
+  o.hi = hi;
+  return solve::min_n(approx, target, o, ctx);
+}
+
 // Bits of sim::Outcome::also: each test's rejection (bit FS or WR), then why a test could not be computed.
 constexpr unsigned TIED = 2, BALANCED = 3, ONE_SIDED = 4, FLAT = 5;
 
@@ -541,14 +585,7 @@ Procedure winratio() {
     const Probabilities pr = cached_pair_probabilities(d);
     const double nb = pr.win - pr.loss;
     auto n2_of = [&](double n1) { return solve::round_up(ratio * n1); };
-    // Yu & Ganju (2022): Var(net benefit) ≈ (1 − p_tie²)/(3 κ(1 − κ) N), Var(log WR) ≈ 4(1 + p_tie)/(3 κ(1 − κ) N (1 − p_tie))
-    auto approx = [&](double n1) {
-      const double n2 = n2_of(n1), total = n1 + n2, kappa = n1 / total;
-      if (test == FS) return z_power(nb / std::sqrt((1 - pr.tie * pr.tie) / (3 * kappa * (1 - kappa) * total)), alpha, a);
-      if (!(pr.win > 0 && pr.loss > 0)) return static_cast<double>(NAN);
-      const double v = 4 * (1 + pr.tie) / (3 * kappa * (1 - kappa) * total * (1 - pr.tie));
-      return z_power(std::log(pr.win / pr.loss) / std::sqrt(v), alpha, a);
-    };
+    auto approx = [&](double n1) { return approx_power(pr, test, n1, n2_of(n1), alpha, a); };
     if (s.solve == "n") {
       // the same distribution in both groups (every hazard ratio 1, no score difference): wins and losses are
       // equally likely, which the net benefit, estimated from random pairs, shows only approximately
@@ -557,18 +594,12 @@ Procedure winratio() {
       if ((a == Alt::Upper && nb < 0) || (a == Alt::Lower && nb > 0))
         throw CalcError("the effect has the direction opposite to the one-sided alternative");
     }
-    // at most 50,000 patients per trial (far beyond any trial analyzed this way; each costs O(N log N))
-    const double cap = std::fmax(2, std::floor(50000 / (1 + ratio)));
-    const double lo = s.solve != "n" ? 2 : solve::first_whole([&](double x) { return n2_of(x) >= 2; }, 2, cap,
-                                                           "the allocation ratio is too small: the control group "
-                                                           "would have fewer than 2 patients");
+    const double cap = largest_n1(ratio);
+    const double lo = s.solve != "n" ? 2 : smallest_n1(ratio);
     const double n1_max = std::fmax(lo, cap);
     double n1;
     if (s.solve == "n") {
-      solve::NSearch o;
-      o.lo = lo;
-      o.hi = n1_max;
-      n1 = solve::min_n(approx, s("power"), o, &ctx);
+      n1 = approx_n1(approx, s("power"), lo, n1_max, &ctx);
     } else {
       n1 = s("n1");
       if (n2_of(n1) < 2) throw CalcError("the control group needs at least 2 patients");
@@ -661,6 +692,84 @@ Procedure winratio() {
     t += simc::others_sentence(r, "trials",
                                {{"Finkelstein–Schoenfeld test", "power_fs"}, {"win ratio test", "power_wr"}});
     return t + simc::method_note(r, "trials");
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const Alt a = alt(s);
+    const double alpha = s("alpha"), ratio = s("r"), n1 = r.num("n1"), n2 = r.num("n2");
+    const double target = s.solve == "n" ? s("power") : NAN;
+    const Design d = design_of(s);
+    const Test test = s.is("test", "wr") ? WR : FS;
+    const Probabilities pr = cached_pair_probabilities(d);  // drawn once per design: the run's own
+    auto approx = [&](double m1) { return approx_power(pr, test, m1, solve::round_up(ratio * m1), alpha, a); };
+    const Approx ap = approx_of(pr, test, n1, n2);
+    const std::string sizes = "N1 = " + fint(n1) + ", N2 = ⌈" + num(ratio) + " × " + fint(n1) + "⌉ = " + fint(n2);
+    std::string model = "death exponential with the rate λD = ln 2 / median, times HR_D in the treatment group";
+    std::string values = "median " + num(s("med_d")) + ", HR_D = " + num(d.hr_d);
+    if (d.event) {
+      model += "; the non-fatal event likewise with λH and HR_H, counted when before death";
+      values += "; median " + num(s("med_h")) + ", HR_H = " + num(d.hr_h);
+    }
+    if (d.score) {
+      model += "; the measured outcome N(Δ, 1) in the treatment group and N(0, 1) in the control group, among the "
+               "patients alive at the end of their follow-up";
+      values += "; Δ = " + num(d.delta) + ", margin " + num(d.margin);
+    }
+    model += "; entry uniform over the accrual time, analysis at its end plus the follow-up, loss to follow-up at the "
+             "rate η; N2 = ⌈r N1⌉";
+    values += "; accrual " + num(d.accrual) + ", follow-up " + num(d.follow) + ", η = " + num(d.eta) + "; " + sizes;
+    const std::string se_formula =
+        test == FS ? "SE(NB̂) = √((1 − P(tie)²) / (3κ(1 − κ)N)), κ = N1/N (Yu & Ganju)"
+                   : "SE(log WR̂) = √(4(1 + P(tie)) / (3κ(1 − κ)N(1 − P(tie)))), κ = N1/N (Yu & Ganju)";
+    const std::string ncp_formula = test == FS ? "λ = NB / SE(NB̂)" : "λ = log WR / SE(log WR̂)";
+    const std::string pairs = "P(win) = " + prob(pr.win) + ", P(loss) = " + prob(pr.loss) + ", P(tie) = " +
+                              prob(pr.tie);
+    Steps out;
+    if (approximated(r)) {
+      out.push_back({"Assumed model", model, values});
+      out.push_back({"Pair probabilities",
+                     "P(win), P(loss) and P(tie) of a random treatment–control pair, from 200,000 simulated pairs of a "
+                     "fixed stream; net benefit NB = P(win) − P(loss), win ratio WR = P(win) / P(loss)",
+                     pairs + ": NB = " + num(r.num("nb")) + ", WR = " + num(r.num("wr"))});
+      out.push_back({"Standard error", se_formula, sizes + ": SE = " + num(ap.se)});
+      out.push_back({"Noncentrality", ncp_formula,
+                     (test == FS ? sub(r.num("nb")) : "log " + num(r.num("wr"))) + " / " + num(ap.se) + " = " +
+                         num(ap.ncp)});
+      out.push_back(z_critical(alpha, a));
+      out.push_back(z_power_step(ap.ncp, alpha, a));
+      if (s.solve == "n") out.push_back(n_search(approx, n1, target, smallest_n1(ratio), "N1"));
+      return out;
+    }
+    out.push_back({"Simulated trials", model, values});
+    const std::string compare =
+        "every treatment–control pair compared over the time both were followed, on death" +
+        std::string(d.event ? ", then on the non-fatal event" : "") +
+        (d.score ? ", then on the measured outcome by more than the margin" : "") + ": a win, a loss or a tie; ";
+    if (test == FS)
+      out.push_back({"Test of each trial",
+                     compare + "Finkelstein–Schoenfeld z = (wins − losses) / √(N1 N2 / (N(N − 1)) Σ U_k²), U_k a "
+                               "patient's wins less losses against all the others; H0 rejected when p < α",
+                     sim_level(a, alpha) +
+                         (r.has("mean_nb") ? "; mean net benefit over the trials = " + num(r.num("mean_nb")) : "")});
+    else
+      out.push_back({"Test of each trial",
+                     compare + "z = log(wins / losses) / SE, SE the two-sample U-statistic (delta-method) estimate; "
+                               "H0 rejected when p < α",
+                     sim_level(a, alpha) +
+                         (r.has("mean_wr") ? "; geometric mean win ratio over the trials = " + num(r.num("mean_wr"))
+                                           : "")});
+    out.push_back(sim_count_step(r, "Trials rejecting H0", "the trials whose test rejects H0"));
+    for (auto& st : sim_power_steps(r, target)) out.push_back(st);
+    if (s.solve == "n") {
+      const double lo = smallest_n1(ratio);
+      const double start = approx_n1(approx, target, lo, std::fmax(lo, largest_n1(ratio)), nullptr);
+      out.push_back(sim_size_search(r, "Sample size", "N1", n1, lo, start, approx(start), target, "trials"));
+    }
+    if (std::isfinite(r.num("approx_power")))
+      out.push_back({"Approximation (for comparison)", "Φ power with " + ncp_formula + ", " + se_formula,
+                     pairs + " (200,000 pairs); SE = " + num(ap.se) + ", λ = " + num(ap.ncp) + ": " +
+                         prob(r.num("approx_power"))});
+    return out;
   };
   p.definitions = {{"N1, N2", "Number of patients in the treatment and control groups; N = N1 + N2."},
                    {"Win, loss, tie", "Comparing a treatment patient with a control patient over the time both were "

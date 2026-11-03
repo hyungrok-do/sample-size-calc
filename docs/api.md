@@ -137,7 +137,7 @@ Another thread can watch progress and cancel it through the token.
   | `_statement` | a one-paragraph summary of the scenario |
   | `_notes` | remarks specific to this scenario |
   | `_tables` | extra tables, for example group-sequential boundaries: `{"title", "columns": [{key, label, fmt}], "rows": [[…], …]}`; the first 1,000 rows carry them |
-  | `_derivation` | how the row's numbers came about, in the procedure's own steps: `[{"what", "formula", "numbers"}, …]`, each a quantity, its formula in symbols, and the formula with the row's numbers ending in its value (for a sample size, the power one size below and at the answer); computed with the functions that gave the answer, for the first 1,000 rows of the procedures that have one |
+  | `_derivation` | how the row's numbers came about, in the procedure's own steps: `[{"what", "formula", "numbers"}, …]`, each a quantity, its formula in symbols, and the formula with the row's numbers ending in its value (for a calculated sample size, the power one size below and at the answer; for a simulated one, the simulated power at the answer and what the search established below it); computed with the functions that gave the answer, for the first 1,000 rows of the procedures that have one |
 
 - **Simulation procedures** (`"simulation": true` in the result and the
   schema) estimate power from simulated studies. Their rows add `method`

@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "procedures/common.hpp"
+#include "procedures/derive_means.hpp"
 #include "procedures/sim_survival.hpp"
 
 namespace ssc::procs {
@@ -82,12 +83,19 @@ double all_reject(const std::vector<double>& marginal, double rho) {
   return stats::clamp01(nph::mvn_probability(K, lo, hi, r));
 }
 
+// The noncentralities are the standardized effects times √(n1 n2 / (n1 + n2)).
+double effect_scale(double n1, double n2) { return std::sqrt(n1 * n2 / (n1 + n2)); }
+
 std::vector<double> marginal_powers(const std::vector<double>& d, double n1, double n2, double alpha, bool t) {
   std::vector<double> p;
-  const double scale = std::sqrt(n1 * n2 / (n1 + n2)), df = n1 + n2 - 2;
+  const double scale = effect_scale(n1, n2), df = n1 + n2 - 2;
   for (double x : d)
     p.push_back(t ? t_power(x * scale, df, alpha, Alt::Upper) : z_power(x * scale, alpha, Alt::Upper));
   return p;
+}
+
+double coprimary_power(const std::vector<double>& d, double n1, double n2, double alpha, bool t, double rho) {
+  return all_reject(marginal_powers(d, n1, n2, alpha, t), rho);
 }
 
 Procedure coprimary() {
@@ -156,7 +164,7 @@ Procedure coprimary() {
       throw CalcError("with " + std::to_string(K) + " endpoints a common correlation must exceed " +
                       fnum(-1.0 / (K - 1), 3));
     const bool t = s.is("test", "t");
-    auto power = [&](double n1, double n2) { return all_reject(marginal_powers(d, n1, n2, alpha, t), rho); };
+    auto power = [&](double n1, double n2) { return coprimary_power(d, n1, n2, alpha, t, rho); };
     TwoN n;
     if (s.solve == "n") {
       double dmin = d[0];
@@ -201,6 +209,63 @@ Procedure coprimary() {
            text_of(r, "deltas") + ", correlation " + fnum(r.num("rho")) + ") with one-sided " +
            (s.is("test", "t") ? "t-tests" : "z-tests") + " at α = " + fnum(r.num("alpha")) +
            " each; the weakest endpoint alone would have " + power_text(r.num("pmin")) + " power.";
+  };
+  p.derivation = [](const Scenario& s, const Row& r) {
+    using namespace derive;
+    const std::vector<double> d = standardized_effects(s);
+    const int K = static_cast<int>(d.size());
+    const double n1 = r.num("n1"), n2 = r.num("n2"), alpha = s("alpha"), rho = s("rho"), df = n1 + n2 - 2;
+    const bool t = s.is("test", "t");
+    const double scale = effect_scale(n1, n2);
+    const std::vector<double> each = marginal_powers(d, n1, n2, alpha, t);
+    Steps out;
+    if (s.is("es", "raw")) {
+      const auto& diff = s.v("diffs");
+      const auto& sd = s.v("sds");
+      std::vector<std::string> v;
+      for (int k = 0; k < K; ++k) v.push_back(sub(diff[k]) + " / " + num(sd[k]) + " = " + num(d[k]));
+      out.push_back({"Standardized effects", "δk = (μ1 − μ2)k / σk", joined(v, ", ")});
+    }
+    std::vector<std::string> lam, pw, lo, cut;
+    const double crit = t ? stats::qt(alpha, df, false) : stats::qnorm(alpha, false);
+    for (int k = 0; k < K; ++k) {
+      const std::string i = std::to_string(k + 1), ncp = num(d[k] * scale);
+      lam.push_back("λ" + i + " = " + num(d[k]) + " × " + num(scale) + " = " + ncp);
+      pw.push_back(t ? "P(T′" + i + " > " + num(crit) + ") = " + prob(each[k])
+                     : "Φ(" + ncp + " − " + num(crit) + ") = " + prob(each[k]));
+      // as all_reject: endpoint k's statistic, standard normal, exceeds this with its power alone
+      const double z = stats::qnorm(each[k], false);
+      lo.push_back(num(z));
+      cut.push_back("X" + i + " > " + num(z));
+    }
+    out.push_back({"Noncentralities", "λk = δk √(N1 N2 / (N1 + N2))",
+                   "√(" + fint(n1) + " × " + fint(n2) + " / " + fint(n1 + n2) + ") = " + num(scale) + "; " +
+                       joined(lam, ", ")});
+    if (t) {
+      out.push_back(t_critical(alpha, df, Alt::Upper, "N1 + N2 − 2"));
+      out.push_back({"Each endpoint's power alone", "P(T′k > t), T′k ~ noncentral t(ν, λk)", joined(pw, ", ")});
+    } else {
+      out.push_back(z_critical(alpha, Alt::Upper));
+      out.push_back({"Each endpoint's power alone", "Φ(λk − z)", joined(pw, ", ")});
+    }
+    // the probability that every test rejects, as all_reject computes it
+    std::string how =
+        "X standard normal with correlation ρ between any two endpoints, zk = Φ⁻¹(1 − power of endpoint k)";
+    if (t) how += " (the t-tests' exact powers joined through a Gaussian copula)";
+    if (K == 2)
+      how += ", a bivariate normal probability";
+    else if (rho >= 0)
+      how += ", = ∫ φ(u) Πk Φ((√ρ u − zk)/√(1 − ρ)) du";
+    else
+      how += ", a multivariate normal probability by a lattice rule (to about 5e-4)";
+    out.push_back({"Power", "P(all tests reject) = P(X1 > z1, …, XK > zK), " + how,
+                   "z = " + joined(lo, ", ") + "; P(" + joined(cut, ", ") + "; ρ = " + num(rho) + ") = " +
+                       prob(all_reject(each, rho))});
+    if (s.solve == "n")
+      out.push_back(two_group_search(
+          s, [&](double x1, double x2) { return coprimary_power(d, x1, x2, alpha, t, rho); }, {n1, n2}, s("power"),
+          2));
+    return out;
   };
   p.definitions = {{"δ", "Standardized effect of an endpoint: (μ1 − μ2)/σ."},
                    {"ρ", "Correlation between two endpoints within a subject (the same for every pair)."},
