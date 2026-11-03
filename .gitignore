@@ -26,3 +26,6 @@ venv/
 # the web page's engine, built by web/build.sh
 web/engine/
 web/node_modules/
+
+# Lean package artifacts
+lean/.lake/

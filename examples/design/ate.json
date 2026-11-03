@@ -1,0 +1,26 @@
+{
+  "schema": "ssc.design-plan",
+  "version": 1,
+  "method": "ate_eif",
+  "name": "ATE EIF from a planning stratum",
+  "parameters": {
+    "alpha": "1/20",
+    "targetPower": "4/5",
+    "nullValue": "0/1",
+    "estimator": "tmle",
+    "strata": [
+      {
+        "weight": "1/1",
+        "propensity": "1/2",
+        "mean0": "0/1",
+        "mean1": "1/2",
+        "variance0": "1/1",
+        "variance1": "1/1"
+      }
+    ]
+  },
+  "search": {
+    "minN": 1,
+    "maxN": 10000
+  }
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; worker-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lean Compiler · Sample Size Calculator</title>
+<meta name="description" content="Write a Lean study declaration, generate C++, and solve for sample size, power, or detectable effect.">
+<link rel="stylesheet" href="lean.css?v=dev">
+</head>
+<body>
+<a class="skip" href="#lean-source">Skip to study editor</a>
+<header class="top">
+  <h1>Sample Size Calculator</h1>
+  <nav class="workspace-tabs" aria-label="Workspace tabs">
+    <a href="./">Calculator</a>
+    <a href="dag.html?v=dev">DAG simulator</a>
+    <a href="lean.html?v=dev" aria-current="page">Lean compiler</a>
+  </nav>
+  <p class="muted small">Private · runs in your browser</p>
+</header>
+<main class="compiler-page">
+  <div class="intro"><h2>Lean study compiler <span class="badge">Experimental</span></h2>
+    <p>Write a study, compile it to a C++ calculation, then choose the quantity to solve.</p>
+  </div>
+  <div class="workbench">
+    <section class="panel editor-panel" aria-labelledby="source-heading">
+      <div class="section-heading"><h3 id="source-heading"><span class="step">1</span> Study in Lean</h3>
+        <span class="small muted">NormalInput · InfluenceInput</span></div>
+      <div class="toolbar">
+        <label for="lean-example" class="sr-only">Study example</label>
+        <select id="lean-example"><option value="normal">Two-arm normal comparison</option><option value="influence">ATE influence variance</option><option value="cluster">Cluster influence variance</option></select>
+        <button id="lean-load" type="button">Load</button>
+        <label for="lean-import" class="file-button">Open .lean</label><input id="lean-import" type="file" accept=".lean,text/plain" class="sr-only">
+        <button id="lean-save" type="button">Save .lean</button>
+      </div>
+      <label class="sr-only" for="lean-source">Lean study declaration</label>
+      <textarea id="lean-source" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" aria-describedby="syntax-help"></textarea>
+      <details id="syntax-help"><summary>Supported Lean syntax</summary>
+        <p>Define <code>study : NormalInput</code> or <code>study : InfluenceInput</code>. Use numbers, decimals, fractions, quoted strings, and comments. The browser compiles this declaration subset. Other Lean programs and proof tactics require a native Lean environment.</p>
+        <p>For a normal study, <code>sd</code> is the common <strong>known</strong> standard deviation and counts are per arm. For an influence-function study, <code>variance</code> is the variance coefficient per independent participant or cluster for the planned estimator.</p>
+      </details>
+    </section>
+    <section class="panel compile-panel" aria-labelledby="compile-heading">
+      <h3 id="compile-heading"><span class="step">2</span> Compile</h3>
+      <div class="solve-controls">
+        <label for="lean-target">Solve for</label>
+        <select id="lean-target"><option value="sample_size">Sample size</option><option value="power">Power</option><option value="effect">Detectable effect</option></select>
+        <div id="lean-n-field" hidden><label for="lean-n" id="lean-n-label">Participants per arm</label><input id="lean-n" type="number" value="63" min="1" max="10000000" step="1"></div>
+      </div>
+      <div class="actions"><button id="lean-compile" class="primary" type="button">Compile</button><button id="lean-stop" type="button" hidden>Stop</button></div>
+      <p id="lean-status" class="status" role="status" aria-live="polite">Ready to compile the example.</p>
+      <p id="lean-error" class="error" role="alert" hidden></p>
+      <div id="lean-compiled" hidden>
+        <div class="section-heading"><h4>Generated C++</h4><button id="lean-cpp-save" type="button">Download .cpp</button></div>
+        <pre class="cpp"><code id="lean-cpp"></code></pre>
+        <p class="small muted">Solve runs the calculation plan in the compiled C++/WebAssembly engine. The downloaded source builds independently with a C++17 compiler.</p>
+        <details><summary>Compilation and proof checks</summary>
+          <p>The browser checks the supported syntax and numerical parameters. It does not run Lean’s proof kernel. The repository includes Lean proofs for the normal rejection formula, algebraic lowering, and finite-search properties.</p>
+          <p>Check this source with native Lean and compare the two exported plans:</p>
+          <pre class="command">python scripts/compile_lean.py study.lean --cpp study.cpp</pre>
+          <p>Numerical evaluation uses ordinary floating-point arithmetic.</p>
+        </details>
+      </div>
+    </section>
+  </div>
+  <section class="panel result-panel" aria-labelledby="solve-heading">
+    <div class="section-heading"><h3 id="solve-heading"><span class="step">3</span> Solve</h3><button id="lean-solve" class="primary" type="button" disabled>Solve sample size</button></div>
+    <p id="lean-prompt" class="muted">Compile the study to enable solving.</p>
+    <div id="lean-result" hidden aria-live="polite">
+      <p id="lean-basis" class="basis"></p>
+      <div class="answer"><strong id="lean-answer"></strong><span id="lean-answer-unit"></span></div>
+      <p id="lean-result-detail"></p>
+      <div class="result-grid"><div><h4>Calculation</h4><table><tbody id="lean-result-table"></tbody></table></div>
+      <div><h4>Assumptions</h4><ul id="lean-assumptions"></ul></div></div>
+      <button id="lean-result-save" type="button">Download result</button>
+    </div>
+  </section>
+</main>
+<script type="module" src="lean.js?v=dev"></script>
+</body>
+</html>

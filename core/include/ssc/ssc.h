@@ -79,6 +79,13 @@ SSC_API char* ssc_run_json(const char* request_json, ssc_token* token);
  * {ok:false,error:...}; release the returned string with ssc_free(). */
 SSC_API char* ssc_dag_json(const char* request_json, ssc_token* token);
 
+/** Execute an ssc.design-plan version 1, or compile the supported Lean study
+ * declaration subset with {op:"compile",source:...,solveFor:...,n?:...}.
+ * Returns {ok:true,result:...} or {ok:false,error:...}. A JSON plan is not
+ * a proof certificate. Numerical and statistical guarantee levels are reported
+ * separately in result.verification. Free the answer with ssc_free(). */
+SSC_API char* ssc_design_json(const char* plan_json, ssc_token* token);
+
 /** Release a string returned by this library. */
 SSC_API void ssc_free(char* p);
 

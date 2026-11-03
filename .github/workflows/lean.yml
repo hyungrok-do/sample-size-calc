@@ -1,0 +1,50 @@
+name: Lean compiler
+on:
+  push:
+    paths: ['lean/**', 'core/src/design/**', 'examples/design/**', 'scripts/*lean*', 'scripts/check_design_compiler.py', '.github/workflows/lean.yml']
+  pull_request:
+    paths: ['lean/**', 'core/src/design/**', 'examples/design/**', 'scripts/*lean*', 'scripts/check_design_compiler.py', '.github/workflows/lean.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lean-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          auto-config: 'false'
+          build: 'false'
+          test: 'false'
+          lint: 'false'
+          use-mathlib-cache: 'false'
+      - name: Build checked library and compiler
+        working-directory: lean
+        run: |
+          lake exe cache get Mathlib/Probability/Distributions/Gaussian.lean Mathlib/Probability/CDF.lean Mathlib/Tactic.lean
+          lake build
+          lake env lean Audit.lean > audit.txt
+          python ../scripts/check_lean_audit.py audit.txt
+      - name: Build numerical engine
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          build/ssc_tests 'design:'
+      - name: Check editor inputs with Lean and compile emitted C++
+        run: |
+          python scripts/compile_lean.py examples/design/normal.lean --cpp /tmp/normal.cpp
+          c++ -std=c++17 -O2 /tmp/normal.cpp -o /tmp/normal
+          /tmp/normal
+          python scripts/compile_lean.py examples/design/influence.lean --cpp /tmp/influence.cpp
+          c++ -std=c++17 -O2 /tmp/influence.cpp -o /tmp/influence
+          /tmp/influence
+      - name: Independent numerical references
+        run: |
+          python -m pip install scipy
+          python scripts/check_design_compiler.py

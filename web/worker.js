@@ -86,6 +86,21 @@ const ops = {
     return all;
   },
   search: (M, { query, limit }) => withText(M, query, (p) => JSON.parse(take(M, M._ssc_search_json(p, limit)))),
+  design: (M, plan, id) => {
+    if (!M._ssc_design_json) throw new Error('Reload after rebuilding the design-plan engine.');
+    const token = M._ssc_token_new();
+    if (!token) throw new WebAssembly.RuntimeError('out of memory');
+    M.onDagProgress = (progress) => self.postMessage({ id, stage: 'progress', progress });
+    try {
+      return withText(M, JSON.stringify(plan), (p) => {
+        const text = take(M, M._ssc_design_json(p, token));
+        if (text === null) throw new WebAssembly.RuntimeError('out of memory');
+        const answer = JSON.parse(text);
+        if (!answer.ok) throw new Error(answer.error);
+        return { result: answer.result, heapBytes: M.HEAP8.buffer.byteLength };
+      });
+    } finally { M.onDagProgress = null; M._ssc_token_free(token); }
+  },
   dag: (M, request, id) => {
     const token = M._ssc_token_new();
     M.onDagProgress = (progress) => self.postMessage({ id, stage: 'progress', progress });
