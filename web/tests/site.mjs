@@ -582,6 +582,29 @@ try {
   assert.deepEqual(errors, []);
   assert.deepEqual(violations, [], 'the Content-Security-Policy blocked nothing');
   console.log(`Site: every check passed in ${kind}.`);
+  // TEMPORARY, removed in the next commit: the published page before this change, for the PR's before/after pictures
+  if (shots) try {
+    const before = await (await browser.newContext()).newPage();
+    await before.goto('https://hyungrok-do.github.io/sample-size-calc/dag.html', { timeout: 30000 });
+    await before.waitForSelector('[data-template="repeated"]');
+    await before.screenshot({ path: join(shots, 'before-1-study.png'), fullPage: true });
+    await before.click('[data-template="repeated"]');
+    await before.screenshot({ path: join(shots, 'before-2-model.png'), fullPage: true });
+    await before.click('[data-step="question"]');
+    await before.screenshot({ path: join(shots, 'before-3-question.png'), fullPage: true });
+    await before.click('[data-step="power"]');
+    await before.screenshot({ path: join(shots, 'before-4-power.png'), fullPage: true });
+    await before.check('#dag-show-all');
+    await before.screenshot({ path: join(shots, 'before-5-all-sections.png'), fullPage: true });
+    // and the new page at the same size, from a fresh start with the same design
+    const after = await (await browser.newContext()).newPage();
+    await after.goto(new URL('dag.html', url).href);
+    await after.waitForSelector('#dag-example option');
+    await after.screenshot({ path: join(shots, 'after-1-first-visit.png'), fullPage: true });
+    await after.selectOption('#dag-example', 'repeated');
+    await after.click('#dag-example-load');
+    await after.screenshot({ path: join(shots, 'after-2-repeated.png'), fullPage: true });
+  } catch (e) { console.log(`Before/after pictures skipped: ${e.message}`); }
 } finally {
   await browser.close();
   server.close();
