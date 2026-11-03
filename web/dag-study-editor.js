@@ -12,11 +12,14 @@ const choice = (id, options, value) => { const n = el('select', { id }, options.
 const readNumber = (input) => { if (!input.value.trim() || !Number.isFinite(Number(input.value))) throw new Error('Enter finite numeric settings.'); return Number(input.value); };
 const numbers = (input) => input.value.trim().split(/[\s,]+/).filter(Boolean).map(Number);
 
+// The study's schedule, cluster sizes and missed visits. The Clusters and Repeated visits buttons add or remove the
+// levels themselves; this shows only the settings of the levels the study has.
 export function mountStudy(root, graph, onChange, onError) {
-  const s = parseStudy(graph.study ?? { times: [0, 3, 6, 12] });
-  const mode = choice('study-mode', [['independent', 'Independent observations'], ['structured', 'Subjects, visits and clusters']], graph.study ? 'structured' : 'independent');
+  root.hidden = !graph.study;
+  if (!graph.study) { root.replaceChildren(); return; }
+  const s = parseStudy(graph.study), visits = s.times.length > 1, clustered = s.clusterSizes.length > 0;
   const times = el('input', { id: 'study-times', value: s.times.join(', ') });
-  const clusters = el('input', { id: 'study-clusters', value: s.clusterSizes.join(', '), placeholder: 'Blank for independent subjects' });
+  const clusters = el('input', { id: 'study-clusters', value: s.clusterSizes.join(', ') });
   const missing = choice('study-missing', [['none', 'All visits observed'], ['dropout', 'Monotone dropout'], ['intermittent', 'Intermittent missing visits']], s.observation.mode);
   const history = choice('study-history', [['', 'None'], ...graph.nodes.filter((n) => scopeOf(n) === 'visit').map((n) => [n.id, n.label])], s.observation.historyVariable);
   const treatment = choice('study-treatment', [['', 'None'], ...graph.nodes.filter((n) => ['subject', 'cluster'].includes(scopeOf(n))).map((n) => [n.id, n.label])], s.observation.treatmentVariable);
@@ -25,24 +28,25 @@ export function mountStudy(root, graph, onChange, onError) {
   const observation = el('div', {}, el('p', { class: 'small muted' }, 'The first visit is observed. Later missing-visit probabilities use a logistic model. Outcomes continue to exist when a visit is missed.'),
     el('div', { class: 'dag-grid' }, field('Missing-visit log-odds intercept', intercept), field('History variable', history), field('Last observed value coefficient', past),
       field('Unobserved current value coefficient (MNAR)', current), field('Treatment variable', treatment), field('Treatment coefficient', arm)));
-  const settings = el('div', {}, el('div', { class: 'dag-grid' }, field('Visit times', times, 'One time gives clustered cross-sectional data. Times may be irregular.'),
-    field('Subjects per cluster', clusters, 'One size for equal clusters, or a repeating pattern such as 8, 12, 20. With clusters, the power axis counts clusters.'), field('Observation process', missing)), observation);
-  const visibility = () => { settings.hidden = mode.value !== 'structured'; observation.hidden = missing.value === 'none'; };
-  mode.addEventListener('change', visibility); missing.addEventListener('change', visibility); visibility();
-  const form = el('form', { novalidate: true }, field('Data structure', mode), settings, el('button', { type: 'submit' }, 'Apply study structure'));
+  const missingField = field('Observation process', missing);
+  const visibility = () => { observation.hidden = !visits || missing.value === 'none'; };
+  missing.addEventListener('change', visibility); visibility();
+  const form = el('form', { novalidate: true }, el('div', { class: 'dag-grid' },
+    ...(visits ? [field('Visit times', times, 'Times may be irregular.')] : []),
+    ...(clustered ? [field('Subjects per cluster', clusters, 'One size for equal clusters, or a repeating pattern such as 8, 12, 20.')] : []),
+    ...(visits ? [missingField] : [])), observation, el('button', { type: 'submit' }, 'Apply'));
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     try {
       const next = structuredClone(graph);
-      if (mode.value === 'independent') {
-        delete next.study;
-        for (const n of next.nodes) { delete n.scope; delete n.repeated; delete n.lags; }
-      } else next.study = parseStudy({ times: numbers(times), clusterSizes: numbers(clusters), observation: { mode: missing.value, intercept: readNumber(intercept),
+      next.study = parseStudy({ times: visits ? numbers(times) : s.times, clusterSizes: clustered ? numbers(clusters) : [], observation: { mode: visits ? missing.value : 'none', intercept: readNumber(intercept),
         historyVariable: history.value, historyCoefficient: readNumber(past), currentCoefficient: readNumber(current), treatmentVariable: treatment.value, treatmentCoefficient: readNumber(arm) } });
       onChange(next);
     } catch (e) { onError(e.message); }
   });
-  root.replaceChildren(el('summary', {}, 'Study structure', el('span', { class: 'small muted' }, graph.study ? ` · ${graph.study.times.length} visits · size counts ${sizeUnit(graph)}` : ' · independent observations')), form);
+  const parts = [...(visits ? [`visits at ${s.times.join(', ')}`] : []), ...(clustered ? [`${s.clusterSizes.join(', ')} subjects per cluster`] : []),
+    ...(visits ? [{ none: 'all visits observed', dropout: 'monotone dropout', intermittent: 'intermittent missed visits' }[s.observation.mode]] : [])];
+  root.replaceChildren(el('summary', {}, 'Study settings', el('span', { class: 'small muted' }, ` · ${parts.join(' · ')} · size counts ${sizeUnit(graph)}`)), form);
 }
 
 // onEdit: called when a lag row is added or removed, so the variable's settings apply at once

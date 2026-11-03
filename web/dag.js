@@ -10,7 +10,7 @@ import { NODE_W, NODE_H, CANVAS_LIMIT, ASPECT, plateLayout, plateAt, changeScope
   freeSpot, connectTargets, inferRoles, contentBounds, fitView, zoomView, viewBox } from './dag-canvas.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
 import { mountPower } from './dag-power.js?v=dev';
-import { mountWorkflow } from './dag-workflow.js?v=dev';
+import { studySummary } from './dag-workflow.js?v=dev';
 import { calibrationEdges, powerCompatibility } from './power-model.js?v=dev';
 import { sketch, findPaths, classifyPath, pathText } from './dag-view.js?v=dev';
 import { Engine } from './engine.js?v=dev';
@@ -97,10 +97,6 @@ function download(content, type, name) {
 
 export function mountDag(root) {
   const $ = (id) => root.querySelector(`#${id}`);
-  // the question and power panels are rebuilt only when shown; edits made while they are hidden mark them stale
-  let powerStale = false;
-  const powerShown = () => ['all', 'question', 'power'].includes(root.dataset.view);
-  const workflow = mountWorkflow(root, { onChange: () => { if (powerStale && powerShown()) refreshPower(); } });
   let graph = emptyGraph(), selected = null, connectFrom = null, result = null, worker = null;
   let estimand = null, powerEditor, powerSettings = null;
   // pending: the design before target edits that have not yet become an undo step
@@ -499,11 +495,11 @@ export function mountDag(root) {
       overlay.append(svg('path', { class: 'dag-rubber', d: `M ${s.x + W} ${s.y + H / 2} L ${pointer.x} ${pointer.y}`, 'marker-end': 'url(#dag-arrow)' }));
     }
     if (!graph.nodes.length) nodes.append(svg('text', { x: view.x + view.w / 2, y: view.y + view.w * ASPECT / 2, 'text-anchor': 'middle', class: 'dag-empty' },
-      'Add a variable above, or double-click here'));
+      'Choose a starting point or add a variable above, or double-click here'));
     canvas.replaceChildren(svg('title', {}, 'Data generating process'),
       svg('desc', {}, 'Select a box to edit it. Drag boxes to move them, or into a plate to change how often they are measured. Drag from a box’s plus port to another box to draw an arrow.'),
       defs, plates, effects, lines, lags, nodes, overlay);
-    $('dag-node-count').replaceChildren(`${graph.nodes.length} variable${graph.nodes.length === 1 ? '' : 's'} · ${graph.edges.length} arrow${graph.edges.length === 1 ? '' : 's'}`,
+    $('dag-node-count').replaceChildren(studySummary(graph),
       ...(effect.size ? [el('span', { class: 'dag-legend-effect' }, 'tested effect')] : []),
       ...(biased.size ? [el('span', { class: 'dag-legend-bias' }, 'open non-causal path')] : []));
     $('dag-node-select').replaceChildren(...graph.nodes.map((n) => el('option', { value: n.id }, `${n.id} · ${n.label}`)));
@@ -584,8 +580,7 @@ export function mountDag(root) {
     $('dag-issues').hidden = !list.length;
   }
   function assignRole(role, id) {
-    // a role set from the graph goes through the form, so a form left stale while hidden is rebuilt first
-    if (powerStale && powerEditor) { powerStale = false; powerEditor.refresh(estimand, powerSettings); }
+    // a role set from the graph goes through the power form, which keeps the question consistent
     if (!powerEditor?.assign(role, id)) status('The power analysis needs at least two variables.', true);
     else status(`${id} is now the ${role === 'exposure' ? 'compared variable' : 'outcome'} in the power analysis.`);
   }
@@ -882,19 +877,13 @@ export function mountDag(root) {
     box.append(el('button', { type: 'button', class: 'secondary dag-delete', onclick: () => apply(removeNode(graph, selected), 'Variable and its arrows removed. Any observation rule using it was reset. Undo restores them.') }, 'Delete variable'));
   }
   function buttons() { $('dag-undo').disabled = !history.length; $('dag-redo').disabled = !future.length; }
-  function refreshPower() {
-    if (!powerEditor) return;
-    if (powerShown()) { powerStale = false; powerEditor.refresh(estimand, powerSettings); return; }
-    // hidden: stop a run of the old design and keep the graph's roles current, without building the form
-    powerStale = true; powerEditor.outdated(estimand);
-  }
+  function refreshPower() { powerEditor?.refresh(estimand, powerSettings); }
   function render() {
     draw(); inspector(); buttons();
     mountTimeline($('dag-timeline'), graph);
     mountStudy($('dag-study'), graph, (next) => apply(next, 'Study structure updated.', { fit: true }), (message) => status(message, true));
     $('dag-n').previousElementSibling.textContent = graph.study ? `Number of ${sizeUnit(graph)}` : 'Observations';
     refreshPower();
-    workflow.update(graph);
     if (preview.key !== modelKey()) schedulePreview();
     const { order, byId } = validateGraph(graph);
     $('dag-equations').replaceChildren(...order.map((id) => el('li', {}, el('code', {}, equation(graph, byId.get(id))))));
@@ -1079,33 +1068,22 @@ export function mountDag(root) {
   }
   $('dag-undo').addEventListener('click', () => timeTravel(history, future));
   $('dag-redo').addEventListener('click', () => timeTravel(future, history));
-  // a starting point is the Study step's choice, so the next thing to do is to look at its model
-  const advance = () => { if (root.dataset.view !== 'all') workflow.go('model'); };
   function loadExample(name) {
     const next = scenarioDesign(name);
     const label = SCENARIOS.find((s) => s.id === name)?.label ?? 'Scenario';
     if (!apply(next.graph, `${label} loaded with its question and analysis. All values are editable example assumptions.`, { estimand: next.estimand, power: next.power, fit: true })) return;
-    $('dag-scenario-category').value = 'all'; renderScenarioOptions(name);
-    $('dag-example').value = name;
-    advance();
+    $('dag-example').value = name; describeScenario();
   }
-  const category = $('dag-scenario-category');
-  for (const value of [...new Set(SCENARIOS.map((s) => s.category))]) category.append(new Option(value, value));
+  // every starting point, grouped by kind of study; loading one replaces the design (undo restores it)
   function describeScenario() {
     const s = SCENARIOS.find((s) => s.id === $('dag-example').value);
     $('dag-scenario-description').textContent = s ? `${s.description} ${s.assumption}` : '';
   }
-  function renderScenarioOptions(selected = $('dag-example').value) {
-    const choices = SCENARIOS.filter((s) => category.value === 'all' || s.category === category.value);
-    $('dag-example').replaceChildren(...choices.map((s) => new Option(s.label, s.id)));
-    if (choices.some((s) => s.id === selected)) $('dag-example').value = selected;
-    describeScenario();
-  }
-  category.addEventListener('change', () => renderScenarioOptions());
+  $('dag-example').replaceChildren(...[...new Set(SCENARIOS.map((s) => s.category))].map((category) => el('optgroup', { label: category },
+    SCENARIOS.filter((s) => s.category === category).map((s) => new Option(s.label, s.id)))));
+  $('dag-example').value = 'trial'; describeScenario();
   $('dag-example').addEventListener('change', describeScenario);
-  renderScenarioOptions('trial');
   $('dag-example-load').addEventListener('click', () => loadExample($('dag-example').value));
-  for (const button of root.querySelectorAll('[data-template]')) button.addEventListener('click', () => loadExample(button.dataset.template));
   $('dag-export').addEventListener('click', () => download(JSON.stringify(exportDesign(graph, estimand, powerSettings), null, 2) + '\n', 'application/json', 'simulation-design.json'));
   $('dag-import').addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
@@ -1141,8 +1119,6 @@ export function mountDag(root) {
   powerEditor = mountPower($('dag-power'), {
     getGraph: () => graph,
     engine: { borrow: borrowEngine, give: returnEngine },
-    onRefresh: () => workflow.refresh(),
-    onRun: () => { if (root.dataset.view !== 'all') workflow.go('power'); },
     onTarget(value, mode) {
       if (JSON.stringify(value) !== JSON.stringify(estimand)) {
         if (mode !== 'auto') pending ??= JSON.stringify(exportDesign(graph, estimand, powerSettings));
@@ -1180,5 +1156,5 @@ export function mountDag(root) {
   render(); clearResult();
   status(storageNote || (graph.nodes.length
     ? 'Design restored from this browser.'
-    : 'Add a variable or load an example to start.'));
+    : 'Choose a starting point and press Load, or add a variable.'));
 }

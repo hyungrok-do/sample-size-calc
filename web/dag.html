@@ -20,140 +20,115 @@
 <main id="dag" class="dag-page">
   <div class="dag-intro">
     <h2>Design your study <span class="dag-badge">DAG power simulator · Experimental</span></h2>
-    <p>Start with a study design, describe your data, then find the sample size for your question.</p>
+    <p>Draw how your data arise, choose what to compare, then find the sample size.</p>
   </div>
-  <div class="dag-utility-bar">
-    <div class="dag-toolbar-group">
-      <button id="dag-undo" type="button" disabled>Undo</button>
-      <button id="dag-redo" type="button" disabled>Redo</button>
-      <button id="dag-export" type="button">Export design</button>
-      <label class="dag-file-button" for="dag-import">Import design</label>
-      <input id="dag-import" class="sr-only" type="file" accept=".json,application/json" aria-label="Import a model or power report JSON file">
-    </div>
-    <label class="dag-view-toggle"><input id="dag-show-all" type="checkbox"> Show all sections</label>
-  </div>
-  <nav class="dag-steps" aria-label="Study planning steps">
-    <button type="button" data-step="study" aria-current="step"><span class="dag-step-number">1</span><span><strong>Study</strong><small>Choose a design</small></span></button>
-    <button type="button" data-step="model"><span class="dag-step-number">2</span><span><strong>Model</strong><small>Describe your data</small></span></button>
-    <button type="button" data-step="question"><span class="dag-step-number">3</span><span><strong>Question</strong><small>Choose the comparison</small></span></button>
-    <button type="button" data-step="power"><span class="dag-step-number">4</span><span><strong>Power</strong><small>Find a sample size</small></span></button>
-  </nav>
-  <p id="dag-design-summary" class="dag-design-summary"></p>
-  <section class="dag-starters" data-dag-step="study" aria-labelledby="dag-study-title">
-    <div class="dag-section-heading"><p class="dag-eyebrow">01 / Study</p><h3 id="dag-study-title" tabindex="-1">How will you collect the data?</h3><p>Choose an editable starting point; it opens in the Model step.</p></div>
-    <div class="dag-template-grid">
-      <button type="button" data-template="trial"><span class="dag-template-icon" aria-hidden="true">A → Y</span><strong>One measurement</strong><span>Compare two groups on a continuous outcome.</span><small>Independent subjects</small></button>
-      <button type="button" data-template="repeated"><span class="dag-template-icon" aria-hidden="true">0 · 3 · 6 · 12</span><strong>Repeated visits</strong><span>Follow the same people over time.</span><small>Subjects × visits</small></button>
-      <button type="button" data-template="clustered-repeated"><span class="dag-template-icon" aria-hidden="true">{ A → Y }</span><strong>Groups of subjects</strong><span>Randomize clinics, schools or other clusters.</span><small>Clusters × subjects × visits</small></button>
-      <button type="button" data-template="empty"><span class="dag-template-icon" aria-hidden="true">+ ○ → ○</span><strong>Blank canvas</strong><span>Draw your own variables and arrows.</span><small>Start from scratch</small></button>
-    </div>
-    <p class="small muted">Starting points replace the current design. Undo restores it. All values are example assumptions.</p>
-    <div class="dag-toolbar-group">
-      <label for="dag-scenario-category">Explore scenarios</label>
-      <select id="dag-scenario-category"><option value="all">All scenarios</option></select>
-      <label class="sr-only" for="dag-example">Scenario</label>
-      <select id="dag-example"></select>
-      <button id="dag-example-load" type="button">Load</button>
-    </div>
-    <p id="dag-scenario-description" class="dag-scenario-description" aria-live="polite"></p>
-    <details class="dag-coverage"><summary>What is covered — and what still needs a different estimator?</summary>
-      <p>Data generation is more flexible than the available analyses. A simulated dataset alone does not establish valid power.</p>
-      <div class="dag-coverage-scroll"><table><thead><tr><th>Study or question</th><th>Available analysis</th><th>Limits to check</th></tr></thead><tbody>
-      <tr><td>Independent continuous, binary or count outcomes, including heavy-tailed (Student t), proportion (Beta) and overdispersed (negative binomial) ones</td><td>Regression, g-computation, AIPW and TMLE; quasi-likelihood with sandwich errors for Beta and negative binomial coefficients</td><td>TMLE requires binary treatment. Flexible regression bases, no Super Learner.</td></tr>
-      <tr><td>Unmeasured confounders, error-prone measurements, hidden classes</td><td>Unmeasured variables are simulated but left out of every analysis</td><td>The results show the bias they leave; no sensitivity-analysis estimator or instrumental-variable analysis.</td></tr>
-      <tr><td>Relationships of unknown form</td><td>Smooth random functions in the generator; TMLE or AIPW with a Super Learner (cross-validated ensemble) and cross-fitting</td><td>Flexible estimation needs enough data for the shapes; wiggly functions in small studies leave bias. No Super Learner for the g-formula, survival or repeated-measures analyses.</td></tr>
-      <tr><td>Effect modification</td><td>Wald test of the compared variable’s interaction terms</td><td>Conditional regression test; plan for a larger sample than for a main effect.</td></tr>
-      <tr><td>Complete repeated or clustered outcomes</td><td>MMRM, LMM, robust trajectory means; baseline-treatment TMLE</td><td>TMLE targets a prespecified subject summary; cluster folds and inference preserve dependence.</td></tr>
-      <tr><td>Missing visits</td><td>MMRM for monotone dropout; LMM for intermittent visits</td><td>Model and missing-at-random assumptions matter. TMLE with dropout is not implemented.</td></tr>
-      <tr><td>Rare events, weak overlap, few clusters</td><td>Editable stress-test scenarios and diagnostics</td><td>No guarantee of calibrated inference. Compare failure rates, bias, null rejection and coverage.</td></tr>
-      <tr><td>Single-event survival and censoring</td><td>Cox, Weibull, survival probability and RMST analyses</td><td>No survival TMLE, competing risks or recurrent-event estimator.</td></tr>
-      <tr><td>Changing treatment, dynamic rules, crossover or adaptive trials</td><td>No dedicated DAG power estimator yet</td><td>Require design-specific estimators and error-control rules; not covered by baseline-treatment TMLE.</td></tr>
-      </tbody></table></div>
-      <p class="small muted">Power remains conditional on the generating distributions, effect sizes, dependence and observation process. TMLE changes the estimator; it does not remove those simulation assumptions.</p>
-    </details>
-  </section>
-  <details id="dag-study" class="dag-card dag-study" data-dag-step="study" open></details>
-  <div class="dag-section-heading" data-dag-step="model" hidden><p class="dag-eyebrow">02 / Model</p><h3 id="dag-model-step-title" tabindex="-1">What generates your data?</h3><p>Add variables, drag from a box’s + to draw an arrow, and select a box to edit its distribution. Plates show how often each variable is measured: once per cluster, once per subject or at every visit.</p></div>
-  <div class="dag-toolbar" data-dag-step="model" hidden>
-    <div class="dag-toolbar-group" role="group" aria-label="Add a variable">
-      <span class="dag-toolbar-label">Add</span>
-      <button id="dag-add" type="button" class="dag-chip continuous" data-add-kind="continuous" title="Click to add, or drag onto the canvas">+ Continuous</button>
-      <button type="button" class="dag-chip binary" data-add-kind="binary" title="Click to add, or drag onto the canvas">+ Binary</button>
-      <button type="button" class="dag-chip count" data-add-kind="count" title="Click to add, or drag onto the canvas">+ Count</button>
-      <button type="button" class="dag-chip survival" data-add-kind="survival" title="Click to add, or drag onto the canvas">+ Event time</button>
-    </div>
-    <div class="dag-toolbar-group" role="group" aria-label="Study levels">
-      <span class="dag-toolbar-label">Levels</span>
-      <button id="dag-level-clusters" type="button" class="dag-toggle" aria-pressed="false" title="Randomize or sample groups of subjects (clinics, schools)">Clusters</button>
-      <button id="dag-level-visits" type="button" class="dag-toggle" aria-pressed="false" title="Measure subjects at several visits">Repeated visits</button>
-    </div>
-    <div class="dag-toolbar-group"><button id="dag-tidy" type="button">Tidy layout</button></div>
-  </div>
-  <div class="dag-workbench" data-dag-step="model" hidden>
-    <div class="dag-canvas-column">
-      <div class="dag-canvas-heading"><h3>Data generating process</h3><span id="dag-node-count"></span></div>
-      <div class="dag-scroll">
-        <svg id="dag-canvas" viewBox="0 -16 1100 580" role="group" aria-label="Editable distribution DAG"></svg>
-        <div id="dag-issues" class="dag-issues" aria-live="polite" hidden></div>
-        <div class="dag-zoom" role="group" aria-label="Zoom">
-          <button id="dag-zoom-out" type="button" aria-label="Zoom out" title="Zoom out (−)">−</button>
-          <button id="dag-zoom-fit" type="button" title="Show the whole graph (F)">Fit</button>
-          <button id="dag-zoom-in" type="button" aria-label="Zoom in" title="Zoom in (+)">+</button>
-          <button id="dag-help-toggle" type="button" aria-expanded="false" aria-controls="dag-shortcuts" aria-label="Canvas shortcuts" title="Shortcuts (?)">?</button>
+  <section class="dag-panel" aria-label="DAG power simulator">
+    <div class="dag-toolbar">
+      <div class="dag-toolbar-row">
+        <div class="dag-toolbar-group">
+          <label class="dag-toolbar-label" for="dag-example">Start from</label>
+          <select id="dag-example"></select>
+          <button id="dag-example-load" type="button">Load</button>
         </div>
-        <div id="dag-shortcuts" class="dag-shortcuts" hidden>
-          <h4>On the canvas</h4>
-          <dl>
-            <dt>Draw an arrow</dt><dd>Drag from a box’s + to another box, or click + then the box</dd>
-            <dt>Change an effect</dt><dd>Click the arrow’s number</dd>
-            <dt>Change a level</dt><dd>Drag a box into another plate, or right-click it</dd>
-            <dt>Add a variable</dt><dd>Drag a type from Add, or double-click empty canvas</dd>
-            <dt>Pan · zoom</dt><dd>Drag the background · Ctrl/⌘ + scroll, + and −, F to fit</dd>
-            <dt>Compared · outcome</dt><dd>C · O on a selected box</dd>
-            <dt>Delete</dt><dd>Delete or Backspace on a selected box or arrow</dd>
-            <dt>Undo · redo</dt><dd>Ctrl/⌘ + Z · Ctrl/⌘ + Shift + Z</dd>
-            <dt>Cancel</dt><dd>Escape</dd>
-          </dl>
+        <div class="dag-toolbar-group dag-file-tools">
+          <button id="dag-undo" type="button" disabled>Undo</button>
+          <button id="dag-redo" type="button" disabled>Redo</button>
+          <label class="dag-file-button" for="dag-import">Import</label>
+          <input id="dag-import" class="sr-only" type="file" accept=".json,application/json" aria-label="Import a model or power report JSON file">
+          <button id="dag-export" type="button">Export</button>
         </div>
       </div>
-      <p class="dag-canvas-help">Drag from + to draw an arrow · click an arrow’s number to change its effect · C and O set the compared variable and the outcome · Ctrl/⌘ + scroll zooms · press ? for all shortcuts.</p>
-      <details id="dag-timeline" class="dag-timeline" hidden></details>
-      <div id="dag-paths" class="dag-paths" aria-live="polite"></div>
-      <details class="dag-model" aria-labelledby="dag-model-title">
-        <summary id="dag-model-title">Equations and generation order</summary>
-        <ul id="dag-equations"></ul><p id="dag-order" class="small muted"></p>
-      </details>
+      <p id="dag-scenario-description" class="dag-scenario-description small muted" aria-live="polite"></p>
+      <div class="dag-toolbar-row">
+        <div class="dag-toolbar-group" role="group" aria-label="Add a variable">
+          <span class="dag-toolbar-label">Add</span>
+          <button id="dag-add" type="button" class="dag-chip continuous" data-add-kind="continuous" title="Click to add, or drag onto the canvas">+ Continuous</button>
+          <button type="button" class="dag-chip binary" data-add-kind="binary" title="Click to add, or drag onto the canvas">+ Binary</button>
+          <button type="button" class="dag-chip count" data-add-kind="count" title="Click to add, or drag onto the canvas">+ Count</button>
+          <button type="button" class="dag-chip survival" data-add-kind="survival" title="Click to add, or drag onto the canvas">+ Event time</button>
+        </div>
+        <div class="dag-toolbar-group" role="group" aria-label="Study levels">
+          <span class="dag-toolbar-label">Levels</span>
+          <button id="dag-level-clusters" type="button" class="dag-toggle" aria-pressed="false" title="Randomize or sample groups of subjects (clinics, schools)">Clusters</button>
+          <button id="dag-level-visits" type="button" class="dag-toggle" aria-pressed="false" title="Measure subjects at several visits">Repeated visits</button>
+          <button id="dag-tidy" type="button">Tidy layout</button>
+        </div>
+      </div>
     </div>
-    <aside class="dag-inspector-column" aria-label="Variable settings">
-      <div class="dag-field"><label for="dag-node-select">Variable</label><select id="dag-node-select"></select></div>
-      <div id="dag-inspector"></div>
-    </aside>
-  </div>
-  <p id="dag-status" class="dag-message" role="status" aria-live="polite"></p>
-  <section id="dag-power" class="dag-card dag-power-card" data-dag-step="question power" hidden aria-label="Question and power analysis"></section>
-  <details id="dag-sim" class="dag-card dag-sim-card" data-dag-step="model" hidden>
-    <summary><span>Simulated dataset</span> <span class="small muted">Generate one dataset to check or download as CSV</span></summary>
-    <form id="dag-simulation" class="dag-sim-form" novalidate>
-      <div class="dag-field"><label for="dag-n">Observations</label><input id="dag-n" type="number" min="1" max="50000" step="1" value="500"></div>
-      <div class="dag-field"><label for="dag-seed">Random seed</label><input id="dag-seed" type="number" min="0" max="4294967295" step="1" value="2026"></div>
-      <div class="dag-actions"><button id="dag-simulate" type="submit">Generate</button>
-        <button id="dag-cancel" type="button" hidden>Stop</button>
-        <button id="dag-download-csv" type="button" disabled>Download CSV</button></div>
-    </form>
-    <div id="dag-results" aria-live="polite"></div>
-  </details>
-  <div class="dag-step-footer"><button id="dag-step-back" type="button" hidden>Back</button><span id="dag-step-position" class="small muted"></span><button id="dag-step-next" class="primary" type="button">Continue to Model →</button></div>
-  <details class="dag-notes"><summary>Assumptions and scope</summary>
+    <p id="dag-status" class="dag-message" role="status" aria-live="polite"></p>
+    <div class="dag-workbench">
+      <div class="dag-canvas-column">
+        <div class="dag-canvas-heading"><h3>Data generating process</h3><span id="dag-node-count"></span></div>
+        <div class="dag-scroll">
+          <svg id="dag-canvas" viewBox="0 -16 1100 580" role="group" aria-label="Editable distribution DAG"></svg>
+          <div id="dag-issues" class="dag-issues" aria-live="polite" hidden></div>
+          <div class="dag-zoom" role="group" aria-label="Zoom">
+            <button id="dag-zoom-out" type="button" aria-label="Zoom out" title="Zoom out (−)">−</button>
+            <button id="dag-zoom-fit" type="button" title="Show the whole graph (F)">Fit</button>
+            <button id="dag-zoom-in" type="button" aria-label="Zoom in" title="Zoom in (+)">+</button>
+            <button id="dag-help-toggle" type="button" aria-expanded="false" aria-controls="dag-shortcuts" aria-label="Canvas shortcuts" title="Shortcuts (?)">?</button>
+          </div>
+          <div id="dag-shortcuts" class="dag-shortcuts" hidden>
+            <h4>On the canvas</h4>
+            <dl>
+              <dt>Draw an arrow</dt><dd>Drag from a box’s + to another box, or click + then the box</dd>
+              <dt>Change an effect</dt><dd>Click the arrow’s number</dd>
+              <dt>Change a level</dt><dd>Drag a box into another plate, or right-click it</dd>
+              <dt>Add a variable</dt><dd>Drag a type from Add, or double-click empty canvas</dd>
+              <dt>Pan · zoom</dt><dd>Drag the background · Ctrl/⌘ + scroll, + and −, F to fit</dd>
+              <dt>Compared · outcome</dt><dd>C · O on a selected box</dd>
+              <dt>Delete</dt><dd>Delete or Backspace on a selected box or arrow</dd>
+              <dt>Undo · redo</dt><dd>Ctrl/⌘ + Z · Ctrl/⌘ + Shift + Z</dd>
+              <dt>Cancel</dt><dd>Escape</dd>
+            </dl>
+          </div>
+        </div>
+        <div id="dag-paths" class="dag-paths" aria-live="polite"></div>
+        <details id="dag-study" class="dag-more dag-study" hidden></details>
+        <details id="dag-timeline" class="dag-more dag-timeline" hidden></details>
+        <details class="dag-more dag-model" aria-labelledby="dag-model-title">
+          <summary id="dag-model-title">Equations and generation order</summary>
+          <ul id="dag-equations"></ul><p id="dag-order" class="small muted"></p>
+        </details>
+        <details id="dag-sim" class="dag-more dag-sim">
+          <summary>Simulate one dataset</summary>
+          <form id="dag-simulation" class="dag-sim-form" novalidate>
+            <div class="dag-field"><label for="dag-n">Observations</label><input id="dag-n" type="number" min="1" max="50000" step="1" value="500"></div>
+            <div class="dag-field"><label for="dag-seed">Random seed</label><input id="dag-seed" type="number" min="0" max="4294967295" step="1" value="2026"></div>
+            <div class="dag-actions"><button id="dag-simulate" type="submit">Generate</button>
+              <button id="dag-cancel" type="button" hidden>Stop</button>
+              <button id="dag-download-csv" type="button" disabled>Download CSV</button></div>
+          </form>
+          <div id="dag-results" aria-live="polite"></div>
+        </details>
+      </div>
+      <aside class="dag-inspector-column" aria-label="Variable settings">
+        <div class="dag-field"><label for="dag-node-select">Variable</label><select id="dag-node-select"></select></div>
+        <div id="dag-inspector"></div>
+      </aside>
+    </div>
+    <section id="dag-power" class="dag-power" aria-label="Question and power analysis"></section>
+  </section>
+  <details class="dag-notes"><summary>Scope and assumptions</summary>
     <ul>
       <li>Variables have a type and a distribution; labels such as treatment or outcome impose nothing. Any directed acyclic graph is allowed.</li>
-      <li>Continuous: Normal, Uniform, Log-normal, Gamma. Binary: Bernoulli. Count: Poisson. Survival time: Weibull or Exponential with proportional hazards.</li>
       <li>An arrow adds the parent, times its coefficient, to the child’s predictor on the scale shown in its equation; interactions add products of two parents.</li>
       <li>Survival variables are latent event times. A cutoff or another variable as the censoring time adds observed-time and event columns; shared parents make censoring dependent.</li>
       <li>Independent-observation designs generate independent rows. Structured designs retain subject and cluster variables across visits, with explicit shared effects, residual correlation and lagged relationships.</li>
-      <li>Power is conditional on the chosen generating distributions, response functions, dependence and observation process. Monte Carlo intervals describe simulation error, not uncertainty about these assumptions.</li>
-      <li>Power simulates whole studies from the graph and analyzes each with the method the panel shows. An effect to detect recalibrates one arrow for the run; the drawn graph is kept.</li>
+      <li>Power simulates whole studies from the graph and analyzes each with the method shown above. An effect to detect recalibrates one arrow for the run; the drawn graph is kept. Power is conditional on the generating distributions, effect sizes, dependence and observation process; Monte Carlo intervals describe simulation error only.</li>
       <li>Models stay in this browser and can be exported as JSON; datasets download as CSV.</li>
     </ul>
+    <div class="dag-coverage-scroll"><table class="dag-coverage"><thead><tr><th>Study or question</th><th>Available analysis</th><th>Limits to check</th></tr></thead><tbody>
+    <tr><td>Independent continuous, binary or count outcomes, including heavy-tailed (Student t), proportion (Beta) and overdispersed (negative binomial) ones</td><td>Regression, g-computation, AIPW and TMLE; quasi-likelihood with sandwich errors for Beta and negative binomial coefficients</td><td>TMLE requires binary treatment.</td></tr>
+    <tr><td>Unmeasured confounders, error-prone measurements, hidden classes</td><td>Unmeasured variables are simulated but left out of every analysis</td><td>The results show the bias they leave; no sensitivity-analysis estimator or instrumental-variable analysis.</td></tr>
+    <tr><td>Relationships of unknown form</td><td>Smooth random functions in the generator; TMLE or AIPW with a Super Learner (cross-validated ensemble) and cross-fitting</td><td>Flexible estimation needs enough data for the shapes; wiggly functions in small studies leave bias. No Super Learner for the g-formula, survival or repeated-measures analyses.</td></tr>
+    <tr><td>Effect modification</td><td>Wald test of the compared variable’s interaction terms</td><td>Conditional regression test; plan for a larger sample than for a main effect.</td></tr>
+    <tr><td>Complete repeated or clustered outcomes</td><td>MMRM, LMM, robust trajectory means; baseline-treatment TMLE</td><td>TMLE targets a prespecified subject summary; cluster folds and inference preserve dependence.</td></tr>
+    <tr><td>Missing visits</td><td>MMRM for monotone dropout; LMM for intermittent visits</td><td>Model and missing-at-random assumptions matter. TMLE with dropout is not implemented.</td></tr>
+    <tr><td>Rare events, weak overlap, few clusters</td><td>Editable stress-test scenarios and diagnostics</td><td>No guarantee of calibrated inference. Compare failure rates, bias, null rejection and coverage.</td></tr>
+    <tr><td>Single-event survival and censoring</td><td>Cox, Weibull, survival probability and RMST analyses</td><td>No survival TMLE, competing risks or recurrent-event estimator.</td></tr>
+    <tr><td>Changing treatment, dynamic rules, crossover or adaptive trials</td><td>No dedicated DAG power estimator yet</td><td>Require design-specific estimators and error-control rules; not covered by baseline-treatment TMLE.</td></tr>
+    </tbody></table></div>
   </details>
 </main>
 <footer>Sample Size Calculator by Hyungrok Do. <a href="https://github.com/hyungrok-do/sample-size-calc">Source on GitHub</a>.</footer>

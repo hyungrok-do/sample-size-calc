@@ -10,9 +10,13 @@ selecting generic variables for it.
 
 ## Workflow
 
-1. In **Study**, choose a starting point (one measurement, repeated visits,
-   groups of subjects, or a blank canvas) or a scenario from the catalog; the
-   choice opens in **Model**, the next step to check. Add variables with the
+The page is one panel, read from top to bottom: the graph and the selected
+variable's settings, then **Question**, then **Power** and its results. There
+are no steps or tabs; every part stays on the page.
+
+1. Pick a design in **Start from** (scenarios grouped by kind of study, from a
+   two-group trial to TMLE and stress tests, plus an empty canvas) and press
+   **Load**; it replaces the design, and Undo restores it. Add variables with the
    **+ Continuous**, **+ Binary**, **+ Count** and **+ Event time** chips (click
    one, or drag it onto the canvas where the variable should go; double-clicking
    the empty canvas adds a continuous variable). New variables are placed where
@@ -52,10 +56,10 @@ selecting generic variables for it.
    non-causal, and whether the planned analysis leaves it open or blocks it (at
    a collider, or by adjusting for a variable); hovering a path marks its
    arrows. An open non-causal path is flagged because it would mix
-   confounding into the estimate. **Simulated dataset**, folded away at the
-   bottom, generates one seeded dataset, summarizes every column and downloads
+   confounding into the estimate. **Simulate one dataset**, folded away under
+   the graph, generates one seeded dataset, summarizes every column and downloads
    it as CSV.
-5. In **Power analysis**, choose what to detect (a group difference or a
+5. In **Question** and **Power**, below the graph, choose what to detect (a group difference or a
    regression coefficient, the variable compared, the outcome, the measure, a
    time horizon for survival measures and an optional effect to detect) and the
    design (total sample sizes, studies per size, alpha, the test's sides and
@@ -67,8 +71,9 @@ selecting generic variables for it.
    When the automatic analysis is an unadjusted two-group test although other
    causes of the outcome are drawn, it says so and points to g-computation or
    AIPW.
-   Null value, comparison levels, seed, calibration and the null-scenario check
-   are under **More settings**. Inspect uncertainty and failed fits.
+   Null value, seed, calibration and the null-scenario check
+   are under **Analysis details and formal target** and **Simulation settings
+   and null checks**. Inspect uncertainty and failed fits.
 6. Export/import the design as JSON. The graph, estimand and power settings are saved in browser storage
    when available. Undo/redo supports 50 edits. A deleted or replaced model
    can be recovered with Undo.
@@ -395,7 +400,7 @@ g-formula, so continuous, count and event-time interventions run too.
 
 ### Independently specifying the planned analysis
 
-In **Question**, choose the estimator and open **Analysis details and assumptions** for regression terms
+In **Question**, choose the estimator and open **Analysis details and formal target** for regression terms
 independently of the generating graph. Existing designs default to the
 original automatic estimator with matching terms and no cross-fitting.
 Selecting g-computation also allows adjusted analyses of randomized binary
@@ -690,8 +695,10 @@ survival observation handling, power curves and saved-report reproduction.
 
 ## Subjects, visits and clusters
 
-Open **Study structure** and select **Subjects, visits and clusters**. Specify one
-or more strictly increasing visit times. A single time supports a clustered
+Switch on **Repeated visits** or **Clusters** in the toolbar; each adds a plate
+to the graph. **Study settings**, under the graph, then holds the visit times,
+the subjects per cluster and the observation process (also editable by clicking
+a plate's label). Specify strictly increasing visit times. A single time supports a clustered
 cross-sectional design. Times may be irregular, but the schedule is shared by
 subjects. The optional **Subjects per cluster** field is either one cluster size
 or a repeating size pattern such as `8, 12, 16`. Without clusters, sample size

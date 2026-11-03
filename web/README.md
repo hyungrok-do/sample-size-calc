@@ -267,7 +267,7 @@ solve-for choice with its defaults gives the native answer to within 4 parts
 in 10¹², the difference between two math libraries. CI runs these tests and
 builds the page on every push.
 
-The DAG page's **Study structure** panel supports subject/visit/cluster scopes,
+The DAG page's **Clusters** and **Repeated visits** levels, with **Study settings** under the graph, support subject/visit/cluster scopes,
 shared random effects, lagged relationships, scheduled irregular times and
 missing visits. Its trajectory targets connect directly to MMRM, LMM or
 cluster-robust trajectory analyses in C++/WebAssembly. See the structured-study
