@@ -1,6 +1,7 @@
 // Compiler for the documented, closed subset of Lean study declarations.
 // It does not run Lean tactics or claim that parsing is a kernel proof check.
 #include "plan.hpp"
+#include "program.hpp"
 #include "util/numtext.hpp"
 #include <cctype>
 #include <cmath>
@@ -73,6 +74,12 @@ class Parser {
   }
   bool take(const std::string& x) {if(!token.quoted&&token.text==x){next();return true;}return false;}
   void expect(const std::string& x) {if(!take(x))error("expected '"+x+"'.");}
+  bool legacyDeclaration() {
+    if(take("import")) { if(token.text != "DesignCompiler.Input") return false; next(); }
+    if(take("open")) { if(token.text != "DesignCompiler") return false; next(); }
+    return take("def") && take("study") && take(":") && !token.quoted &&
+      (token.text == "NormalInput" || token.text == "InfluenceInput");
+  }
   std::pair<std::int64_t,std::int64_t> decimal() {
     const auto t=token.text;
     if(token.quoted||t.empty()||!std::isdigit(static_cast<unsigned char>(t[0])))error("expected a numeric literal.");
@@ -98,7 +105,8 @@ class Parser {
     return std::to_string(value.first)+"/"+std::to_string(value.second);
   }
   J parse() {
-    expect("import");expect("DesignCompiler.Input");expect("open");expect("DesignCompiler");
+    if(take("import"))expect("DesignCompiler.Input");
+    if(take("open"))expect("DesignCompiler");
     expect("def");expect("study");expect(":");
     const auto type=token.text; if(token.quoted||(type!="NormalInput"&&type!="InfluenceInput"))error("use NormalInput or InfluenceInput.");next();expect(":=");expect("{");
     const bool normal=type=="NormalInput";
@@ -184,6 +192,15 @@ std::string cpp_source(const J& plan,const J& checked) {
 
 J compile_source(const J& request) {
   if(!request.is_object())throw std::invalid_argument("Expected a compilation request.");
+  const auto& input=request.get("source");
+  if(input.is_string()) {
+    bool legacy = false;
+    // Examine declaration tokens, so names mentioned in comments cannot select
+    // the legacy parser. Its narrower lexer may reject a new-language token.
+    try { legacy = Parser(input.as_string()).legacyDeclaration(); }
+    catch(const std::invalid_argument&) {}
+    if(!legacy) return compile_program(request);
+  }
   for(const auto& kv:request.items())if(kv.first!="op"&&kv.first!="source"&&kv.first!="solveFor"&&kv.first!="n")
     throw std::invalid_argument("Unsupported compilation field: "+kv.first);
   const auto& source=request.get("source");

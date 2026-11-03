@@ -1,0 +1,8 @@
+#pragma once
+namespace ssc::design {
+inline constexpr const char* program_runtime_source = R"SSC_RUNTIME(
+#include <initializer_list>
+@SSC_RANDOM_SOURCE@
+@SSC_PROGRAM_RUNTIME@
+)SSC_RUNTIME";
+}

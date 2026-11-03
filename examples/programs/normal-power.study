@@ -1,0 +1,11 @@
+-- The compiler derives the Gaussian rejection probability from this event.
+def effect : Real := 0.5
+def alpha : Real := 0.05
+def critical : Real := normalQuantile(1 - alpha / 2)
+
+def power (n : Real) : Real :=
+  let z := normal(effect * sqrt(n / 2), 1)
+  probability(abs(z) > critical)
+
+solve for n : Nat in [2, 10000]
+where power(n) >= 0.80

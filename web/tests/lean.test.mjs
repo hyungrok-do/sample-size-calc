@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { examples } from '../lean-examples.js';
+import { examples, programs } from '../lean-examples.js';
 
 const executable = process.env.SSC_DESIGN_NATIVE;
 const M = executable ? null : await (await import('../engine/ssc_web.mjs')).default();
@@ -52,4 +52,27 @@ test('third tab has separate navigation and offline files', async () => {
   for (const page of ['index.html', 'dag.html', 'lean.html']) assert.match(await readFile(new URL(`../${page}`, import.meta.url), 'utf8'), /href="lean\.html\?v=dev"/);
   const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
   for (const file of ['lean.html', 'lean.css', 'lean.js', 'lean-examples.js']) assert.ok(sw.includes(`${file}?v=dev`));
+});
+
+test('expression examples compile and execute through the real C++ runtime', async () => {
+  const files = { normalPower: 'normal-power', effectEquation: 'detectable-effect', equation: 'equation', simulation: 'nonlinear-simulation', integration: 'integration', estimate: 'evaluate-simulation' };
+  for (const [key, file] of Object.entries(files)) {
+    assert.equal(programs[key], await readFile(new URL(`../../examples/programs/${file}.study`, import.meta.url), 'utf8'));
+    const compiled = design({ op: 'compile', source: programs[key], solveFor: 'code' });
+    assert.equal(compiled.plan.schema, 'ssc.expression-plan');
+    assert.equal(compiled.leanKernelChecked, false);
+    assert.ok(compiled.explanation.steps.length >= 3);
+    const result = design(compiled.plan);
+    if (key === 'normalPower') { assert.equal(result.solution, 63); assert.ok(Math.abs(result.value - .8013023941055797) < 2e-13); }
+    if (key === 'equation') {
+      assert.equal(result.solution, 2);
+      assert.equal(compiled.derivation.kind, 'exact_algebraic');
+      assert.equal(compiled.derivation.leanKernelChecked, false);
+      assert.match(compiled.derivation.leanSource, /theorem domain_solution/);
+    }
+    if (key === 'effectEquation') assert.ok(Math.abs(result.solution - .4991694806) < 2e-8);
+    if (key === 'integration') assert.ok(Math.abs(result.solution - .886142984) < 1e-7);
+    if (key === 'simulation') { assert.equal(result.method, 'monte_carlo'); assert.equal(result.solution, 20); assert.equal(result.trace.length, 2); }
+    if (key === 'estimate') { assert.equal(result.status, 'estimated'); assert.equal(result.value, .27965); assert.ok(result.lower < result.value && result.value < result.upper); }
+  }
 });
