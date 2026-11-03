@@ -380,8 +380,8 @@ try {
   assert.match(await page.textContent('#power-answer'), /for 80\.0% power|already gives|Not reached/);
   assert.match(await page.textContent('#power-table thead'), /Checks/);
   assert.match(await page.textContent('#power-summary'), /Question: Compare.*With 60 participants in total, estimated power is/);
-  const next = page.locator('#power-answer .dag-power-next');
-  if (await next.count()) assert.match(await next.getAttribute('data-sizes'), /^\d+(,\d+)+$/);
+  const refine = page.locator('#power-answer .dag-power-next');
+  if (await refine.count()) assert.match(await refine.getAttribute('data-sizes'), /^\d+(,\d+)+$/);
   const displayedPower = await page.textContent('#power-table');
   await page.click('[data-step="model"]');
   assert.equal(await page.isVisible('#power-table'), false);
