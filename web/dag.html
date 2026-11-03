@@ -59,7 +59,9 @@
     <details class="dag-coverage"><summary>What is covered — and what still needs a different estimator?</summary>
       <p>Data generation is more flexible than the available analyses. A simulated dataset alone does not establish valid power.</p>
       <div class="dag-coverage-scroll"><table><thead><tr><th>Study or question</th><th>Available analysis</th><th>Limits to check</th></tr></thead><tbody>
-      <tr><td>Independent continuous, binary or count outcomes</td><td>Regression, g-computation, AIPW and TMLE</td><td>TMLE requires binary treatment. Flexible regression bases, no Super Learner.</td></tr>
+      <tr><td>Independent continuous, binary or count outcomes, including heavy-tailed (Student t), proportion (Beta) and overdispersed (negative binomial) ones</td><td>Regression, g-computation, AIPW and TMLE; quasi-likelihood with sandwich errors for Beta and negative binomial coefficients</td><td>TMLE requires binary treatment. Flexible regression bases, no Super Learner.</td></tr>
+      <tr><td>Unmeasured confounders, error-prone measurements, hidden classes</td><td>Unmeasured variables are simulated but left out of every analysis</td><td>The results show the bias they leave; no sensitivity-analysis estimator or instrumental-variable analysis.</td></tr>
+      <tr><td>Effect modification</td><td>Wald test of the compared variable’s interaction terms</td><td>Conditional regression test; plan for a larger sample than for a main effect.</td></tr>
       <tr><td>Complete repeated or clustered outcomes</td><td>MMRM, LMM, robust trajectory means; baseline-treatment TMLE</td><td>TMLE targets a prespecified subject summary; cluster folds and inference preserve dependence.</td></tr>
       <tr><td>Missing visits</td><td>MMRM for monotone dropout; LMM for intermittent visits</td><td>Model and missing-at-random assumptions matter. TMLE with dropout is not implemented.</td></tr>
       <tr><td>Rare events, weak overlap, few clusters</td><td>Editable stress-test scenarios and diagnostics</td><td>No guarantee of calibrated inference. Compare failure rates, bias, null rejection and coverage.</td></tr>

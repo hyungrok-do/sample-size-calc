@@ -17,6 +17,38 @@ bool positive(const std::string &measure) {
   return measure == "risk_ratio" || measure == "odds_ratio" ||
          measure == "exponentiated_coefficient";
 }
+// The regression an analysis fits for a variable of this distribution:
+// least squares, logistic (a Beta mean by quasi-likelihood), Poisson (a
+// negative binomial mean by quasi-likelihood) or Gamma.
+std::string model_family(const std::string &family) {
+  return family == "bernoulli" || family == "beta"    ? "bernoulli"
+         : family == "poisson" || family == "negbin"  ? "poisson"
+         : family == "gamma"                          ? "gamma"
+                                                      : "gaussian";
+}
+// Quasi-likelihood fits whose model-based variance is wrong for the
+// distribution: their tests use a sandwich covariance.
+bool quasi(const std::string &family) {
+  return family == "beta" || family == "negbin";
+}
+// The terms a joint test of `measure` covers for predictor `a`.
+bool joint_term(const Term &t, int a, const std::string &measure) {
+  if (measure == "nonlinearity") return nonlinear_in(t, a);
+  if (measure == "interaction") return t.right >= 0 && (t.left == a || t.right == a);
+  return t.left == a || t.right == a;
+}
+std::string unmeasured_note(const Graph &g, int a, int y) {
+  std::string names;
+  const auto before = ancestors(g, y);
+  for (int v = 0; v < static_cast<int>(g.nodes.size()); ++v)
+    if (!g.nodes[v].measured && before[v] && v != a)
+      names += (names.empty() ? "" : ", ") + g.nodes[v].id;
+  return names.empty() ? std::string()
+                       : names + (names.find(',') == std::string::npos ? " is" : " are") +
+                             " unmeasured, so the analysis cannot use " +
+                             (names.find(',') == std::string::npos ? "it" : "them") +
+                             "; the results show any bias that leaves.";
+}
 std::uint64_t seed_value(const J &o, const std::string &key = "seed") {
   if (!o.find(key))
     return 2026;
@@ -43,6 +75,8 @@ void validate_estimand(const Graph &g, const J &e) {
     fail("The outcome and comparison variable must differ.");
   const auto &outcome = g.nodes[y];
   const auto &exposure = g.nodes[a];
+  if (!outcome.measured || !exposure.measured)
+    fail("The compared variable and the outcome must be measured.");
   const double lo = number(e, "reference"), hi = number(e, "active");
   bool compatible = false;
   if (kind == "coefficient" || kind == "joint") {
@@ -55,9 +89,11 @@ void validate_estimand(const Graph &g, const J &e) {
            "predictor to the outcome.");
     compatible = measure == "coefficient" ||
                  (measure == "exponentiated_coefficient" &&
-                  outcome.family != "gaussian" && outcome.family != "uniform");
+                  outcome.family != "gaussian" && outcome.family != "uniform" &&
+                  outcome.family != "student");
     if (kind == "joint") {
-      compatible = measure == "overall_effect" || measure == "nonlinearity";
+      compatible = measure == "overall_effect" || measure == "nonlinearity" ||
+                   measure == "interaction";
       if (number(e,"nullValue") != 0 || !e.get("alternative").is_null())
         fail("Joint tests use a zero coefficient-block null and the graph as drawn.");
       if (measure == "nonlinearity" && exposure.kind == "binary")
@@ -176,10 +212,11 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
   p.terms.clear(); p.propensity.clear(); p.chain.clear();
   const auto &a = g.nodes[p.exposure];
   const auto &y = g.nodes[p.outcome];
+  const auto aterms = measured_terms(g, a.terms), yterms = measured_terms(g, y.terms);
   const auto affected = descendants(g, p.exposure);
   const int count = static_cast<int>(g.nodes.size());
   std::vector<bool> chosen(count);
-  for (const auto &t : a.terms)
+  for (const auto &t : aterms)
     for (int v : {t.left, t.right})
       if (v >= 0) {
         const auto &node = g.nodes[v];
@@ -187,7 +224,7 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
           note(p, latent_note(node));
         chosen[v] = true;
       }
-  for (const auto &t : y.terms) {
+  for (const auto &t : yterms) {
     if (t.right >= 0 || affected[t.left])
       continue;
     const auto &node = g.nodes[t.left];
@@ -200,7 +237,7 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
       p.terms.push_back({v, -1, 0});
   // Within an exposure arm its factors are constants: A * f(X) contributes
   // f(X) to the arm-specific model. Keep that basis even without a main f(X).
-  for (const auto *source : {&a.terms, &y.terms}) for (auto t : *source) {
+  for (const auto *source : {&aterms, &yterms}) for (auto t : *source) {
     if (t.left == p.exposure && t.right >= 0) {
       t.left=t.right; t.transform=t.rightTransform; t.right=-1; t.rightTransform=Transform{};
     } else if (t.right == p.exposure) { t.right=-1; t.rightTransform=Transform{}; }
@@ -209,13 +246,11 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
           return term_key(u) == term_key(t);
         })) p.terms.push_back(t);
   }
-  for (const auto &t : a.terms)
+  for (const auto &t : aterms)
     p.propensity.push_back(t);
-  p.outcomeModel = y.family == "bernoulli" ? "bernoulli"
-                   : y.family == "poisson" ? "poisson"
-                   : y.family == "gamma" || y.family == "lognormal"
-                       ? "gamma"
-                       : "gaussian";
+  p.outcomeModel = y.family == "lognormal" ? "gamma" : model_family(y.family);
+  if (const auto text = unmeasured_note(g, p.exposure, p.outcome); !text.empty())
+    note(p, text);
   const auto measure = e.get("measure").as_string();
   p.method = "aipw";
   p.label = "Doubly robust AIPW Wald test of the marginal " +
@@ -225,7 +260,8 @@ void plan_aipw(const Graph &g, const J &e, Plan &p) {
                                 y.kind == "binary"
                             ? "risk difference"
                             : "mean difference") +
-            ", adjusting for " + term_text(g, p.terms);
+            (p.terms.empty() ? std::string(", adjusting for nothing measured")
+                             : ", adjusting for " + term_text(g, p.terms));
   const std::string model =
       p.outcomeModel == "gaussian"    ? "linear regression"
       : p.outcomeModel == "bernoulli" ? "logistic regression"
@@ -274,12 +310,16 @@ void plan_gformula(const Graph &g, const J &e, Plan &p) {
                 "; zero by construction";
     return;
   }
+  // Unmeasured variables are not refitted: each model uses the measured
+  // variables in their place.
   for (int v : g.order)
-    if (v != p.exposure && after[v] && before[v])
-      p.chain.push_back({v, g.nodes[v].terms});
+    if (v != p.exposure && after[v] && before[v] && g.nodes[v].measured)
+      p.chain.push_back({v, measured_terms(g, g.nodes[v].terms)});
+  if (const auto text = unmeasured_note(g, p.exposure, p.outcome); !text.empty())
+    note(p, text);
   if (!after[p.outcome]) {
     // No path: the analysis still estimates a comparison, which is null.
-    auto terms = y.terms;
+    auto terms = measured_terms(g, y.terms);
     terms.insert(terms.begin(), Term{p.exposure, -1, 0});
     p.chain.push_back({p.outcome, terms});
   }
@@ -330,15 +370,20 @@ Plan default_plan(const Graph &g, const J &e) {
     // A two-level comparison of a confounded binary variable uses AIPW; any
     // other comparison variable, or a confounded one with an event-time
     // outcome, the g-formula.
-    if (upstream || a.kind != "binary" ||
-        (!a.terms.empty() && y.kind == "survival")) {
+    // Parents the analysis cannot measure do not make it adjust; they leave
+    // the bias that the unmeasured note reports.
+    const bool confounded = !measured_terms(g, a.terms).empty();
+    if (upstream || a.kind != "binary" || (confounded && y.kind == "survival")) {
       plan_gformula(g, e, p);
       return p;
     }
-    if (!a.terms.empty()) {
+    if (confounded) {
       plan_aipw(g, e, p);
       return p;
     }
+    if (const auto text = unmeasured_note(g, p.exposure, p.outcome);
+        !text.empty() && !a.terms.empty())
+      note(p, text);
     const double allocation = 1 / (1 + std::exp(-a.intercept));
     if (!(allocation > 0 && allocation < 1))
       fail("The comparison variable gives an empty arm. Use a nondegenerate "
@@ -385,7 +430,9 @@ Plan default_plan(const Graph &g, const J &e) {
     p.formula = y.id + ": " + a.id + " = " + e.get("active").to_text() +
                 " versus " + e.get("reference").to_text();
   } else {
-    p.terms = y.terms;
+    p.terms = measured_terms(g, y.terms);
+    if (const auto text = unmeasured_note(g, p.exposure, p.outcome); !text.empty())
+      note(p, text);
     for (int j = 0; j < static_cast<int>(p.terms.size()); ++j) {
       const auto &t = p.terms[j];
       if (t.right >= 0 || t.transform.kind != "identity")
@@ -396,20 +443,24 @@ Plan default_plan(const Graph &g, const J &e) {
         note(p, latent_note(g.nodes[t.left]));
     }
     if (y.family == "gaussian" || y.family == "uniform" ||
-        y.family == "lognormal") {
+        y.family == "lognormal" || y.family == "student") {
       p.method = y.family == "lognormal" ? "ols_log" : "ols";
       p.label = y.family == "lognormal"
                     ? "Log-response linear regression coefficient t test"
                     : "Linear regression coefficient t test";
       if (y.family == "uniform")
         p.label += " (approximate for Uniform errors)";
-    } else if (y.family == "bernoulli" || y.family == "poisson" ||
-               y.family == "gamma") {
+      if (y.family == "student")
+        p.label += " (approximate for Student t errors)";
+    } else if (y.kind != "survival") {
       p.method = "glm";
       p.label = std::string(y.family == "bernoulli" ? "Logistic"
+                            : y.family == "beta"    ? "Quasi-binomial logit-mean"
                             : y.family == "poisson" ? "Poisson log-link"
+                            : y.family == "negbin"  ? "Quasi-Poisson log-link"
                                                     : "Gamma log-link") +
-                " regression coefficient Wald test";
+                " regression coefficient Wald test" +
+                (quasi(y.family) ? " with a sandwich standard error" : "");
     } else {
       p.method = "cox";
       p.label = "Cox PH coefficient Wald test (Breslow ties)";
@@ -510,13 +561,14 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
     for(int j=0;j<static_cast<int>(p.terms.size());++j) {
       const auto &t=p.terms[j];
       if(t.left==p.exposure && t.right<0 && t.transform.kind=="identity") p.targetIndex=j;
-      if(kind=="joint" && (e.get("measure").as_string()=="nonlinearity" ? nonlinear_in(t,p.exposure) : t.left==p.exposure || t.right==p.exposure)) p.tested.push_back(j+1);
+      if(kind=="joint" && joint_term(t,p.exposure,e.get("measure").as_string())) p.tested.push_back(j+1);
     }
     if(kind=="coefficient" && p.targetIndex<0) fail("The planned model omits the selected linear coefficient.");
     if(kind=="joint") {
       if(p.tested.empty()) fail("The planned model has no terms for the selected joint test.");
       p.method="joint";
-      p.label=std::string("Joint Wald test of ")+(e.get("measure").as_string()=="nonlinearity" ? "nonlinearity" : "all predictor terms")+" ("+std::to_string(p.tested.size())+" df)";
+      const auto measure=e.get("measure").as_string();
+      p.label=std::string(p.tested.size()==1 && measure=="interaction" ? "Wald test of the interaction" : std::string("Joint Wald test of ")+(measure=="nonlinearity" ? "nonlinearity" : measure=="interaction" ? "the interactions" : "all predictor terms"))+" ("+std::to_string(p.tested.size())+" df)";
       if(y.kind=="survival") note(p,"The joint survival test fits a parametric Weibull proportional-hazards model.");
       else note(p,"The joint Wald test uses a sandwich covariance and a large-sample chi-square reference distribution.");
     }
@@ -726,7 +778,7 @@ Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
     else {
       Vec y=d.values[p.outcome];
       if(p.family=="lognormal") for(double &v:y) v=std::log(v);
-      model=fit_model(m,y,(p.family=="uniform" || p.family=="lognormal") ? "gaussian" : p.family,true);
+      model=fit_model(m,y,model_family(p.family),true);
     }
     out.statistic=wald_statistic(model,p.tested);
     out.jointP=stats::pchisq(out.statistic,static_cast<double>(p.tested.size()),false);
@@ -751,8 +803,12 @@ Analysis analyze(const Graph &g, const J &e, const Data &d, const Plan &p) {
     Fit fit;
     if (p.method == "cox")
       fit = fit_cox(m, d.times[p.outcome], d.events[p.outcome], target);
-    else if (p.method == "glm")
-      fit = fit_glm(m, d.values[p.outcome], target, p.family);
+    else if (p.method == "glm" && quasi(p.family)) {
+      const auto model = fit_model(m, d.values[p.outcome], model_family(p.family), true);
+      fit.coefficient = model.beta[target] / m.scales[target];
+      fit.se = std::sqrt(model.covariance[target * m.p + target]) / m.scales[target];
+    } else if (p.method == "glm")
+      fit = fit_glm(m, d.values[p.outcome], target, model_family(p.family));
     else {
       Vec y = d.values[p.outcome];
       if (p.method == "ols_log")
@@ -856,7 +912,7 @@ J population(const Graph &g, const J &e, int n, std::uint64_t seed,
   if(kind=="joint") {
     J coefficients=J::array(); bool null=true;
     for(const auto &t:g.nodes[y].terms)
-      if(measure=="nonlinearity" ? nonlinear_in(t,a) : t.left==a || t.right==a) {
+      if(joint_term(t,a,measure)) {
         coefficients.push(t.coefficient); null &= t.coefficient==0;
       }
     return object({{"estimate",J()},{"mcSE",0},{"n",0},{"exact",true},
@@ -1175,7 +1231,7 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
           J terms=J::array();
           for(J term:node.get(key).elements()) {
             const auto t=parse_term(g,term);
-            if(overall ? t.left==plan.exposure || t.right==plan.exposure : nonlinear_in(t,plan.exposure)) term.set("coefficient",0);
+            if(joint_term(t,plan.exposure,e.get("measure").as_string())) term.set("coefficient",0);
             terms.push(term);
           }
           node.set(key,terms);

@@ -10,7 +10,8 @@ Transform parse_transform(const J &v) {
   if (!v.is_object()) fail("A transformation must be an object.");
   t.kind = v.get("kind").as_string();
   if (t.kind != "identity" && t.kind != "square" && t.kind != "threshold" &&
-      t.kind != "hinge" && t.kind != "saturation" && t.kind != "spline")
+      t.kind != "hinge" && t.kind != "saturation" && t.kind != "spline" &&
+      t.kind != "log")
     fail("Unknown response transformation.");
   if (v.find("center")) t.center = number(v, "center");
   if (v.find("scale")) t.scale = number(v, "scale");
@@ -45,6 +46,11 @@ double transform_value(double x, const Transform &t) {
   if (t.kind == "saturation") return std::tanh((x - t.center) / t.scale);
   if (t.kind == "threshold") return x > t.knot ? 1 : 0;
   if (t.kind == "hinge") return std::max(0.0, x - t.knot);
+  if (t.kind == "log") {
+    if (!(x > 0))
+      throw Error("generation_error", "log(x) needs positive values; a parent of a log term took a value of zero or less.");
+    return std::log(x);
+  }
   const auto &k = t.knots;
   const double a = k[t.index], b = k[k.size() - 2], c = k.back(),
                width = c - k.front(), z = std::min(x, c),
@@ -83,6 +89,7 @@ std::string transform_text(const std::string &id, const Transform &t) {
   }
   if (t.kind == "threshold") return "I(" + id + " > " + J(t.knot).to_text() + ")";
   if (t.kind == "hinge") return "max(0, " + id + " - " + J(t.knot).to_text() + ")";
+  if (t.kind == "log") return "log(" + id + ")";
   return "rcs" + std::to_string(t.index + 1) + "(" + id + "; " + array(t.knots).dump() + ")";
 }
 Term parse_term(const Graph &g, const J &v, bool coefficient) {
@@ -155,7 +162,11 @@ std::vector<Term> analysis_terms(const Graph &g, const std::vector<Term> &terms,
   if(mode=="match") return terms;
   std::vector<Term> out;
   if(mode=="custom") {
-    for(const auto &t:cfg.get("terms").elements()) out.push_back(parse_term(g,t,false));
+    for(const auto &t:cfg.get("terms").elements()) {
+      out.push_back(parse_term(g,t,false));
+      for(int v:{out.back().left,out.back().right})
+        if(v>=0 && !g.nodes[v].measured) fail("Analysis terms cannot use "+g.nodes[v].id+": it is unmeasured.");
+    }
   } else {
     std::set<int> variables;
     for(const auto &t:terms) { variables.insert(t.left); if(t.right>=0) variables.insert(t.right); }

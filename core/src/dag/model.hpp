@@ -48,6 +48,11 @@ std::string transform_text(const std::string &id, const Transform &value);
 struct Node {
   std::string id, label, kind, family, censor;
   double intercept = 0, sd = 1, width = 1, shape = 1, scale = 1, cutoff = 20;
+  // Student t degrees of freedom, Beta precision, negative binomial
+  // overdispersion (variance = mean + overdispersion * mean^2).
+  double df = 5, precision = 10, overdispersion = .5;
+  // An unmeasured variable is generated but never enters an analysis.
+  bool measured = true;
   int censor_index = -1;
   std::uint64_t stream = 0;
   std::vector<Term> terms;
@@ -91,6 +96,10 @@ J data_json(const Graph &graph, const Data &data, std::uint64_t seed,
             bool summarize);
 Data read_data(const Graph &graph, const J &value);
 std::vector<bool> ancestors(const Graph &graph, int node);
+// The terms an analysis can use in place of `terms`: a term on unmeasured
+// variables becomes linear terms in the measured variables they are generated
+// from (through other unmeasured ones), without duplicates.
+std::vector<Term> measured_terms(const Graph &graph, const std::vector<Term> &terms);
 std::vector<bool> descendants(const Graph &graph, int node);
 std::vector<int> calibration_edges(const Graph &graph, const J &estimand);
 J null_graph(const Graph &graph, const J &estimand);

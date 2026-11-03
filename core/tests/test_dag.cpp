@@ -526,3 +526,124 @@ TEST_CASE("dag: a comparison without a causal path still runs") {
                   .as_number(),
               .05, 0, .035);
 }
+TEST_CASE("dag: Student t, Beta and negative binomial variables have their moments") {
+  J nodes = J::array();
+  J t = variable("T", "continuous", "student", 1);
+  t.set("sd", 2); t.set("df", 5);
+  J b = variable("B", "continuous", "beta", std::log(.3 / .7));
+  b.set("precision", 4);
+  J c = variable("C", "count", "negbin", std::log(3.0));
+  c.set("overdispersion", .5);
+  for (const auto &v : {t, b, c}) nodes.push(v);
+  const J graph = object({{"version", 1}, {"nodes", nodes}, {"edges", J::array()}});
+  const auto data = run_request(object({{"op", "simulate"}, {"graph", graph},
+      {"options", object({{"n", 40000}, {"seed", 11}})}}));
+  const auto moments_of = [&](const char *id) {
+    Vec values;
+    for (const auto &v : data.get("columns").get(id).elements()) values.push_back(v.as_number());
+    return moments(values);
+  };
+  // t: mean 1, variance sd^2 df / (df - 2) = 4 * 5 / 3
+  const auto mt = moments_of("T"), mb = moments_of("B"), mc = moments_of("C");
+  CHECK_CLOSE(mt.mean, 1, 0, .04);
+  CHECK_CLOSE(mt.variance, 20.0 / 3, .06, 0);
+  // Beta: mean .3, variance .3 * .7 / (1 + 4)
+  CHECK_CLOSE(mb.mean, .3, 0, .005);
+  CHECK_CLOSE(mb.variance, .21 / 5, .04, 0);
+  // negative binomial: mean 3, variance 3 + .5 * 9
+  CHECK_CLOSE(mc.mean, 3, 0, .04);
+  CHECK_CLOSE(mc.variance, 7.5, .05, 0);
+  for (const auto &v : data.get("columns").get("B").elements())
+    CHECK(v.as_number() > 0 && v.as_number() < 1);
+  // a Student t variable needs a mean
+  J bad = graph;
+  J badNodes = J::array();
+  J t1 = t; t1.set("df", 1);
+  badNodes.push(t1);
+  bad.set("nodes", badNodes);
+  bool refused = false;
+  try { parse_graph(bad); } catch (const Error &e) { refused = std::string(e.what()).find("more than 1 degree") != std::string::npos; }
+  CHECK(refused);
+}
+TEST_CASE("dag: unmeasured variables are simulated but never analyzed") {
+  // U confounds A -> Y and is unmeasured; X is measured.
+  J nodes = J::array(), edges = J::array();
+  J u = variable("U", "continuous", "gaussian");
+  u.set("measured", false);
+  for (const auto &v : {u, variable("X", "continuous", "gaussian"),
+                        variable("A", "binary", "bernoulli"), variable("Y", "continuous", "gaussian")})
+    nodes.push(v);
+  for (const auto &e : {arrow("U", "A", .8), arrow("U", "Y", .5), arrow("X", "A", .5),
+                        arrow("X", "Y", .4), arrow("A", "Y", .3)})
+    edges.push(e);
+  const J graph = object({{"version", 1}, {"nodes", nodes}, {"edges", edges}});
+  const J plan = run_request(object({{"op", "plan"}, {"graph", graph}, {"estimand", marginal()}}));
+  CHECK_EQ(plan.get("method").as_string(), std::string("aipw"));
+  for (const char *key : {"terms", "propensityTerms"})
+    for (const auto &t : plan.get(key).elements())
+      CHECK(t.get("left").as_string() != "U");
+  CHECK(plan.get("notes").at(0).as_string().find("U is unmeasured") != std::string::npos);
+  // the data still carry U, and the analysis is biased by it
+  const auto result = power_of(graph, marginal(), 400, 200);
+  const auto row = result.get("results").at(0).get("alternative");
+  CHECK(row.get("bias").as_number() > .2);
+  // a model term on an unmeasured parent becomes its measured causes
+  const auto g = parse_graph(graph);
+  const auto terms = measured_terms(g, g.nodes[g.index("A")].terms);
+  CHECK_EQ(terms.size(), std::size_t(1));
+  CHECK_EQ(g.nodes[terms[0].left].id, std::string("X"));
+  // the compared variable and the outcome must be measured
+  J hidden = marginal();
+  hidden.set("exposure", "U");
+  CHECK(refusal(graph, hidden).find("must be measured") != std::string::npos);
+}
+TEST_CASE("dag: log terms, quasi-likelihood tests and the interaction test") {
+  // Y ~ Poisson-gamma counts over follow-up F with log(F) as an offset-like term.
+  J nodes = J::array(), edges = J::array();
+  J f = variable("F", "continuous", "uniform", 1);
+  f.set("width", 1);
+  J y = variable("Y", "count", "negbin", std::log(1.5));
+  y.set("overdispersion", .6);
+  J functions = J::array();
+  functions.push(object({{"left", "F"}, {"transform", object({{"kind", "log"}})}, {"coefficient", 1}}));
+  y.set("functions", functions);
+  J terms = J::array();
+  terms.push(object({{"left", "A"}, {"right", "F"}, {"coefficient", 0}}));
+  y.set("interactions", terms);
+  for (const auto &v : {variable("A", "binary", "bernoulli"), f, y}) nodes.push(v);
+  for (const auto &e : {arrow("A", "Y", std::log(.7)), arrow("F", "Y", 0)}) edges.push(e);
+  const J graph = object({{"version", 1}, {"nodes", nodes}, {"edges", edges}});
+  J coefficient = marginal();
+  coefficient.set("kind", "coefficient");
+  coefficient.set("measure", "exponentiated_coefficient");
+  coefficient.set("nullValue", 1);
+  const J plan = run_request(object({{"op", "plan"}, {"graph", graph}, {"estimand", coefficient}}));
+  CHECK(plan.get("label").as_string().find("sandwich") != std::string::npos);
+  CHECK(plan.get("formula").as_string().find("log(F)") != std::string::npos);
+  const J result = power_of(graph, coefficient, 400, 200);
+  const auto row = result.get("results").at(0);
+  // with A x F in the model, A's coefficient is the rate ratio at F = 0: its
+  // intervals still cover, and the sandwich test holds its size
+  CHECK_CLOSE(row.get("alternative").get("coverage").as_number(), .95, 0, .04);
+  CHECK_CLOSE(row.get("null").get("probability").as_number(), .05, 0, .035);
+  // the zero interaction is the true null of the interaction test
+  J interaction = coefficient;
+  interaction.set("kind", "joint");
+  interaction.set("measure", "interaction");
+  interaction.set("nullValue", 0);
+  const J joint = run_request(object({{"op", "plan"}, {"graph", graph}, {"estimand", interaction}}));
+  CHECK_EQ(joint.get("label").as_string(), std::string("Wald test of the interaction (1 df)"));
+  CHECK_CLOSE(power_of(graph, interaction, 400, 300).get("results").at(0).get("alternative")
+                  .get("probability").as_number(), .05, 0, .035);
+  // a log term of a variable that reaches zero stops the simulation
+  J zero = graph, zn = J::array();
+  for (J v : graph.get("nodes").elements()) {
+    if (v.get("id").as_string() == "F") { v.set("intercept", 0); }
+    zn.push(v);
+  }
+  zero.set("nodes", zn);
+  bool stopped = false;
+  try { run_request(object({{"op", "simulate"}, {"graph", zero}, {"options", object({{"n", 200}})}})); }
+  catch (const Error &e) { stopped = std::string(e.what()).find("log(x)") != std::string::npos; }
+  CHECK(stopped);
+}

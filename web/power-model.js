@@ -27,6 +27,39 @@ export function calibrationEdges(graph, estimand) {
     Number(b.source === estimand.exposure && b.target === estimand.outcome) - Number(a.source === estimand.exposure && a.target === estimand.outcome));
 }
 const termText = (terms) => terms.map(oneTermText).join(' + ');
+// Mirrors the engine's measured_terms: a term on unmeasured variables becomes linear terms in the measured
+// variables they are generated from (through other unmeasured ones), in graph order, without duplicates.
+export function measuredTerms(graph, terms) {
+  const byId = new Map(graph.nodes.map((n, i) => [n.id, { node: n, index: i }]));
+  const measured = (id) => byId.get(id).node.measured !== false;
+  const parentsOf = (id) => { const n = byId.get(id).node; return [...nodeTerms(graph, n).flatMap((t) => [t.left, ...(t.right ? [t.right] : [])]), ...(n.lags ?? []).map((l) => l.source)]; };
+  const standIns = (id) => {
+    const found = [], visited = new Set([id]), queue = [id];
+    for (let i = 0; i < queue.length; i++) for (const p of parentsOf(queue[i])) {
+      if (visited.has(p)) continue;
+      visited.add(p);
+      if (measured(p)) found.push(p); else queue.push(p);
+    }
+    return found.sort((a, b) => byId.get(a).index - byId.get(b).index);
+  };
+  const out = [], seen = new Set();
+  const add = (t) => { const key = termKey(t); if (!seen.has(key)) { seen.add(key); out.push(t); } };
+  for (const t of terms) {
+    if (measured(t.left) && (!t.right || measured(t.right))) { add(t); continue; }
+    for (const id of [t.left, t.right]) if (id) { if (measured(id)) add({ left: id }); else for (const p of standIns(id)) add({ left: p }); }
+  }
+  return out;
+}
+const modelFamily = (family) => ['bernoulli', 'beta'].includes(family) ? 'bernoulli' : ['poisson', 'negbin'].includes(family) ? 'poisson' : family === 'gamma' ? 'gamma' : 'gaussian';
+const quasi = (family) => ['beta', 'negbin'].includes(family);
+const jointTerm = (t, a, measure) => measure === 'nonlinearity' ? nonlinearIn(t, a) : measure === 'interaction' ? Boolean(t.right) && (t.left === a || t.right === a) : t.left === a || t.right === a;
+// Mirrors the engine's note on unmeasured causes of the outcome.
+function unmeasuredNote(graph, a, y) {
+  const before = ancestors(graph, y), names = graph.nodes.filter((n) => n.measured === false && before.has(n.id) && n.id !== a).map((n) => n.id);
+  if (!names.length) return null;
+  const one = names.length === 1;
+  return `${names.join(', ')}${one ? ' is' : ' are'} unmeasured, so the analysis cannot use ${one ? 'it' : 'them'}; the results show any bias that leaves.`;
+}
 const censored = (node) => node.kind === 'survival' && node.censoring.mode !== 'none';
 const latentNote = (id) => `${id} is a censored event time; the analysis uses its latent values as if they were measured.`;
 const informativeNote = (node) => `${node.censoring.variable} censors ${node.id} but depends on ${node.id} itself, so no analysis of the observed data is unbiased; the results show the bias.`;
@@ -45,27 +78,28 @@ const measureScale = (estimand, outcome) => {
 // parents that the exposure does not affect.
 function aipwPlan(graph, estimand, exposure, outcome, notes) {
   const node = (id) => graph.nodes.find((n) => n.id === id);
-  const propensity = nodeTerms(graph, exposure);
+  const propensity = measuredTerms(graph, nodeTerms(graph, exposure)), outcomeTerms = measuredTerms(graph, nodeTerms(graph, outcome));
   const affected = descendants(graph, exposure.id);
   const chosen = new Set();
   for (const t of propensity) for (const id of [t.left, t.right]) if (id) {
     if (censored(node(id))) addNote(notes, latentNote(id));
     chosen.add(id);
   }
-  for (const t of nodeTerms(graph, outcome)) if (!t.right && !affected.has(t.left) && !censored(node(t.left)) && (!graph.study || ['subject', 'cluster'].includes(scopeOf(node(t.left))))) chosen.add(t.left);
+  for (const t of outcomeTerms) if (!t.right && !affected.has(t.left) && !censored(node(t.left)) && (!graph.study || ['subject', 'cluster'].includes(scopeOf(node(t.left))))) chosen.add(t.left);
   const terms = graph.nodes.filter((n) => chosen.has(n.id)).map((n) => ({ left: n.id }));
-  for (const raw of [...nodeTerms(graph, exposure), ...nodeTerms(graph, outcome)]) {
+  for (const raw of [...propensity, ...outcomeTerms]) {
     let t = { ...raw };
     if (t.left === exposure.id && t.right) t = { left: t.right, ...(t.rightTransform ? { transform: t.rightTransform } : {}) };
     else if (t.right === exposure.id) { delete t.right; delete t.rightTransform; }
     if (chosen.has(t.left) && (!t.right || chosen.has(t.right)) && !terms.some((u) => termKey(u) === termKey(t))) terms.push(t);
   }
-  const outcomeModel = outcome.family === 'bernoulli' ? 'bernoulli' : outcome.family === 'poisson' ? 'poisson'
-    : ['gamma', 'lognormal'].includes(outcome.family) ? 'gamma' : 'gaussian';
+  const outcomeModel = outcome.family === 'lognormal' ? 'gamma' : modelFamily(outcome.family);
+  const hidden = unmeasuredNote(graph, exposure.id, outcome.id);
+  if (hidden) addNote(notes, hidden);
   const scale = estimand.measure === 'risk_ratio' ? 'log risk ratio' : estimand.measure === 'odds_ratio' ? 'log odds ratio'
     : estimand.measure === 'risk_difference' || outcome.kind === 'binary' ? 'risk difference' : 'mean difference';
   const model = { gaussian: 'linear regression', bernoulli: 'logistic regression', poisson: 'Poisson log-link regression', gamma: 'Gamma log-link regression' }[outcomeModel];
-  return { method: 'aipw', label: `Doubly robust AIPW Wald test of the marginal ${scale}, adjusting for ${termText(terms)}`, terms,
+  return { method: 'aipw', label: `Doubly robust AIPW Wald test of the marginal ${scale}, adjusting for ${terms.length ? termText(terms) : 'nothing measured'}`, terms,
     propensityTerms: propensity, outcomeModel, notes,
     formula: `${outcome.id}: ${exposure.id} = ${estimand.active} versus ${estimand.reference}; propensity ${exposure.id} ~ ${termText(propensity)} (logistic); outcome ${outcome.id} ~ ${termText(terms)} within each arm (${model})` };
 }
@@ -78,9 +112,12 @@ function gformulaPlan(graph, estimand, exposure, outcome, notes) {
   if (descendants(graph, outcome.id).has(exposure.id)) return { method: 'gformula', label, terms: [], models: [], notes, formula: `${levels}; zero by construction` };
   const after = descendants(graph, exposure.id), before = ancestors(graph, outcome.id);
   const node = (id) => graph.nodes.find((n) => n.id === id);
-  const models = topologicalOrder(graph).filter((id) => id !== exposure.id && after.has(id) && before.has(id))
-    .map((id) => ({ node: id, terms: nodeTerms(graph, node(id)) }));
-  if (!after.has(outcome.id)) models.push({ node: outcome.id, terms: [{ left: exposure.id }, ...nodeTerms(graph, outcome)] });
+  // unmeasured variables are not refitted: each model uses the measured variables in their place
+  const models = topologicalOrder(graph).filter((id) => id !== exposure.id && after.has(id) && before.has(id) && node(id).measured !== false)
+    .map((id) => ({ node: id, terms: measuredTerms(graph, nodeTerms(graph, node(id))) }));
+  const hidden = unmeasuredNote(graph, exposure.id, outcome.id);
+  if (hidden) addNote(notes, hidden);
+  if (!after.has(outcome.id)) models.push({ node: outcome.id, terms: [{ left: exposure.id }, ...measuredTerms(graph, nodeTerms(graph, outcome))] });
   for (const m of models) for (const t of m.terms) for (const id of [t.left, t.right])
     if (id && id !== exposure.id && censored(node(id))) addNote(notes, latentNote(id));
   for (const m of models) {
@@ -108,9 +145,12 @@ function defaultPlan(graph, estimand) {
     const upstream = descendants(graph, outcome.id).has(exposure.id);
     if (upstream) notes.push(reverseNote(exposure.id, outcome.id));
     else if (!descendants(graph, exposure.id).has(outcome.id)) notes.push(noPathNote(exposure.id, outcome.id));
-    const confounded = graph.edges.some((e) => e.target === exposure.id) || exposure.interactions.length > 0;
+    // parents the analysis cannot measure do not make it adjust; they leave the bias the unmeasured note reports
+    const confounded = measuredTerms(graph, nodeTerms(graph, exposure)).length > 0;
     if (upstream || exposure.kind !== 'binary' || (confounded && outcome.kind === 'survival')) return { ...common, ...gformulaPlan(graph, estimand, exposure, outcome, notes) };
     if (confounded) return { ...common, ...aipwPlan(graph, estimand, exposure, outcome, notes) };
+    const hidden = unmeasuredNote(graph, exposure.id, outcome.id);
+    if (hidden && nodeTerms(graph, exposure).length) addNote(notes, hidden);
     const p = 1 / (1 + Math.exp(-exposure.intercept));
     if (!(p > 0 && p < 1)) fail('The comparison variable gives an empty arm. Use a nondegenerate allocation probability.');
     if (estimand.measure === 'mean_difference' && outcome.kind !== 'binary') { method = 'welch'; label = 'Welch t test of the marginal mean difference'; }
@@ -133,18 +173,20 @@ function defaultPlan(graph, estimand) {
       if (shared || (rule.mode === 'administrative' && estimand.horizon > rule.time)) return { ...common, ...gformulaPlan(graph, estimand, exposure, outcome, notes) };
     }
   } else {
-    terms = nodeTerms(graph, outcome);
+    terms = measuredTerms(graph, nodeTerms(graph, outcome));
+    const hidden = unmeasuredNote(graph, exposure.id, outcome.id);
+    if (hidden) addNote(notes, hidden);
     terms.forEach((t, j) => {
       if (t.right || t.transform) return;
       if (t.left === exposure.id) targetIndex = j;
       const node = graph.nodes.find((n) => n.id === t.left);
       if (censored(node)) addNote(notes, latentNote(node.id));
     });
-    if (['gaussian', 'uniform', 'lognormal'].includes(outcome.family)) {
+    if (['gaussian', 'uniform', 'lognormal', 'student'].includes(outcome.family)) {
       method = outcome.family === 'lognormal' ? 'ols_log' : 'ols';
-      label = `${outcome.family === 'lognormal' ? 'Log-response linear' : 'Linear'} regression coefficient t test${outcome.family === 'uniform' ? ' (approximate for Uniform errors)' : ''}`;
-    } else if (['bernoulli', 'poisson', 'gamma'].includes(outcome.family)) {
-      method = 'glm'; label = `${outcome.family === 'bernoulli' ? 'Logistic' : outcome.family === 'poisson' ? 'Poisson log-link' : 'Gamma log-link'} regression coefficient Wald test`;
+      label = `${outcome.family === 'lognormal' ? 'Log-response linear' : 'Linear'} regression coefficient t test${outcome.family === 'uniform' ? ' (approximate for Uniform errors)' : outcome.family === 'student' ? ' (approximate for Student t errors)' : ''}`;
+    } else if (outcome.kind !== 'survival') {
+      method = 'glm'; label = `${{ bernoulli: 'Logistic', beta: 'Quasi-binomial logit-mean', poisson: 'Poisson log-link', negbin: 'Quasi-Poisson log-link' }[outcome.family] ?? 'Gamma log-link'} regression coefficient Wald test${quasi(outcome.family) ? ' with a sandwich standard error' : ''}`;
     } else if (outcome.kind === 'survival') {
       method = 'cox'; label = 'Cox PH coefficient Wald test (Breslow ties)';
       if (outcome.censoring.mode === 'variable' && ancestors(graph, outcome.censoring.variable).has(outcome.id)) addNote(notes, informativeNote(outcome));
@@ -224,9 +266,10 @@ export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
     p.targetIndex = p.terms.findIndex((t) => t.left === a.id && !t.right && !t.transform);
     if (estimand.kind === 'coefficient' && p.targetIndex < 0) fail('The planned model omits the selected linear coefficient.');
     if (estimand.kind === 'joint') {
-      p.testedIndices = p.terms.flatMap((t, i) => (estimand.measure === 'nonlinearity' ? nonlinearIn(t, a.id) : t.left === a.id || t.right === a.id) ? [i + 1] : []);
+      p.testedIndices = p.terms.flatMap((t, i) => jointTerm(t, a.id, estimand.measure) ? [i + 1] : []);
       if (!p.testedIndices.length) fail('The planned model has no terms for the selected joint test.');
-      p.method = 'joint'; p.label = `Joint Wald test of ${estimand.measure === 'nonlinearity' ? 'nonlinearity' : 'all predictor terms'} (${p.testedIndices.length} df)`;
+      const m = estimand.measure, k = p.testedIndices.length;
+      p.method = 'joint'; p.label = `${k === 1 && m === 'interaction' ? 'Wald test of the interaction' : `Joint Wald test of ${m === 'nonlinearity' ? 'nonlinearity' : m === 'interaction' ? 'the interactions' : 'all predictor terms'}`} (${k} df)`;
       addNote(p.notes, y.kind === 'survival' ? 'The joint survival test fits a parametric Weibull proportional-hazards model.' : 'The joint Wald test uses a sandwich covariance and a large-sample chi-square reference distribution.');
     }
     p.formula = `${y.family === 'lognormal' ? `log(${y.id})` : y.id} ~ ${termText(p.terms)}`;

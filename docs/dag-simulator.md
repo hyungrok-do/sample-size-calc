@@ -103,8 +103,11 @@ original units. All generated variables can be parents, subject to acyclicity.
 | Continuous | Uniform | Center `eta`, positive width; endpoints `eta ± width/2` |
 | Continuous | Log-normal | Mean of log values `eta`, positive SD of log values |
 | Continuous | Gamma | Mean `exp(eta)`, positive shape; scale `exp(eta)/shape` |
+| Continuous | Student t | Center `eta` plus scale × t with `df > 1` degrees of freedom (heavy tails; variance `scale² df/(df − 2)` when `df > 2`) |
+| Continuous | Beta (proportion) | Values in (0, 1) with mean `logistic(eta)` and precision `φ`: variance `mean (1 − mean) / (1 + φ)` |
 | Binary | Bernoulli | Success probability `logistic(eta)` |
 | Count | Poisson | Mean `exp(eta)` |
+| Count | Negative binomial | Mean `exp(eta)`, overdispersion `α`: variance `mean + α mean²` (a gamma-mixed Poisson) |
 | Survival time | Weibull | Positive shape `k` and baseline scale `s`, with `S(t | parents) = exp(-(t/s)^k * exp(eta))` |
 | Survival time | Exponential | Weibull with shape fixed at 1 |
 
@@ -113,6 +116,30 @@ coefficient shortens event times. The survival inverse transform is evaluated
 on the log time scale. Log-normal is a positive continuous variable; it can
 also supply censoring times. Other survival parameterizations and categorical
 distributions can be added to the distribution registry in later work.
+
+Analyses treat a Student t variable with least squares (a Normal working model
+in the g-formula), and fit a Beta or negative binomial mean by quasi-likelihood
+(logistic or Poisson regression) with a sandwich covariance; the g-formula
+redraws them with moment estimates of the precision or overdispersion. The
+parameters `df`, `precision` and `overdispersion` are saved only on variables
+whose distribution uses them.
+
+**Unmeasured variables.** Clear *Measured in the study* in a variable's
+settings (or use *Mark as unmeasured* in its menu; JSON `"measured": false`) for
+a variable that is simulated but recorded by no study: an unmeasured
+confounder, the true value behind an error-prone measurement, a hidden class
+such as responders or structural zeros. It is drawn dashed, with "unmeasured"
+on its box, and stays in simulated datasets. No analysis uses it: a model term
+on it is replaced by linear terms in the measured variables it is generated
+from (through other unmeasured ones), so a confounder with no measured causes
+is simply not adjusted for, and a mediator's model uses the compared variable
+in its place. The compared variable, the outcome and the visit time must be
+measured, and custom analysis terms cannot name an unmeasured variable. The
+plan notes which unmeasured variables affect the outcome; the true effect still
+comes from the full model, so the Checks column shows the bias, coverage and
+false positives they leave. Adjusting for a recorded proxy (a child of the
+unmeasured variable) is a choice made in the planned analysis's terms, not
+automatic.
 
 Exogenous draws are independent across variables and rows. Dependencies arise
 through parent terms and shared ancestors. Roots are independent unless an
@@ -132,6 +159,7 @@ remain linear terms. Additional terms support:
 | Hinge | `max(0, x - knot)` |
 | Saturation | `tanh((x - center) / scale)` |
 | Restricted cubic spline | 3–7 fixed, increasing knots in original units; one linear arrow plus `K - 2` nonlinear components |
+| Logarithm | `log(x)` for a positive parent; a value of zero or less stops the simulation. With coefficient 1 on a count's log follow-up time it is an offset |
 
 A response term can multiply two transformed parents, including the same
 parent. Both variables must already have arrows into the child. Terms are
@@ -268,10 +296,12 @@ supports three target types:
   other interacting parents. Nonlinear terms can also contribute to effects and
   derivatives, so the linear coefficient alone is not the full effect. It is not presented as a marginal total effect.
 
-- **Overall effect / nonlinearity** (a joint conditional regression test):
+- **Joint test (overall, nonlinearity, interaction)** (a joint conditional regression test):
   `overall_effect` tests all fitted terms involving the selected predictor;
   `nonlinearity` tests only terms nonlinear in that predictor, retaining its
-  linear terms. The latter is unavailable for a binary predictor. Transformed
+  linear terms; `interaction` tests only the products of the predictor with
+  other variables (effect modification), retaining its main terms. Nonlinearity
+  is unavailable for a binary predictor. Transformed
   interactions are included when they are nonlinear in the selected predictor.
   The fitted basis defines the hypothesis; this is not a marginal total-effect
   test. The graph supplies the alternative; a scalar effect-size calibration
@@ -743,7 +773,7 @@ about the scenario. Compare plausible generating scenarios independently of the
 planned analysis; this version does not integrate an elicited prior over
 unknown generating parameters or implement empirical resampling from pilot data.
 
-The Study catalog has 28 categorized scenarios, including six TMLE examples and stress tests for rare events, weak overlap, few clusters, skewed outcomes and missingness. Every scenario loads a graph, question and power settings together. The coverage table distinguishes estimator support from sensitivity scenarios and unsupported designs. `web/tests/study.test.mjs`
+The Study catalog has 42 categorized scenarios, including six TMLE examples and stress tests for rare events, weak overlap, few clusters, skewed outcomes and missingness. Common designs add a baseline-adjusted (ANCOVA) outcome, a 2 × 2 factorial trial, a one-sided non-inferiority comparison and an effect-modification (interaction) test; *Repeated and clustered* adds a cluster randomized trial with one measurement per patient; *Outcome types* covers staggered entry with a common end date, overdispersed counts, event rates over unequal follow-up (a log offset), heavy-tailed and proportion outcomes; *Unmeasured variables* covers unmeasured confounding, a confounder measured with error (adjusting for its recorded proxy), zero-inflated counts from an unrecorded never-at-risk class, and unrecorded responders. `web/tests/scenarios.test.mjs` loads every scenario and checks that the page's analysis plan matches the engine's. Every scenario loads a graph, question and power settings together. The coverage table distinguishes estimator support from sensitivity scenarios and unsupported designs. `web/tests/study.test.mjs`
 checks analytic covariance at irregular times, independent complete-data
 contrast/variance calculations, LMM trend estimates, cluster influence-function
 variance, missing-outcome exclusion, calibration and null effects, unit counts,

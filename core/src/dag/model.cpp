@@ -68,7 +68,9 @@ Graph parse_graph(const J &raw) {
   const std::map<std::string, std::string> kinds = {
       {"gaussian", "continuous"},  {"uniform", "continuous"},
       {"lognormal", "continuous"}, {"gamma", "continuous"},
+      {"student", "continuous"},   {"beta", "continuous"},
       {"bernoulli", "binary"},     {"poisson", "count"},
+      {"negbin", "count"},
       {"weibull", "survival"},     {"exponential", "survival"}};
   for (const auto &v : nodes.elements()) {
     Node node;
@@ -89,8 +91,19 @@ Graph parse_graph(const J &raw) {
         fail(std::string(key) + " must be positive.");
       return x;
     };
-    if (node.family == "gaussian" || node.family == "lognormal")
+    if (node.family == "gaussian" || node.family == "lognormal" || node.family == "student")
       node.sd = positive("sd");
+    if (node.family == "student" && !((node.df = positive("df")) > 1))
+      fail("A Student t variable needs more than 1 degree of freedom, so that its mean exists.");
+    if (node.family == "beta")
+      node.precision = positive("precision");
+    if (node.family == "negbin")
+      node.overdispersion = positive("overdispersion");
+    if (v.find("measured")) {
+      if (!v.get("measured").is_bool())
+        fail("measured must be true or false.");
+      node.measured = v.get("measured").as_bool();
+    }
     if (node.family == "uniform")
       node.width = positive("width");
     if (node.family == "gamma" || node.family == "weibull")
@@ -212,6 +225,17 @@ double draw_value(const Node &node, double eta, sim::Rng &rng, double normal) {
         value = std::exp(eta + node.sd * (std::isnan(normal) ? rng.normal() : normal));
       else if (node.family == "gamma")
         value = rng.gamma(node.shape) / node.shape * std::exp(eta);
+      else if (node.family == "student")
+        value = eta + node.sd * (std::isnan(normal) ? rng.normal() : normal) /
+                          std::sqrt(2 * rng.gamma(node.df / 2) / node.df);
+      else if (node.family == "beta") {
+        // Mean expit(eta), variance mean (1 - mean) / (1 + precision).
+        const double mean = eta >= 0 ? 1 / (1 + std::exp(-eta)) : std::exp(eta) / (1 + std::exp(eta));
+        const double a = rng.gamma(mean * node.precision), b = rng.gamma((1 - mean) * node.precision);
+        // Shapes far below 1 can underflow a gamma draw to zero; keep the
+        // value strictly inside (0, 1).
+        value = std::clamp(a + b > 0 ? a / (a + b) : mean, 1e-300, 1 - 0x1p-53);
+      }
       else if (node.family == "bernoulli")
         value = rng.uniform() < (eta >= 0 ? 1 / (1 + std::exp(-eta))
                                           : std::exp(eta) / (1 + std::exp(eta)))
@@ -223,12 +247,24 @@ double draw_value(const Node &node, double eta, sim::Rng &rng, double normal) {
           throw Error("generation_error",
                       node.label + ": the Poisson rate must be in (0, 1000].");
         value = poisson(mean, rng);
+      } else if (node.family == "negbin") {
+        // Gamma-Poisson mixture: a rate with mean exp(eta) and variance
+        // overdispersion * exp(2 eta).
+        const double mean = std::exp(eta), k = 1 / node.overdispersion;
+        if (!std::isfinite(mean) || !(mean > 0) || mean > 1000)
+          throw Error("generation_error",
+                      node.label + ": the negative binomial mean must be in (0, 1000].");
+        const double rate = mean * rng.gamma(k) / k;
+        if (!(rate <= 100000))
+          throw Error("generation_error",
+                      node.label + ": a negative binomial rate exceeded 100,000; reduce the overdispersion.");
+        value = rate > 0 ? poisson(rate, rng) : 0;
       } else
         value = std::exp(std::log(node.scale) +
                          (std::log(rng.exponential()) - eta) / node.shape);
       if (!std::isfinite(value) ||
           ((node.family == "lognormal" || node.family == "gamma" ||
-            node.kind == "survival") &&
+            node.family == "beta" || node.kind == "survival") &&
            value <= 0))
         throw Error("generation_error",
                     node.label + ": a simulated value is outside the supported "
@@ -410,6 +446,41 @@ std::vector<bool> ancestors(const Graph &g, int node) {
     for(const auto &l:g.nodes[j].lags) add(l.source);
   } }
   return found;
+}
+std::vector<Term> measured_terms(const Graph &g, const std::vector<Term> &terms) {
+  std::vector<Term> out;
+  std::set<std::string> seen;
+  const auto add = [&](const Term &t) {
+    if (seen.insert(term_key(t)).second) out.push_back(t);
+  };
+  // The measured variables an unmeasured one is generated from, nearest first.
+  const auto stand_ins = [&](int v) {
+    std::vector<int> found, queue{v};
+    std::vector<bool> visited(g.nodes.size());
+    visited[v] = true;
+    for (std::size_t i = 0; i < queue.size(); ++i) {
+      std::vector<int> parents;
+      for (const auto &t : g.nodes[queue[i]].terms) { parents.push_back(t.left); if (t.right >= 0) parents.push_back(t.right); }
+      for (const auto &l : g.nodes[queue[i]].lags) parents.push_back(l.source);
+      for (int p : parents) {
+        if (visited[p]) continue;
+        visited[p] = true;
+        if (g.nodes[p].measured) found.push_back(p); else queue.push_back(p);
+      }
+    }
+    std::sort(found.begin(), found.end());
+    return found;
+  };
+  for (const auto &t : terms) {
+    const bool left = g.nodes[t.left].measured, right = t.right < 0 || g.nodes[t.right].measured;
+    if (left && right) { add(t); continue; }
+    for (int v : {t.left, t.right}) {
+      if (v < 0) continue;
+      if (g.nodes[v].measured) add(Term{v, -1, 0});
+      else for (int p : stand_ins(v)) add(Term{p, -1, 0});
+    }
+  }
+  return out;
 }
 std::vector<bool> descendants(const Graph &g, int node) {
   std::vector<bool> found(g.nodes.size()); found[node]=true; bool changed=true;

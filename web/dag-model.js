@@ -12,14 +12,19 @@ export const DISTRIBUTIONS = {
   uniform: { kind: 'continuous', label: 'Uniform', link: 'center', parameters: ['width'] },
   lognormal: { kind: 'continuous', label: 'Log-normal', link: 'log median', parameters: ['sd'] },
   gamma: { kind: 'continuous', label: 'Gamma', link: 'log mean', parameters: ['shape'] },
+  student: { kind: 'continuous', label: 'Student t', link: 'center', parameters: ['sd', 'df'] },
+  beta: { kind: 'continuous', label: 'Beta (proportion)', link: 'log odds of the mean', parameters: ['precision'] },
   bernoulli: { kind: 'binary', label: 'Bernoulli', link: 'log odds', parameters: [] },
   poisson: { kind: 'count', label: 'Poisson', link: 'log mean', parameters: [] },
+  negbin: { kind: 'count', label: 'Negative binomial', link: 'log mean', parameters: ['overdispersion'] },
   weibull: { kind: 'survival', label: 'Weibull', link: 'log hazard multiplier', parameters: ['shape', 'scale'] },
   exponential: { kind: 'survival', label: 'Exponential', link: 'log hazard multiplier', parameters: ['scale'] },
 };
 export const FAMILIES = Object.keys(DISTRIBUTIONS);
 const DEFAULT_FAMILY = { continuous: 'gaussian', binary: 'bernoulli', count: 'poisson', survival: 'weibull' };
 const DEFAULT_PARAMETERS = { sd: 1, width: 2, shape: 2, scale: 10 };
+// Kept on a variable only while its distribution uses them (older files never have them).
+const EXTRA_PARAMETERS = { df: 5, precision: 10, overdispersion: 0.5 };
 const idPattern = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
 const finite = (x) => typeof x === 'number' && Number.isFinite(x);
 const fail = (message) => { throw new Error(message); };
@@ -56,6 +61,8 @@ export function validateGraph(graph) {
     if (!finite(node.intercept)) fail(`${node.label}: enter a finite intercept.`);
     for (const param of DISTRIBUTIONS[node.family].parameters)
       if (!finite(node[param]) || node[param] <= 0) fail(`${node.label}: ${param} must be positive and finite.`);
+    if (node.family === 'student' && !(node.df > 1)) fail(`${node.label}: a Student t variable needs more than 1 degree of freedom, so that its mean exists.`);
+    if (node.measured != null && typeof node.measured !== 'boolean') fail(`${node.label}: measured must be true or false.`);
     if (!finite(node.x) || !finite(node.y) || node.x < 0 || node.x > CANVAS_LIMIT.x || node.y < 0 || node.y > CANVAS_LIMIT.y)
       fail(`${node.label}: invalid canvas position.`);
     if (!Array.isArray(node.interactions) || node.interactions.length > MAX_NODES * MAX_NODES) fail(`${node.label}: invalid interaction list.`);
@@ -119,6 +126,9 @@ export function parseGraph(input) {
   return { version: DAG_VERSION, ...(raw.study ? { study: parseStudy(raw.study) } : {}),
     nodes: raw.nodes.map((n) => ({ id: n.id, label: n.label, kind: n.kind, family: n.family, intercept: n.intercept,
       ...Object.fromEntries(Object.entries(DEFAULT_PARAMETERS).map(([key, value]) => [key, finite(n[key]) && n[key] > 0 ? n[key] : value])),
+      ...Object.fromEntries(Object.entries(EXTRA_PARAMETERS).filter(([key]) => DISTRIBUTIONS[n.family].parameters.includes(key))
+        .map(([key, value]) => [key, finite(n[key]) && n[key] > 0 ? n[key] : value])),
+      ...(n.measured === false ? { measured: false } : {}),
       x: n.x, y: n.y,
       ...(raw.study ? { scope: n.scope ?? 'subject', repeated: Object.fromEntries(['subjectSD', 'slopeSD', 'slopeCorrelation', 'clusterSD', 'residualCorrelation'].map((k) => [k, n.repeated?.[k] ?? 0])),
         lags: (n.lags ?? []).map((l) => ({ source: l.source, lag: l.lag, coefficient: l.coefficient, initial: l.initial ?? 0 })) } : {}),
@@ -154,6 +164,8 @@ export function renameNode(graph, oldId, newId) {
     edges: graph.edges.map((e) => ({ ...e, source: e.source === oldId ? newId : e.source, target: e.target === oldId ? newId : e.target })) };
   validateGraph(next); return next;
 }
+// A parameter's value for a distribution that uses it: the variable's own, else the default.
+export const parameterValue = (node, key) => finite(node[key]) && node[key] > 0 ? node[key] : (DEFAULT_PARAMETERS[key] ?? EXTRA_PARAMETERS[key]);
 export function makeNode(id, kind = 'continuous', x = 30, y = 30) {
   return { id, label: id, kind, family: DEFAULT_FAMILY[kind], intercept: 0, ...DEFAULT_PARAMETERS,
     censoring: { mode: 'none', time: 20, variable: '' }, interactions: [], x, y };
@@ -227,15 +239,19 @@ export function equation(graph, node) {
     if (r.slopeSD) predictor += ` + subject slope × elapsed time (SD ${r.slopeSD})`;
     if (r.clusterSD) predictor += ` + cluster intercept (SD ${r.clusterSD})`;
   }
-  if (node.family === 'gaussian') return `${node.id} = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})`;
-  if (node.family === 'uniform') return `${node.id} ~ Uniform(η − ${node.width / 2}, η + ${node.width / 2}), η = ${predictor}`;
-  if (node.family === 'lognormal') return `log(${node.id}) = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})`;
-  if (node.family === 'gamma') return `${node.id} ~ Gamma(shape = ${node.shape}, scale = μ / ${node.shape}), log(μ) = ${predictor}`;
-  if (node.family === 'bernoulli') return `${node.id} ~ Bernoulli(p), logit(p) = ${predictor}`;
-  if (node.family === 'poisson') return `${node.id} ~ Poisson(μ), log(μ) = ${predictor}`;
+  const hidden = node.measured === false ? ' (unmeasured)' : '';
+  if (node.family === 'gaussian') return `${node.id} = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})${hidden}`;
+  if (node.family === 'uniform') return `${node.id} ~ Uniform(η − ${node.width / 2}, η + ${node.width / 2}), η = ${predictor}${hidden}`;
+  if (node.family === 'lognormal') return `log(${node.id}) = ${predictor} + ε, ε ~ Normal(0, SD = ${node.sd})${hidden}`;
+  if (node.family === 'gamma') return `${node.id} ~ Gamma(shape = ${node.shape}, scale = μ / ${node.shape}), log(μ) = ${predictor}${hidden}`;
+  if (node.family === 'student') return `${node.id} = ${predictor} + ${node.sd} × t, t ~ Student t(${node.df} df)${hidden}`;
+  if (node.family === 'beta') return `${node.id} ~ Beta(μφ, (1 − μ)φ), φ = ${node.precision}, logit(μ) = ${predictor}${hidden}`;
+  if (node.family === 'bernoulli') return `${node.id} ~ Bernoulli(p), logit(p) = ${predictor}${hidden}`;
+  if (node.family === 'poisson') return `${node.id} ~ Poisson(μ), log(μ) = ${predictor}${hidden}`;
+  if (node.family === 'negbin') return `${node.id} ~ NegBin(μ, Var = μ + ${node.overdispersion} μ²), log(μ) = ${predictor}${hidden}`;
   const shape = node.family === 'exponential' ? 1 : node.shape;
   const obs = node.censoring.mode === 'none' ? '∞' : node.censoring.mode === 'administrative' ? node.censoring.time : node.censoring.variable;
-  return `S_${node.id}(t | parents) = exp(−(t / ${node.scale})^${shape} × exp(η)), η = ${predictor}. ${node.id}_time = min(${node.id}, ${obs}), ${node.id}_event = 1{${node.id} ≤ ${obs}}`;
+  return `S_${node.id}(t | parents) = exp(−(t / ${node.scale})^${shape} × exp(η)), η = ${predictor}. ${node.id}_time = min(${node.id}, ${obs}), ${node.id}_event = 1{${node.id} ≤ ${obs}}${hidden}`;
 }
 export function dataCsv(_graph, result) {
   const ids = Object.keys(result.columns);

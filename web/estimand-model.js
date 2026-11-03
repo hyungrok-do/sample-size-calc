@@ -13,18 +13,19 @@ export const MEASURES = {
   exponentiated_coefficient: { label: 'Exponentiated conditional coefficient', nullValue: 1, positive: true },
   overall_effect: { label: 'Overall predictor effect (joint test)', nullValue: 0 },
   nonlinearity: { label: 'Nonlinearity beyond linear terms (joint test)', nullValue: 0 },
+  interaction: { label: 'Effect modification: interaction terms (joint test)', nullValue: 0 },
   custom: { label: 'Custom estimand', nullValue: 0 },
 };
 const finite = (x) => typeof x === 'number' && Number.isFinite(x);
 const fail = (text) => { throw new Error(text); };
-const logLinks = ['bernoulli', 'poisson', 'gamma', 'lognormal', 'weibull', 'exponential'];
+const logLinks = ['bernoulli', 'beta', 'poisson', 'negbin', 'gamma', 'lognormal', 'weibull', 'exponential'];
 
 export function availableMeasures(graph, kind, outcome) {
   const node = graph.nodes.find((n) => n.id === outcome);
   if (kind === 'custom') return ['custom'];
   if (!node) return [];
   if (graph.study && kind === 'marginal') return node.kind === 'binary' ? ['risk_difference'] : node.kind === 'survival' ? [] : ['mean_difference'];
-  if (kind === 'joint') return ['overall_effect', 'nonlinearity'];
+  if (kind === 'joint') return ['overall_effect', 'nonlinearity', 'interaction'];
   if (kind === 'coefficient') return ['coefficient', ...(logLinks.includes(node.family) ? ['exponentiated_coefficient'] : [])];
   return Object.entries(MEASURES).filter(([, spec]) => spec.kinds?.includes(node.kind)).map(([key]) => key);
 }
@@ -44,6 +45,7 @@ export function validateEstimand(graph, value) {
   } else {
     if (!outcome || !exposure) fail('Select an outcome variable and a comparison variable.');
     if (outcome.id === exposure.id) fail('The outcome and comparison variable must differ.');
+    if (outcome.measured === false || exposure.measured === false) fail('The compared variable and the outcome must be measured.');
     if (!availableMeasures(graph, value.kind, value.outcome).includes(value.measure)) fail('Choose an effect measure compatible with the outcome distribution.');
     if (value.kind === 'coefficient' || value.kind === 'joint') {
       if (value.kind === 'joint' && (value.nullValue !== 0 || value.alternative !== null)) fail('Joint tests use a zero coefficient-block null and the graph as drawn.');
@@ -93,7 +95,7 @@ export function describeEstimand(graph, value) {
     formula = value.definition;
     note = 'This definition is recorded for planning. Its estimator and simulation evaluation must be specified explicitly.';
   } else if (value.kind === 'joint') {
-    formula = `H₀: ${value.measure === 'nonlinearity' ? 'all nonlinear terms in' : 'all terms involving'} ${a} in the model for ${y} equal zero`;
+    formula = `H₀: ${value.measure === 'nonlinearity' ? 'all nonlinear terms in' : value.measure === 'interaction' ? 'all interaction terms of' : 'all terms involving'} ${a} in the model for ${y} equal zero`;
     note = 'This is a conditional regression block test. Its hypothesis depends on the specified analysis basis. It is not a marginal causal contrast.';
   } else if (value.kind === 'coefficient') {
     const node = graph.nodes.find((n) => n.id === y);

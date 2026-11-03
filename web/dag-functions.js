@@ -1,7 +1,7 @@
 // Explicit basis functions shared by the editor, equations and analysis preview.
 // The C++ engine independently validates and evaluates every term and fit.
 export const TRANSFORMS = [['identity', 'Linear'], ['square', 'Quadratic'], ['threshold', 'Threshold'],
-  ['hinge', 'Hinge'], ['saturation', 'Saturation (tanh)'], ['spline', 'Restricted cubic spline']];
+  ['hinge', 'Hinge'], ['saturation', 'Saturation (tanh)'], ['spline', 'Restricted cubic spline'], ['log', 'Logarithm']];
 export const BASES = [['match', 'Match the generating terms'], ['linear', 'Linear main effects'],
   ['quadratic', 'Linear + quadratic terms'], ['spline', 'Restricted cubic splines']];
 const fail = (s) => { throw new Error(s); };
@@ -31,6 +31,7 @@ export function transformValue(x, raw) {
   if (t.kind === 'saturation') return Math.tanh((x - t.center) / t.scale);
   if (t.kind === 'threshold') return Number(x > t.knot);
   if (t.kind === 'hinge') return Math.max(0, x - t.knot);
+  if (t.kind === 'log') return x > 0 ? Math.log(x) : NaN;
   const k = t.knots, a = k[t.index], b = k.at(-2), c = k.at(-1), width = c - k[0], z = Math.min(x, c);
   const u = Math.max(0, z - a) / width, v = Math.max(0, z - b) / width, w = Math.max(0, z - c) / width;
   const r = (c - a) / (c - b), s = (b - a) / (c - b);
@@ -42,6 +43,7 @@ export function transformText(id, raw) {
   if (['square', 'saturation'].includes(t.kind)) return `${t.kind === 'square' ? 'square' : 'tanh'}((${id} - ${t.center}) / ${t.scale})`;
   if (t.kind === 'threshold') return `I(${id} > ${t.knot})`;
   if (t.kind === 'hinge') return `max(0, ${id} - ${t.knot})`;
+  if (t.kind === 'log') return `log(${id})`;
   return `rcs${t.index + 1}(${id}; [${t.knots.join(',')}])`;
 }
 export const termText = (t) => transformText(t.left, t.transform) + (t.right ? ` × ${transformText(t.right, t.rightTransform)}` : '');
@@ -98,7 +100,10 @@ export function analysisTerms(graph, terms, spec, id, propensity = false) {
   const cfg = spec.models?.[id] ?? (propensity && spec.propensity ? spec.propensity : spec);
   if (cfg.basis === 'match') return terms;
   let out = [];
-  if (cfg.basis === 'custom') out = cfg.terms;
+  if (cfg.basis === 'custom') {
+    out = cfg.terms;
+    for (const t of out) for (const v of [t.left, t.right]) if (v && graph.nodes.find((n) => n.id === v)?.measured === false) fail(`Analysis terms cannot use ${v}: it is unmeasured.`);
+  }
   else {
     // C++ sorts by the graph's node index.
     const chosen = new Set(terms.flatMap((t) => [t.left, ...(t.right ? [t.right] : [])]));

@@ -34,6 +34,7 @@ export function validateStudy(graph) {
     if (!['subject', 'cluster', 'visit', 'time'].includes(scope)) fail('Choose cluster, subject, visit or time scope.');
     if (scope === 'cluster' && !s.clusterSizes.length) fail('Cluster variables require cluster sizes.');
     if (scope === 'time' && (n.family !== 'gaussian' || graph.edges.some((e) => e.target === n.id))) fail('Visit time must be a continuous Normal root; its values come from the schedule.');
+    if (scope === 'time' && n.measured === false) fail('The visit time is part of the schedule and is always measured.');
     if (scope === 'visit' && n.kind === 'survival') fail('Repeated event histories need a separate model. Use a subject-level survival variable.');
     if (repeatedKeys.some((k) => !finite(r[k] ?? 0))) fail('Repeated-measure parameters must be finite.');
     if (['subjectSD', 'slopeSD', 'clusterSD'].some((k) => (r[k] ?? 0) < 0) || Math.abs(r.slopeCorrelation ?? 0) > 1 || (r.residualCorrelation ?? 0) < 0 || (r.residualCorrelation ?? 0) >= 1)

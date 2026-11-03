@@ -10,7 +10,7 @@ import { estimateSize, nextSizes, rowChecks, effectText, summaryText } from './d
 
 const POPULATION = 'Population represented by the data generating process';
 const SHORT = { mean_difference: 'Mean difference', risk_difference: 'Risk difference', risk_ratio: 'Risk ratio', odds_ratio: 'Odds ratio',
-  survival_difference: 'Survival difference', rmst_difference: 'RMST difference', coefficient: 'Coefficient', exponentiated_coefficient: 'exp(coefficient)', overall_effect: 'Overall effect', nonlinearity: 'Nonlinearity' };
+  survival_difference: 'Survival difference', rmst_difference: 'RMST difference', coefficient: 'Coefficient', exponentiated_coefficient: 'exp(coefficient)', overall_effect: 'Overall effect', nonlinearity: 'Nonlinearity', interaction: 'Interaction' };
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -95,12 +95,14 @@ const levelsFit = (node, a, b) => Number.isFinite(a) && Number.isFinite(b) && a 
 // A ready-to-run target for a graph: a binary variable that affects others, compared on a variable it affects.
 export function defaultTarget(graph) {
   if (graph.nodes.length < 2) return null;
-  const binary = graph.nodes.filter((n) => n.kind === 'binary' && (!graph.study || ['subject', 'cluster'].includes(scopeOf(n))));
+  const binary = graph.nodes.filter((n) => n.kind === 'binary' && n.measured !== false && (!graph.study || ['subject', 'cluster'].includes(scopeOf(n))));
   const exposure = binary.find((n) => !hasParents(graph, n.id) && hasChildren(graph, n.id))
-    ?? binary.find((n) => hasChildren(graph, n.id)) ?? binary[0] ?? graph.nodes[0];
-  const affected = below(graph, exposure.id), last = [...graph.nodes].reverse();
+    ?? binary.find((n) => hasChildren(graph, n.id)) ?? binary[0] ?? graph.nodes.find((n) => n.measured !== false);
+  if (!exposure) return null;
+  const affected = below(graph, exposure.id), last = [...graph.nodes].reverse().filter((n) => n.measured !== false);
   const outcome = last.find((n) => affected.has(n.id) && !hasChildren(graph, n.id)) ?? last.find((n) => affected.has(n.id))
     ?? last.find((n) => n.id !== exposure.id);
+  if (!outcome) return null;
   const measures = availableMeasures(graph, 'marginal', outcome.id);
   const measure = outcome.kind === 'binary' && measures.includes('risk_difference') ? 'risk_difference' : measures[0];
   const [reference, active] = levelsFor(exposure);
@@ -263,7 +265,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       return;
     }
     const nodeList = graph.nodes.map((n) => [n.id, `${n.id} · ${n.label}`]);
-    const kind = select('estimand-kind', graph.study ? [['marginal', 'Trajectory contrast']] : [['marginal', 'Group / dose contrast'], ['coefficient', 'Regression coefficient'], ['joint', 'Overall effect / nonlinearity']], start.kind);
+    const kind = select('estimand-kind', graph.study ? [['marginal', 'Trajectory contrast']] : [['marginal', 'Group / dose contrast'], ['coefficient', 'Regression coefficient'], ['joint', 'Joint test (overall, nonlinearity, interaction)']], start.kind);
     const exposure = el('select', { id: 'estimand-exposure' }), outcome = el('select', { id: 'estimand-outcome' });
     const measure = el('select', { id: 'estimand-measure' });
     const horizon = numeric('estimand-horizon', start.horizon, { min: 0 });
@@ -466,7 +468,9 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
       // an unadjusted test leaves out the outcome's other causes; say so where the analysis is chosen
       const unadjusted = !problem && value.kind === 'marginal' && ['welch', 'risk_score', 'risk_wald', 'risk_ratio', 'odds_ratio', 'km_survival', 'km_rmst'].includes(plan.method);
       const affected = below(graph, value.exposure);
-      const prognostic = unadjusted ? graph.edges.filter((e) => e.target === value.outcome && e.source !== value.exposure && !affected.has(e.source)).map((e) => e.source) : [];
+      // only causes a study records can be adjusted for
+      const recorded = (id) => graph.nodes.find((n) => n.id === id)?.measured !== false;
+      const prognostic = unadjusted ? graph.edges.filter((e) => e.target === value.outcome && e.source !== value.exposure && !affected.has(e.source) && recorded(e.source)).map((e) => e.source) : [];
       adjustNote.hidden = !prognostic.length;
       adjustNote.textContent = prognostic.length ? `This test is unadjusted: ${prognostic.join(', ')} ${prognostic.length === 1 ? 'also causes' : 'also cause'} ${value.outcome} but ${prognostic.length === 1 ? 'is' : 'are'} not used. Adjusting for ${prognostic.length === 1 ? 'it' : 'them'} (choose g-computation or AIPW) usually needs fewer participants.` : '';
       reviewMethod.textContent = method.textContent;

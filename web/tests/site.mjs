@@ -358,6 +358,19 @@ try {
   assert.equal(await page.inputValue('#analysis-method'), 'auto');
   await page.click('#dag-undo');
   assert.doesNotMatch(await page.textContent('#dag-equations'), /square/);
+  // an unmeasured variable is drawn dashed and simulated, but no analysis adjusts for it; its settings measure it
+  await page.selectOption('#dag-example', 'unmeasured-confounding');
+  await page.click('#dag-example-load');
+  await page.waitForSelector('#dag-canvas .dag-node.unmeasured');
+  assert.equal(await page.locator('#dag-canvas .dag-node.unmeasured .dag-node-family').textContent(), 'U · unmeasured');
+  assert.match(await page.textContent('#dag-equations'), /\(unmeasured\)/);
+  assert.match(await page.textContent('#dag-paths'), /A ← U → Y\s*back-door · open/);
+  await page.selectOption('#dag-node-select', 'U');
+  await page.check('#dag-node-measured');
+  await page.waitForFunction(() => !document.querySelector('#dag-canvas .dag-node.unmeasured'));
+  assert.match(await page.textContent('#dag-paths'), /A ← U → Y\s*back-door · blocked/);
+  await page.click('#dag-undo');
+  await page.waitForSelector('#dag-canvas .dag-node.unmeasured');
   await page.selectOption('#dag-example', 'binary');
   await page.click('#dag-example-load');
   await page.click('#dag-simulate');

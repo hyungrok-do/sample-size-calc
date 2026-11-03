@@ -15,7 +15,8 @@ export function questionSummary(graph, target) {
   const name = (id) => graph.nodes.find((n) => n.id === id)?.label || id;
   const outcome = name(target.outcome), exposure = name(target.exposure);
   if (target.kind === 'coefficient') return `Estimate the ${target.measure === 'exponentiated_coefficient' ? 'exponentiated ' : ''}coefficient of ${exposure} in the model for ${outcome}.`;
-  if (target.kind === 'joint') return `Test ${target.measure === 'nonlinearity' ? 'nonlinearity' : 'the overall effect'} of ${exposure} in the model for ${outcome}.`;
+  if (target.kind === 'joint') return target.measure === 'interaction' ? `Test whether the effect of ${exposure} on ${outcome} depends on another variable (its interaction terms).`
+    : `Test ${target.measure === 'nonlinearity' ? 'nonlinearity' : 'the overall effect'} of ${exposure} in the model for ${outcome}.`;
   const measures = { mean_difference: 'mean difference', risk_difference: 'risk difference', risk_ratio: 'risk ratio', odds_ratio: 'odds ratio', survival_difference: 'survival probability difference', rmst_difference: 'restricted mean survival time difference' };
   let response = outcome, when = '';
   if (graph.study) {

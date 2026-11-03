@@ -131,14 +131,14 @@ test('continuous TMLE recovers with either nuisance model and exposes double mis
 });
 
 test('every catalog entry carries a compatible, explicit design, and new scenarios execute in C++', () => {
-  assert.equal(SCENARIOS.length,28);
+  assert.equal(SCENARIOS.length,42);
   for(const s of SCENARIOS) {
     const {graph,estimand,power}=scenarioDesign(s.id);
     if(!estimand) { assert.equal(s.id,'empty'); continue; }
     const nativePlan=native({op:'plan',graph,estimand,analysis:power.analysis});
     assert.equal(nativePlan.method,compilePowerPlan(graph,estimand,power.analysis).method,s.id);
     const fit=analyze(graph,estimand,simulate(graph,graph.study?.clusterSizes.length?48:s.id==='rare-binary'?2000:500,17),power.analysis);
-    assert.ok(Number.isFinite(fit.se) && fit.se>0,s.id);
+    assert.ok(estimand.kind==='joint' ? Number.isFinite(fit.statistic) : Number.isFinite(fit.se) && fit.se>0,s.id);
   }
 });
 

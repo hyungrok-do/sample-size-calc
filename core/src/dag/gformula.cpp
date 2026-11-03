@@ -20,12 +20,34 @@ struct Fitted {
   std::vector<Term> terms;
   Vec means, scales, theta, covariance;
   double shape = 1;  // Gamma shape, held at its estimate
+  // Beta precision and negative binomial overdispersion, held at moment
+  // estimates; their means are fitted by quasi-likelihood.
+  double precision = 1, overdispersion = 0;
 };
 bool survival(const std::string &family) {
   return family == "weibull" || family == "exponential";
 }
 bool scaled(const std::string &family) {
-  return family == "gaussian" || family == "uniform" || family == "lognormal";
+  return family == "gaussian" || family == "uniform" || family == "lognormal" ||
+         family == "student";  // a Student t variable refitted as Normal
+}
+double expit_(double eta) {
+  return eta >= 0 ? 1 / (1 + std::exp(-eta)) : std::exp(eta) / (1 + std::exp(eta));
+}
+// Negative binomial quantile (mean mu, variance mu + a mu^2) by summing its
+// probabilities.
+double qnegbin(double u, double mu, double a) {
+  if (!(a > 1e-8)) return stats::qpois(u, mu);
+  const double k = 1 / a, q = a * mu / (1 + a * mu);
+  double p = std::exp(-k * std::log1p(a * mu)), cdf = p;
+  int y = 0;
+  while (cdf < u && y < 10000000) {
+    p *= (y + k) / (y + 1) * q;
+    cdf += p;
+    ++y;
+    if (p < 1e-300 && cdf < u && y > mu * 10 + 100) break;
+  }
+  return y;
 }
 double expit(double eta) {
   return eta >= 0 ? 1 / (1 + std::exp(-eta)) : std::exp(eta) / (1 + std::exp(eta));
@@ -47,7 +69,8 @@ Fitted fit(const Graph &g, const Data &d, const ChainModel &c) {
   const auto &node = g.nodes[c.node];
   Fitted f;
   f.node = c.node;
-  f.family = node.family;
+  // A Student t variable is refitted, and redrawn, as Normal.
+  f.family = node.family == "student" ? "gaussian" : node.family;
   f.terms = c.terms;
   const auto m = model_matrix(d, c.terms, true);
   f.p = m.p;
@@ -81,11 +104,30 @@ Fitted fit(const Graph &g, const Data &d, const ChainModel &c) {
     f.covariance[q * q - 1] = 1 / (2.0 * (m.n - m.p));
     return f;
   }
-  const auto model = fit_model(m, d.values[c.node], node.family);
+  const bool quasi = node.family == "beta" || node.family == "negbin";
+  const auto model = fit_model(m, d.values[c.node],
+                               node.family == "beta"     ? "bernoulli"
+                               : node.family == "negbin" ? "poisson"
+                                                         : node.family,
+                               quasi);
   f.theta = model.beta;
   f.covariance = model.covariance;
   if (node.family == "gamma")
     f.shape = 1 / model.dispersion;
+  if (quasi) {
+    // Var(y) = mu (1 - mu) / (1 + precision) for a Beta variable, and
+    // E[(y - mu)^2 - y] = overdispersion mu^2 for a negative binomial one.
+    double top = 0, bottom = 0;
+    for (int i = 0; i < m.n; ++i) {
+      double eta = model.beta[0];
+      for (int j = 1; j < m.p; ++j) eta += model.beta[j] * m.x[i * m.p + j];
+      const double y = d.values[c.node][i], mu = node.family == "beta" ? expit_(eta) : std::exp(eta);
+      if (node.family == "beta") { top += mu * (1 - mu); bottom += (y - mu) * (y - mu); }
+      else { top += (y - mu) * (y - mu) - y; bottom += mu * mu; }
+    }
+    if (node.family == "beta") f.precision = std::max(.01, bottom > 0 ? top / bottom - 1 : 1e6);
+    else f.overdispersion = std::max(0.0, bottom > 0 ? top / bottom : 0);
+  }
   return f;
 }
 // Standardized noise for one draw, fixed for the study: the parameters only
@@ -114,6 +156,12 @@ double draw(const Fitted &f, const Vec &theta, const double *row, double u,
     return u < expit(eta) ? 1 : 0;
   if (f.family == "poisson")
     return stats::qpois(u, std::exp(eta));
+  if (f.family == "negbin")
+    return qnegbin(u, std::exp(eta), f.overdispersion);
+  if (f.family == "beta") {
+    const double mu = expit(eta);
+    return std::clamp(stats::qbeta(u, mu * f.precision, (1 - mu) * f.precision), 1e-300, 1 - 0x1p-53);
+  }
   return std::exp((std::log(z) - eta) / std::exp(extra(f, theta)));
 }
 // The outcome's mean, P(Y = 1), S(horizon) or RMST to the horizon given its
@@ -131,9 +179,9 @@ double functional(const Fitted &f, const Vec &theta, const double *row,
     return std::exp(-eta / k + stats::lgammafn(1 + 1 / k)) *
            stats::pgamma_raw(x, 1 / k, true);
   }
-  if (f.family == "bernoulli")
+  if (f.family == "bernoulli" || f.family == "beta")
     return expit(eta);
-  if (f.family == "gaussian" || f.family == "uniform")
+  if (f.family == "gaussian" || f.family == "uniform" || f.family == "student")
     return eta;
   if (f.family == "lognormal") {
     const double sd = std::exp(extra(f, theta));

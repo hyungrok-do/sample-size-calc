@@ -5,7 +5,7 @@ import { scopeOf, sizeUnit, parseStudy } from './dag-study.js?v=dev';
 import { reconcileAnalysis } from './dag-functions.js?v=dev';
 import { mountFunctions } from './dag-function-editor.js?v=dev';
 import { addEdge, removeEdge, removeNode, makeNode, emptyGraph, renameNode, validateGraph,
-  equation, dataCsv, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES } from './dag-model.js?v=dev';
+  equation, dataCsv, KINDS, DISTRIBUTIONS, FAMILIES, MAX_NODES, parameterValue } from './dag-model.js?v=dev';
 import { NODE_W, NODE_H, CANVAS_LIMIT, ASPECT, plateLayout, plateAt, changeScope, setStructure, edgePath, loopPath, layout,
   freeSpot, connectTargets, inferRoles, contentBounds, fitView, zoomView, viewBox } from './dag-canvas.js?v=dev';
 import { validateEstimand, renameEstimand, exportDesign, parseDesign } from './estimand-model.js?v=dev';
@@ -19,26 +19,34 @@ const SVG = 'http://www.w3.org/2000/svg';
 const STORE = 'ssc-dag-v1';
 const number = (x) => x === null ? '—' : Number.isInteger(x) ? String(x) : x.toFixed(3);
 const kindNames = { continuous: 'Continuous', binary: 'Binary', count: 'Count', survival: 'Survival time' };
-const parameterLabels = { sd: 'Standard deviation', width: 'Uniform width', shape: 'Shape', scale: 'Baseline time scale' };
+const parameterLabels = { sd: 'Standard deviation', width: 'Uniform width', shape: 'Shape', scale: 'Baseline time scale',
+  df: 'Degrees of freedom', precision: 'Precision φ (variance = μ(1 − μ) / (1 + φ))', overdispersion: 'Overdispersion α (variance = μ + αμ²)' };
 const PREVIEW_N = 2000;  // observations drawn to sketch each variable's distribution
 const SKETCH_W = 220;  // width of the selected variable's sketch in its settings
+// how an arrow marks a response-curve term of its source in the child
+const TERM_MARK = { square: 'x²', log: 'log', threshold: 'step', hinge: 'hinge', saturation: 'tanh', spline: 'spline' };
 const short = (x) => String(Number(x.toPrecision(3))).replace('-', '−');
 // What a node's box says about its distribution: a root's values, or the scale its incoming arrows act on.
 function summary(graph, node) {
   if (graph.study && scopeOf(node) === 'time') return `Visit times · ${graph.study.times.join(', ')}`;
   const i = node.intercept, e = Math.exp(i), family = DISTRIBUTIONS[node.family].label;
+  const param = (key) => short(parameterValue(node, key));  // every family's text is built, so read parameters safely
   if (graph.edges.some((edge) => edge.target === node.id)) {
     const rest = { gaussian: `SD ${short(node.sd)}`, uniform: `width ${short(node.width)}`, lognormal: 'log scale', gamma: 'log mean',
-      bernoulli: 'log-odds', poisson: 'log mean', weibull: 'log HR', exponential: 'log HR' }[node.family];
+      student: `scale ${short(node.sd)}, ${param('df')} df`, beta: 'log odds of the mean', bernoulli: 'log-odds', poisson: 'log mean',
+      negbin: `log mean, α ${param('overdispersion')}`, weibull: 'log HR', exponential: 'log HR' }[node.family];
     return `${family} · ${rest}`;
   }
   return `${family} · ${{ gaussian: `mean ${short(i)}, SD ${short(node.sd)}`, uniform: `center ${short(i)}, width ${short(node.width)}`,
     lognormal: `median ${short(e)}`, gamma: `mean ${short(e)}, shape ${short(node.shape)}`, bernoulli: `P(1) = ${short(1 / (1 + Math.exp(-i)))}`,
-    poisson: `mean ${short(e)}`, weibull: `k ${short(node.shape)}, scale ${short(node.scale)}`, exponential: `scale ${short(node.scale)}` }[node.family]}`;
+    student: `center ${short(i)}, scale ${short(node.sd)}, ${param('df')} df`, beta: `mean ${short(1 / (1 + Math.exp(-i)))}, precision ${param('precision')}`,
+    poisson: `mean ${short(e)}`, negbin: `mean ${short(e)}, α ${param('overdispersion')}`,
+    weibull: `k ${short(node.shape)}, scale ${short(node.scale)}`, exponential: `scale ${short(node.scale)}` }[node.family]}`;
 }
 // The second line of a box: the distribution in a few characters, with a root's parameters.
 function compact(graph, node) {
   if (graph.study && scopeOf(node) === 'time') return 'visit time';
+  if (node.measured === false) return 'unmeasured';
   const name = DISTRIBUTIONS[node.family].label;
   if (graph.edges.some((edge) => edge.target === node.id)) return name;
   const i = node.intercept;
@@ -281,7 +289,10 @@ export function mountDag(root) {
     const lines = svg('g', { class: 'dag-arrows' });
     for (const edge of graph.edges) {
       const key = `${edge.source}>${edge.target}`, { d, mid } = edgePath(map.get(edge.source), map.get(edge.target));
-      const number = short(edge.coefficient), width = 8.5 * number.length + 10;
+      // the arrow's linear coefficient, and a mark for each response-curve term of the source in the child
+      const shapes = [...new Set((map.get(edge.target).functions ?? []).filter((t) => t.left === edge.source || t.right === edge.source)
+        .map((t) => t.right ? '×' : TERM_MARK[t.transform?.kind] ?? 'f'))];
+      const number = short(edge.coefficient) + (shapes.length ? ` + ${shapes.join(', ')}` : ''), width = 7.6 * number.length + 12;
       const isSelected = key === selectedEdge, kind = effect.has(key) ? 'effect' : biased.has(key) ? 'bias' : '';
       const group = svg('g', { class: `dag-edge${edge.target === selected && !selectedEdge ? ' selected' : ''}${isSelected ? ' chosen' : ''}${kind ? ` ${kind}` : ''}`,
         'data-edge': key, role: 'button', tabindex: 0,
@@ -361,12 +372,12 @@ export function mountDag(root) {
       const inferred = roles.get(node.id), shownRole = ['confounder', 'mediator', 'collider'].includes(inferred) ? inferred : null;
       // A box says what the variable is and how it is drawn, in two lines; everything else is in its tooltip,
       // the variable settings and the equations.
-      const tip = [`${node.id} · ${node.label}`, `${kindNames[node.kind]}: ${summary(graph, node)}`,
+      const tip = [`${node.id} · ${node.label}${node.measured === false ? ' (unmeasured: no analysis can use it)' : ''}`, `${kindNames[node.kind]}: ${summary(graph, node)}`,
         ...(node.kind === 'survival' && node.censoring.mode !== 'none' ? [node.censoring.mode === 'variable' ? `Censored by ${node.censoring.variable}` : `Follow-up ends at ${short(node.censoring.time)}`] : []),
         ...(r.residualCorrelation ? [`Residual correlation ${short(r.residualCorrelation)} per unit time`] : []),
         ...(inferred ? [`${inferred[0].toUpperCase()}${inferred.slice(1)}: ${roleHelp[inferred].toLowerCase()}`] : []),
         ...(sketched ? [sketched.title] : [])].join('\n');
-      const group = svg('g', { class: `dag-node ${node.kind}${node.id === selected ? ' selected' : ''}${node.id === connecting ? ' connecting' : ''}`
+      const group = svg('g', { class: `dag-node ${node.kind}${node.measured === false ? ' unmeasured' : ''}${node.id === selected ? ' selected' : ''}${node.id === connecting ? ' connecting' : ''}`
         + `${target && node.id !== connecting ? target.ok ? ' target-ok' : ' target-bad' : ''}`
         + `${!graph.edges.some((e) => e.source === node.id || e.target === node.id) && graph.nodes.length > 1 ? ' isolated' : ''}`,
         'data-node': node.id, transform: `translate(${node.x} ${node.y})`, tabindex: 0, role: 'button',
@@ -588,6 +599,11 @@ export function mountDag(root) {
       item('Edit', () => { updateSelection(node.id); $('dag-node-label').focus(); }),
       item('Draw an arrow from it', () => connectTo(node.id)),
       ...level('cluster', 'Measure once per cluster'), ...level('subject', 'Measure once per subject'), ...level('visit', 'Measure at every visit'),
+      ...(graph.study && scopeOf(node) === 'time' ? [] : [item(node.measured === false ? 'Mark as measured' : 'Mark as unmeasured', () => {
+        const { measured: _, ...rest } = node;
+        apply({ ...graph, nodes: graph.nodes.map((n) => n.id === node.id ? (node.measured === false ? rest : { ...rest, measured: false }) : n) },
+          node.measured === false ? `${node.id} is measured: analyses can use it.` : `${node.id} is unmeasured: it is simulated, but no analysis can use it.`);
+      })]),
       item('Delete', () => apply(removeNode(graph, node.id), `${node.id} and its arrows removed. Undo restores them.`)));
     document.body.append(menu);
     menu.style.left = `${Math.min(x, innerWidth - menu.offsetWidth - 8) + scrollX}px`;
@@ -712,12 +728,15 @@ export function mountDag(root) {
     // shown to six digits; the intercept is kept exactly unless the probability is edited
     const shownProbability = String(Number((1 / (1 + Math.exp(-node.intercept))).toPrecision(6)));
     const probability = numeric('dag-node-probability', shownProbability, { min: 0, max: 1 });
-    const inputs = Object.fromEntries(['sd', 'width', 'shape', 'scale'].map((key) => [key, numeric(`dag-node-${key}`, node[key], { min: 0 })]));
+    const inputs = Object.fromEntries(['sd', 'width', 'shape', 'scale', 'df', 'precision', 'overdispersion'].map((key) => [key, numeric(`dag-node-${key}`, parameterValue(node, key), { min: 0 })]));
+    const measured = el('input', { id: 'dag-node-measured', type: 'checkbox', checked: node.measured !== false });
     const censorMode = select('dag-censor-mode', [['none', 'None · fully observed'], ['administrative', 'Administrative cutoff'], ['variable', 'Use another variable']], node.censoring.mode);
     const censorTime = numeric('dag-censor-time', node.censoring.time, { min: 0 });
     const censorVariable = select('dag-censor-variable', graph.nodes.filter((n) => n.id !== node.id).map((n) => [n.id, `${n.id} · ${n.label}`]), node.censoring.variable);
     const form = el('form', { novalidate: true }, el('div', { class: 'dag-pair' }, field('ID', id), field('Label', label)),
-      el('div', { class: 'dag-pair' }, field('Type', kind), field('Distribution', family)));
+      el('div', { class: 'dag-pair' }, field('Type', kind), field('Distribution', family)),
+      ...(graph.study && scopeOf(node) === 'time' ? [] : [el('div', { class: 'dag-field dag-check' }, el('label', {}, measured, ' Measured in the study'),
+        el('p', { class: 'small muted' }, 'Clear it for a variable that is simulated but that no analysis can use: an unmeasured confounder, the true value behind an error-prone measurement, or a hidden class.'))]));
     const parameters = el('div'), observation = el('div');
     function observationFields() {
       observation.replaceChildren();
@@ -760,7 +779,8 @@ export function mountDag(root) {
           if (!(p > 0 && p < 1)) throw new Error('Success probability must be strictly between 0 and 1.');
           baseline = Math.log(p) - Math.log1p(-p);
         }
-        const changed = { ...node, ...studyFields.read(), label: label.value.trim(), kind: kind.value, family: family.value,
+        const { measured: _, ...rest } = node;
+        const changed = { ...rest, ...(measured.checked ? {} : { measured: false }), ...studyFields.read(), label: label.value.trim(), kind: kind.value, family: family.value,
           intercept: baseline,
           censoring: kind.value === 'survival' ? { mode: censorMode.value,
             time: censorMode.value === 'administrative' ? inputNumber(censorTime, 'Administrative cutoff') : 20,

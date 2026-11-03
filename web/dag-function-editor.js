@@ -77,8 +77,9 @@ export function mountFunctions(box, { graph, node, onChange, onError }) {
         for (const e of graph.edges) if (e.target === node.id) eta += e.coefficient * values[e.source];
         for (const t of node.interactions) eta += t.coefficient * values[t.left] * values[t.right];
         for (const t of functions) eta += t.coefficient * transformValue(values[t.left], t.transform) * (t.right ? transformValue(values[t.right], t.rightTransform) : 1);
-        response.push(node.family === 'bernoulli' ? 1 / (1 + Math.exp(-eta)) : ['gaussian', 'uniform'].includes(node.family) ? eta : Math.exp(eta + (node.family === 'lognormal' ? node.sd ** 2 / 2 : 0)));
+        response.push(['bernoulli', 'beta'].includes(node.family) ? 1 / (1 + Math.exp(-eta)) : ['gaussian', 'uniform', 'student'].includes(node.family) ? eta : Math.exp(eta + (node.family === 'lognormal' ? node.sd ** 2 / 2 : 0)));
       }
+      if (response.some((x) => Number.isNaN(x))) throw new Error('A log term needs positive values: start the preview range above 0.');
       if (response.some((x) => !Number.isFinite(x))) throw new Error('The response overflows within this preview range.');
       const min = Math.min(...response), max = Math.max(...response), span = max - min || 1;
       const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

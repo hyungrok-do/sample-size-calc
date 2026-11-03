@@ -46,6 +46,7 @@ void parse_study(Graph &g) {
     if(n.scope!="subject" && n.scope!="cluster" && n.scope!="visit" && n.scope!="time") fail("Choose cluster, subject, visit or time scope.");
     if(n.scope=="cluster" && s.clusterSizes.empty()) fail("Cluster variables require cluster sizes in the study structure.");
     if(n.scope=="time" && (n.family!="gaussian" || !n.terms.empty())) fail("A visit-time variable must be a continuous Normal root; its values come from the schedule.");
+    if(n.scope=="time" && !n.measured) fail("The visit time is part of the schedule and is always measured.");
     if(n.scope=="visit" && n.kind=="survival") fail("Repeated event processes require a separate event-history model. Use a subject-level survival variable.");
     const auto &r=v.get("repeated");
     if(!r.is_null() && !r.is_object()) fail("Repeated-measure settings must be an object.");
