@@ -16,11 +16,15 @@ struct Learned {
   Vec weights;     // per learner, summing to one; zero for a learner that failed
 };
 // Fits to `rows` and predicts every row. Each learner's 5-fold cross-validated
-// predictions are combined by non-negative least squares, normalized to a
-// convex combination, and the learners with weight are refitted on all `rows`.
+// predictions are combined by the convex combination with the smallest squared
+// error (non-negative weights summing to one, exactly solved), and the
+// learners with weight are refitted on all `rows`.
 // family "bernoulli" uses logistic GLMs and logistic boosting and returns
 // probabilities; any other family uses squared-error learners. With `groups`
-// (a cluster per row), the folds keep each cluster together.
+// (a cluster per row), the folds and boosting's early-stopping hold-out keep
+// each cluster together. The product GLM takes at most 40 terms; products
+// with the first variables come first, so callers list the most important
+// variable (the exposure) first.
 Learned super_learner(const Data &data, const std::vector<int> &variables,
                       const Vec &response, const std::vector<int> &rows,
                       const std::string &family, const std::vector<int> *groups = nullptr);

@@ -51,8 +51,8 @@ double quantile(const Vec &sorted, double q) {
 // squared error, or the logistic loss with Newton leaf values.
 class Booster {
 public:
-  Booster(const Data &d, const std::vector<int> &variables, const Vec &y, bool logistic)
-      : n_(d.n), p_(static_cast<int>(variables.size())), y_(y), logistic_(logistic), bins_(p_), count_(p_) {
+  Booster(const Data &d, const std::vector<int> &variables, const Vec &y, bool logistic, const std::vector<int> *groups)
+      : n_(d.n), p_(static_cast<int>(variables.size())), y_(y), logistic_(logistic), groups_(groups), bins_(p_), count_(p_) {
     for (int j = 0; j < p_; ++j) {
       const Vec &x = d.values[variables[j]];
       Vec sorted(x);
@@ -69,10 +69,18 @@ public:
     }
   }
   // The number of rounds is chosen by early stopping on every fifth training
-  // row, then the model is refitted on all of them.
+  // row, or every fifth cluster when rows are clustered (rows of a held-out
+  // cluster seen in the fit would reward memorizing clusters), then the model
+  // is refitted on all of them.
   Vec operator()(const std::vector<int> &rows) const {
     std::vector<int> fit, held;
-    for (std::size_t k = 0; k < rows.size(); ++k) (k % 5 == 4 ? held : fit).push_back(rows[k]);
+    if (groups_) {
+      std::map<int, int> order;
+      for (int i : rows) order.emplace((*groups_)[i], static_cast<int>(order.size()));
+      const int count = static_cast<int>(order.size()), every = std::min(5, count);
+      for (int i : rows) (count >= 2 && order[(*groups_)[i]] % every == every - 1 ? held : fit).push_back(i);
+    } else
+      for (std::size_t k = 0; k < rows.size(); ++k) (k % 5 == 4 ? held : fit).push_back(rows[k]);
     int best = ROUNDS;
     if (held.size() >= 10 && fit.size() >= 20) boost(fit, ROUNDS, &held, &best);
     return boost(rows, std::max(best, 1), nullptr, nullptr);
@@ -124,7 +132,7 @@ private:
       }
       if (held) {
         const double now = loss();
-        if (now < bestLoss - 1e-12) { bestLoss = now; *bestRounds = round + 1; }
+        if (now < bestLoss * (1 - 1e-12)) { bestLoss = now; *bestRounds = round + 1; }
         else if (round + 1 - *bestRounds >= PATIENCE) break;
       }
     }
@@ -138,10 +146,12 @@ private:
   Split split(const std::vector<int> &rows, const Vec &g, const Vec &h) const {
     Split best;
     if (static_cast<int>(rows.size()) < 2 * MIN_LEAF) return best;
-    double G = 0, H = 0;
-    for (int i : rows) { G += g[i]; H += h[i]; }
+    double G = 0, H = 0, scale = 0;
+    for (int i : rows) { G += g[i]; H += h[i]; scale += g[i] * g[i] / h[i]; }
     const double parent = G * G / (H + LAMBDA);
-    double bestGain = 1e-12;
+    // a split must gain a relative amount of the loss: outcomes on any scale split alike
+    double bestGain = 1e-12 * scale;
+    if (!(bestGain > 0)) return best;
     double gb[BINS], hb[BINS];
     int nb[BINS];
     for (int j = 0; j < p_; ++j) {
@@ -165,6 +175,7 @@ private:
   int n_, p_;
   const Vec &y_;
   bool logistic_;
+  const std::vector<int> *groups_;
   std::vector<std::vector<std::uint8_t>> bins_;
   std::vector<int> count_;
 };
@@ -308,30 +319,75 @@ private:
   Vec phi_;
 };
 
-// Non-negative least squares by cyclic coordinate descent on the normal
-// equations (a handful of learners).
-Vec nnls(const std::vector<Vec> &columns, const Vec &y, const std::vector<int> &rows, const std::vector<bool> &use) {
+// The convex combination of the learners' cross-validated predictions with
+// the smallest squared error: min ||sum_l w_l (cv_l - y)||^2 over weights
+// w >= 0 summing to one. Working with the residual columns makes the weights
+// independent of the outcome's location (an outcome near 1000 with SD 1 gets
+// the same weights as one near 0), unlike non-negative least squares on the
+// raw predictions followed by normalization. The minimum lies in the relative
+// interior of some face of the simplex, where it solves the face's equality-
+// constrained problem, so every support is tried (at most 63 for six learners)
+// and the best feasible solution kept; a single learner is always feasible.
+Vec simplex_weights(const std::vector<Vec> &columns, const Vec &y, const std::vector<int> &rows, const std::vector<bool> &use) {
   const int k = static_cast<int>(columns.size());
-  std::vector<double> gram(k * k), cross(k);
-  for (int a = 0; a < k; ++a) {
-    if (!use[a]) continue;
-    for (int i : rows) cross[a] += columns[a][i] * y[i];
-    for (int b = 0; b < k; ++b) if (use[b]) for (int i : rows) gram[a * k + b] += columns[a][i] * columns[b][i];
-  }
-  Vec w(k);
-  for (int sweep = 0; sweep < 1000; ++sweep) {
-    double change = 0;
-    for (int a = 0; a < k; ++a) {
-      if (!use[a] || !(gram[a * k + a] > 0)) continue;
-      double r = cross[a];
-      for (int b = 0; b < k; ++b) r -= gram[a * k + b] * w[b];
-      const double next = std::max(0.0, w[a] + r / gram[a * k + a]);
-      change = std::max(change, std::fabs(next - w[a]));
-      w[a] = next;
+  std::vector<double> gram(static_cast<std::size_t>(k) * k);
+  for (int a = 0; a < k; ++a) if (use[a])
+    for (int b = a; b < k; ++b) if (use[b]) {
+      double s = 0;
+      for (int i : rows) s += (columns[a][i] - y[i]) * (columns[b][i] - y[i]);
+      gram[a * k + b] = gram[b * k + a] = s;
     }
-    if (change < 1e-12) break;
+  Vec best(k);
+  double bestRisk = INFINITY;
+  for (int mask = 1; mask < (1 << k); ++mask) {
+    std::vector<int> s;
+    bool usable = true;
+    for (int l = 0; l < k; ++l) if (mask >> l & 1) { if (!use[l]) usable = false; s.push_back(l); }
+    if (!usable) continue;
+    const int m = static_cast<int>(s.size());
+    if (m == 1) {
+      if (gram[s[0] * k + s[0]] < bestRisk) { bestRisk = gram[s[0] * k + s[0]]; best.assign(k, 0); best[s[0]] = 1; }
+      continue;
+    }
+    // solve G_SS v = 1 by Gaussian elimination with partial pivoting; a ridge
+    // far below the scale of G separates learners with identical predictions
+    std::vector<double> a(static_cast<std::size_t>(m) * (m + 1));
+    double trace = 0;
+    for (int r = 0; r < m; ++r) trace += gram[s[r] * k + s[r]];
+    const double ridge = 1e-12 * std::max(trace / m, 1e-300);
+    for (int r = 0; r < m; ++r) {
+      for (int c = 0; c < m; ++c) a[r * (m + 1) + c] = gram[s[r] * k + s[c]] + (r == c ? ridge : 0);
+      a[r * (m + 1) + m] = 1;
+    }
+    bool singular = false;
+    for (int c = 0; c < m && !singular; ++c) {
+      int pivot = c;
+      for (int r = c + 1; r < m; ++r) if (std::fabs(a[r * (m + 1) + c]) > std::fabs(a[pivot * (m + 1) + c])) pivot = r;
+      if (!(std::fabs(a[pivot * (m + 1) + c]) > 0)) { singular = true; break; }
+      if (pivot != c) for (int j = 0; j <= m; ++j) std::swap(a[c * (m + 1) + j], a[pivot * (m + 1) + j]);
+      for (int r = c + 1; r < m; ++r) {
+        const double f = a[r * (m + 1) + c] / a[c * (m + 1) + c];
+        for (int j = c; j <= m; ++j) a[r * (m + 1) + j] -= f * a[c * (m + 1) + j];
+      }
+    }
+    if (singular) continue;
+    Vec v(m);
+    for (int r = m - 1; r >= 0; --r) {
+      double x = a[r * (m + 1) + m];
+      for (int j = r + 1; j < m; ++j) x -= a[r * (m + 1) + j] * v[j];
+      v[r] = x / a[r * (m + 1) + r];
+    }
+    double total = 0;
+    for (double x : v) total += x;
+    if (!(total > 0) || !std::isfinite(total)) continue;
+    bool feasible = true;
+    for (double &x : v) { x /= total; if (x < -1e-10) feasible = false; x = std::max(x, 0.0); }
+    if (!feasible) continue;
+    double risk = 0;
+    for (int r = 0; r < m; ++r) for (int c = 0; c < m; ++c) risk += v[r] * v[c] * gram[s[r] * k + s[c]];
+    if (risk < bestRisk) { bestRisk = risk; best.assign(k, 0); for (int r = 0; r < m; ++r) best[s[r]] = v[r]; }
   }
-  return w;
+  return best;
 }
 } // namespace
 
@@ -372,8 +428,10 @@ Learned super_learner(const Data &d, const std::vector<int> &variables, const Ve
   if (variables.empty()) use[1] = use[2] = use[3] = use[4] = use[5] = false;
   else if (bases[1]->size() == linear.size()) use[2] = false;   // one variable: no products
   if (additive.size() == linear.size()) use[3] = false;          // nothing to smooth
-  auto booster = std::make_shared<Booster>(d, variables, y, logistic);
+  auto booster = std::make_shared<Booster>(d, variables, y, logistic, groups);
   library[4] = [booster](const std::vector<int> &r) { return (*booster)(r); };
+  // kernel ridge chooses its penalty by GCV, which treats rows as independent;
+  // with clusters it can overfit them, and the cluster folds below judge it
   if (variables.empty()) use[5] = false;
   else {
     auto kernel = std::make_shared<KernelRidge>(d, variables, y, logistic);
@@ -408,19 +466,9 @@ Learned super_learner(const Data &d, const std::vector<int> &variables, const Ve
       } catch (const Error &) { use[l] = false; }
     }
   }
-  Vec w = nnls(cv, y, rows, use);
-  double total = 0;
-  for (double x : w) total += x;
-  if (!(total > 0)) {
-    // no learner improves on zero: keep the one with the smallest CV risk
-    int best = 0; double risk = INFINITY;
-    for (int l = 0; l < k; ++l) if (use[l]) {
-      double r = 0; for (int i : rows) r += (y[i] - cv[l][i]) * (y[i] - cv[l][i]);
-      if (r < risk) { risk = r; best = l; }
-    }
-    w.assign(k, 0); w[best] = 1; total = 1;
-  }
-  for (double &x : w) x /= total;
+  if (std::none_of(use.begin(), use.end(), [](bool u) { return u; }))
+    throw Error("nonconvergence", "No Super Learner candidate could be fitted.");
+  Vec w = simplex_weights(cv, y, rows, use);
   Learned out;
   out.prediction.assign(n, 0);
   for (int l = 0; l < k; ++l) {

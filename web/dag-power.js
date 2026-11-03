@@ -323,7 +323,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
       choice.addEventListener('change', visibility); visibility();
       return el('div', { class: 'dag-grid' }, field(`Model for ${n.id}`, choice), k, inter);
     });
-    const learnerField = field('AIPW / TMLE nuisance models', learner, 'The Super Learner weighs a mean, GLMs, additive splines, boosted trees and kernel ridge regression by 5-fold cross-validation; it uses the variables of the terms below, not their form. For independent subjects, automatic analysis chooses it, with TMLE and 3-fold cross-fitting, when a treatment or outcome model has a relationship of unknown form.');
+    const learnerField = field('AIPW / TMLE nuisance models', learner, 'The Super Learner weighs a mean, GLMs, additive splines, boosted trees and kernel ridge regression by 5-fold cross-validation; it uses the variables of the terms below, not their form, and is always cross-fitted (at least 2 folds). For independent subjects, automatic analysis chooses it, with TMLE and 3-fold cross-fitting, when a treatment or outcome model has a relationship of unknown form.');
     const knotsField = field('Analysis spline knots', knots, 'Fixed knots in the original predictor units; includes linear terms.'),
       propensityKnotsField = field('Propensity spline knots', propensityKnots);
     function analysisFields() {
@@ -332,6 +332,9 @@ export function mountPower(root, { getGraph, onTarget, onSettings, engine = null
       targetedOptions.hidden = !['aipw', 'tmle'].includes(analysisMethod.value);
       learnerField.hidden = !['aipw', 'tmle'].includes(analysisMethod.value);
       if (learnerField.hidden) learner.value = 'glm';
+      // the Super Learner is always cross-fitted (the plan raises one fold to three)
+      folds.min = learner.value === 'superlearner' ? 2 : 1;
+      if (learner.value === 'superlearner' && Number(folds.value) < 2) folds.value = 3;
       knotsField.hidden = analysisBasis.value !== 'spline'; propensityKnotsField.hidden = propensityBasis.value !== 'spline';
       folds.disabled = !['auto', 'aipw', 'tmle'].includes(analysisMethod.value);
       if (folds.disabled) folds.value = 1;

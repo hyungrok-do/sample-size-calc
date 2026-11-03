@@ -221,7 +221,9 @@ they interact in an arbitrary way): 64 random Fourier features of a Gaussian
 process with a squared-exponential kernel on the parents standardized by
 their population mean and SD, then centred and scaled to the given SD. The
 standardization comes from a pilot draw of the model (4,000 rows, a fixed
-seed) and is carried into the scenarios the engine derives from the graph, so
+seed; in a study, 4,000 subjects or at most 40,000 rows, with every cluster
+reduced to one subject so a cluster-level parent gets thousands of independent
+draws) and is carried into the scenarios the engine derives from the graph, so
 the null and calibrated scenarios keep the same function; in the null
 scenario the compared variable is held at its reference level inside it.
 **Draw another shape** changes the shape number (the function's seed). The
@@ -474,18 +476,29 @@ terms chosen below it) or *Super Learner* (van der Laan, Polley & Hubbard
 2007): a library of the training mean, a main-terms GLM, a GLM with all
 pairwise products, additive restricted cubic splines (knots at covariate
 quantiles), gradient-boosted depth-2 trees (shrinkage 0.1, the number of
-rounds chosen by early stopping on a fifth of the training rows) and kernel
-ridge regression on 48 random Fourier features (median-heuristic bandwidth,
-penalty by generalized cross-validation). Each learner's 5-fold cross-validated
-predictions are combined by non-negative least squares into a convex
-combination, and the learners with weight are refitted on the training rows.
+rounds chosen by early stopping on a fifth of the training rows, or of the
+clusters) and kernel ridge regression on 48 random Fourier features
+(median-heuristic bandwidth, penalty by generalized cross-validation). Each
+learner's 5-fold cross-validated predictions are combined by the convex
+combination (non-negative weights summing to one) with the smallest
+cross-validated squared error, solved exactly; because it works with the
+learners' residuals, the weights do not depend on where the outcome sits on
+its scale. The learners with weight are refitted on the training rows. In
+clustered data the folds and the boosting hold-out keep clusters together. The
+product GLM takes at most 40 terms, the exposure's products first.
 Logistic versions model the propensity and a binary outcome. The Super Learner
 uses the variables of the planned terms, not their forms; the outcome
 regression is one model over both arms with the exposure as a covariate,
 evaluated at each level. With cross-fitting each fold's predictions come from
-learners fitted on the other folds (CV-TMLE). The diagnostics report the mean
-weights each learner received. JSON: `"learner": "superlearner"` in the
-analysis. A Super Learner run takes several times longer than a parametric one.
+learners fitted on the other folds (CV-TMLE). The Super Learner is always
+cross-fitted: one fold is raised to three, because learners fitted and
+evaluated on the same rows overfit and the test rejected a true null in 13–21%
+of simulated studies. The diagnostics report the mean weights each learner
+received. JSON: `"learner": "superlearner"` in the analysis; it is refused for
+MMRM, LMM and trajectory analyses. A Super Learner run takes several times
+longer than a parametric one, and the engine's memory budget counts its
+working set (data stacked three times, design matrices and kernel features),
+so large runs use fewer threads.
 
 In checks with two standard Normal confounders whose effects on treatment
 (log-odds SD 1) and outcome (SD 1) both had unknown form, parametric AIPW was

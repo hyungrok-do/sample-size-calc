@@ -690,6 +690,16 @@ TEST_CASE("dag: relationships of unknown form and the Super Learner") {
   for (double w : learned.weights) { CHECK(w >= 0); total += w; }
   CHECK_CLOSE(total, 1, 0, 1e-9);
   CHECK(learnedError < .5 * linearError);
+  // The weights do not depend on where the outcome sits: shifted by 1000 (an
+  // outcome far from zero relative to its spread), the predictions shift and
+  // the weights stay. Normalizing non-negative least squares on the raw
+  // predictions instead put nearly all weight on the training mean.
+  Vec shifted(d.values[2]);
+  for (double &v : shifted) v += 1000;
+  const auto moved = super_learner(d, {0, 1}, shifted, rows, "gaussian");
+  for (std::size_t l = 0; l < LEARNERS.size(); ++l) CHECK_CLOSE(moved.weights[l], learned.weights[l], 0, 1e-6);
+  for (int i = 0; i < 600; i += 60) CHECK_CLOSE(moved.prediction[i] - 1000, learned.prediction[i], 0, 1e-6);
+  CHECK(learned.weights[0] < .2);  // the training mean is not the answer
   // Confounding of unknown form: the automatic analysis is TMLE with a Super
   // Learner and cross-fitting, and recovers the effect.
   J a = variable("A", "binary", "bernoulli");
@@ -704,6 +714,29 @@ TEST_CASE("dag: relationships of unknown form and the Super Learner") {
   CHECK_EQ(plan.get("method").as_string(), std::string("tmle"));
   CHECK_EQ(plan.get("learner").as_string(), std::string("superlearner"));
   CHECK_EQ(plan.get("folds").as_number(), 3.0);
+  // a Super Learner asked for without folds is cross-fitted as well
+  const J asked = run_request(object({{"op", "plan"}, {"graph", confounded}, {"estimand", marginal()},
+                                      {"analysis", object({{"method", "tmle"}, {"learner", "superlearner"}})}}));
+  CHECK_EQ(asked.get("folds").as_number(), 3.0);
+  bool told = false;
+  for (const auto &n : asked.get("notes").elements()) told |= n.as_string().find("cross-fitted in 3 folds") != std::string::npos;
+  CHECK(told);
+  // In a study of large clusters, a cluster-level input is standardized from
+  // its own spread (SD 3), not from the few clusters that fit 4,000 rows.
+  J w = variable("W", "continuous", "gaussian"), ca = variable("A", "binary", "bernoulli"), cy = variable("Y", "continuous", "gaussian");
+  w.set("sd", 3); w.set("scope", "cluster"); ca.set("scope", "cluster"); cy.set("scope", "subject");
+  J wOnly = J::array(); wOnly.push("W");
+  cy.set("unknown", unknown(wOnly, 1, 1, 7));
+  J studyNodes = J::array(), studyEdges = J::array(), times = J::array(), sizes = J::array();
+  for (const auto &v : {w, ca, cy}) studyNodes.push(v);
+  for (const auto &e : {arrow("W", "Y", 0), arrow("A", "Y", .5)}) studyEdges.push(e);
+  for (int t = 0; t < 10; ++t) times.push(t);
+  sizes.push(400);
+  const J study = object({{"version", 1}, {"nodes", studyNodes}, {"edges", studyEdges},
+                          {"study", object({{"times", times}, {"clusterSizes", sizes}})}});
+  const auto standardized = parse_graph(study).nodes[2].unknown;
+  CHECK_CLOSE(standardized.scale[0], 3, .1, 0);
+  CHECK_CLOSE(standardized.center[0], 0, 0, .3);
   const auto row = power_of(confounded, marginal(), 400, 60).get("results").at(0).get("alternative");
   CHECK_CLOSE(row.get("bias").as_number(), 0, 0, .1);
   CHECK(row.get("targetedDiagnostics").get("learners").get("outcome").size() == LEARNERS.size());

@@ -53,6 +53,7 @@ export function measuredTerms(graph, terms) {
 const unknownForm = (node) => (node?.unknown?.inputs?.length ?? 0) > 0;
 const unknownNote = (node) => `${node.id} depends on ${node.unknown.inputs.join(', ')} through a relationship of unknown form that the planned parametric models do not represent; inspect bias and coverage.`;
 const SUPER_LEARNER_NOTE = 'Nuisance models are fitted by a Super Learner: a 5-fold cross-validated, non-negative weighted ensemble of the training mean, main-terms and pairwise-product GLMs, additive restricted cubic splines, boosted depth-2 trees and kernel ridge regression. It uses the variables of the planned terms, not their functional forms.';
+const CROSS_FIT_NOTE = 'The Super Learner\'s nuisance models are cross-fitted in 3 folds. Fitted and evaluated on the same rows, flexible learners overfit and the test rejects a true null too often.';
 const AUTO_LEARNER_NOTE = 'Automatic analysis chose TMLE with a Super Learner and cross-fitting: a nuisance model has a relationship of unknown form.';
 const modelFamily = (family) => ['bernoulli', 'beta'].includes(family) ? 'bernoulli' : ['poisson', 'negbin'].includes(family) ? 'poisson' : family === 'gamma' ? 'gamma' : 'gaussian';
 const quasi = (family) => ['beta', 'negbin'].includes(family);
@@ -247,7 +248,11 @@ export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
       const a = graph.nodes.find((n) => n.id === estimand.exposure), y = graph.nodes.find((n) => n.id === estimand.outcome);
       if (descendants(graph, y.id).has(a.id)) fail('The outcome cannot be upstream of treatment for TMLE.');
       p = { ...p, ...aipwPlan(graph, estimand, a, y, p.notes), method: 'tmle', folds: spec.folds, learner: spec.learner ?? 'glm' };
+      if (p.learner === 'superlearner' && p.folds < 2) { p.folds = 3; addNote(p.notes, CROSS_FIT_NOTE); }
       configureTargeted(graph, estimand, p, spec);
+    } else {
+      // structured estimators refuse folds in studyPlan; a learner would be ignored
+      if (spec.learner === 'superlearner') fail('The Super Learner fits the nuisance models of AIPW and TMLE. Select one of those methods.');
     }
     return p;
   }
@@ -274,6 +279,7 @@ export function compilePowerPlan(graph, estimand, rawAnalysis = {}) {
   if (learner === 'superlearner' && !['aipw', 'tmle'].includes(p.method)) fail('The Super Learner fits the nuisance models of AIPW and TMLE. Select one of those methods.');
   if (['aipw', 'tmle'].includes(p.method)) p.learner = learner;
   if (p.folds > 1 && !['aipw', 'tmle'].includes(p.method)) fail('Cross-fitting is available for AIPW and TMLE. Select one of those methods.');
+  if (p.learner === 'superlearner' && p.folds < 2) { p.folds = 3; addNote(p.notes, CROSS_FIT_NOTE); }
   if (['aipw', 'tmle'].includes(p.method)) configureTargeted(graph, estimand, p, spec);
   else p.terms = analysisTerms(graph, p.terms, spec, y.id);
   if (p.method === 'gformula') {

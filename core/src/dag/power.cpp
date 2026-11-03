@@ -44,6 +44,9 @@ std::string unknown_note(const Graph &g, int v) {
   for (int k : g.nodes[v].unknown.inputs) inputs += (inputs.empty() ? "" : ", ") + g.nodes[k].id;
   return g.nodes[v].id + " depends on " + inputs + " through a relationship of unknown form that the planned parametric models do not represent; inspect bias and coverage.";
 }
+// fitted and judged on the same rows, flexible learners overfit: in simulated
+// confounded designs, 13-21% of studies rejected a true null without folds
+const char *const CROSS_FIT_NOTE = "The Super Learner's nuisance models are cross-fitted in 3 folds. Fitted and evaluated on the same rows, flexible learners overfit and the test rejects a true null too often.";
 const char *const SUPER_LEARNER_NOTE = "Nuisance models are fitted by a Super Learner: a 5-fold cross-validated, non-negative weighted ensemble of the training mean, main-terms and pairwise-product GLMs, additive restricted cubic splines, boosted depth-2 trees and kernel ridge regression. It uses the variables of the planned terms, not their functional forms.";
 std::string unmeasured_note(const Graph &g, int a, int y) {
   std::string names;
@@ -548,7 +551,12 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
       if(descendants(g,p.outcome)[p.exposure]) fail("The outcome cannot be upstream of treatment for TMLE.");
       plan_aipw(g,e,p); p.method="tmle";
       p.folds=integer(spec,"folds",1,10,1); p.learner=spec.find("learner") ? spec.get("learner").as_string() : "glm";
+      if(p.learner=="superlearner" && p.folds<2) { p.folds=3; note(p,CROSS_FIT_NOTE); }
       configure_targeted(g,e,p);
+    } else {
+      // structured estimators refuse folds in study_plan; a learner would be ignored
+      if(spec.find("learner") && spec.get("learner").as_string()=="superlearner")
+        fail("The Super Learner fits the nuisance models of AIPW and TMLE. Select one of those methods.");
     }
     return p;
   }
@@ -577,6 +585,7 @@ Plan compile_plan(const Graph &g, const J &e, const J &raw = J()) {
     fail("The Super Learner fits the nuisance models of AIPW and TMLE. Select one of those methods.");
   if(p.folds>1 && p.method!="aipw" && p.method!="tmle")
     fail("Cross-fitting is available for AIPW and TMLE. Select one of those methods.");
+  if(p.learner=="superlearner" && p.folds<2) { p.folds=3; note(p,CROSS_FIT_NOTE); }
   if(p.method=="aipw" || p.method=="tmle") configure_targeted(g,e,p);
   else p.terms=analysis_terms(g,p.terms,spec,p.outcome);
   if(p.method=="gformula") {
@@ -701,8 +710,10 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
   Data stacked;
   auto ov=variables(p.terms);
   if(learned) {
-    if(std::find(ov.begin(),ov.end(),p.exposure)==ov.end()) ov.push_back(p.exposure);
-    std::sort(ov.begin(),ov.end());
+    // the exposure leads, so its products with the covariates (the effect
+    // modification) are the ones kept when the product learner is capped
+    ov.erase(std::remove(ov.begin(),ov.end(),p.exposure),ov.end());
+    ov.insert(ov.begin(),p.exposure);
     stacked.n=3*n; stacked.values.resize(d.values.size());
     for(int v:ov) {
       auto &column=stacked.values[v]; column.resize(3*n);
@@ -1267,9 +1278,20 @@ J power(const Graph &g, const J &e, const Settings &s, int requested,
          "repetitions, or the number of variables.");
   // Bound concurrent workspaces, especially for wide regressions. The
   // calculator's pool is still shared.
+  const double largest = g.study.enabled ? study_rows(g,s.sizes.back()) : s.sizes.back();
+  // A Super Learner fit holds, for the data stacked three times over: the
+  // main-term, product (at most 40 terms) and spline design matrices, every
+  // learner's cross-validated and refitted predictions, 48 kernel features,
+  // and the booster's bins and gradients, about 110 + 5 values per variable.
+  double learnerBytes = 0;
+  if(plan.learner=="superlearner") {
+    std::set<int> variables={plan.exposure};
+    for(const auto *terms:{&plan.terms,&plan.propensity}) for(const auto &t:*terms) { variables.insert(t.left); if(t.right>=0) variables.insert(t.right); }
+    learnerBytes = 8.0 * 3 * largest * (110 + 5.0 * variables.size());
+  }
   const double terms = plan.terms.size() + 1,
-               bytes = 8 * ((g.study.enabled ? study_rows(g,s.sizes.back()) : s.sizes.back()) * (g.nodes.size() * 4 + terms + 10) +
-                            8 * terms * terms) + (plan.method=="lmm" ? 2000.0*s.sizes.back() : 0);
+               bytes = 8 * (largest * (g.nodes.size() * 4 + terms + 10) +
+                            8 * terms * terms) + (plan.method=="lmm" ? 2000.0*s.sizes.back() : 0) + learnerBytes;
   const int memoryThreads = static_cast<int>(
       std::min(128.0, std::floor(256e6 / std::max(1.0, bytes))));
   if (memoryThreads < 1)

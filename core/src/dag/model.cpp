@@ -79,16 +79,21 @@ void prepare_unknown(Graph &g) {
   for (const auto &n : g.nodes) any |= !n.unknown.inputs.empty() && !n.unknown.ready;
   if (!any) return;
   constexpr std::uint64_t PILOT = 0x70696c6f74ULL;
+  // In a study the pilot keeps the visits but gives every cluster a single
+  // subject: no variable depends on its cluster's size, so each row has the
+  // distribution it has in the study, and a cluster-level input gets as many
+  // independent draws as there are subjects (clusters of 400 would leave a
+  // 4,000-row pilot one cluster). At most 40,000 rows, within the row limit.
+  Graph pilotGraph = g;
+  int units = 4000;
+  if (g.study.enabled) {
+    if (!pilotGraph.study.clusterSizes.empty()) pilotGraph.study.clusterSizes.assign(1, 1);
+    units = std::min(4000, std::max(1, 40000 / static_cast<int>(g.study.times.size())));
+  }
   for (int j : g.order) {
     auto &u = g.nodes[j].unknown;
     if (u.inputs.empty() || u.ready) continue;
-    int units = 4000;
-    if (g.study.enabled) {
-      double size = 1;
-      if (!g.study.clusterSizes.empty()) { size = 0; for (int c : g.study.clusterSizes) size += c; size /= g.study.clusterSizes.size(); }
-      units = std::max(1, static_cast<int>(4000 / (size * g.study.times.size())));
-    }
-    const Data pilot = simulate(g, units, PILOT, {}, false);
+    const Data pilot = simulate(pilotGraph, units, PILOT, {}, false);
     const auto spread = [&](const auto &value, double &mean, double &sd) {
       double m = 0, m2 = 0;
       for (int i = 0; i < pilot.n; ++i) { const double x = value(i), delta = x - m; m += delta / (i + 1); m2 += delta * (x - m); }
@@ -104,6 +109,7 @@ void prepare_unknown(Graph &g) {
     spread([&](int i) { return unknown_raw(u, pilot, i); }, u.mean, sd);
     u.sd = sd > 0 && std::isfinite(sd) ? sd : 1;
     u.ready = true;
+    pilotGraph.nodes[j].unknown = u;  // later relationships' pilots include this one
   }
   J nodes = J::array();
   for (int i = 0; i < static_cast<int>(g.nodes.size()); ++i) {
