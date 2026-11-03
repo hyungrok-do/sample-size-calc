@@ -261,6 +261,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-roles { display: flex; gap: 6px; margin: -2px 0 12px; }
 .dag-roles button { padding: 4px 10px; font-size: 13px; border-radius: 999px; }
 .dag-roles button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+/* Redrawing the graph, the variable settings or the paths list does not make the browser restyle and re-lay out
+   the rest of the page: each keeps its layout, style and painting to itself. */
+.dag-scroll { contain: layout style paint; }  /* it already clips what overflows */
+#dag-inspector, #dag-paths, #dag-equations { contain: layout style; }
 .dag-paths h4 { margin: 6px 0; }
 .dag-paths ul { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 2px; }
 .dag-paths li { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 16px; padding: 4px 8px; border-radius: 6px; font-size: 12.5px; }

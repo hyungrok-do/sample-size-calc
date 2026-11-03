@@ -79,13 +79,28 @@ function download(content, type, name) {
 
 export function mountDag(root) {
   const $ = (id) => root.querySelector(`#${id}`);
-  const workflow = mountWorkflow(root);
+  // the question and power panels are rebuilt only when shown; edits made while they are hidden mark them stale
+  let powerStale = false;
+  const powerShown = () => ['all', 'question', 'power'].includes(root.dataset.view);
+  const workflow = mountWorkflow(root, { onChange: () => { if (powerStale && powerShown()) refreshPower(); } });
   let graph = emptyGraph(), selected = null, connectFrom = null, result = null, worker = null;
   let estimand = null, powerEditor, powerSettings = null;
   // pending: the design before target edits that have not yet become an undo step
   let history = [], future = [], pending = null, storageNote = '';
   // a sample from the current graph, drawn in the boxes; `key` is the model it came from (positions aside)
-  const preview = { columns: null, key: '', token: 0, engine: null, timer: 0 };
+  const preview = { columns: null, key: '', token: 0, timer: 0, sketches: new Map() };
+  // Starting an engine loads and compiles the WebAssembly module, which costs more than a preview itself, so
+  // previews share one engine and the page closes it a moment after the last answer.
+  const background = { engine: null, active: 0, idle: 0 };
+  function borrowEngine() {
+    clearTimeout(background.idle); background.active++;
+    return background.engine ??= new Engine();
+  }
+  function returnEngine(instance) {
+    background.active = Math.max(0, background.active - 1);
+    if (background.active || background.engine !== instance) return;
+    background.idle = setTimeout(() => { background.engine?.dispose(); background.engine = null; }, 1500);
+  }
   const modelKey = () => JSON.stringify([graph.nodes.map(({ x, y, ...rest }) => rest), graph.edges, graph.study]);
   let menu = null;
   // the canvas: what part of the drawing is in view, the selected arrow, the plates and random effects last drawn,
@@ -230,6 +245,7 @@ export function mountDag(root) {
     const map = new Map(graph.nodes.map((n) => [n.id, n]));
     // the arrows that carry the effect the power analysis tests
     const effect = new Set((estimand ? calibrationEdges(graph, estimand) : []).map((e) => `${e.source}>${e.target}`));
+    const fresh = preview.key === modelKey();  // once per drawing, not once per variable
     const connecting = gesture?.type === 'connect' ? gesture.source : connectFrom;
     const targets = connecting ? connectTargets(graph, connecting) : null;
     const roles = estimand ? inferRoles(graph, estimand.exposure, estimand.outcome) : new Map();
@@ -346,9 +362,11 @@ export function mountDag(root) {
       svg('text', { x: 14, y: 66, class: 'dag-node-family' }, summary(graph, node)));
       const role = estimand?.exposure === node.id ? (estimand.kind === 'coefficient' ? 'Predictor' : 'Compared')
         : estimand?.outcome === node.id ? 'Outcome' : null;
-      const values = preview.columns?.[node.id];
-      const sketched = values && sketch(node.kind, values, values && (node.kind === 'binary' || node.kind === 'survival') ? 92 : W - 28, 22);
-      if (sketched) group.append(svg('g', { class: `dag-spark${preview.key === modelKey() ? '' : ' stale'}`, transform: `translate(14 ${H - 30})` },
+      const values = preview.columns?.[node.id], width = node.kind === 'binary' || node.kind === 'survival' ? 92 : W - 28;
+      const sketchKey = `${node.id}|${node.kind}|${width}`;
+      if (values && !preview.sketches.has(sketchKey)) preview.sketches.set(sketchKey, sketch(node.kind, values, width, 22));
+      const sketched = values && preview.sketches.get(sketchKey);
+      if (sketched) group.append(svg('g', { class: `dag-spark${fresh ? '' : ' stale'}`, transform: `translate(14 ${H - 30})` },
         svg('title', {}, sketched.title), svg('line', { x1: 0, x2: W - 28, y1: 22.5, y2: 22.5 }),
         ...(sketched.bars ? [svg('path', { class: 'bars', d: sketched.bars })] : []),
         ...(sketched.line ? [svg('path', { class: 'curve', d: sketched.line })] : []),
@@ -482,7 +500,15 @@ export function mountDag(root) {
   const levelName = (node) => ({ cluster: 'cluster', subject: 'subject', visit: 'visit', time: 'visit' })[scopeOf(node)];
   // The paths between the compared variable and the outcome, and whether the planned analysis leaves each open.
   // Also returns the arrows on open non-causal paths, which the canvas marks.
+  // the paths depend on the model's structure, the question and the analysis, not on where boxes are drawn: the
+  // last answer is kept until one of those changes
+  let pathsMemo = { key: null, value: null };
   function analysisPaths() {
+    const key = JSON.stringify([modelKey(), estimand, powerSettings?.analysis ?? null]);
+    if (key !== pathsMemo.key) pathsMemo = { key, value: computePaths() };
+    return pathsMemo.value;
+  }
+  function computePaths() {
     const a = estimand?.exposure, y = estimand?.outcome;
     if (graph.study || !a || !y || !graph.nodes.some((n) => n.id === a) || !graph.nodes.some((n) => n.id === y)) return null;
     const plan = powerCompatibility(graph, estimand, powerSettings?.analysis);
@@ -539,6 +565,8 @@ export function mountDag(root) {
     $('dag-issues').hidden = !list.length;
   }
   function assignRole(role, id) {
+    // a role set from the graph goes through the form, so a form left stale while hidden is rebuilt first
+    if (powerStale && powerEditor) { powerStale = false; powerEditor.refresh(estimand, powerSettings); }
     if (!powerEditor?.assign(role, id)) status('The power analysis needs at least two variables.', true);
     else status(`${id} is now the ${role === 'exposure' ? 'compared variable' : 'outcome'} in the power analysis.`);
   }
@@ -622,18 +650,17 @@ export function mountDag(root) {
     clearTimeout(preview.timer);
     preview.timer = setTimeout(async () => {
       const token = ++preview.token, key = modelKey();
-      preview.engine?.dispose();
-      if (!graph.nodes.length) { preview.columns = null; preview.engine = null; draw(); return; }
-      const instance = new Engine(); preview.engine = instance;
+      if (!graph.nodes.length) { preview.columns = null; preview.sketches.clear(); draw(); return; }
+      const instance = borrowEngine();
       try {
         const data = await instance.dag({ op: 'simulate', graph, options: { n: graph.study ? Math.max(1, Math.floor(PREVIEW_N / (graph.study.times.length * Math.max(1, ...(graph.study.clusterSizes ?? []))))) : PREVIEW_N, seed: 1 } });
         if (token !== preview.token) return;
-        preview.columns = data.columns; preview.key = key;
+        preview.columns = data.columns; preview.key = key; preview.sketches.clear();
       } catch (error) {
         if (token !== preview.token || error.stopped) return;
-        preview.columns = null;
+        preview.columns = null; preview.sketches.clear();
       } finally {
-        if (preview.engine === instance) { instance.dispose(); preview.engine = null; }
+        returnEngine(instance);
       }
       draw();
     }, 250);
@@ -715,10 +742,10 @@ export function mountDag(root) {
         for (const key of DISTRIBUTIONS[family.value].parameters) changed[key] = inputNumber(inputs[key], parameterLabels[key]);
         const next = renameNode({ ...graph, nodes: graph.nodes.map((n) => n.id === selected ? changed : n) }, node.id, id.value.trim());
         if (JSON.stringify(next) === JSON.stringify(graph)) return;
-        if (apply(next, `${id.value.trim()} updated.`, { renameFrom: node.id, renameTo: id.value.trim() })) {
-          updateSelection(id.value.trim());
-          if (focus) $(focus)?.focus();
-        }
+        // select the (possibly renamed) variable before the page redraws, so it draws once
+        const before = selected; selected = id.value.trim();
+        if (apply(next, `${id.value.trim()} updated.`, { renameFrom: node.id, renameTo: id.value.trim() })) { if (focus) $(focus)?.focus(); }
+        else selected = before;
       } catch (error) { status(error.message, true); }
     }
     box.append(form);
@@ -783,12 +810,18 @@ export function mountDag(root) {
     box.append(el('button', { type: 'button', class: 'secondary dag-delete', onclick: () => apply(removeNode(graph, selected), 'Variable and its arrows removed. Any observation rule using it was reset. Undo restores them.') }, 'Delete variable'));
   }
   function buttons() { $('dag-undo').disabled = !history.length; $('dag-redo').disabled = !future.length; }
+  function refreshPower() {
+    if (!powerEditor) return;
+    if (powerShown()) { powerStale = false; powerEditor.refresh(estimand, powerSettings); return; }
+    // hidden: stop a run of the old design and keep the graph's roles current, without building the form
+    powerStale = true; powerEditor.outdated(estimand);
+  }
   function render() {
     draw(); inspector(); buttons();
     mountTimeline($('dag-timeline'), graph);
     mountStudy($('dag-study'), graph, (next) => apply(next, 'Study structure updated.', { fit: true }), (message) => status(message, true));
     $('dag-n').previousElementSibling.textContent = graph.study ? `Number of ${sizeUnit(graph)}` : 'Observations';
-    powerEditor?.refresh(estimand, powerSettings);
+    refreshPower();
     workflow.update(graph);
     if (preview.key !== modelKey()) schedulePreview();
     const { order, byId } = validateGraph(graph);
@@ -1035,13 +1068,18 @@ export function mountDag(root) {
   });
   powerEditor = mountPower($('dag-power'), {
     getGraph: () => graph,
+    engine: { borrow: borrowEngine, give: returnEngine },
     onRefresh: () => workflow.refresh(),
     onRun: () => { if (root.dataset.view !== 'all') workflow.go('power'); },
     onTarget(value, mode) {
-      const before = JSON.stringify(exportDesign(graph, estimand, powerSettings));
       if (JSON.stringify(value) !== JSON.stringify(estimand)) {
-        if (mode !== 'auto') pending ??= before;
-        estimand = value; persist(); draw();
+        if (mode !== 'auto') pending ??= JSON.stringify(exportDesign(graph, estimand, powerSettings));
+        // the canvas shows the roles, the tested arrows and the analysis's paths; an effect size or null value
+        // typed in the form changes none of them
+        const drawn = (e) => e && JSON.stringify([e.kind, e.exposure, e.outcome, e.measure, e.reference, e.active, e.horizon, e.repeated]);
+        const redraw = drawn(value) !== drawn(estimand);
+        estimand = value; persist();
+        if (redraw) draw();
       }
       if (mode === 'commit' && pending !== null) {
         if (pending !== JSON.stringify(exportDesign(graph, estimand, powerSettings))) {
@@ -1051,10 +1089,12 @@ export function mountDag(root) {
       }
     },
     onSettings(settings, mode) {
-      const before = JSON.stringify(exportDesign(graph, estimand, powerSettings));
       if (JSON.stringify(settings) !== JSON.stringify(powerSettings)) {
-        if (mode !== 'auto') pending ??= before;
-        powerSettings = settings; persist(); draw();
+        if (mode !== 'auto') pending ??= JSON.stringify(exportDesign(graph, estimand, powerSettings));
+        // only the analysis changes what the canvas shows (the paths it leaves open); sizes and α do not
+        const redraw = JSON.stringify(settings.analysis) !== JSON.stringify(powerSettings?.analysis);
+        powerSettings = settings; persist();
+        if (redraw) draw();
       }
       if (mode === 'commit' && pending !== null) {
         if (pending !== JSON.stringify(exportDesign(graph, estimand, powerSettings))) {

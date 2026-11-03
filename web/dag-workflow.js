@@ -28,7 +28,7 @@ export function questionSummary(graph, target) {
   return `Compare ${response}${when} if ${exposure} were set to ${target.active} versus ${target.reference}, using the ${measures[target.measure] ?? target.measure.replaceAll('_', ' ')}.`;
 }
 
-export function mountWorkflow(root) {
+export function mountWorkflow(root, { onChange = () => {} } = {}) {
   let step = 'study', all = false;
   try {
     const saved = JSON.parse(sessionStorage.getItem(VIEW_KEY));
@@ -52,6 +52,7 @@ export function mountWorkflow(root) {
     next.textContent = `Continue to ${NAMES[STEPS[index + 1]] ?? 'Power'} →`;
     root.querySelector('#dag-step-position').textContent = all ? 'All sections · your design is saved in this browser' : `Step ${index + 1} of 4 · you can jump to any step`;
     try { sessionStorage.setItem(VIEW_KEY, JSON.stringify({ step, all })); } catch { /* optional preference */ }
+    onChange(all ? 'all' : step);
   }
   function go(value, focus = true) {
     if (!STEPS.includes(value)) return;

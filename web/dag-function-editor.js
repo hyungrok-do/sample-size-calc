@@ -93,5 +93,9 @@ export function mountFunctions(box, { graph, node, onChange, onError }) {
       picture.replaceChildren(el('p', { class: 'small muted' }, `${node.kind === 'survival' ? 'Conditional hazard multiplier' : node.kind === 'binary' ? 'Conditional probability' : 'Conditional mean'}; other parents fixed at the values above.`), svg);
     } catch (e) { picture.replaceChildren(el('p', { class: 'error' }, e.message)); }
   }
-  preview.addEventListener('input', draw); preview.addEventListener('change', draw); draw(); box.append(preview);
+  // drawn when opened (and as its inputs change), not on every rebuild of the variable's settings
+  preview.addEventListener('input', draw); preview.addEventListener('change', draw);
+  // the summary's click (or Enter) opens it: draw then, so the curve is there as the panel opens
+  preview.querySelector('summary').addEventListener('click', () => { if (!preview.open) draw(); });
+  preview.addEventListener('toggle', () => { if (preview.open && !picture.childElementCount) draw(); }); box.append(preview);
 }

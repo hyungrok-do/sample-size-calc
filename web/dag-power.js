@@ -110,10 +110,12 @@ export function defaultTarget(graph) {
   try { validateEstimand(graph, target); return target; } catch { return null; }
 }
 
-export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = () => {}, onRun = () => {} }) {
+export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = () => {}, onRun = () => {}, engine = null }) {
+  // background requests share the page's warm engine when it offers one
+  const borrow = engine?.borrow ?? (() => new Engine()), give = engine?.give ?? ((instance) => instance.dispose());
   let worker = null, generation = 0, result = null, ready = false, assign = () => false;
   // the effect the model implies for the current question, computed in the background without a run
-  const hint = { engine: null, timer: 0, token: 0, key: '', text: '', number: '' };
+  const hint = { timer: 0, token: 0, key: '', text: '', number: '' };
   function implied(graph, value, show) {
     clearTimeout(hint.timer);
     const name = (SHORT[value.measure] ?? value.measure).toLowerCase(), digits = (x) => Number(x.toPrecision(3)).toString();
@@ -127,8 +129,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     if (key === hint.key) return show(hint.text, hint.number);
     show('', '');
     hint.timer = setTimeout(async () => {
-      const token = ++hint.token, instance = new Engine();
-      hint.engine?.dispose(); hint.engine = instance;
+      const token = ++hint.token, instance = borrow();
       try {
         const truth = await instance.dag({ op: 'population', graph, estimand: { ...value, alternative: null }, options: { n: graph.study ? 400 : 5000, seed: 1 } });
         if (token !== hint.token) return;
@@ -137,7 +138,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
         hint.text = hint.number ? `${name} ${hint.number}` : '';
         show(hint.text, hint.number);
       } catch { if (token === hint.token) show('', ''); }
-      finally { if (hint.engine === instance) { instance.dispose(); hint.engine = null; } }
+      finally { give(instance); }
     }, 400);
   }
   const $ = (id) => root.querySelector(`#${id}`);
@@ -245,7 +246,7 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
   }
 
   function refresh(saved, savedSettings = null) {
-    stop(); clearTimeout(hint.timer); hint.token++; hint.engine?.dispose(); hint.engine = null;
+    stop(); clearTimeout(hint.timer); hint.token++;
     const graph = getGraph();
     let settings;
     try { settings = parsePowerSettings(savedSettings ?? DEFAULT_POWER); } catch { settings = parsePowerSettings(); }
@@ -519,6 +520,17 @@ export function mountPower(root, { getGraph, onTarget, onSettings, onRefresh = (
     invalidate(); sync('auto');
     onRefresh();
   }
-  return { refresh, stop, assign: (role, id) => assign(role, id) };
+  // The design changed while the panel is hidden: a run of the old design stops and its results go, and the
+  // graph keeps a runnable comparison to show; the form itself is rebuilt when it is next shown.
+  function outdated(saved) {
+    clearTimeout(hint.timer); hint.token++;
+    if (worker || result) invalidate('The design changed. Calculate again to update the results.');
+    const graph = getGraph();
+    let start = null;
+    try { if (saved && saved.kind !== 'custom') start = validateEstimand(graph, saved); } catch { /* replaced below */ }
+    start ??= defaultTarget(graph);
+    if (start && start !== saved) onTarget(copyEstimand(start), 'auto');
+  }
+  return { refresh, outdated, stop, assign: (role, id) => assign(role, id) };
 }
 
