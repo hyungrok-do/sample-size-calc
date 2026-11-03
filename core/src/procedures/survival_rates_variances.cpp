@@ -78,52 +78,118 @@ double logrank_power(const Scenario& s, double n1, double n2, const LogrankDesig
   return z_power(logrank_drift(s, n1, n2, d), s("alpha"), alt(s));
 }
 
-// The first steps of both logrank derivations: the hazards, each group's probability of an event (as event_prob
-// computes it) and the expected number of events, from which the power follows.
-void logrank_event_steps(const Scenario& s, const LogrankDesign& d, double n1, double n2, derive::Steps& out) {
+// The pieces of the logrank derivations: the hazards, each group's probability of an event (as event_prob computes
+// it) and the expected number of events, from which the drift θ of the statistic follows (θ, as λ is a hazard).
+// λ2 from the control group's survival input, in symbols and numbers (both empty when it is the hazard itself), and
+// λ2 as a step writes it: given when entered as the hazard, else derived.
+std::pair<std::string, std::string> control_hazard_text(const Scenario& s, double lam2) {
   using namespace derive;
-  const std::string what = "Hazard rates (exponential survival)";
-  const std::string lam1 = "λ1 = " + num(d.hr) + " × " + sig(d.lam2) + " = " + sig(d.lam1);
   const std::string& in = s.s("survin");
-  if (in == "median")
-    out.push_back({what, "λ2 = ln 2 / Median2, λ1 = HR × λ2",
-                   "λ2 = ln 2 / " + num(s("med2")) + " = " + sig(d.lam2) + ", " + lam1});
-  else if (in == "surv")
-    out.push_back({what, "λ2 = −ln S2 / T0, λ1 = HR × λ2",
-                   "λ2 = −ln " + num(s("s2")) + " / " + num(s("t0")) + " = " + sig(d.lam2) + ", " + lam1});
-  else
-    out.push_back({what, "λ1 = HR × λ2", lam1});
-  const double eta = s("eta"), A = s("accrual"), F = s("follow");
-  const bool loss = eta > 0;
-  // 1 − e^(−hF)(1 − e^(−hA))/(hA), or 1 − e^(−hF) when all enter at once, for h × F and h × A as written
-  auto shape = [&](const std::string& hF, const std::string& hA) {
-    std::string t = "1 − e^(−" + hF + ")";
-    if (A > 0) t += " (1 − e^(−" + hA + ")) / (" + hA + ")";
-    return t;
-  };
-  const std::string formula =
-      (loss ? "Pi = λi/(λi + η) × [" + shape("(λi + η)F", "(λi + η)A") + "]" : "Pi = " + shape("λi F", "λi A")) +
-      (A > 0 ? ", with uniform entry over the accrual A and follow-up F after it"
-             : ", all entering at once and followed F") +
-      (loss ? ", and loss to follow-up at the rate η" : "");
-  auto numbers = [&](int i, double lam, double p) {
-    const double h = lam + eta;
-    const std::string t = shape(sig(h) + " × " + num(F), sig(h) + " × " + num(A));
-    return "P" + std::to_string(i) + " = " + (loss ? sig(lam) + "/" + sig(h) + " × [" + t + "]" : t) + " = " + sig(p);
-  };
-  out.push_back({"Probability of an event", formula, numbers(1, d.lam1, d.p1) + "; " + numbers(2, d.lam2, d.p2)});
-  out.push_back({"Expected events", "D = N1 P1 + N2 P2",
-                 fint(n1) + " × " + sig(d.p1) + " + " + fint(n2) + " × " + sig(d.p2) + " = " +
-                     num(n1 * d.p1 + n2 * d.p2, 2)});
+  if (in == "median") return {"λ2 = ln 2 / Median2", "λ2 = ln 2 / " + gsig(s("med2")) + " = " + dsig(lam2)};
+  if (in == "surv")
+    return {"λ2 = −ln S2 / T0", "λ2 = −ln " + gsig(s("s2")) + " / " + gsig(s("t0")) + " = " + dsig(lam2)};
+  return {"", ""};
+}
+std::string lam2_value(const Scenario& s, double lam2) {
+  return s.is("survin", "hazard") ? derive::gsig(lam2) : derive::dsig(lam2);
 }
 
-// The power of a statistic N(θ, 1) under H1, as derive::z_power_step shows it, with θ for its mean: λ is a hazard
-// here.
-Step drift_power_step(double drift, double alpha, Alt a) {
-  Step st = derive::z_power_step(drift, alpha, a);
-  const std::string lambda = "λ";
-  for (std::size_t at; (at = st.formula.find(lambda)) != std::string::npos;) st.formula.replace(at, lambda.size(), "θ");
-  return st;
+Step hazards_step(const Scenario& s, const LogrankDesign& d) {
+  using namespace derive;
+  const auto [f, t] = control_hazard_text(s, d.lam2);
+  const std::string lam1 = "λ1 = " + gv(d.hr) + " × " + lam2_value(s, d.lam2) + " = " + dsig(d.lam1);
+  return {"Hazard rates (exponential survival)", (f.empty() ? "" : f + ", ") + "λ1 = HR × λ2",
+          (t.empty() ? "" : t + ", ") + lam1};
+}
+
+// Pi in symbols (`i` the group, or "i" for both), and with the numbers of group i, its hazard `lam` written
+// `lam_text`.
+std::string event_prob_formula(const Scenario& s, const std::string& i) {
+  const bool loss = s("eta") > 0, entry = s("accrual") > 0;
+  const std::string h = loss ? "(λ" + i + " + η)" : "λ" + i;
+  std::string t = "1 − e^(−" + h + "F)" + (entry ? " (1 − e^(−" + h + "A)) / (" + h + "A)" : "");
+  if (loss) t = "λ" + i + "/(λ" + i + " + η) × [" + t + "]";
+  return "P" + i + " = " + t +
+         (entry ? ", with uniform entry over the accrual A and follow-up F after it"
+                : ", all entering at once and followed F") +
+         (loss ? ", and loss to follow-up at the rate η" : "");
+}
+std::string event_prob_numbers(const Scenario& s, int i, double lam, const std::string& lam_text, double p) {
+  using namespace derive;
+  const double eta = s("eta"), A = s("accrual"), F = s("follow");
+  const bool loss = eta > 0;
+  // h × F and h × A, h the hazard of leaving the risk set (the event's alone without loss to follow-up)
+  const std::string h = loss ? dsig(lam + eta) : lam_text;
+  std::string t = "1 − e^(−" + h + " × " + gsig(F) + ")";
+  if (A > 0) t += " (1 − e^(−" + h + " × " + gsig(A) + ")) / (" + h + " × " + gsig(A) + ")";
+  if (loss) t = lam_text + "/" + h + " × [" + t + "]";
+  return "P" + std::to_string(i) + " = " + t + " = " + dsig(p);
+}
+
+Step event_probs_step(const Scenario& s, const LogrankDesign& d) {
+  using namespace derive;
+  return {"Probability of an event", event_prob_formula(s, "i"),
+          event_prob_numbers(s, 1, d.lam1, dsig(d.lam1), d.p1) + "; " +
+              event_prob_numbers(s, 2, d.lam2, lam2_value(s, d.lam2), d.p2)};
+}
+
+Step events_step(const TwoN& n, bool solved, const LogrankDesign& d) {
+  using namespace derive;
+  return {"Expected events", "D = N1 P1 + N2 P2",
+          size(n.n1, solved) + " × " + dsig(d.p1) + " + " + size(n.n2, solved) + " × " + dsig(d.p2) + " = " +
+              dv(n.n1 * d.p1 + n.n2 * d.p2, 2)};
+}
+
+// θ from the expected events by Schoenfeld's or Freedman's formula: its expression, the definitions it uses, and its
+// numbers (`hr` the hazard ratio as written, given or derived).
+struct DriftText {
+  std::string expr, defs, numbers;
+};
+DriftText logrank_drift_text(const Scenario& s, const TwoN& n, const LogrankDesign& d, const std::string& hr) {
+  using namespace derive;
+  const double events = n.n1 * d.p1 + n.n2 * d.p2, drift = logrank_drift(s, n.n1, n.n2, d);
+  if (s.is("method", "freedman")) {
+    const std::string phi = dv(n.n2 / n.n1);
+    return {"√(D φ) (HR − 1) / (HR + φ)", "φ = N2/N1",
+            "√(" + dv(events, 2) + " × " + phi + ") × (" + hr + " − 1) / (" + hr + " + " + phi + ") = " + dv(drift)};
+  }
+  const double w1 = n.n1 / (n.n1 + n.n2);
+  return {"√(D w1 w2) ln HR", "w1 = N1/(N1 + N2), w2 = 1 − w1",
+          "√(" + dv(events, 2) + " × " + dv(w1) + " × " + dv(1 - w1) + ") × ln " + hr + " = " + dv(drift)};
+}
+
+// The shares of the groups, w1 = N1/N, where the allocation fixes them (equal groups, a ratio, a percentage): what
+// a closed form of the events needs; NaN when one group's size is fixed instead.
+double logrank_share(const Scenario& s) {
+  const std::string& a = s.s("alloc");
+  if (a == "equal") return 0.5;
+  if (a == "ratio") return 1 / (1 + s("r"));
+  if (a == "pct") return s("pct1") / 100;
+  return NAN;
+}
+
+// The events a logrank test needs by the closed form of its method, and the subjects that many events take: for
+// comparison with the search. `effect` is the log hazard ratio's distance from H0 in symbols and with its numbers.
+Step logrank_closed_form(const Scenario& s, const LogrankDesign& d, double w1, double alpha, Alt a,
+                         const std::string& effect, const std::string& effect_numbers, double effect_value,
+                         bool freedman) {
+  using namespace derive;
+  const double target = s("power"), w2 = 1 - w1, za = z_alpha(alpha, a), zb = stats::qnorm(target);
+  const double zz = (za + zb) * (za + zb), phi = w2 / w1;
+  const double events = freedman ? zz * (d.hr + phi) * (d.hr + phi) / (phi * (d.hr - 1) * (d.hr - 1))
+                                 : zz / (w1 * w2 * effect_value * effect_value);
+  const double subjects = events / (w1 * d.p1 + w2 * d.p2);
+  const std::string tail = std::string(" and N ≈ D / (w1 P1 + w2 P2), w1 and w2 = 1 − w1 the groups' shares of N") +
+                           (freedman ? " and φ = w2/w1" : "") + ", for comparison; the steps below give the answer";
+  const std::string per = ", N ≈ " + dv(events, 2) + " / (" + dv(w1) + " × " + dsig(d.p1) + " + " + dv(w2) + " × " +
+                          dsig(d.p2) + ") = " + dv(subjects, 2);
+  if (freedman)
+    return {"Events needed (Freedman)", "D ≈ " + z_sum_formula(a) + " (HR + φ)² / (φ (HR − 1)²)" + tail,
+            "D ≈ " + z_sum_numbers(alpha, a, target) + " × (" + gv(d.hr) + " + " + dv(phi) + ")² / (" + dv(phi) +
+                " × (" + gv(d.hr) + " − 1)²) = " + dv(events, 2) + per};
+  return {"Events needed (Schoenfeld)", "D ≈ " + z_sum_formula(a) + " / (w1 w2 (" + effect + ")²)" + tail,
+          "D ≈ " + z_sum_numbers(alpha, a, target) + " / (" + dv(w1) + " × " + dv(w2) + " × (" + effect_numbers +
+              ")²) = " + dv(events, 2) + per};
 }
 
 // Help texts of the inputs shared by the two logrank procedures.
@@ -306,27 +372,61 @@ Procedure logrank() {
   };
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
-    const double n1 = r.num("n1"), n2 = r.num("n2"), alpha = s("alpha");
     const Alt a = alt(s);
+    const bool solved = s.solve == "n", freedman = s.is("method", "freedman");
+    const double alpha = s("alpha");
+    const TwoN n{r.num("n1"), r.num("n2")};
     const LogrankDesign d = logrank_design(s, r.num("hr"));
-    Steps out;
-    logrank_event_steps(s, d, n1, n2, out);
-    const double events = n1 * d.p1 + n2 * d.p2, drift = logrank_drift(s, n1, n2, d);
-    if (s.is("method", "freedman"))
-      out.push_back({"Noncentrality (Freedman)", "θ = √(D φ) (HR − 1) / (HR + φ), φ = N2/N1",
-                     "√(" + num(events, 2) + " × " + num(n2 / n1) + ") × (" + num(d.hr) + " − 1) / (" + num(d.hr) +
-                         " + " + num(n2 / n1) + ") = " + num(drift)});
-    else
-      out.push_back({"Noncentrality (Schoenfeld)", "θ = √(D w1 w2) ln HR, w1 = N1/(N1 + N2), w2 = 1 − w1",
-                     "√(" + num(events, 2) + " × " + num(n1 / (n1 + n2)) + " × " + num(1 - n1 / (n1 + n2)) +
-                         ") × ln " + num(d.hr) + " = " + num(drift)});
-    out.push_back(z_critical(alpha, a));
-    out.push_back(drift_power_step(drift, alpha, a));
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return logrank_power(s, x1, x2, d); }, {n1, n2}, s("power"), 1));
-    else if (s.solve == "hr")
-      out.push_back(effect_search("HR", d.hr, logrank_power(s, n1, n2, d), s("power")));
+    const double events = n.n1 * d.p1 + n.n2 * d.p2, drift = logrank_drift(s, n.n1, n.n2, d);
+    const double power = logrank_power(s, n.n1, n.n2, d);
+    const std::string method = freedman ? " (Freedman)" : " (Schoenfeld)";
+    Derivation out;
+    if (s.solve == "hr") {
+      // the target power gives θ; HR solves θ(HR) = θ, where the events change with HR through P1: a root search
+      const double target = s("power");
+      out.find = find_effect("HR", target, "with " + two_sizes(n, false));
+      const auto [f, t] = control_hazard_text(s, d.lam2);
+      if (!f.empty()) out.steps.push_back({"Control hazard (exponential survival)", f, t});
+      out.steps.push_back({"Probability of an event, control group", event_prob_formula(s, "2"),
+                           event_prob_numbers(s, 2, d.lam2, lam2_value(s, d.lam2), d.p2)});
+      out.steps.push_back(z_critical(alpha, a));
+      out.steps.push_back(renamed(z_ncp_needed(drift, alpha, a, target), "λ", "θ"));
+      const DriftText theta = logrank_drift_text(s, n, d, dv(d.hr));
+      out.steps.push_back(
+          {"Hazard ratio detected" + method,
+           "HR solves " + theta.expr + " = θ, " + theta.defs + ", D = N1 P1 + N2 P2 and P1 the treatment group's "
+               "probability of an event at λ1 = HR × λ2 (as P2 above): D changes with HR, so HR is found by a root "
+               "search",
+           "at HR = " + dv(d.hr) + ": λ1 = " + dv(d.hr) + " × " + lam2_value(s, d.lam2) + " = " + dsig(d.lam1) +
+               ", P1 = " + dsig(d.p1) + ", D = " + gvi(n.n1) + " × " + dsig(d.p1) + " + " + gvi(n.n2) + " × " +
+               dsig(d.p2) + " = " + dv(events, 2) + ", θ = " + theta.numbers});
+      out.steps.push_back(effect_search("HR", d.hr, power, target));
+      out.answer = "HR = " + dv(d.hr) + ", with " + dv(events, 2) + " expected events";
+      return out;
+    }
+    out.steps.push_back(hazards_step(s, d));
+    out.steps.push_back(event_probs_step(s, d));
+    if (solved) {
+      out.find = find_size(two_group_unknown(s), s("power"));
+      const double w1 = logrank_share(s);
+      if (std::isfinite(w1))
+        out.steps.push_back(
+            logrank_closed_form(s, d, w1, alpha, a, "ln HR", "ln " + gv(d.hr), std::log(d.hr), freedman));
+    } else {
+      out.find = find_power("with " + two_sizes(n, false));
+    }
+    out.steps.push_back(events_step(n, solved, d));
+    const DriftText theta = logrank_drift_text(s, n, d, gv(d.hr));
+    out.steps.push_back({"Noncentrality" + method, "θ = " + theta.expr + ", " + theta.defs, theta.numbers});
+    out.steps.push_back(z_critical(alpha, a));
+    out.steps.push_back(renamed(z_power_step(drift, alpha, a), "λ", "θ"));
+    if (solved) {
+      out.steps.push_back(two_group_search(
+          s, [&](double x1, double x2) { return logrank_power(s, x1, x2, d); }, n, s("power"), 1));
+      out.answer = sizes_answer(n, dv(events, 2) + " expected events and power " + dvp(power));
+    } else {
+      out.answer = "power = " + dvp(power) + ", with " + dv(events, 2) + " expected events";
+    }
     return out;
   };
   p.definitions = {{"HR", "Hazard ratio λ1/λ2 (treatment relative to control)."},
@@ -504,21 +604,41 @@ Procedure logrank_ni() {
   };
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
-    const double n1 = r.num("n1"), n2 = r.num("n2"), margin = r.num("margin"), alpha = s("alpha");
+    const bool solved = s.solve == "n";
+    const double margin = r.num("margin"), alpha = s("alpha");
+    const TwoN n{r.num("n1"), r.num("n2")};
     const LogrankDesign d = logrank_design(s, r.num("hr"));
-    Steps out;
-    logrank_event_steps(s, d, n1, n2, out);
-    const double events = n1 * d.p1 + n2 * d.p2, drift = logrank_ni_drift(n1, n2, d, margin);
-    out.push_back({"Noncentrality (Schoenfeld)", "θ = √(D w1 w2) |ln M − ln HR|, w1 = N1/(N1 + N2), w2 = 1 − w1",
-                   "√(" + num(events, 2) + " × " + num(n1 / (n1 + n2)) + " × " + num(1 - n1 / (n1 + n2)) +
-                       ") × |ln " + num(margin) + " − ln " + num(d.hr) + "| = " + num(drift)});
-    // the one-sided test that the hazard ratio lies on the acceptable side of the margin
-    out.push_back(z_critical(alpha, Alt::Upper));
-    out.push_back(drift_power_step(drift, alpha, Alt::Upper));
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return logrank_ni_power(x1, x2, d, margin, alpha); }, {n1, n2},
-          s("power"), 1));
+    const double events = n.n1 * d.p1 + n.n2 * d.p2, drift = logrank_ni_drift(n.n1, n.n2, d, margin);
+    const double power = logrank_ni_power(n.n1, n.n2, d, margin, alpha);
+    const std::string effect = "|ln " + gv(margin) + " − ln " + gv(d.hr) + "|";
+    Derivation out;
+    out.steps.push_back(hazards_step(s, d));
+    out.steps.push_back(event_probs_step(s, d));
+    // a one-sided test (Alt::Upper) that the hazard ratio lies on the acceptable side of the margin
+    if (solved) {
+      out.find = find_size(two_group_unknown(s), s("power"));
+      const double w1 = logrank_share(s);
+      if (std::isfinite(w1))
+        out.steps.push_back(logrank_closed_form(s, d, w1, alpha, Alt::Upper, "ln M − ln HR",
+                                                "ln " + gv(margin) + " − ln " + gv(d.hr),
+                                                std::log(margin) - std::log(d.hr), false));
+    } else {
+      out.find = find_power("with " + two_sizes(n, false));
+    }
+    out.steps.push_back(events_step(n, solved, d));
+    const double w1 = n.n1 / (n.n1 + n.n2);
+    out.steps.push_back({"Noncentrality (Schoenfeld)", "θ = √(D w1 w2) |ln M − ln HR|, w1 = N1/(N1 + N2), w2 = 1 − w1",
+                         "√(" + dv(events, 2) + " × " + dv(w1) + " × " + dv(1 - w1) + ") × " + effect + " = " +
+                             dv(drift)});
+    out.steps.push_back(z_critical(alpha, Alt::Upper));
+    out.steps.push_back(renamed(z_power_step(drift, alpha, Alt::Upper), "λ", "θ"));
+    if (solved) {
+      out.steps.push_back(two_group_search(
+          s, [&](double x1, double x2) { return logrank_ni_power(x1, x2, d, margin, alpha); }, n, s("power"), 1));
+      out.answer = sizes_answer(n, dv(events, 2) + " expected events and power " + dvp(power));
+    } else {
+      out.answer = "power = " + dvp(power) + ", with " + dv(events, 2) + " expected events";
+    }
     return out;
   };
   p.definitions = {{"M", "Non-inferiority margin for the hazard ratio (treatment/control)."},
@@ -735,84 +855,108 @@ Step sawtooth_n_search(const std::function<double(double)>& power, double n, dou
   using namespace derive;
   const double at = power(n), below = n - 1 >= lo ? power(n - 1) : NAN;
   if (!(below >= target)) return n_search([&](double x) { return x == n ? at : below; }, n, target, lo);
-  return {"Sample size",
-          "N = the first size of the search's scan whose power reaches the target (the exact power rises in a "
-          "saw-tooth with N)",
-          "power at N = " + fint(n) + ": " + prob(at, target) + " ≥ " + fnum(target)};
+  return {"Smallest size",
+          "N = the first size of the search's scan whose power reaches 1 − β (the exact power rises in a saw-tooth "
+          "with N)",
+          "N = " + dvi(n) + " is where the scan began, and its power is " + dvp(at, target) + " ≥ " + gv(target) +
+              " (the saw-tooth gives N = " + dvi(n - 1) + " a power of " + dvp(below, target) + " too)"};
 }
 
-// The steps of a one-rate Poisson test from its rejection region on: the region, the actual significance level and
-// the power, as one_pois_eval computed them (Poisson tails, or beyond POIS_FAR their Edgeworth approximation).
-void one_pois_exact_steps(const Scenario& s, const OnePoisResult& res, derive::Steps& out) {
+// How the tails are taken beyond POIS_FAR, as a formula says it.
+const char* const POIS_FAR_TEXT =
+    ", from the normal tails with the Poisson skewness and a continuity correction (Edgeworth), as beyond 10^15 events";
+
+// The rejection region of a one-rate Poisson test as one_pois_eval placed it (critical counts from μ0 alone).
+Step pois_region_step(const Scenario& s, const OnePoisResult& res) {
   using namespace derive;
   const Alt a = alt(s);
-  const bool upper = a != Alt::Lower, lower = a != Alt::Upper, exact_test = s.is("test", "exact");
+  const bool upper = a != Alt::Lower, lower = a != Alt::Upper;
   const std::string side = a == Alt::Two ? "α/2" : "α";
-  const std::string far = res.far ? ", from the normal tails with the Poisson skewness and a continuity correction "
-                                    "(Edgeworth), as beyond 10^15 events"
-                                  : "";
   const PoisRegion& g = res.region;
   std::string formula, numbers;
   auto add = [](std::string& to, const std::string& t) { to += (to.empty() ? "" : "; ") + t; };
-  if (exact_test) {
+  if (s.is("test", "exact")) {
     if (upper) {
       add(formula, "c_U = the smallest count with P(X ≥ c_U | μ0) ≤ " + side);
-      add(numbers, "c_U = " + fint(g.cu));
+      add(numbers, "c_U = " + dvi(g.cu));
     }
     if (lower) {
       add(formula, "c_L = the largest count with P(X ≤ c_L | μ0) ≤ " + side);
-      add(numbers, g.cl >= 0 ? "c_L = " + fint(g.cl) : "no c_L: even P(X = 0 | μ0) exceeds " + side);
+      add(numbers, g.cl >= 0 ? "c_L = " + dvi(g.cl) : "no c_L: even P(X = 0 | μ0) exceeds " + side);
     }
-    formula += far;
+    if (res.far) formula += POIS_FAR_TEXT;
   } else {
-    const double z = stats::qnorm(tail_alpha(s("alpha"), a), false);
-    const std::string spread = num(z) + " × √" + num(res.mu0);
+    const double z = z_alpha(s("alpha"), a);
+    const std::string spread = dv(z) + " × √" + dv(res.mu0);
     if (upper) {
       add(formula, "c_U = ⌊μ0 + z√μ0⌋ + 1");
-      add(numbers, "c_U = ⌊" + num(res.mu0) + " + " + spread + "⌋ + 1 = " + fint(g.cu));
+      add(numbers, "c_U = ⌊" + dv(res.mu0) + " + " + spread + "⌋ + 1 = " + dvi(g.cu));
     }
     if (lower) {
       add(formula, "c_L = ⌈μ0 − z√μ0⌉ − 1");
-      add(numbers, g.cl >= 0 ? "c_L = ⌈" + num(res.mu0) + " − " + spread + "⌉ − 1 = " + fint(g.cl)
-                             : "no c_L: μ0 − z√μ0 = " + num(res.mu0 - z * std::sqrt(res.mu0)) +
+      add(numbers, g.cl >= 0 ? "c_L = ⌈" + dv(res.mu0) + " − " + spread + "⌉ − 1 = " + dvi(g.cl)
+                             : "no c_L: μ0 − z√μ0 = " + dv(res.mu0 - z * std::sqrt(res.mu0)) +
                                    " leaves no count below it");
     }
     formula += ", the counts beyond μ0 ± z√μ0";
   }
-  out.push_back({"Rejection region", formula, numbers});
-  // the tails beyond the critical counts at the mean mu (with mu − μ0 = dmu), as one_pois_eval sums them
-  auto tails = [&](double mu, double dmu) -> std::pair<double, double> {
-    if (res.far)
-      return {upper ? pois_power_far(res.up, NAN, mu, dmu) : 0.0, lower ? pois_power_far(NAN, res.lo, mu, dmu) : 0.0};
-    return {pois_at_least(g.cu, mu), pois_at_most(g.cl, mu)};
-  };
+  return {"Rejection region", formula, numbers};
+}
+
+// The chance that a one-rate Poisson test rejects at the mean count `at` (`sym` in symbols, at − μ0 = dmu), as
+// one_pois_eval sums it (Poisson tails, or beyond POIS_FAR their Edgeworth approximation): in symbols, and with its
+// terms (ending before the total) and the total, told apart from `against`.
+struct PoisReject {
+  std::string formula, terms, total;
+};
+PoisReject pois_reject(const Scenario& s, const OnePoisResult& res, const std::string& sym, double at, double dmu,
+                       double total, double against = NAN) {
+  using namespace derive;
+  const Alt a = alt(s);
+  const bool upper = a != Alt::Lower, lower = a != Alt::Upper;
+  const PoisRegion& g = res.region;
+  const std::string far = res.far ? POIS_FAR_TEXT : "";
+  const auto [hi, lo] = res.far ? std::pair<double, double>{upper ? pois_power_far(res.up, NAN, at, dmu) : 0.0,
+                                                            lower ? pois_power_far(NAN, res.lo, at, dmu) : 0.0}
+                                : std::pair<double, double>{pois_at_least(g.cu, at), pois_at_most(g.cl, at)};
+  // beyond POIS_FAR the means differ by less than the digits shown: μ1 as μ0 and the difference
+  const std::string mean =
+      res.far && dmu != 0 ? dv(res.mu0) + (dmu < 0 ? " − " : " + ") + dv(std::fabs(dmu)) : dv(at);
   // a lower tail without a critical count adds nothing
   const bool hi_tail = upper && std::isfinite(g.cu), lo_tail = lower && g.cl >= 0;
-  auto sum = [&](const std::string& mu, double at, double dmu, double total) {
-    const auto [hi, lo] = tails(at, dmu);
-    // beyond POIS_FAR the means differ by less than the digits shown: μ1 as μ0 and the difference
-    const std::string mean =
-        res.far && dmu != 0 ? num(res.mu0) + (dmu < 0 ? " − " : " + ") + num(std::fabs(dmu)) : num(at);
-    std::string f, t;
-    if (hi_tail) {
-      f = "P(X ≥ c_U | " + mu + ")";
-      t = "P(X ≥ " + fint(g.cu) + " | " + mean + ")";
-    }
-    if (lo_tail) {
-      f += std::string(hi_tail ? " + " : "") + "P(X ≤ c_L | " + mu + ")";
-      t += std::string(hi_tail ? " + " : "") + "P(X ≤ " + fint(g.cl) + " | " + mean + ")";
-    }
-    if (!hi_tail && !lo_tail)
-      return std::pair<std::string, std::string>{"P(reject | " + mu + "), 0 as no count is rare enough to reject",
-                                                 "P(reject | " + mean + ") = " + prob(total)};
-    t += " = ";
-    if (hi_tail && lo_tail) t += prob(hi) + " + " + prob(lo) + " = ";
-    return std::pair<std::string, std::string>{f + far, t + prob(total)};
+  if (!hi_tail && !lo_tail)
+    return {"P(reject | " + sym + "), 0 as no count is rare enough to reject", "P(reject | " + mean + ")",
+            dvp(total, against)};
+  std::string f, t;
+  if (hi_tail) {
+    f = "P(X ≥ c_U | " + sym + ")";
+    t = "P(X ≥ " + dvi(g.cu) + " | " + mean + ")";
+  }
+  if (lo_tail) {
+    f += std::string(hi_tail ? " + " : "") + "P(X ≤ c_L | " + sym + ")";
+    t += std::string(hi_tail ? " + " : "") + "P(X ≤ " + dvi(g.cl) + " | " + mean + ")";
+  }
+  if (hi_tail && lo_tail) t += " = " + dvp(hi) + " + " + dvp(lo);
+  return {f + far, t, dvp(total, against)};
+}
+
+// The power of the z-test of one rate by the normal approximation of one_pois_eval, X ~ N(μ1, μ1) against the
+// critical values μ0 ± z√μ0: in symbols, its terms and the total.
+PoisReject pois_normal_power(const Scenario& s, const OnePoisResult& res, double against = NAN) {
+  using namespace derive;
+  const Alt a = alt(s);
+  const double z = z_alpha(s("alpha"), a), s0 = std::sqrt(res.mu0), s1 = std::sqrt(res.mu1);
+  auto term = [&](double d) {
+    return "Φ((" + dv(d) + " − " + dv(z) + " × √" + dv(res.mu0) + ") / √" + dv(res.mu1) + ")";
   };
-  const auto size = sum("μ0", res.mu0, 0, res.actual_alpha);
-  out.push_back({"Actual significance level", "α* = " + size.first, size.second});
-  const auto power = sum("μ1", res.mu1, res.dmu, res.power);
-  out.push_back({"Power", power.first, power.second});
+  const std::string up = "Φ((μ1 − μ0 − z√μ0) / √μ1)", down = "Φ((μ0 − μ1 − z√μ0) / √μ1)";
+  if (a == Alt::Two)
+    return {up + " + " + down,
+            term(res.dmu) + " + " + term(-res.dmu) + " = " + dvp(stats::pnorm((res.dmu - z * s0) / s1)) + " + " +
+                dvp(stats::pnorm((-res.dmu - z * s0) / s1)),
+            dvp(res.power, against)};
+  if (a == Alt::Upper) return {up, term(res.dmu), dvp(res.power, against)};
+  return {down, term(-res.dmu), dvp(res.power, against)};
 }
 
 Procedure one_poisson() {
@@ -961,44 +1105,62 @@ Procedure one_poisson() {
     using namespace derive;
     const double n = r.num("n"), t = s("time"), lam0 = r.num("lam0"), lam1 = r.num("lam1"), alpha = s("alpha");
     const Alt a = alt(s);
+    const bool solved = s.solve == "n", effect = s.solve == "lam1";
     const OnePoisResult res = one_pois_eval(s, n, lam1);
-    Steps out;
     // λ1 with the digits that tell it from λ0 (which a rate found next to a large λ0 can need)
-    const auto [l1, l0] = fnum_apart(lam1, lam0);
-    Step events{"Expected events", "μ0 = λ0 N t, μ1 = λ1 N t",
-                "μ0 = " + l0 + " × " + fint(n) + " × " + num(t) + " = " + num(res.mu0) + ", μ1 = " + l1 + " × " +
-                    fint(n) + " × " + num(t) + " = " + num(res.mu1)};
-    if (res.far) {  // the difference of the means, which one_pois_eval takes from that of the rates
-      events.formula += ", μ1 − μ0 = (λ1 − λ0) N t";
-      events.numbers += ", μ1 − μ0 = " + num(res.dmu);
+    const auto texts = apart(lam1, lam0);
+    const std::string l1 = effect ? derived(texts.first) : given(texts.first), l0 = given(texts.second);
+    const std::string N = size(n, solved), T = gsig(t);
+    const std::string mu0 = "μ0 = " + l0 + " × " + N + " × " + T + " = " + dv(res.mu0);
+    std::string mu1 = "μ1 = " + l1 + " × " + N + " × " + T + " = " + dv(res.mu1);
+    if (res.far) mu1 += ", μ1 − μ0 = " + dv(res.dmu);  // which one_pois_eval takes from the rates' difference
+    const std::string mu1_formula = res.far ? "μ1 = λ1 N t, μ1 − μ0 = (λ1 − λ0) N t" : "μ1 = λ1 N t";
+    // the power in symbols and with its terms at μ1 (Poisson tails, or the normal approximation)
+    const double target = s.solve == "power" ? NAN : s("power");
+    const PoisReject pw = res.exact ? pois_reject(s, res, "μ1", res.mu1, res.dmu, res.power, target)
+                                    : pois_normal_power(s, res, target);
+    Derivation out;
+    // the critical value or counts, and the actual size of an exact power: all from μ0 alone
+    const auto region = [&] {
+      if (!s.is("test", "exact")) out.steps.push_back(z_critical(alpha, a));
+      if (!res.exact) return;
+      out.steps.push_back(pois_region_step(s, res));
+      const PoisReject size = pois_reject(s, res, "μ0", res.mu0, 0, res.actual_alpha);
+      out.steps.push_back({"Actual significance level", "α* = " + size.formula, size.terms + " = " + size.total});
+    };
+    if (effect) {  // λ1 is where the power at μ1 = λ1 N t reaches the target
+      out.find = find_effect("λ1", target, "with N = " + gvi(n));
+      out.steps.push_back({"Expected events under H0", "μ0 = λ0 N t", mu0});
+      region();
+      out.steps.push_back({"Expected events at λ1", mu1_formula, mu1});
+      out.steps.push_back(effect_found("λ1", l1, pw.formula + ", μ1 = λ1 N t", pw.terms, res.power, target));
+      out.answer = "λ1 = " + l1 + " (λ1/λ0 = " + derived(apart(lam1 / lam0, 1).first) + ")";
+      return out;
     }
-    out.push_back(events);
-    if (!s.is("test", "exact")) out.push_back(z_critical(alpha, a));
-    if (res.exact) {
-      one_pois_exact_steps(s, res, out);
+    if (solved) {
+      // the closed form of the normal approximation, beside the answer the steps below give
+      out.find = find_size("N", target);
+      const double za = z_alpha(alpha, a), zb = stats::qnorm(target);
+      const double g = std::pow((za * std::sqrt(lam0) + zb * std::sqrt(lam1)) / (lam1 - lam0), 2) / t;
+      out.steps.push_back({"Normal approximation",
+                           std::string("N ≈ (z(") + level_symbol(a) +
+                               ") √λ0 + z(1 − β) √λ1)² / (t (λ1 − λ0)²), for comparison; the steps below give the "
+                               "answer",
+                           "(" + dv(za) + " × √" + l0 + " + " + dv(zb) + " × √" + l1 + ")² / (" + T + " × (" + l1 +
+                               " − " + l0 + ")²) = " + dv(g)});
     } else {
-      // the normal approximation of one_pois_eval: X ~ N(μ1, μ1) against the critical values μ0 ± z√μ0
-      const double z = stats::qnorm(tail_alpha(alpha, a), false), s0 = std::sqrt(res.mu0), s1 = std::sqrt(res.mu1);
-      const double hi = stats::pnorm((res.dmu - z * s0) / s1), lo = stats::pnorm((-res.dmu - z * s0) / s1);
-      auto term = [&](double d) {
-        return "Φ((" + num(d) + " − " + num(z) + " × √" + num(res.mu0) + ") / √" + num(res.mu1) + ")";
-      };
-      if (a == Alt::Two)
-        out.push_back({"Power", "Φ((μ1 − μ0 − z√μ0) / √μ1) + Φ((μ0 − μ1 − z√μ0) / √μ1)",
-                       term(res.dmu) + " + " + term(-res.dmu) + " = " + prob(hi) + " + " + prob(lo) + " = " +
-                           prob(res.power)});
-      else if (a == Alt::Upper)
-        out.push_back({"Power", "Φ((μ1 − μ0 − z√μ0) / √μ1)", term(res.dmu) + " = " + prob(res.power)});
-      else
-        out.push_back({"Power", "Φ((μ0 − μ1 − z√μ0) / √μ1)", term(-res.dmu) + " = " + prob(res.power)});
+      out.find = find_power("with N = " + gvi(n));
     }
-    const auto power = [&](double x) { return one_pois_eval(s, x, lam1).power; };
-    if (s.solve == "n")
-      out.push_back(res.exact ? sawtooth_n_search(power, n, s("power"), 1) : n_search(power, n, s("power"), 1));
-    else if (s.solve == "lam1")  // effect_search's step, with λ1's digits apart from λ0's
-      out.push_back({"Detectable λ1", "λ1 = the value at which the power equals the target",
-                     "power at λ1 = " + l1 + ": " + prob(res.power, s("power")) + " (target " +
-                         fnum(s("power")) + ")"});
+    out.steps.push_back({"Expected events", "μ0 = λ0 N t, " + mu1_formula, mu0 + ", " + mu1});
+    region();
+    out.steps.push_back({"Power", pw.formula, pw.terms + " = " + pw.total});
+    if (solved) {
+      const auto power = [&](double x) { return one_pois_eval(s, x, lam1).power; };
+      out.steps.push_back(res.exact ? sawtooth_n_search(power, n, target, 1) : n_search(power, n, target, 1));
+      out.answer = size_answer(n, res.power);
+    } else {
+      out.answer = "power = " + dvp(res.power);
+    }
     return out;
   };
   p.definitions = {{"N", "Number of subjects."},
@@ -1077,17 +1239,35 @@ TwoN sizes_with_events(const Scenario& s, const std::function<double(double, dou
 Step log_ratio_power_step(const std::string& sym, double lr, double v0, double v1, std::pair<double, double> sides,
                           double power, double alpha, Alt a) {
   using namespace derive;
-  const double z = stats::qnorm(tail_alpha(alpha, a), false);
+  const double z = z_alpha(alpha, a);
   const std::string up = "Φ((" + sym + " − z√V0) / √V1)", down = "Φ((−" + sym + " − z√V0) / √V1)";
   auto term = [&](double d) {
-    return "Φ((" + num(d) + " − " + num(z) + " × √" + sig(v0) + ") / √" + sig(v1) + ")";
+    return "Φ((" + dv(d) + " − " + dv(z) + " × √" + dsig(v0) + ") / √" + dsig(v1) + ")";
   };
   if (a == Alt::Two)
     return {"Power", up + " + " + down,
-            term(lr) + " + " + term(-lr) + " = " + prob(sides.first) + " + " + prob(sides.second) + " = " +
-                prob(power)};
-  if (a == Alt::Upper) return {"Power", up, term(lr) + " = " + prob(power)};
-  return {"Power", down, term(-lr) + " = " + prob(power)};
+            term(lr) + " + " + term(-lr) + " = " + dvp(sides.first) + " + " + dvp(sides.second) + " = " + dvp(power)};
+  if (a == Alt::Upper) return {"Power", up, term(lr) + " = " + dvp(power)};
+  return {"Power", down, term(-lr) + " = " + dvp(power)};
+}
+
+// The closed form of a two-rate test's group sizes where group 2 follows group 1 (equal groups or a ratio): with
+// v0 = N1 V0 and v1 = N1 V1, which do not change with N1 there, N1 ≈ (z √v0 + z(1 − β) √v1)² / (log ratio)², for
+// comparison with the search (the form of Zhu and Lakkis's closed formula). M is the test (TwoPois or TwoNegbin).
+template <class M>
+void rate_closed_form(const Scenario& s, const M& m, double lr, const std::string& lr_sym, Derivation& out) {
+  using namespace derive;
+  const std::string& alloc = s.s("alloc");
+  if (alloc != "equal" && alloc != "ratio") return;
+  const double k = alloc == "ratio" ? s("r") : 1, v0 = m.v0(1, k), v1 = m.v1(1, k);
+  const double za = z_alpha(m.alpha, m.a), zb = stats::qnorm(s("power"));
+  const double g = std::pow(za * std::sqrt(v0) + zb * std::sqrt(v1), 2) / (lr * lr);
+  out.steps.push_back(
+      {"Normal approximation",
+       std::string(alloc == "equal" ? "N1 = N2" : "N1") + " ≈ (z(" + level_symbol(m.a) + ") √v0 + z(1 − β) √v1)² / (" +
+           lr_sym + ")², v0 = N1 V0 and v1 = N1 V1 from the variances below at N1 = 1, N2 = " +
+           (alloc == "equal" ? "1" : "r") + ", for comparison; the steps below give the answer",
+       "(" + dv(za) + " × √" + dsig(v0) + " + " + dv(zb) + " × √" + dsig(v1) + ")² / " + dvs(lr) + "² = " + dv(g)});
 }
 
 // How a two-rate test's group sizes were found: as two_group_search shows it, or, where sizes_with_events moved them
@@ -1111,10 +1291,10 @@ Step rate_sizes_step(const Scenario& s, const Row& r, const M& m) {
     const auto [none1, none2] = m.log_none_groups(less.n1, less.n2);
     const bool first = beyond_events(up, none1);
     const double side = first ? up : down, chance = -std::expm1(first ? none1 : none2);
-    st.numbers = "at N1 = " + fint(less.n1) + ", N2 = " + fint(less.n2) + " the normal approximation gives group " +
-                 (first ? "1" : "2") + "'s side a power of " + prob(side, chance) +
-                 ", above that group's chance of an event, " + prob(chance, side) + "; power at N1 = " + fint(n.n1) +
-                 ", N2 = " + fint(n.n2) + ": " + prob(P(n.n1, n.n2), target) + " ≥ " + fnum(target);
+    st.numbers = "at " + two_sizes(less, true) + " the normal approximation gives group " + (first ? "1" : "2") +
+                 "'s side a power of " + dvp(side, chance) + ", above that group's chance of an event, " +
+                 dvp(chance, side) + "; power at " + two_sizes(n, true) + ": " + dvp(P(n.n1, n.n2), target) + " ≥ " +
+                 gv(target);
   }
   return st;
 }
@@ -1250,26 +1430,40 @@ Procedure two_poisson() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const TwoPois m(s);
-    const double n1 = r.num("n1"), n2 = r.num("n2"), t = m.t;
-    const double v1 = m.v1(n1, n2), v0 = m.v0(n1, n2);
-    Steps out;
-    out.push_back({"Log rate ratio", "ln(λ1/λ2)", "ln(" + sig(m.l1) + " / " + sig(m.l2) + ") = " + num(m.lr)});
-    out.push_back({"Variance under H1", "V1 = 1/(N1 t λ1) + 1/(N2 t λ2), one over each group's expected events",
-                   "1/" + sig(n1 * t * m.l1) + " + 1/" + sig(n2 * t * m.l2) + " = " + sig(v1)});
-    if (m.wald) {
-      out.push_back({"Variance under H0", "V0 = V1 (Wald)", "V0 = " + sig(v0)});
+    const bool solved = s.solve == "n";
+    const TwoN n{r.num("n1"), r.num("n2")};
+    const double v1 = m.v1(n.n1, n.n2), v0 = m.v0(n.n1, n.n2), power = m.power(n.n1, n.n2);
+    const std::string N1 = size(n.n1, solved), N2 = size(n.n2, solved), T = gsig(m.t), L1 = gsig(m.l1),
+                      L2 = gsig(m.l2);
+    Derivation out;
+    out.steps.push_back({"Log rate ratio", "ln(λ1/λ2)", "ln(" + L1 + " / " + L2 + ") = " + dv(m.lr)});
+    if (solved) {
+      out.find = find_size(two_group_unknown(s), s("power"));
+      rate_closed_form(s, m, m.lr, "ln(λ1/λ2)", out);
     } else {
-      const double pooled = m.pooled(n1, n2);
-      out.push_back({"Variance under H0",
-                     "V0 = (1/(N1 t) + 1/(N2 t)) / λ̄, λ̄ = (N1 λ1 + N2 λ2) / (N1 + N2), the pooled rate",
-                     "λ̄ = (" + fint(n1) + " × " + sig(m.l1) + " + " + fint(n2) + " × " + sig(m.l2) + ") / " +
-                         fint(n1 + n2) + " = " + sig(pooled) + ", V0 = (1/" + sig(n1 * t) + " + 1/" + sig(n2 * t) +
-                         ") / " + sig(pooled) + " = " + sig(v0)});
+      out.find = find_power("with " + two_sizes(n, false));
     }
-    out.push_back(z_critical(m.alpha, m.a));
-    out.push_back(log_ratio_power_step("ln(λ1/λ2)", m.lr, v0, v1, m.sides(n1, n2), m.power(n1, n2), m.alpha, m.a));
-    if (s.solve == "n")
-      out.push_back(rate_sizes_step(s, r, m));
+    out.steps.push_back({"Variance under H1", "V1 = 1/(N1 t λ1) + 1/(N2 t λ2), one over each group's expected events",
+                         "1/(" + N1 + " × " + T + " × " + L1 + ") + 1/(" + N2 + " × " + T + " × " + L2 + ") = " +
+                             dsig(v1)});
+    if (m.wald) {
+      out.steps.push_back({"Variance under H0", "V0 = V1 (Wald)", "V0 = " + dsig(v0)});
+    } else {
+      const double pooled = m.pooled(n.n1, n.n2);
+      out.steps.push_back({"Variance under H0",
+                           "V0 = (1/(N1 t) + 1/(N2 t)) / λ̄, λ̄ = (N1 λ1 + N2 λ2) / (N1 + N2), the pooled rate",
+                           "λ̄ = (" + N1 + " × " + L1 + " + " + N2 + " × " + L2 + ") / (" + N1 + " + " + N2 + ") = " +
+                               dsig(pooled) + ", V0 = (1/(" + N1 + " × " + T + ") + 1/(" + N2 + " × " + T + ")) / " +
+                               dsig(pooled) + " = " + dsig(v0)});
+    }
+    out.steps.push_back(z_critical(m.alpha, m.a));
+    out.steps.push_back(log_ratio_power_step("ln(λ1/λ2)", m.lr, v0, v1, m.sides(n.n1, n.n2), power, m.alpha, m.a));
+    if (solved) {
+      out.steps.push_back(rate_sizes_step(s, r, m));
+      out.answer = sizes_answer(n, "power " + dvp(power));
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"λ1, λ2", "Event rates per unit of exposure."}, {"t", "Exposure time per subject."}};
@@ -1440,32 +1634,48 @@ Procedure two_negbin() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const TwoNegbin m(s);
-    const double n1 = r.num("n1"), n2 = r.num("n2");
-    const double v1 = m.v1(n1, n2), v0 = m.v0(n1, n2);
-    // 1/(t λ) + κ, the variance of a subject's log rate in a group, written out
-    auto per = [&](double rate) { return "(1/(" + num(m.mt) + " × " + sig(rate) + ") + " + num(m.kappa) + ")"; };
-    const std::string inv = "(1/" + fint(n1) + " + 1/" + fint(n2) + ")";
-    Steps out;
-    out.push_back({"Treatment rate", "λ1 = R × λ2", num(m.rr) + " × " + sig(m.r0) + " = " + sig(m.r1)});
-    out.push_back({"Variance under H1", "V1 = (1/(t λ1) + κ)/N1 + (1/(t λ2) + κ)/N2",
-                   per(m.r1) + "/" + fint(n1) + " + " + per(m.r0) + "/" + fint(n2) + " = " + sig(v1)});
-    if (m.method == "1") {
-      out.push_back({"Variance under H0 (method 1)", "V0 = (1/(t λ2) + κ)(1/N1 + 1/N2), from the control rate",
-                     per(m.r0) + " × " + inv + " = " + sig(v0)});
-    } else if (m.method == "2") {
-      out.push_back({"Variance under H0 (method 2)", "V0 = V1, from the true rates", "V0 = " + sig(v0)});
+    const bool solved = s.solve == "n";
+    const TwoN n{r.num("n1"), r.num("n2")};
+    const double v1 = m.v1(n.n1, n.n2), v0 = m.v0(n.n1, n.n2), power = m.power(n.n1, n.n2), lr = std::log(m.rr);
+    const std::string N1 = size(n.n1, solved), N2 = size(n.n2, solved);
+    // 1/(t λ) + κ, the variance of a subject's log rate in a group, written out (`rate` as written)
+    auto per = [&](const std::string& rate) {
+      return "(1/(" + gsig(m.mt) + " × " + rate + ") + " + gsig(m.kappa) + ")";
+    };
+    const std::string inv = "(1/" + N1 + " + 1/" + N2 + ")";
+    Derivation out;
+    out.steps.push_back({"Treatment rate", "λ1 = R × λ2, and ln R the log rate ratio tested",
+                         "λ1 = " + gv(m.rr) + " × " + gsig(m.r0) + " = " + dsig(m.r1) + ", ln R = ln " + gv(m.rr) +
+                             " = " + dv(lr)});
+    if (solved) {
+      out.find = find_size(two_group_unknown(s), s("power"));
+      rate_closed_form(s, m, lr, "ln R", out);
     } else {
-      const double pooled = m.pooled(n1, n2);
-      out.push_back({"Variance under H0 (method 3)",
-                     "V0 = (1/(t λ̄) + κ)(1/N1 + 1/N2), λ̄ = (N1 λ1 + N2 λ2) / (N1 + N2), the pooled rate",
-                     "λ̄ = (" + fint(n1) + " × " + sig(m.r1) + " + " + fint(n2) + " × " + sig(m.r0) + ") / " +
-                         fint(n1 + n2) + " = " + sig(pooled) + ", V0 = " + per(pooled) + " × " + inv + " = " +
-                         sig(v0)});
+      out.find = find_power("with " + two_sizes(n, false));
     }
-    out.push_back(z_critical(m.alpha, m.a));
-    out.push_back(log_ratio_power_step("ln R", std::log(m.rr), v0, v1, m.sides(n1, n2), m.power(n1, n2), m.alpha, m.a));
-    if (s.solve == "n")
-      out.push_back(rate_sizes_step(s, r, m));
+    out.steps.push_back({"Variance under H1", "V1 = (1/(t λ1) + κ)/N1 + (1/(t λ2) + κ)/N2",
+                         per(dsig(m.r1)) + "/" + N1 + " + " + per(gsig(m.r0)) + "/" + N2 + " = " + dsig(v1)});
+    if (m.method == "1") {
+      out.steps.push_back({"Variance under H0 (method 1)", "V0 = (1/(t λ2) + κ)(1/N1 + 1/N2), from the control rate",
+                           per(gsig(m.r0)) + " × " + inv + " = " + dsig(v0)});
+    } else if (m.method == "2") {
+      out.steps.push_back({"Variance under H0 (method 2)", "V0 = V1, from the true rates", "V0 = " + dsig(v0)});
+    } else {
+      const double pooled = m.pooled(n.n1, n.n2);
+      out.steps.push_back({"Variance under H0 (method 3)",
+                           "V0 = (1/(t λ̄) + κ)(1/N1 + 1/N2), λ̄ = (N1 λ1 + N2 λ2) / (N1 + N2), the pooled rate",
+                           "λ̄ = (" + N1 + " × " + dsig(m.r1) + " + " + N2 + " × " + gsig(m.r0) + ") / (" + N1 +
+                               " + " + N2 + ") = " + dsig(pooled) + ", V0 = " + per(dsig(pooled)) + " × " + inv +
+                               " = " + dsig(v0)});
+    }
+    out.steps.push_back(z_critical(m.alpha, m.a));
+    out.steps.push_back(log_ratio_power_step("ln R", lr, v0, v1, m.sides(n.n1, n.n2), power, m.alpha, m.a));
+    if (solved) {
+      out.steps.push_back(rate_sizes_step(s, r, m));
+      out.answer = sizes_answer(n, "power " + dvp(power));
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"λ1, λ2", "Event rates in the treatment and control groups."},
@@ -1505,33 +1715,51 @@ double one_var_power(double n, double ratio, double alpha, Alt a) {
 // `ratio_sym`, has the law `q` (χ² or F, its degrees of freedom `df`, defined by `df_def`) under H1: c_U and c_L are
 // its quantiles (quantile(lower, p)), and the power the chances beyond them once divided by the ratio (tail(lower, x),
 // as the power function computes them).
+// `ratio_text` is the ratio as written (given, or derived from the SDs), `df_numbers` the degrees of freedom.
 void variance_test_steps(const std::string& q, const std::string& df, const std::string& df_def,
-                         const std::string& df_numbers, const std::string& ratio_sym, double ratio, double alpha, Alt a,
-                         double power, const std::function<double(bool, double)>& quantile,
+                         const std::string& df_numbers, const std::string& ratio_sym, const std::string& ratio_text,
+                         double ratio, double alpha, Alt a, double power,
+                         const std::function<double(bool, double)>& quantile,
                          const std::function<double(bool, double)>& tail, derive::Steps& out) {
   using namespace derive;
   const double side = tail_alpha(alpha, a);
-  const std::string level = a == Alt::Two ? "α/2" : "α";
+  const std::string level = a == Alt::Two ? "α/2" : "α", level_lo = gv(alpha) + (a == Alt::Two ? "/2" : "");
   const bool hi = a != Alt::Lower, lo = a != Alt::Upper;
   const double cu = hi ? quantile(false, side) : NAN, cl = lo ? quantile(true, side) : NAN;
   std::string f, t, pf, pt;
   if (hi) {
     f = "c_U = " + q + "(1 − " + level + "; " + df + ")";
-    t = "c_U = " + q + "(1 − " + num(side) + "; " + df_numbers + ") = " + num(cu);
+    t = "c_U = " + q + "(" + level_numbers(alpha, a) + "; " + df_numbers + ") = " + dv(cu);
     pf = "P(" + q + " > c_U / " + ratio_sym + ")";
-    pt = "P(" + q + " > " + num(cu) + " / " + num(ratio) + ")";
+    pt = "P(" + q + " > " + dv(cu) + " / " + ratio_text + ")";
   }
   if (lo) {
     const std::string join = hi ? ", " : "", plus = hi ? " + " : "";
     f += join + "c_L = " + q + "(" + level + "; " + df + ")";
-    t += join + "c_L = " + q + "(" + num(side) + "; " + df_numbers + ") = " + num(cl);
+    t += join + "c_L = " + q + "(" + level_lo + "; " + df_numbers + ") = " + dv(cl);
     pf += plus + "P(" + q + " < c_L / " + ratio_sym + ")";
-    pt += plus + "P(" + q + " < " + num(cl) + " / " + num(ratio) + ")";
+    pt += plus + "P(" + q + " < " + dv(cl) + " / " + ratio_text + ")";
   }
   out.push_back({"Critical values", f + ", the " + q + " quantiles with " + df_def, t});
   pt += " = ";
-  if (hi && lo) pt += prob(tail(false, cu / ratio)) + " + " + prob(tail(true, cl / ratio)) + " = ";
-  out.push_back({"Power", pf + ", " + q + " with " + df + " degrees of freedom", pt + prob(power)});
+  if (hi && lo) pt += dvp(tail(false, cu / ratio)) + " + " + dvp(tail(true, cl / ratio)) + " = ";
+  out.push_back({"Power", pf + ", " + q + " with " + df + " degrees of freedom", pt + dvp(power)});
+}
+
+// The normal approximation of a test of variances on the log scale, where ln S² has a variance of about 2/(N − 1):
+// the size whose log ratio ln(`ratio`) the test detects with the target power, N − 1 ≈ c (z + z(1 − β))² / (ln
+// ratio)², for comparison (`c` 2 for one variance, 4 for two equal groups, 2 (1 + 1/r) for a ratio, written
+// `c_formula` and `c_numbers`).
+Step log_variance_approx(const std::string& lhs, const std::string& ratio_sym, const std::string& ratio_text,
+                         double ratio, const std::string& c_formula, const std::string& c_numbers, double c,
+                         double alpha, Alt a, double target) {
+  using namespace derive;
+  const double za = z_alpha(alpha, a), zb = stats::qnorm(target), lr = std::log(ratio);
+  return {"Normal approximation (log scale)",
+          lhs + " ≈ 1 + " + c_formula + " " + z_sum_formula(a) + " / (ln " + ratio_sym +
+              ")², as ln S² has a variance of about 2/(N − 1), for comparison; the steps below give the answer",
+          "1 + " + c_numbers + " × " + z_sum_numbers(alpha, a, target) + " / (ln " + ratio_text + ")² = " +
+              dv(1 + c * (za + zb) * (za + zb) / (lr * lr))};
 }
 
 Procedure one_variance() {
@@ -1603,14 +1831,29 @@ Procedure one_variance() {
     using namespace derive;
     const double n = r.num("n"), ratio = r.num("ratio"), alpha = s("alpha"), df = n - 1;
     const Alt a = alt(s);
-    Steps out;
-    out.push_back({"Variance ratio", "σ1²/σ0²", num(s("sd1")) + "² / " + num(s("sd0")) + "² = " + num(ratio)});
+    const bool solved = s.solve == "n";
+    const double power = one_var_power(n, ratio, alpha, a);
+    Derivation out;
+    out.steps.push_back(
+        {"Variance ratio", "σ1²/σ0²", gsig(s("sd1")) + "² / " + gsig(s("sd0")) + "² = " + dsig(ratio)});
+    if (solved) {
+      out.find = find_size("N", s("power"));
+      out.steps.push_back(
+          log_variance_approx("N", "(σ1²/σ0²)", dsig(ratio), ratio, "2", "2", 2, alpha, a, s("power")));
+    } else {
+      out.find = find_power("with N = " + gvi(n));
+    }
+    out.steps.push_back({"Degrees of freedom", "ν = N − 1", size(n, solved) + " − 1 = " + dvi(df)});
     variance_test_steps(
-        "χ²", "ν", "ν = N − 1", fint(df), "(σ1²/σ0²)", ratio, alpha, a, one_var_power(n, ratio, alpha, a),
+        "χ²", "ν", "ν = N − 1", dvi(df), "(σ1²/σ0²)", dsig(ratio), ratio, alpha, a, power,
         [&](bool lower, double p) { return stats::qchisq(p, df, lower); },
-        [&](bool lower, double x) { return stats::pchisq(x, df, lower); }, out);
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return one_var_power(x, ratio, alpha, a); }, n, s("power"), 2));
+        [&](bool lower, double x) { return stats::pchisq(x, df, lower); }, out.steps);
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return one_var_power(x, ratio, alpha, a); }, n, s("power"), 2));
+      out.answer = size_answer(n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.references = {"Ostle, B. & Malone, L. C. (1988). Statistics in Research, 4th ed. Iowa State University Press.", REF_MACHIN};
@@ -1692,19 +1935,40 @@ Procedure two_variances() {
   };
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
-    const double n1 = r.num("n1"), n2 = r.num("n2"), ratio = r.num("ratio"), alpha = s("alpha");
-    const double d1 = n1 - 1, d2 = n2 - 1;
+    const TwoN n{r.num("n1"), r.num("n2")};
+    const double ratio = r.num("ratio"), alpha = s("alpha"), d1 = n.n1 - 1, d2 = n.n2 - 1;
     const Alt a = alt(s);
-    Steps out;
-    out.push_back({"Degrees of freedom", "ν1 = N1 − 1, ν2 = N2 − 1",
-                   "ν1 = " + fint(n1) + " − 1 = " + fint(d1) + ", ν2 = " + fint(n2) + " − 1 = " + fint(d2)});
+    const bool solved = s.solve == "n";
+    const double power = two_var_power(n.n1, n.n2, ratio, alpha, a);
+    Derivation out;
+    if (solved) {
+      out.find = find_size(two_group_unknown(s), s("power"));
+      // ln(S1²/S2²) has a variance of about 2/ν1 + 2/ν2: 4/ν1 with equal groups, 2 (1 + 1/r)/ν1 with N2 = r N1
+      const std::string& alloc = s.s("alloc");
+      if (alloc == "equal")
+        out.steps.push_back(
+            log_variance_approx("N1 = N2", "(σ1²/σ2²)", gsig(ratio), ratio, "4", "4", 4, alpha, a, s("power")));
+      else if (alloc == "ratio")
+        out.steps.push_back(log_variance_approx("N1", "(σ1²/σ2²)", gsig(ratio), ratio, "2 (1 + 1/r)",
+                                                "2 × (1 + 1/" + gv(s("r")) + ")", 2 * (1 + 1 / s("r")), alpha, a,
+                                                s("power")));
+    } else {
+      out.find = find_power("with " + two_sizes(n, false));
+    }
+    out.steps.push_back({"Degrees of freedom", "ν1 = N1 − 1, ν2 = N2 − 1",
+                         "ν1 = " + size(n.n1, solved) + " − 1 = " + dvi(d1) + ", ν2 = " + size(n.n2, solved) +
+                             " − 1 = " + dvi(d2)});
     variance_test_steps(
-        "F", "ν1, ν2", "ν1 = N1 − 1 and ν2 = N2 − 1", fint(d1) + ", " + fint(d2), "(σ1²/σ2²)", ratio, alpha, a,
-        two_var_power(n1, n2, ratio, alpha, a), [&](bool lower, double p) { return stats::qf(p, d1, d2, lower); },
-        [&](bool lower, double x) { return stats::pf(x, d1, d2, lower); }, out);
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return two_var_power(x1, x2, ratio, alpha, a); }, {n1, n2}, s("power"), 2));
+        "F", "ν1, ν2", "ν1 = N1 − 1 and ν2 = N2 − 1", dvi(d1) + ", " + dvi(d2), "(σ1²/σ2²)", gsig(ratio), ratio,
+        alpha, a, power, [&](bool lower, double p) { return stats::qf(p, d1, d2, lower); },
+        [&](bool lower, double x) { return stats::pf(x, d1, d2, lower); }, out.steps);
+    if (solved) {
+      out.steps.push_back(two_group_search(
+          s, [&](double x1, double x2) { return two_var_power(x1, x2, ratio, alpha, a); }, n, s("power"), 2));
+      out.answer = sizes_answer(n, "power " + dvp(power));
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.references = {"Desu, M. M. & Raghavarao, D. (1990). Sample Size Methodology. Academic Press.", REF_MACHIN};

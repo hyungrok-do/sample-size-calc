@@ -106,11 +106,11 @@ double corr_power(const Scenario& s, double n, double rho1, const CorrCrit& c) {
 
 double corr_power(const Scenario& s, double n, double rho1) { return corr_power(s, n, rho1, corr_crit(s, n)); }
 
-// The steps of the exact test of one correlation: its critical correlations (for ρ0 = 0 from the t-test, as
-// zcrit_upper finds them, otherwise roots of the exact null distribution) and the power beyond them at ρ1, whose
-// tails corr_tails_z gave.
-void exact_corr_steps(const Scenario& s, double n, double rho0, double rho1, const CorrCrit& c,
-                      const std::pair<double, double>& tails, derive::Steps& out) {
+// The critical correlations of the exact test of one correlation with N subjects (written `N`): for ρ0 = 0 from the
+// t-test, as zcrit_upper finds them, otherwise roots of the exact null distribution, which stats::pcorr_z evaluates
+// on Fisher's scale (ζ0 = atanh ρ0, which the steps before have shown).
+void exact_corr_critical_steps(const Scenario& s, double n, const std::string& N, double rho0, const CorrCrit& c,
+                               derive::Steps& out) {
   using namespace derive;
   const double alpha = s("alpha"), zeta0 = std::atanh(rho0);
   const Alt a = alt(s);
@@ -121,48 +121,49 @@ void exact_corr_steps(const Scenario& s, double n, double rho0, double rho1, con
   if (rho0 == 0) {
     const double tc = stats::qt(tail_alpha(alpha, a), n - 2, false);
     out.push_back(t_critical(alpha, n - 2, a, "N − 2"));
-    const std::string root = num(tc) + " / √(" + fint(n - 2) + " + " + num(tc) + "²)";
+    const std::string root = dv(tc) + " / √(" + N + " − 2 + " + dv(tc) + "²)";
     if (hi) {
       f = "r_U = t / √(N − 2 + t²)";
-      t = "r_U = " + root + " = " + num(std::tanh(c.up));
+      t = "r_U = " + root + " = " + dv(std::tanh(c.up));
     }
     if (lo) {
       f += join + (hi ? "r_L = −r_U" : "r_L = −t / √(N − 2 + t²)");
-      t += join + (hi ? "r_L = " : "r_L = −" + root + " = ") + num(std::tanh(c.lo));
+      t += join + (hi ? "r_L = " : "r_L = −" + root + " = ") + dv(std::tanh(c.lo));
     }
     out.push_back({"Critical correlations", f + ", the t-test of ρ = 0 written for r", t});
-  } else {
-    // the scale on which corr_crit finds the critical values and stats::pcorr_z takes the correlations
-    out.push_back({"Fisher z transform", "ζ = atanh ρ, the scale on which the exact distribution of r is evaluated",
-                   "ζ0 = atanh " + sub(rho0) + " = " + num(zeta0) + ", ζ1 = atanh " + sub(rho1) + " = " +
-                       num(std::atanh(rho1))});
-    if (hi) {
-      f = "P(r ≥ r_U | ρ0) = " + level;
-      t = "P(r ≥ " + num(std::tanh(c.up)) + " | ρ0 = " + num(rho0) + ") = " +
-          prob(stats::pcorr_z(c.up, n, zeta0, false));
-    }
-    if (lo) {
-      f += join + "P(r ≤ r_L | ρ0) = " + level;
-      t += join + "P(r ≤ " + num(std::tanh(c.lo)) + " | ρ0 = " + num(rho0) + ") = " +
-           prob(stats::pcorr_z(c.lo, n, zeta0, true));
-    }
-    out.push_back(
-        {"Critical correlations", f + ", r the sample correlation of N subjects, from its exact distribution", t});
+    return;
   }
-  f.clear();
-  t.clear();
-  const std::string plus = hi && lo ? " + " : "", at = " | ρ1 = " + num(rho1) + ")";
+  if (hi) {
+    f = "P(r ≥ r_U | ρ0) = " + level;
+    t = "P(r ≥ " + dv(std::tanh(c.up)) + " | ρ0 = " + gv(rho0) + ") = " + dvp(stats::pcorr_z(c.up, n, zeta0, false));
+  }
+  if (lo) {
+    f += join + "P(r ≤ r_L | ρ0) = " + level;
+    t += join + "P(r ≤ " + dv(std::tanh(c.lo)) + " | ρ0 = " + gv(rho0) + ") = " +
+         dvp(stats::pcorr_z(c.lo, n, zeta0, true));
+  }
+  out.push_back({"Critical correlations",
+                 f + ", r the sample correlation of N subjects, from its exact distribution (on Fisher's scale ζ)", t});
+}
+
+// The exact power at ρ1 (written `rho1`) beyond the critical correlations, whose tails corr_tails_z gave: in symbols,
+// and its terms up to the total.
+std::pair<std::string, std::string> exact_corr_power_terms(const CorrCrit& c, const std::string& rho1,
+                                                           const std::pair<double, double>& tails) {
+  using namespace derive;
+  const bool hi = std::isfinite(c.up), lo = std::isfinite(c.lo);
+  const std::string plus = hi && lo ? " + " : "", at = " | ρ1 = " + rho1 + ")";
+  std::string f, t;
   if (hi) {
     f = "P(r ≥ r_U | ρ1)";
-    t = "P(r ≥ " + num(std::tanh(c.up)) + at;
+    t = "P(r ≥ " + dv(std::tanh(c.up)) + at;
   }
   if (lo) {
     f += plus + "P(r ≤ r_L | ρ1)";
-    t += plus + "P(r ≤ " + num(std::tanh(c.lo)) + at;
+    t += plus + "P(r ≤ " + dv(std::tanh(c.lo)) + at;
   }
-  t += " = ";
-  if (hi && lo) t += prob(tails.first) + " + " + prob(tails.second) + " = ";
-  out.push_back({"Power", f + ", from the exact distribution of r", t + prob(corr_tails_power(tails))});
+  if (hi && lo) t += " = " + dvp(tails.first) + " + " + dvp(tails.second);
+  return {f + ", from the exact distribution of r", t};
 }
 
 Procedure one_corr() {
@@ -282,29 +283,75 @@ Procedure one_corr() {
     using namespace derive;
     const double n = r.num("n"), rho0 = r.num("rho0"), rho1 = r.num("rho1"), alpha = s("alpha");
     const Alt a = alt(s);
-    Steps out;
-    double power;
-    if (s.is("method", "fisher")) {
-      const double zeta0 = std::atanh(rho0), zeta1 = std::atanh(rho1), ncp = (zeta1 - zeta0) * std::sqrt(n - 3);
-      power = corr_power(s, n, rho1, CorrCrit{});
-      out.push_back({"Fisher z transform", "ζ = atanh ρ = ½ ln((1 + ρ)/(1 − ρ))",
-                     "ζ0 = atanh " + sub(rho0) + " = " + num(zeta0) + ", ζ1 = atanh " + sub(rho1) + " = " +
-                         num(zeta1)});
-      out.push_back({"Noncentrality", "λ = (ζ1 − ζ0) √(N − 3)",
-                     "(" + num(zeta1) + " − " + sub(zeta0) + ") × √" + fint(n - 3) + " = " + num(ncp)});
-      out.push_back(z_critical(alpha, a));
-      out.push_back(z_power_step(ncp, alpha, a));
-    } else {
-      // as corr_power, with the tails kept for the steps
-      const CorrCrit c = corr_crit(s, n);
-      const auto tails = corr_tails_z(n, std::atanh(rho1), c);
-      power = corr_tails_power(tails);
-      exact_corr_steps(s, n, rho0, rho1, c, tails, out);
+    const bool fisher = s.is("method", "fisher"), solved = s.solve == "n";
+    const double zeta0 = std::atanh(rho0), zeta1 = std::atanh(rho1), ncp = (zeta1 - zeta0) * std::sqrt(n - 3);
+    const std::string N = size(n, solved);
+    // the exact power as corr_power computes it, with its critical values and tails kept for the steps
+    const CorrCrit c = fisher ? CorrCrit{} : corr_crit(s, n);
+    const auto tails = fisher ? std::pair<double, double>{} : corr_tails_z(n, zeta1, c);
+    const double power = fisher ? corr_power(s, n, rho1, c) : corr_tails_power(tails);
+    const std::string zeta = "ζ = atanh ρ = ½ ln((1 + ρ)/(1 − ρ))";
+    const std::string zeta0_text = "ζ0 = atanh(" + gv(rho0) + ") = " + dv(zeta0);
+    Derivation out;
+    if (s.solve == "rho1") {
+      const double target = s("power");
+      const std::string rho1_text = derived(apart(rho1, rho0).first);
+      out.find = find_effect("ρ1", target, "with N = " + gvi(n));
+      out.steps.push_back({"Fisher z transform", zeta, zeta0_text});
+      if (fisher) {  // the target power gives λ, λ the distance on Fisher's scale, and that ρ1
+        out.steps.push_back(z_critical(alpha, a));
+        out.steps.push_back(z_ncp_needed(ncp, alpha, a, target));
+        out.steps.push_back({"Fisher z detected", "ζ1 = ζ0 + λ / √(N − 3)",
+                             dv(zeta0) + " + " + dvs(ncp) + " / √(" + N + " − 3) = " + dv(zeta1)});
+        out.steps.push_back({"Correlation detected", "ρ1 = tanh ζ1", "tanh(" + dv(zeta1) + ") = " + rho1_text});
+      } else {  // the critical values follow from ρ0 alone; ρ1 is where the exact power beyond them reaches the target
+        const double za = z_alpha(alpha, a), zb = stats::qnorm(target), sign = a == Alt::Lower ? -1 : 1;
+        out.steps.push_back({"Fisher z approximation",
+                             std::string("ρ1 ≈ tanh(ζ0 ") + (sign < 0 ? "−" : "+") + " (z(" + level_symbol(a) +
+                                 ") + z(1 − β)) / √(N − 3)), for comparison; the steps below give the answer",
+                             "tanh(" + dv(zeta0) + (sign < 0 ? " − " : " + ") + "(" + dv(za) + " + " + dv(zb) +
+                                 ") / √(" + N + " − 3)) = " +
+                                 dv(std::tanh(zeta0 + sign * (za + zb) / std::sqrt(n - 3)))});
+        exact_corr_critical_steps(s, n, N, rho0, c, out.steps);
+        const auto [f, t] = exact_corr_power_terms(c, rho1_text, tails);
+        out.steps.push_back(effect_found("ρ1", rho1_text, f, t, power, target));
+      }
+      out.answer = "ρ1 = " + rho1_text;
+      return out;
     }
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return x == n ? power : corr_power(s, x, rho1); }, n, s("power"), 4));
-    else if (s.solve == "rho1")
-      out.push_back(effect_search("ρ1", rho1, power, s("power")));
+    if (solved)
+      out.find = find_size("N", s("power"));
+    else
+      out.find = find_power("with N = " + gvi(n));
+    const std::string zeta1_text = "ζ1 = atanh(" + gv(rho1) + ") = " + dv(zeta1);
+    // the exact test with ρ0 = 0 is a t-test, which needs no Fisher transform unless for the closed form
+    if (fisher || solved || rho0 != 0)
+      out.steps.push_back({"Fisher z transform", zeta, zeta0_text + ", " + zeta1_text});
+    if (solved) {
+      const double za = z_alpha(alpha, a), zb = stats::qnorm(s("power"));
+      out.steps.push_back({"Fisher z approximation",
+                           std::string("N ≈ ((z(") + level_symbol(a) +
+                               ") + z(1 − β)) / (ζ1 − ζ0))² + 3, for comparison; the steps below give the answer",
+                           "((" + dv(za) + " + " + dv(zb) + ") / (" + dv(zeta1) + " − " + dvs(zeta0) + "))² + 3 = " +
+                               dv(std::pow((za + zb) / (zeta1 - zeta0), 2) + 3)});
+    }
+    if (fisher) {
+      out.steps.push_back({"Noncentrality", "λ = (ζ1 − ζ0) √(N − 3)",
+                           "(" + dv(zeta1) + " − " + dvs(zeta0) + ") × √(" + N + " − 3) = " + dv(ncp)});
+      out.steps.push_back(z_critical(alpha, a));
+      out.steps.push_back(z_power_step(ncp, alpha, a));
+    } else {
+      exact_corr_critical_steps(s, n, N, rho0, c, out.steps);
+      const auto [f, t] = exact_corr_power_terms(c, gv(rho1), tails);
+      out.steps.push_back({"Power", f, t + " = " + dvp(power)});
+    }
+    if (solved) {
+      out.steps.push_back(
+          n_search([&](double x) { return x == n ? power : corr_power(s, x, rho1); }, n, s("power"), 4));
+      out.answer = size_answer(n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"ρ0", "Population correlation under H0."}, {"ρ1", "Population correlation under H1."}};
@@ -391,22 +438,47 @@ Procedure two_corr() {
   };
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
-    const double n1 = r.num("n1"), n2 = r.num("n2"), rho1 = r.num("rho1"), rho2 = r.num("rho2"), alpha = s("alpha");
+    const TwoN n{r.num("n1"), r.num("n2")};
+    const double rho1 = r.num("rho1"), rho2 = r.num("rho2"), alpha = s("alpha");
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double zeta1 = std::atanh(rho1), zeta2 = std::atanh(rho2), dz = zeta1 - zeta2;
-    const double se = std::sqrt(1 / (n1 - 3) + 1 / (n2 - 3)), ncp = dz / se;
-    Steps out;
-    out.push_back({"Fisher z transform", "ζ = atanh ρ = ½ ln((1 + ρ)/(1 − ρ))",
-                   "ζ1 = atanh " + sub(rho1) + " = " + num(zeta1) + ", ζ2 = atanh " + sub(rho2) + " = " + num(zeta2)});
-    out.push_back({"Standard error", "SE = √(1/(N1 − 3) + 1/(N2 − 3))",
-                   "√(1/" + fint(n1 - 3) + " + 1/" + fint(n2 - 3) + ") = " + num(se)});
-    out.push_back({"Noncentrality", "λ = (ζ1 − ζ2) / SE",
-                   "(" + num(zeta1) + " − " + sub(zeta2) + ") / " + num(se) + " = " + num(ncp)});
-    out.push_back(z_critical(alpha, a));
-    out.push_back(z_power_step(ncp, alpha, a));
-    if (s.solve == "n")
-      out.push_back(two_group_search(
-          s, [&](double x1, double x2) { return two_corr_power(dz, x1, x2, alpha, a); }, {n1, n2}, s("power"), 4));
+    const double se = std::sqrt(1 / (n.n1 - 3) + 1 / (n.n2 - 3)), ncp = dz / se;
+    const double power = two_corr_power(dz, n.n1, n.n2, alpha, a);
+    Derivation out;
+    out.steps.push_back({"Fisher z transform", "ζ = atanh ρ = ½ ln((1 + ρ)/(1 − ρ))",
+                         "ζ1 = atanh(" + gv(rho1) + ") = " + dv(zeta1) + ", ζ2 = atanh(" + gv(rho2) + ") = " +
+                             dv(zeta2)});
+    if (solved) {
+      out.find = find_size(two_group_unknown(s), s("power"));
+      // the closed form where group 2 follows group 1: 1/(N1 − 3) + 1/(N2 − 3) ≈ (1 + 1/r)/(N1 − 3)
+      const std::string& alloc = s.s("alloc");
+      if (alloc == "equal" || alloc == "ratio") {
+        const double k = alloc == "ratio" ? 1 + 1 / s("r") : 2;
+        const double za = z_alpha(alpha, a), zb = stats::qnorm(s("power"));
+        out.steps.push_back(
+            {"Fisher z approximation",
+             std::string(alloc == "equal" ? "N1 = N2 ≈ 2" : "N1 ≈ (1 + 1/r)") + " ((z(" + level_symbol(a) +
+                 ") + z(1 − β)) / (ζ1 − ζ2))² + 3, for comparison; the steps below give the answer",
+             std::string(alloc == "equal" ? "2" : "(1 + 1/" + gv(s("r")) + ")") + " × ((" + dv(za) + " + " + dv(zb) +
+                 ") / (" + dv(zeta1) + " − " + dvs(zeta2) + "))² + 3 = " + dv(k * std::pow((za + zb) / dz, 2) + 3)});
+      }
+    } else {
+      out.find = find_power("with " + two_sizes(n, false));
+    }
+    out.steps.push_back({"Standard error", "SE = √(1/(N1 − 3) + 1/(N2 − 3))",
+                         "√(1/(" + size(n.n1, solved) + " − 3) + 1/(" + size(n.n2, solved) + " − 3)) = " + dv(se)});
+    out.steps.push_back({"Noncentrality", "λ = (ζ1 − ζ2) / SE",
+                         "(" + dv(zeta1) + " − " + dvs(zeta2) + ") / " + dv(se) + " = " + dv(ncp)});
+    out.steps.push_back(z_critical(alpha, a));
+    out.steps.push_back(z_power_step(ncp, alpha, a));
+    if (solved) {
+      out.steps.push_back(two_group_search(
+          s, [&](double x1, double x2) { return two_corr_power(dz, x1, x2, alpha, a); }, n, s("power"), 4));
+      out.answer = sizes_answer(n, "power " + dvp(power));
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"ρ1, ρ2", "Population correlations in the two groups."}};
@@ -507,27 +579,49 @@ Procedure corr_ci() {
     using namespace derive;
     const double n = r.num("n"), rho = r.num("rho"), conf = r.num("conf"), width = r.num("width");
     const double z = stats::qnorm((1 - conf) / 2, false), zeta = std::atanh(rho), h = z / std::sqrt(n - 3);
-    Steps out;
-    out.push_back(
-        {"Fisher z transform", "ζ = atanh r = ½ ln((1 + r)/(1 − r))", "atanh " + sub(rho) + " = " + num(zeta)});
-    out.push_back({"Critical value", "z = Φ⁻¹(1 − (1 − C)/2), C the confidence level",
-                   "Φ⁻¹(1 − " + num((1 - conf) / 2) + ") = " + num(z)});
-    out.push_back({"Half-width on Fisher's scale", "h = z / √(N − 3)", num(z) + " / √" + fint(n - 3) + " = " + num(h)});
-    out.push_back({"Limits", "L = tanh(ζ − h), U = tanh(ζ + h)",
-                   "L = tanh(" + num(zeta) + " − " + num(h) + ") = " + num(r.num("lower")) + ", U = tanh(" +
-                       num(zeta) + " + " + num(h) + ") = " + num(r.num("upper"))});
-    out.push_back({"Width", "W = U − L", num(r.num("upper")) + " − " + sub(r.num("lower")) + " = " + num(width)});
-    if (s.solve == "n") {
+    const bool solved = s.solve == "n";
+    const std::string N = size(n, solved), level = "(level C = " + gv(conf) + ")";
+    // the limits told apart from each other and from the estimate, as the statement shows them
+    const auto t = fnum_apart_list({r.num("lower"), rho, r.num("upper")}, {-1.0, 1.0});
+    const auto printed = [](const std::string& x) { return !x.empty() && x[0] == '-' ? "−" + x.substr(1) : x; };
+    const std::string lower = derived(printed(t[0])), upper = derived(printed(t[2]));
+    Derivation out;
+    out.steps.push_back(
+        {"Fisher z transform", "ζ = atanh r = ½ ln((1 + r)/(1 − r))", "atanh(" + gv(rho) + ") = " + dv(zeta)});
+    out.steps.push_back({"Critical value", "z = Φ⁻¹(1 − (1 − C)/2), C the confidence level",
+                         "Φ⁻¹(1 − (1 − " + gv(conf) + ")/2) = " + dv(z)});
+    if (solved) {
+      // Bonett and Wright's closed form from the interval's first-order width 2z(1 − r²)/√(N − 3)
+      const double target = r.num("target_width");
+      out.find = "the smallest N whose confidence interval " + level + " is at most W = " + gv(target) + " wide";
+      out.steps.push_back({"Approximation",
+                           "N ≈ 4 z² (1 − r²)² / W² + 3, for comparison; the steps below give the answer",
+                           "4 × " + dv(z) + "² × (1 − " + gvs(rho) + "²)² / " + gv(target) + "² + 3 = " +
+                               dv(4 * z * z * std::pow(1 - rho * rho, 2) / (target * target) + 3)});
+    } else {
+      out.find = "the width of the confidence interval " + level + " with N = " + gvi(n);
+    }
+    out.steps.push_back(
+        {"Half-width on Fisher's scale", "h = z / √(N − 3)", dv(z) + " / √(" + N + " − 3) = " + dv(h)});
+    out.steps.push_back({"Limits", "L = tanh(ζ − h), U = tanh(ζ + h)",
+                         "L = tanh(" + dv(zeta) + " − " + dv(h) + ") = " + lower + ", U = tanh(" + dv(zeta) + " + " +
+                             dv(h) + ") = " + upper});
+    out.steps.push_back({"Width", "W = U − L", upper + " − " + (r.num("lower") < 0 ? "(" + lower + ")" : lower) +
+                                                   " = " + dv(width)});
+    if (solved) {
       // as n_search, for the width: the smallest size whose interval is no wider than the target
       const double target = r.num("target_width");
       if (n - 1 < 4)
-        out.push_back({"Sample size", "N = the smallest size whose width is at most the target",
-                       "N = " + fint(n) + " is the smallest size allowed, and its width is already " +
-                           prob(width, target) + " ≤ " + fnum(target)});
+        out.steps.push_back({"Smallest size", "N = the smallest size whose width is at most W",
+                             "N = " + dvi(n) + " is the smallest size allowed, and its width is already " +
+                                 dvp(width, target) + " ≤ " + gv(target)});
       else
-        out.push_back({"Sample size", "N = the smallest whole number whose width is at most the target",
-                       "width at N = " + fint(n - 1) + ": " + prob(corr_ci_width(rho, z, n - 1), target) + " > " +
-                           fnum(target) + " ≥ width at N = " + fint(n) + ": " + prob(width, target)});
+        out.steps.push_back({"Smallest size", "N = the smallest whole number whose width is at most W",
+                             "width at N = " + dvi(n - 1) + ": " + dvp(corr_ci_width(rho, z, n - 1), target) + " > " +
+                                 gv(target) + " ≥ width at N = " + dvi(n) + ": " + dvp(width, target)});
+      out.answer = "N = " + dvi(n) + ", with width " + dvp(width, target) + " (from " + lower + " to " + upper + ")";
+    } else {
+      out.answer = "W = " + dv(width) + " (from " + lower + " to " + upper + ")";
     }
     return out;
   };
@@ -685,21 +779,44 @@ Procedure multiple_regression() {
   p.derivation = [](const Scenario& s, const Row& r) {
     using namespace derive;
     const double n = r.num("n"), b = r.num("b"), a = r.num("a"), r2t = r.num("r2t"), r2c = r.num("r2c");
-    const double alpha = s("alpha"), f2 = mreg_f2(r2t, r2c), df2 = n - a - b - 1;
+    const double alpha = s("alpha"), f2 = mreg_f2(r2t, r2c), df2 = n - a - b - 1, lambda = n * f2;
     const double fc = stats::qf(alpha, b, df2, false), power = mreg_power(n, f2, b, a, alpha);
-    Steps out;
-    out.push_back({"Effect size (Cohen's f²)", "f² = ΔR² / (1 − R²c − ΔR²)",
-                   sig(r2t) + " / (1 − " + sig(r2c) + " − " + sig(r2t) + ") = " + sig(f2)});
-    out.push_back({"Noncentrality", "λ = N f²", fint(n) + " × " + sig(f2) + " = " + num(n * f2)});
-    out.push_back({"Critical value",
-                   "F_c = F(1 − α; B, ν), the F quantile with B and ν = N − A − B − 1 degrees of freedom",
-                   "F(1 − " + num(alpha) + "; " + fint(b) + ", " + fint(df2) + ") = " + num(fc)});
-    out.push_back({"Power", "P(F′ > F_c), F′ ~ noncentral F(B, ν, λ)", "P(F′ > " + num(fc) + ") = " + prob(power)});
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return x == n ? power : mreg_power(x, f2, b, a, alpha); }, n, s("power"),
-                             a + b + 2));
-    else if (s.solve == "r2t")
-      out.push_back(effect_search("ΔR²", r2t, power, s("power")));
+    const bool solved = s.solve == "n";
+    const std::string N = size(n, solved);
+    const Step critical{"Critical value",
+                        "F_c = F(1 − α; B, ν), the F quantile with B and ν = N − A − B − 1 degrees of freedom",
+                        "ν = " + N + " − " + gvi(a) + " − " + gvi(b) + " − 1 = " + dvi(df2) + ", F(1 − " + gv(alpha) +
+                            "; " + gvi(b) + ", " + dvi(df2) + ") = " + dv(fc)};
+    Derivation out;
+    if (s.solve == "r2t") {  // the target power gives λ, λ the effect size f², and f² the R² increase
+      const double target = s("power");
+      out.find = find_effect("ΔR²", target, "with N = " + gvi(n));
+      out.steps.push_back(critical);
+      out.steps.push_back({"Noncentrality needed", "λ solves P(F′ > F_c) = 1 − β, F′ ~ noncentral F(B, ν, λ)",
+                           "P(F′ > " + dv(fc) + ") = " + gv(target) + " when λ = " + dv(lambda)});
+      out.steps.push_back(
+          {"Effect size detected (Cohen's f²)", "f² = λ / N", dv(lambda) + " / " + N + " = " + dsig(f2)});
+      // ΔR² with the digits that tell it from 1 − R²c, its limit, as the statement shows it
+      const std::string delta = derived(fnum_apart(r2t, 1 - r2c).first);
+      out.steps.push_back({"R² increase detected", "ΔR² = f² (1 − R²c) / (1 + f²), from f² = ΔR² / (1 − R²c − ΔR²)",
+                           dsig(f2) + " × (1 − " + gsig(r2c) + ") / (1 + " + dsig(f2) + ") = " + delta});
+      out.answer = "ΔR² = " + delta + " (f² = " + dsig(f2) + ")";
+      return out;
+    }
+    out.find = solved ? find_size("N", s("power")) : find_power("with N = " + gvi(n));
+    out.steps.push_back({"Effect size (Cohen's f²)", "f² = ΔR² / (1 − R²c − ΔR²)",
+                         gsig(r2t) + " / (1 − " + gsig(r2c) + " − " + gsig(r2t) + ") = " + dsig(f2)});
+    out.steps.push_back({"Noncentrality", "λ = N f²", N + " × " + dsig(f2) + " = " + dv(lambda)});
+    out.steps.push_back(critical);
+    out.steps.push_back(
+        {"Power", "P(F′ > F_c), F′ ~ noncentral F(B, ν, λ)", "P(F′ > " + dv(fc) + ") = " + dvp(power)});
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return x == n ? power : mreg_power(x, f2, b, a, alpha); }, n,
+                                   s("power"), a + b + 2));
+      out.answer = size_answer(n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"B", "Number of predictors being tested."},
@@ -854,20 +971,60 @@ Procedure linreg_slope() {
     using namespace derive;
     const double n = r.num("n"), b0 = r.num("b0"), b1 = r.num("b1"), sx = r.num("sx"), alpha = s("alpha");
     const Alt a = alt(s);
-    const double d = b1 - b0, sd = slope_resid_sd(s, b1), ncp = d * sx * std::sqrt(n - 1) / sd;
-    Steps out;
-    if (s.is("sdtype", "sy"))
-      out.push_back({"Residual SD", "σ = √(σy² − β1² σx²)",
-                     "√(" + num(s("sigma")) + "² − " + sub(b1) + "² × " + num(sx) + "²) = " + num(sd)});
-    out.push_back({"Difference to detect", "δ = β1 − B0", num(b1) + " − " + sub(b0) + " = " + num(d)});
-    out.push_back({"Noncentrality", "λ = δ σx √(N − 1) / σ",
-                   sub(d) + " × " + num(sx) + " × √" + fint(n - 1) + " / " + num(sd) + " = " + num(ncp)});
-    out.push_back(t_critical(alpha, n - 2, a, "N − 2"));
-    out.push_back(t_power_step(ncp, n - 2, alpha, a));
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return slope_power(s, x, d, b1); }, n, s("power"), 3));
-    else if (s.solve == "b1")
-      out.push_back(effect_search("β1", b1, slope_power(s, n, d, b1), s("power")));
+    const bool total_sd = s.is("sdtype", "sy"), solved = s.solve == "n";
+    const double d = b1 - b0, sd = slope_resid_sd(s, b1), ncp = d * sx * std::sqrt(n - 1) / sd, df = n - 2;
+    const double power = slope_power(s, n, d, b1);
+    const std::string N = size(n, solved), SX = gsig(sx), SD = total_sd ? dsig(sd) : gsig(sd);
+    // the residual SD at β1 (written `b1_text`), from the total SD of Y
+    const auto resid = [&](const std::string& b1_text) {
+      return "σ = √(" + gsig(s("sigma")) + "² − " + b1_text + "² × " + SX + "²) = " + SD;
+    };
+    Derivation out;
+    if (s.solve == "b1") {  // the target power gives λ, λ the difference, the difference β1
+      const double target = s("power");
+      const auto texts = apart(b1, b0);
+      const std::string b1_text = derived(texts.first), b0_text = given(texts.second);
+      out.find = find_effect("β1", target, "with N = " + gvi(n));
+      out.steps.push_back(t_critical(alpha, df, a, "N − 2"));
+      out.steps.push_back(t_ncp_needed(ncp, df, alpha, a, target));
+      const std::string delta = dvs(ncp) + " × " + SD + " / (" + SX + " × √(" + N + " − 1)) = " + dv(d);
+      const std::string slope = b0_text + " + " + dvs(d) + " = " + b1_text;
+      if (!total_sd) {
+        out.steps.push_back({"Difference detected", "δ = λ σ / (σx √(N − 1))", delta});
+        out.steps.push_back({"Slope detected", "β1 = B0 + δ", slope});
+      } else {  // σ depends on β1, so β1 solves the relation with σ at β1
+        out.steps.push_back(
+            {"Slope detected",
+             "β1 = B0 + δ, δ = λ σ / (σx √(N − 1)), σ = √(σy² − β1² σx²) the residual SD at β1: σ changes with β1, "
+             "so β1 is found by a root search",
+             "at β1 = " + b1_text + ": " + resid(b1_text) + ", δ = " + delta + ", β1 = " + slope});
+        out.steps.push_back(effect_found("β1", b1_text, t_power_step(ncp, df, alpha, a).formula, "", power, target));
+      }
+      out.answer = "β1 = " + b1_text + " (δ = " + dv(d) + ")";
+      return out;
+    }
+    out.find = solved ? find_size("N", s("power")) : find_power("with N = " + gvi(n));
+    if (total_sd) out.steps.push_back({"Residual SD", "σ = √(σy² − β1² σx²)", resid(gvs(b1))});
+    out.steps.push_back({"Difference to detect", "δ = β1 − B0", gv(b1) + " − " + gvs(b0) + " = " + dv(d)});
+    if (solved) {
+      // the closed form a normal statistic would give, beside the exact answer below
+      const double za = z_alpha(alpha, a), zb = stats::qnorm(s("power"));
+      out.steps.push_back(
+          {"Normal approximation",
+           "N ≈ " + z_sum_formula(a) + " σ² / (δ σx)² + 1, for comparison; the steps below give the answer",
+           z_sum_numbers(alpha, a, s("power")) + " × " + SD + "² / (" + dvs(d) + " × " + SX + ")² + 1 = " +
+               dv((za + zb) * (za + zb) * sd * sd / (d * d * sx * sx) + 1)});
+    }
+    out.steps.push_back({"Noncentrality", "λ = δ σx √(N − 1) / σ",
+                         dvs(d) + " × " + SX + " × √(" + N + " − 1) / " + SD + " = " + dv(ncp)});
+    out.steps.push_back(t_critical(alpha, df, a, "N − 2"));
+    out.steps.push_back(t_power_step(ncp, df, alpha, a));
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return slope_power(s, x, d, b1); }, n, s("power"), 3));
+      out.answer = size_answer(n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"β1", "Slope under H1."}, {"σx", "Standard deviation of the predictor X."},
@@ -1027,42 +1184,69 @@ Procedure logistic() {
     const Logistic m(s);
     const double n = r.num("n"), alpha = s("alpha"), d = m.shift(n), power = m.power(n);
     const Alt a = alt(s);
-    Steps out;
+    const bool solved = s.solve == "n";
+    const std::string N = size(n, solved), P0 = gsig(m.p0), R2 = gsig(m.r2);
+    Derivation out;
+    out.find = solved ? find_size("N", s("power")) : find_power("with N = " + gvi(n));
+    // Hsieh's closed form: the N at which the shift reaches z σ0 + z(1 − β) σ1 (σ0 = σ1 = 1 for a normal X)
+    const double za = m.za, zb = solved ? stats::qnorm(s("power")) : NAN;
     if (m.binary) {
-      out.push_back({"Event probability at X = 1", "P1 = O1 / (1 + O1), O1 = OR × P0 / (1 − P0) its odds",
-                     "O1 = " + num(m.orr) + " × " + sig(m.p0) + " / " + sig(1 - m.p0) + " = " + sig(m.o1) + ", P1 = " +
-                         sig(m.o1) + " / (1 + " + sig(m.o1) + ") = " + sig(m.p1)});
-      out.push_back({"Overall event probability", "P̄ = (1 − B) P0 + B P1, B = P(X = 1)",
-                     "(1 − " + num(m.B) + ") × " + sig(m.p0) + " + " + num(m.B) + " × " + sig(m.p1) + " = " +
-                         sig(m.pb)});
-      out.push_back(z_critical(alpha, a));
-      out.push_back({"Standard deviations",
-                     "σ0 = √(P̄ (1 − P̄) / B) under H0, σ1 = √(P0 (1 − P0) + P1 (1 − P1)(1 − B) / B) under H1",
-                     "σ0 = √(" + sig(m.pb) + " × " + sig(1 - m.pb) + " / " + num(m.B) + ") = " + num(m.sd0) +
-                         ", σ1 = √(" + sig(m.p0) + " × " + sig(1 - m.p0) + " + " + sig(m.p1) + " × " + sig(1 - m.p1) +
-                         " × " + num(1 - m.B) + " / " + num(m.B) + ") = " + num(m.sd1)});
-      out.push_back({"Shift", "δ = √(N (1 − R²)(1 − B)) |P1 − P0|",
-                     "√(" + fint(n) + " × " + num(1 - m.r2) + " × " + num(1 - m.B) + ") × |" + sig(m.p1) + " − " +
-                         sig(m.p0) + "| = " + num(d)});
+      const std::string B = gsig(m.B);
+      out.steps.push_back({"Event probability at X = 1", "P1 = O1 / (1 + O1), O1 = OR × P0 / (1 − P0) its odds",
+                           "O1 = " + gv(m.orr) + " × " + P0 + " / (1 − " + P0 + ") = " + dsig(m.o1) + ", P1 = " +
+                               dsig(m.o1) + " / (1 + " + dsig(m.o1) + ") = " + dsig(m.p1)});
+      out.steps.push_back({"Overall event probability", "P̄ = (1 − B) P0 + B P1, B = P(X = 1)",
+                           "(1 − " + B + ") × " + P0 + " + " + B + " × " + dsig(m.p1) + " = " + dsig(m.pb)});
+      out.steps.push_back(z_critical(alpha, a));
+      out.steps.push_back(
+          {"Standard deviations",
+           "σ0 = √(P̄ (1 − P̄) / B) under H0, σ1 = √(P0 (1 − P0) + P1 (1 − P1)(1 − B) / B) under H1",
+           "σ0 = √(" + dsig(m.pb) + " × (1 − " + dsig(m.pb) + ") / " + B + ") = " + dv(m.sd0) + ", σ1 = √(" + P0 +
+               " × (1 − " + P0 + ") + " + dsig(m.p1) + " × (1 − " + dsig(m.p1) + ") × (1 − " + B + ") / " + B +
+               ") = " + dv(m.sd1)});
+      if (solved)
+        out.steps.push_back(
+            {"Hsieh's formula", std::string("N ≈ (z(") + level_symbol(a) +
+                                    ") σ0 + z(1 − β) σ1)² / ((1 − R²)(1 − B)(P1 − P0)²), for comparison; the steps "
+                                    "below give the answer",
+             "(" + dv(za) + " × " + dv(m.sd0) + " + " + dv(zb) + " × " + dv(m.sd1) + ")² / ((1 − " + R2 + ") × (1 − " +
+                 B + ") × (" + dsig(m.p1) + " − " + P0 + ")²) = " +
+                 dv(std::pow(za * m.sd0 + zb * m.sd1, 2) / ((1 - m.r2) * (1 - m.B) * std::pow(m.p1 - m.p0, 2)))});
+      out.steps.push_back({"Shift", "δ = √(N (1 − R²)(1 − B)) |P1 − P0|",
+                           "√(" + N + " × (1 − " + R2 + ") × (1 − " + B + ")) × |" + dsig(m.p1) + " − " + P0 + "| = " +
+                               dv(d)});
       auto term = [&](double x) {
-        return "Φ((" + num(x) + " − " + num(m.za) + " × " + num(m.sd0) + ") / " + num(m.sd1) + ")";
+        return "Φ((" + dv(x) + " − " + dv(m.za) + " × " + dv(m.sd0) + ") / " + dv(m.sd1) + ")";
       };
       if (a == Alt::Two)
-        out.push_back({"Power", "Φ((δ − z σ0) / σ1) + Φ((−δ − z σ0) / σ1)",
-                       term(d) + " + " + term(-d) + " = " + prob(stats::pnorm((d - m.crit) / m.sd1)) + " + " +
-                           prob(stats::pnorm((-d - m.crit) / m.sd1)) + " = " + prob(power)});
+        out.steps.push_back({"Power", "Φ((δ − z σ0) / σ1) + Φ((−δ − z σ0) / σ1)",
+                             term(d) + " + " + term(-d) + " = " + dvp(stats::pnorm((d - m.crit) / m.sd1)) + " + " +
+                                 dvp(stats::pnorm((-d - m.crit) / m.sd1)) + " = " + dvp(power)});
       else
-        out.push_back({"Power", "Φ((δ − z σ0) / σ1), on the side of the effect", term(d) + " = " + prob(power)});
+        out.steps.push_back(
+            {"Power", "Φ((δ − z σ0) / σ1), on the side of the effect", term(d) + " = " + dvp(power)});
     } else {
-      out.push_back({"Log odds ratio per SD of X", "β = ln OR", "ln " + num(m.orr) + " = " + num(m.b)});
-      out.push_back({"Noncentrality", "λ = √(N (1 − R²) P0 (1 − P0)) |β|",
-                     "√(" + fint(n) + " × " + num(1 - m.r2) + " × " + sig(m.p0) + " × " + sig(1 - m.p0) + ") × |" +
-                         num(m.b) + "| = " + num(d)});
-      out.push_back(z_critical(alpha, a));
+      out.steps.push_back({"Log odds ratio per SD of X", "β = ln OR", "ln " + gv(m.orr) + " = " + dv(m.b)});
+      out.steps.push_back(z_critical(alpha, a));
+      if (solved)
+        out.steps.push_back(
+            {"Hsieh's formula",
+             "N ≈ " + z_sum_formula(a) +
+                 " / ((1 − R²) P0 (1 − P0) β²), for comparison; the steps below give the answer",
+             z_sum_numbers(alpha, a, s("power")) + " / ((1 − " + R2 + ") × " + P0 + " × (1 − " + P0 + ") × " +
+                 dvs(m.b) + "²) = " + dv((za + zb) * (za + zb) / ((1 - m.r2) * m.p0 * (1 - m.p0) * m.b * m.b))});
+      out.steps.push_back({"Noncentrality", "λ = √(N (1 − R²) P0 (1 − P0)) |β|",
+                           "√(" + N + " × (1 − " + R2 + ") × " + P0 + " × (1 − " + P0 + ")) × |" + dv(m.b) + "| = " +
+                               dv(d)});
       // λ is taken on the side of the effect, so that a one-sided test's power is Φ(λ − z) whichever its side
-      out.push_back(z_power_step(d, alpha, a == Alt::Two ? Alt::Two : Alt::Upper));
+      out.steps.push_back(z_power_step(d, alpha, a == Alt::Two ? Alt::Two : Alt::Upper));
     }
-    if (s.solve == "n") out.push_back(n_search([&](double x) { return m.power(x); }, n, s("power"), 2));
+    if (solved) {
+      out.steps.push_back(n_search([&](double x) { return m.power(x); }, n, s("power"), 2));
+      out.answer = size_answer(n, power);
+    } else {
+      out.answer = "power = " + dvp(power);
+    }
     return out;
   };
   p.definitions = {{"P0", "Event probability at X = 0 (binary X) or at the mean of X (normal X)."},
@@ -1204,22 +1388,45 @@ Procedure cox() {
     using namespace derive;
     const double n = r.num("n"), hr = r.num("hr"), pe = r.num("pevent"), r2 = r.num("r2"), alpha = s("alpha");
     const Alt a = alt(s);
+    const bool solved = s.solve == "n";
     const double var = cox_var(s), drift_per_event = cox_drift_per_event(r2, var, hr);
     const double events = n * pe, ncp = std::sqrt(events) * drift_per_event;
-    Steps out;
+    const double power = cox_power(n, pe, drift_per_event, alpha, a);
+    const std::string PE = gsig(pe), R2 = gsig(r2);
+    Derivation out;
     if (s.is("xtype", "binary"))
-      out.push_back({"Variance of X", "Var(X) = p (1 − p), p = P(X = 1)",
-                     num(s("px")) + " × (1 − " + num(s("px")) + ") = " + sig(var)});
+      out.steps.push_back({"Variance of X", "Var(X) = p (1 − p), p = P(X = 1)",
+                           gsig(s("px")) + " × (1 − " + gsig(s("px")) + ") = " + dsig(var)});
     else
-      out.push_back({"Variance of X", "Var(X) = σx²", num(s("sx")) + "² = " + sig(var)});
-    out.push_back({"Expected events", "D = N × P(Event)", fint(n) + " × " + num(pe) + " = " + num(events, 2)});
-    out.push_back({"Noncentrality (Hsieh–Lavori)", "λ = √D × √((1 − R²) Var(X)) × ln HR",
-                   "√" + num(events, 2) + " × √(" + num(1 - r2) + " × " + sig(var) + ") × ln " + num(hr) + " = " +
-                       num(ncp)});
-    out.push_back(z_critical(alpha, a));
-    out.push_back(z_power_step(ncp, alpha, a));
-    if (s.solve == "n")
-      out.push_back(n_search([&](double x) { return cox_power(x, pe, drift_per_event, alpha, a); }, n, s("power"), 1));
+      out.steps.push_back({"Variance of X", "Var(X) = σx²", gsig(s("sx")) + "² = " + dsig(var)});
+    if (solved) {
+      // Hsieh and Lavori's closed form for the events, and the subjects they take
+      out.find = find_size("N", s("power"));
+      const double need = z_factor(alpha, s("power"), a) / (drift_per_event * drift_per_event);
+      out.steps.push_back({"Events needed (Hsieh–Lavori)",
+                           "D ≈ " + z_sum_formula(a) +
+                               " / ((1 − R²) Var(X) (ln HR)²) and N ≈ D / P(Event), for comparison; the steps below "
+                               "give the answer",
+                           "D ≈ " + z_sum_numbers(alpha, a, s("power")) + " / ((1 − " + R2 + ") × " + dsig(var) +
+                               " × (ln " + gv(hr) + ")²) = " + dv(need, 2) + ", N ≈ " + dv(need, 2) + " / " + PE +
+                               " = " + dv(need / pe, 2)});
+    } else {
+      out.find = find_power("with N = " + gvi(n));
+    }
+    out.steps.push_back(
+        {"Expected events", "D = N × P(Event)", size(n, solved) + " × " + PE + " = " + dv(events, 2)});
+    out.steps.push_back({"Noncentrality (Hsieh–Lavori)", "λ = √D × √((1 − R²) Var(X)) × ln HR",
+                         "√" + dv(events, 2) + " × √((1 − " + R2 + ") × " + dsig(var) + ") × ln " + gv(hr) + " = " +
+                             dv(ncp)});
+    out.steps.push_back(z_critical(alpha, a));
+    out.steps.push_back(z_power_step(ncp, alpha, a));
+    if (solved) {
+      out.steps.push_back(
+          n_search([&](double x) { return cox_power(x, pe, drift_per_event, alpha, a); }, n, s("power"), 1));
+      out.answer = "N = " + dvi(n) + ", with " + dv(events, 2) + " expected events and power " + dvp(power);
+    } else {
+      out.answer = "power = " + dvp(power) + ", with " + dv(events, 2) + " expected events";
+    }
     return out;
   };
   p.definitions = {{"Events", "Expected number of events: N × P(Event)."},

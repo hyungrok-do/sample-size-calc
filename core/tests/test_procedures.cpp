@@ -427,9 +427,11 @@ TEST_CASE("procedures: a derivation's steps agree with the answer they explain")
           parts(st, "numbers");
         }
         if (d.get("given").size() == 0) ::ssc::test::report_failure(where + "no inputs listed as given", __FILE__, __LINE__);
-        // a derivation framed by what was solved for says what it finds and what it found, and tells the inputs it
-        // uses from the values it computes
-        if (d.find("find")) {
+        // every derivation is framed by what was solved for: it says what it finds and what it found, and tells
+        // the inputs it uses from the values it computes
+        if (!d.find("find") || d.get("find").as_string().empty()) {
+          ::ssc::test::report_failure(where + "no find: the derivation does not say what was solved for", __FILE__, __LINE__);
+        } else {
           if (!d.find("answer") || d.get("answer").as_string().empty())
             ::ssc::test::report_failure(where + "a find without an answer", __FILE__, __LINE__);
           else {
