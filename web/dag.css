@@ -185,10 +185,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-node.survival .dag-stripe { fill: #268059; }
 .dag-node.target-ok .dag-box { stroke: var(--accent); stroke-dasharray: 5 3; }
 .dag-node.target-bad { opacity: .45; cursor: not-allowed; }
-.dag-node.isolated .dag-box { stroke-dasharray: 4 3; }
+.dag-node.isolated { opacity: .75; }
+.dag-node.unmeasured .dag-box { stroke-dasharray: 5 4; fill: var(--bg); }
+.dag-node.unmeasured .dag-node-title { font-style: italic; }
 .dag-node.dragging { opacity: .85; }
 .dag-node-inferred rect { fill: var(--surface-2); stroke: var(--line); }
-.dag-node .dag-node-inferred text { font-size: 10.5px; fill: var(--ink-2); font-weight: 600; }
+.dag-node .dag-node-inferred text { font-size: 10px; fill: var(--ink-2); font-weight: 600; }
+.dag-node-inferred.collider rect { fill: var(--surface-2); stroke: var(--path); }
+.dag-node .dag-node-inferred.collider text { fill: var(--ink-2); }
 .dag-node-inferred.confounder rect { fill: var(--error-soft); stroke: var(--error); }
 .dag-node .dag-node-inferred.confounder text { fill: var(--error); }
 .dag-node-inferred.mediator rect { fill: var(--accent-soft); stroke: var(--accent); }
@@ -221,14 +225,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-node:focus .dag-box { stroke: var(--accent); stroke-width: 3; }
 .dag-node.binary .dag-box { fill: var(--accent-soft); }
 .dag-node text { fill: var(--ink); pointer-events: none; }
-.dag-node .dag-node-role { font-size: 10px; letter-spacing: .09em; fill: var(--muted); font-weight: 600; }
 .dag-node .dag-node-title { font-size: 13px; font-weight: 600; }
 .dag-node .dag-node-family { font-size: 11px; fill: var(--muted); }
-.dag-node.count .dag-node-role { fill: #a66013; }
-.dag-node.survival .dag-node-role { fill: #268059; }
+/* the port to draw an arrow from shows on the box being pointed at or worked on (always on touch screens) */
+.dag-port { opacity: 0; transition: opacity .12s; }
+.dag-node:hover .dag-port, .dag-node:focus .dag-port, .dag-node.selected .dag-port, .dag-node.connecting .dag-port, .dag-port:focus { opacity: 1; }
+@media (hover: none) { .dag-port { opacity: 1; } }
 .dag-port { cursor: crosshair; }
 .dag-port circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
-.dag-port text { fill: var(--accent); font-size: 15px; }
+.dag-port text { fill: var(--accent); font-size: 14px; }
 .dag-edge { cursor: pointer; }
 .dag-edge path { fill: none; }
 .dag-edge .dag-edge-hit { stroke: transparent; stroke-width: 16; }
@@ -248,11 +253,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dag-edge-label rect { fill: var(--bg); opacity: .9; }
 .dag-edge-label text { text-decoration: underline dotted; text-underline-offset: 3px; }
 .dag-edge.path .dag-edge-line { stroke: var(--path); stroke-width: 4; stroke-dasharray: none; }
-.dag-spark line { stroke: var(--line); }
-.dag-spark .bars { fill: var(--accent); opacity: .55; }
-.dag-spark .curve { fill: none; stroke: var(--accent); stroke-width: 1.5; }
-.dag-node .dag-spark text { font-size: 10.5px; fill: var(--ink-2); }
-.dag-spark.stale { opacity: .35; }
+.dag-sketch { margin: 0 0 12px; }
+.dag-sketch svg { display: block; max-width: 100%; height: auto; }
+.dag-sketch line { stroke: var(--line); }
+.dag-sketch .bars { fill: var(--accent); opacity: .55; }
+.dag-sketch .curve { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.dag-sketch figcaption { margin-top: 2px; }
+.dag-sketch.stale { opacity: .45; }
 .dag-inline { position: absolute; z-index: 2; width: 72px; padding: 2px 6px; font-size: 13px; }
 .dag-menu { position: absolute; z-index: 20; display: grid; min-width: 190px; padding: 4px; background: var(--surface);
   border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 24px rgb(0 0 0 / .18); }
@@ -277,7 +284,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 #dag-arrow path { fill: var(--field-line); }
 #dag-arrow-effect path { fill: var(--accent); }
 .dag-node-tag rect { fill: var(--accent); stroke: none; }
-.dag-node .dag-node-tag text, .dag-node-tag text { fill: var(--accent-ink); font-size: 11px; font-weight: 600; }
+.dag-node .dag-node-tag text, .dag-node-tag text { fill: var(--accent-ink); font-size: 10.5px; font-weight: 600; }
 .dag-edge text { font-size: 13px; fill: var(--ink-2); paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
 .dag-canvas-help { color: var(--muted); font-size: 12px; margin: 8px 0 12px; }
 .dag-model { margin-top: 4px; border-top: 1px solid var(--line); }

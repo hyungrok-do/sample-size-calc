@@ -122,7 +122,7 @@ test('arrows leave the side facing the other box; a lag can bow beside a same-vi
   const a = { x: 0, y: 0 }, b = { x: 400, y: 0 };
   const { d, mid } = edgePath(a, b);
   assert.match(d, new RegExp(`^M ${NODE_W} ${NODE_H / 2} `));
-  assert.match(d, / 400 52$/);
+  assert.match(d, new RegExp(` 400 ${NODE_H / 2}$`));
   assert.equal(mid[0], (NODE_W + 400) / 2);
   assert.notEqual(edgePath(a, b, 40).mid[1], mid[1]);
   const below = edgePath(a, { x: 0, y: 300 });

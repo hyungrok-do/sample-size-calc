@@ -21,6 +21,7 @@ const number = (x) => x === null ? '—' : Number.isInteger(x) ? String(x) : x.t
 const kindNames = { continuous: 'Continuous', binary: 'Binary', count: 'Count', survival: 'Survival time' };
 const parameterLabels = { sd: 'Standard deviation', width: 'Uniform width', shape: 'Shape', scale: 'Baseline time scale' };
 const PREVIEW_N = 2000;  // observations drawn to sketch each variable's distribution
+const SKETCH_W = 220;  // width of the selected variable's sketch in its settings
 const short = (x) => String(Number(x.toPrecision(3))).replace('-', '−');
 // What a node's box says about its distribution: a root's values, or the scale its incoming arrows act on.
 function summary(graph, node) {
@@ -34,6 +35,15 @@ function summary(graph, node) {
   return `${family} · ${{ gaussian: `mean ${short(i)}, SD ${short(node.sd)}`, uniform: `center ${short(i)}, width ${short(node.width)}`,
     lognormal: `median ${short(e)}`, gamma: `mean ${short(e)}, shape ${short(node.shape)}`, bernoulli: `P(1) = ${short(1 / (1 + Math.exp(-i)))}`,
     poisson: `mean ${short(e)}`, weibull: `k ${short(node.shape)}, scale ${short(node.scale)}`, exponential: `scale ${short(node.scale)}` }[node.family]}`;
+}
+// The second line of a box: the distribution in a few characters, with a root's parameters.
+function compact(graph, node) {
+  if (graph.study && scopeOf(node) === 'time') return 'visit time';
+  const name = DISTRIBUTIONS[node.family].label;
+  if (graph.edges.some((edge) => edge.target === node.id)) return name;
+  const i = node.intercept;
+  return { gaussian: `N(${short(i)}, ${short(node.sd)}²)`, uniform: `U(${short(i - node.width / 2)}, ${short(i + node.width / 2)})`,
+    bernoulli: `P(1) = ${short(1 / (1 + Math.exp(-i)))}`, poisson: `Poisson(${short(Math.exp(i))})` }[node.family] ?? name;
 }
 // What the canvas says about a variable's inferred role for the comparison
 const roleHelp = { confounder: 'Affects both the compared variable and the outcome: adjust for it', mediator: 'On a path from the compared variable to the outcome',
@@ -245,7 +255,6 @@ export function mountDag(root) {
     const map = new Map(graph.nodes.map((n) => [n.id, n]));
     // the arrows that carry the effect the power analysis tests
     const effect = new Set((estimand ? calibrationEdges(graph, estimand) : []).map((e) => `${e.source}>${e.target}`));
-    const fresh = preview.key === modelKey();  // once per drawing, not once per variable
     const connecting = gesture?.type === 'connect' ? gesture.source : connectFrom;
     const targets = connecting ? connectTargets(graph, connecting) : null;
     const roles = estimand ? inferRoles(graph, estimand.exposure, estimand.outcome) : new Map();
@@ -346,42 +355,39 @@ export function mountDag(root) {
     for (const node of graph.nodes) {
       const target = targets?.get(node.id);
       const r = node.repeated ?? {};
+      const sketchKey = `${node.id}|${node.kind}`, values = preview.columns?.[node.id];
+      if (values && !preview.sketches.has(sketchKey)) preview.sketches.set(sketchKey, sketch(node.kind, values, SKETCH_W, 30));
+      const sketched = values && preview.sketches.get(sketchKey);
+      const inferred = roles.get(node.id), shownRole = ['confounder', 'mediator', 'collider'].includes(inferred) ? inferred : null;
+      // A box says what the variable is and how it is drawn, in two lines; everything else is in its tooltip,
+      // the variable settings and the equations.
+      const tip = [`${node.id} · ${node.label}`, `${kindNames[node.kind]}: ${summary(graph, node)}`,
+        ...(node.kind === 'survival' && node.censoring.mode !== 'none' ? [node.censoring.mode === 'variable' ? `Censored by ${node.censoring.variable}` : `Follow-up ends at ${short(node.censoring.time)}`] : []),
+        ...(r.residualCorrelation ? [`Residual correlation ${short(r.residualCorrelation)} per unit time`] : []),
+        ...(inferred ? [`${inferred[0].toUpperCase()}${inferred.slice(1)}: ${roleHelp[inferred].toLowerCase()}`] : []),
+        ...(sketched ? [sketched.title] : [])].join('\n');
       const group = svg('g', { class: `dag-node ${node.kind}${node.id === selected ? ' selected' : ''}${node.id === connecting ? ' connecting' : ''}`
         + `${target && node.id !== connecting ? target.ok ? ' target-ok' : ' target-bad' : ''}`
         + `${!graph.edges.some((e) => e.source === node.id || e.target === node.id) && graph.nodes.length > 1 ? ' isolated' : ''}`,
         'data-node': node.id, transform: `translate(${node.x} ${node.y})`, tabindex: 0, role: 'button',
         'aria-label': `${node.id}, ${node.label}, ${kindNames[node.kind]}${graph.study ? `, measured ${{ cluster: 'once per cluster', subject: 'once per subject', visit: 'at every visit', time: 'as the visit time' }[scopeOf(node)]}` : ''}. Enter to edit, arrow keys to move, C to compare it, O to make it the outcome, Delete to remove it.` },
-      ...(target && !target.ok && node.id !== connecting ? [svg('title', {}, target.reason)] : []),
-      svg('rect', { class: 'dag-box', width: W, height: H, rx: 12 }),
-      svg('rect', { class: 'dag-stripe', width: 6, height: H - 24, x: 0, y: 12, rx: 3 }),
-      svg('text', { x: 14, y: 22, class: 'dag-node-role' }, node.kind.toUpperCase()
-        + (node.kind === 'survival' && node.censoring.mode !== 'none'
-          ? ` · ${node.censoring.mode === 'variable' ? 'censored by ' + node.censoring.variable : 'cutoff ' + short(node.censoring.time)}` : '')
-        + (r.residualCorrelation ? ` · ρ ${short(r.residualCorrelation)}/t` : '')),
-      svg('text', { x: 14, y: 45, class: 'dag-node-title' }, `${node.id} · ${node.label.length > 16 ? node.label.slice(0, 15) + '…' : node.label}`),
-      svg('text', { x: 14, y: 66, class: 'dag-node-family' }, summary(graph, node)));
+      svg('title', {}, target && !target.ok && node.id !== connecting ? target.reason : tip),
+      svg('rect', { class: 'dag-box', width: W, height: H, rx: 10 }),
+      svg('rect', { class: 'dag-stripe', width: 4, height: H - 22, x: 0, y: 11, rx: 2 }),
+      svg('text', { x: 14, y: 25, class: 'dag-node-title' }, node.label.length > 17 ? node.label.slice(0, 16) + '…' : node.label),
+      svg('text', { x: 14, y: 43, class: 'dag-node-family' }, `${node.id} · ${compact(graph, node)}`));
       const role = estimand?.exposure === node.id ? (estimand.kind === 'coefficient' ? 'Predictor' : 'Compared')
         : estimand?.outcome === node.id ? 'Outcome' : null;
-      const values = preview.columns?.[node.id], width = node.kind === 'binary' || node.kind === 'survival' ? 92 : W - 28;
-      const sketchKey = `${node.id}|${node.kind}|${width}`;
-      if (values && !preview.sketches.has(sketchKey)) preview.sketches.set(sketchKey, sketch(node.kind, values, width, 22));
-      const sketched = values && preview.sketches.get(sketchKey);
-      if (sketched) group.append(svg('g', { class: `dag-spark${fresh ? '' : ' stale'}`, transform: `translate(14 ${H - 30})` },
-        svg('title', {}, sketched.title), svg('line', { x1: 0, x2: W - 28, y1: 22.5, y2: 22.5 }),
-        ...(sketched.bars ? [svg('path', { class: 'bars', d: sketched.bars })] : []),
-        ...(sketched.line ? [svg('path', { class: 'curve', d: sketched.line })] : []),
-        ...(sketched.label ? [svg('text', { x: 100, y: 17 }, sketched.label)] : [])));
-      if (role) group.append(svg('g', { class: 'dag-node-tag' }, svg('rect', { x: 10, y: -11, width: 70, height: 20, rx: 10 }),
-        svg('text', { x: 45, y: 3, 'text-anchor': 'middle' }, role)));
-      const inferred = roles.get(node.id);
-      if (inferred) {
-        const width = 7 * inferred.length + 16;
-        group.append(svg('g', { class: `dag-node-inferred ${inferred}` }, svg('title', {}, roleHelp[inferred]),
-          svg('rect', { x: W - width - 8, y: -10, width, height: 18, rx: 9 }), svg('text', { x: W - 8 - width / 2, y: 3, 'text-anchor': 'middle' }, inferred)));
+      if (role) group.append(svg('g', { class: 'dag-node-tag' }, svg('rect', { x: 10, y: -9, width: 66, height: 17, rx: 8.5 }),
+        svg('text', { x: 43, y: 3.5, 'text-anchor': 'middle' }, role)));
+      if (shownRole) {
+        const width = 6.2 * shownRole.length + 14;
+        group.append(svg('g', { class: `dag-node-inferred ${shownRole}` },
+          svg('rect', { x: W - width - 8, y: -8, width, height: 16, rx: 8 }), svg('text', { x: W - 8 - width / 2, y: 3.5, 'text-anchor': 'middle' }, shownRole)));
       }
       const port = svg('g', { class: 'dag-port', role: 'button', tabindex: 0, 'aria-label': `Start an arrow from ${node.id}` },
         svg('title', {}, `Drag to another variable to draw an arrow from ${node.id}`),
-        svg('circle', { cx: W, cy: H / 2, r: 11 }), svg('text', { x: W, y: H / 2 + 5, 'text-anchor': 'middle' }, '+'));
+        svg('circle', { cx: W, cy: H / 2, r: 9 }), svg('text', { x: W, y: H / 2 + 4.5, 'text-anchor': 'middle' }, '+'));
       port.addEventListener('pointerdown', (e) => {
         e.stopPropagation();
         if (e.button !== 0) return;
@@ -658,16 +664,34 @@ export function mountDag(root) {
         preview.columns = data.columns; preview.key = key; preview.sketches.clear();
       } catch (error) {
         if (token !== preview.token || error.stopped) return;
-        preview.columns = null; preview.sketches.clear();
+        preview.columns = null; preview.key = key; preview.sketches.clear();
       } finally {
         returnEngine(instance);
       }
-      draw();
+      draw(); showSketch();
     }, 250);
   }
   function point(event) {
     const p = canvas.createSVGPoint(); p.x = event.clientX; p.y = event.clientY;
     return p.matrixTransform(canvas.getScreenCTM().inverse());
+  }
+  // The selected variable's simulated distribution, under its settings; redrawn when a new preview arrives.
+  function showSketch() {
+    const figure = $('dag-node-sketch'), node = graph.nodes.find((n) => n.id === selected);
+    if (!figure || !node) return;
+    const key = `${node.id}|${node.kind}`, values = preview.columns?.[node.id];
+    if (values && !preview.sketches.has(key)) preview.sketches.set(key, sketch(node.kind, values, SKETCH_W, 30));
+    const s = values && preview.sketches.get(key);
+    if (!s) {
+      figure.replaceChildren(el('figcaption', { class: 'small muted' }, graph.study && scopeOf(node) === 'time' ? 'Takes the visit times.'
+        : preview.key === modelKey() && !preview.columns ? 'Its values cannot be simulated until the model is valid.' : 'Simulating its distribution…'));
+      return;
+    }
+    figure.classList.toggle('stale', preview.key !== modelKey());
+    figure.replaceChildren(svg('svg', { viewBox: `0 -2 ${SKETCH_W} 36`, width: SKETCH_W, height: 36, role: 'img', 'aria-label': s.title },
+      svg('line', { x1: 0, x2: SKETCH_W, y1: 30.5, y2: 30.5 }),
+      ...(s.bars ? [svg('path', { class: 'bars', d: s.bars })] : []), ...(s.line ? [svg('path', { class: 'curve', d: s.line })] : [])),
+    el('figcaption', { class: 'small muted' }, s.title));
   }
   function inspector() {
     const node = graph.nodes.find((n) => n.id === selected);
@@ -677,7 +701,9 @@ export function mountDag(root) {
       el('span', { class: 'small muted' }, kindNames[node.kind] + (graph.study ? ` · ${scopeOf(node)}` : ''))),
     el('div', { class: 'dag-roles', role: 'group', 'aria-label': 'Role in the power analysis' },
       el('button', { id: 'dag-role-exposure', type: 'button', 'aria-pressed': String(estimand?.exposure === node.id), onclick: () => assignRole('exposure', node.id) }, 'Compared'),
-      el('button', { id: 'dag-role-outcome', type: 'button', 'aria-pressed': String(estimand?.outcome === node.id), onclick: () => assignRole('outcome', node.id) }, 'Outcome')));
+      el('button', { id: 'dag-role-outcome', type: 'button', 'aria-pressed': String(estimand?.outcome === node.id), onclick: () => assignRole('outcome', node.id) }, 'Outcome')),
+    el('figure', { id: 'dag-node-sketch', class: 'dag-sketch' }));
+    showSketch();
     const id = el('input', { id: 'dag-node-id', type: 'text', maxlength: 32, value: node.id, required: true });
     const label = el('input', { id: 'dag-node-label', type: 'text', maxlength: 80, value: node.label, required: true });
     const kind = select('dag-node-kind', KINDS.map((k) => [k, kindNames[k]]), node.kind);

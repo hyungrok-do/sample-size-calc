@@ -32,13 +32,16 @@ selecting generic variables for it.
    select the child to edit coefficients or add interactions between two
    parents. **Tidy layout** arranges the graph left to right in generation
    order, keeping each study level together.
-4. Read the graph and the conditional equations below it. A box shows its
-   variable's values if it has no parents (for example `Normal · mean 0, SD 1`),
-   otherwise the scale its incoming coefficients act on (`Bernoulli · log-odds`,
-   `Weibull · log HR`), and sketches the variable from 2,000 draws of the
-   current model (seed 1), redrawn a moment after each change: a histogram,
-   the share of 1s for a binary variable, or the survival curve of an event
-   time. Click the number on an arrow (or press Enter on a focused arrow) to
+4. Read the graph and the conditional equations below it. A box has two
+   lines: the variable's label, then its identifier and distribution, with a
+   root variable's parameters (`X · N(0, 1²)`, `A · P(1) = 0.5`) and otherwise
+   the distribution's name (`Y · Normal`). Hovering a box shows the rest: its
+   type, the scale its incoming coefficients act on, censoring, its inferred
+   role and a summary of 2,000 draws of the current model (seed 1). The
+   selected variable's settings sketch those draws, redrawn a moment after each
+   change: a histogram, the share of 1s for a binary variable, or the survival
+   curve of an event time. A box's plus port appears when it is pointed at or
+   selected (always on touch screens). Click the number on an arrow (or press Enter on a focused arrow) to
    change its coefficient in place. Right-click a box, press C or O on it, or
    use the *Compared* / *Outcome* buttons in its settings to make it the power
    analysis's compared variable or outcome; the two swap if needed. The
@@ -82,8 +85,9 @@ variable and the outcome, and Escape cancels an arrow being drawn. A banner
 over the canvas lists what needs attention: no comparison chosen yet, a
 question the planned analysis cannot answer, open non-causal paths (whose
 arrows are drawn in orange) and variables with no arrows. When a comparison is
-set, each other box carries its inferred role relative to it (confounder,
-mediator, collider, instrument or prognostic). Saved positions may lie
+set, a box that is a confounder, mediator or collider relative to it is
+labelled so; every inferred role (also instrument or prognostic) is in the
+box's tooltip. Saved positions may lie
 anywhere within 3600 × 2400 canvas units; versions of the page before this
 limit accept only 920 × 440.
 

@@ -3,7 +3,7 @@
 // the compared variable and the outcome, and how the study's levels (clusters, subjects, visits) are switched on and
 // off.  Plain functions of data, no DOM, so they are tested under Node (tests/canvas.test.mjs).
 
-export const NODE_W = 180, NODE_H = 104;
+export const NODE_W = 150, NODE_H = 56;
 // Positions are kept nonnegative and within this area (the saved design's x and y).  Earlier versions allowed
 // 0–920 × 0–440, which stays valid.
 export const CANVAS_LIMIT = { x: 3600, y: 2400 };

@@ -255,8 +255,14 @@ try {
   assert.equal(await page.locator('#dag-canvas .dag-node').count(), 4);
   assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
   assert.equal(await page.locator('#engine-status, #method, #guide').count(), 0);
-  // each box sketches its variable from a sample the engine draws in the background; that engine then closes
-  await page.waitForFunction(() => document.querySelectorAll('#dag-canvas .dag-spark:not(.stale)').length === 4);
+  // each box is two lines (label; ID and distribution), and the selected variable's settings sketch its values
+  // from a sample the engine draws in the background; that engine then closes
+  assert.equal(await page.locator('#dag-canvas .dag-node[data-node="X"] text').first().textContent(), 'Covariate');
+  assert.equal(await page.locator('#dag-canvas .dag-node[data-node="X"] .dag-node-family').textContent(), 'X · N(0, 1²)');
+  await page.selectOption('#dag-node-select', 'M');
+  await page.waitForSelector('#dag-node-sketch svg');
+  assert.match(await page.textContent('#dag-node-sketch'), /Simulated: mean/);
+  assert.match(await page.locator('#dag-canvas .dag-node[data-node="M"] > title').textContent(), /Mediator: on a path/);
   for (let i = 0; i < 50 && page.workers().length; i++) await page.waitForTimeout(100);
   assert.equal(page.workers().length, 0, 'no engine keeps running on the DAG page');
   assert.deepEqual([...new Set(await loaded(page))], [next], 'the simulator scripts use the current version');
@@ -273,7 +279,7 @@ try {
   assert.match(await page.textContent('#dag-equations'), /0\.35 × A/);
   await page.click('#dag-undo');
   assert.match(await page.textContent('#dag-equations'), /0\.3 × A/);
-  const box = (id) => page.locator('#dag-canvas .dag-node', { hasText: `${id} · ` });
+  const box = (id) => page.locator(`#dag-canvas .dag-node[data-node="${id}"]`);
   await box('M').focus();
   await page.keyboard.press('o');
   assert.equal(await page.inputValue('#estimand-outcome'), 'M');
@@ -305,14 +311,14 @@ try {
   assert.equal(await page.locator('#dag-source').count(), 0, 'X and A already point at M, and Y depends on it');
   // an arrow drawn on the canvas that would close a cycle is refused
   await page.getByRole('button', { name: 'Start an arrow from Y', exact: true }).click();
-  await page.locator('#dag-canvas .dag-node', { hasText: 'M · Mediator' }).click();
+  await page.locator('#dag-canvas .dag-node[data-node="M"]').click();
   assert.match(await page.textContent('#dag-status'), /cycle/);
   assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
   await page.keyboard.press('Escape');
   // an arrow dragged from a box's port onto another box; Ctrl+Z takes it back
-  await page.locator('#dag-canvas .dag-node', { hasText: 'X · ' }).scrollIntoViewIfNeeded();
+  await page.locator('#dag-canvas .dag-node[data-node="X"]').scrollIntoViewIfNeeded();
   const portBox = await page.getByRole('button', { name: 'Start an arrow from X', exact: true }).boundingBox();
-  const targetBox = await page.locator('#dag-canvas .dag-node', { hasText: 'A · ' }).locator('.dag-box').boundingBox();
+  const targetBox = await page.locator('#dag-canvas .dag-node[data-node="A"]').locator('.dag-box').boundingBox();
   await page.mouse.move(portBox.x + portBox.width / 2, portBox.y + portBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
@@ -358,7 +364,7 @@ try {
   await page.waitForSelector('#dag-results table');
   assert.match(await page.textContent('#dag-equations'), /logit/);
   await page.click('#dag-tidy');
-  const at = (id) => page.locator('#dag-canvas .dag-node', { hasText: `${id} · ` }).getAttribute('transform');
+  const at = (id) => page.locator(`#dag-canvas .dag-node[data-node="${id}"]`).getAttribute('transform');
   assert.equal((await at('X')).split(' ')[0], (await at('A')).split(' ')[0], 'Tidy puts the two roots in the first column');
   assert.notEqual((await at('Y')).split(' ')[0], (await at('X')).split(' ')[0]);
   // the power panel starts from a target it can run: the binary variable that affects others, on what it affects
