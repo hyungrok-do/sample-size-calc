@@ -1,0 +1,17 @@
+{
+  "schema": "ssc.design-plan",
+  "version": 1,
+  "method": "normal_known",
+  "name": "Two-arm normal, known SD",
+  "parameters": {
+    "alpha": "1/20",
+    "targetPower": "4/5",
+    "alternative": "1/2",
+    "nullValue": "0/1",
+    "sd": "1/1"
+  },
+  "search": {
+    "minN": 1,
+    "maxN": 10000
+  }
+}

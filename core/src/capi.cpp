@@ -12,6 +12,7 @@
 #include "util/memory.hpp"
 #include "util/parallel.hpp"
 #include "dag/model.hpp"
+#include "design/plan.hpp"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 // Called only by the engine's owning worker, between parallel replicate batches.
@@ -133,6 +134,28 @@ SSC_API char* ssc_run_json(const char* request_json, ssc_token* token) {
 }
 
 SSC_API void ssc_free(char* p) { std::free(p); }
+
+SSC_API char* ssc_design_json(const char* plan_json, ssc_token* token) {
+  if (!plan_json) return error_answer("empty design plan");
+  try {
+    const auto input = ssc::json::parse(plan_json);
+    const auto result = input.get("op").as_string() == "compile"
+      ? ssc::design::compile_source(input)
+      : ssc::design::execute(input, token ? &token->token : nullptr);
+    if (token) token->token.check();
+    char* answer = dup_string(ssc::dag::object({{"ok",true},{"result",result}}).dump());
+    if (!answer) throw std::bad_alloc();
+    ssc::memory::release_free_memory();
+    return answer;
+  } catch (const std::bad_alloc&) {
+    ssc::memory::release_free_memory();
+    return no_memory_answer();
+  } catch (const std::exception& e) {
+    return error_answer(e.what());
+  } catch (...) {
+    return error_answer("unknown design plan error");
+  }
+}
 
 SSC_API char* ssc_dag_json(const char* request_json, ssc_token* token) {
   if (!request_json) return error_answer("empty request");

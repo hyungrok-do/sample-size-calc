@@ -121,6 +121,11 @@ and they install with `python -m pip install sample_size_calculator-*.whl`.
 
 ## Usage
 
+The web interface has a separate **Lean compiler** tab: write a supported Lean
+study declaration, generate downloadable C++, and solve for sample size, power,
+or detectable effect. See [the workflow and verification scope](docs/lean-compiler.md).
+The DAG simulator remains a separate tab.
+
 ### Web page
 
 Search for a method or pick one from the list, choose what to solve for, fill

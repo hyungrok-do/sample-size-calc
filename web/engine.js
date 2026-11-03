@@ -128,6 +128,12 @@ export class Engine {
     return value.result;
   }
 
+  async design(plan, onProgress) {
+    await this.ready;
+    const { value } = await this.call('design', plan, onProgress);
+    return value.result;
+  }
+
   dispose() {
     this.disposed = true;
     this.worker.terminate();

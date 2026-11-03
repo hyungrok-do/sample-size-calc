@@ -1,0 +1,21 @@
+{
+  "schema": "ssc.design-plan",
+  "version": 1,
+  "method": "influence_wald",
+  "name": "ATE with supplied influence variance",
+  "parameters": {
+    "alpha": "1/20",
+    "targetPower": "4/5",
+    "alternative": "1/2",
+    "nullValue": "0/1",
+    "variance": "4/1",
+    "independentUnit": "participant",
+    "estimand": "ATE on the outcome scale",
+    "estimator": "asymptotically linear AIPW",
+    "varianceSource": "Planning model: balanced treatment, residual variance 1, constant effect 1/2"
+  },
+  "search": {
+    "minN": 1,
+    "maxN": 10000
+  }
+}

@@ -109,6 +109,9 @@ jobs:
       - name: Guide and calculator in Chromium
         if: ${{ !cancelled() }}
         run: cd web && npm run test:browser
+      - name: Lean compiler tab in Chromium
+        if: ${{ !cancelled() }}
+        run: cd web && npm run test:lean-browser
       - name: The testers' fixes, responsiveness and engine fallback in Chromium
         if: ${{ !cancelled() }}
         run: cd web && npm run test:page

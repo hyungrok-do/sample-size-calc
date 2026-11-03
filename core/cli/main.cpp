@@ -13,6 +13,7 @@
 #include "engine/procedure.hpp"
 #include "ssc/ssc.h"
 #include "util/numtext.hpp"
+#include "util/json.hpp"
 
 namespace {
 int usage() {
@@ -21,6 +22,7 @@ int usage() {
                "  ssc_cli schema <procedure-id>\n"
                "  ssc_cli search <words...>\n"
                "  ssc_cli run <request.json | ->\n"
+               "  ssc_cli design <plan.json | ->\n"
                "  ssc_cli eval <function> <args...>\n";
   return 2;
 }
@@ -54,7 +56,7 @@ int main(int argc, char** argv) {
     }
     return print_and_free(s);
   }
-  if (cmd == "run" && argc >= 3) {
+  if ((cmd == "run" || cmd == "design") && argc >= 3) {
     std::string text;
     if (std::string(argv[2]) == "-") {
       std::stringstream ss;
@@ -70,7 +72,12 @@ int main(int argc, char** argv) {
       ss << in.rdbuf();
       text = ss.str();
     }
-    return print_and_free(ssc_run_json(text.c_str(), nullptr));
+    if (cmd == "run") return print_and_free(ssc_run_json(text.c_str(), nullptr));
+    char* answer = ssc_design_json(text.c_str(), nullptr);
+    if (!answer) return print_and_free(answer);
+    const bool ok = ssc::json::parse(answer).get("ok").as_bool();
+    print_and_free(answer);
+    return ok ? 0 : 1;
   }
   if (cmd == "eval" && argc >= 3) {
     std::vector<double> args;

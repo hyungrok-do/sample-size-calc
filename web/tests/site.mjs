@@ -39,7 +39,7 @@ function reference(raw, from) {
     if (path !== 'sw.js' && !new URLSearchParams(query).getAll('v').includes(version)) unversioned.push(`${ref} (from ${from})`);
   }
 }
-for (const file of ['index.html', 'dag.html'])
+for (const file of ['index.html', 'dag.html', 'lean.html'])
   for (const m of (await text(file)).matchAll(/(?:src|href)="([^"#]+)"/g)) if (!/^https?:/.test(m[1])) reference(m[1], file);
 for (const file of scripts) {
   const code = await text(file);
@@ -317,7 +317,8 @@ try {
   assert.equal(await page.locator('#dag-canvas .dag-edge').count(), 5);
   await page.keyboard.press('Escape');
   // an arrow dragged from a box's port onto another box; Ctrl+Z takes it back
-  await page.locator('#dag-canvas .dag-node[data-node="X"]').scrollIntoViewIfNeeded();
+  // Drawing replaces node elements; scroll the persistent canvas before measuring them.
+  await page.locator('#dag-canvas').scrollIntoViewIfNeeded();
   const portBox = await page.getByRole('button', { name: 'Start an arrow from X', exact: true }).boundingBox();
   const targetBox = await page.locator('#dag-canvas .dag-node[data-node="A"]').locator('.dag-box').boundingBox();
   await page.mouse.move(portBox.x + portBox.width / 2, portBox.y + portBox.height / 2);
