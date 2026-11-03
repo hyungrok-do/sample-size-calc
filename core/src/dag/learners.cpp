@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 
@@ -335,7 +336,7 @@ Vec nnls(const std::vector<Vec> &columns, const Vec &y, const std::vector<int> &
 } // namespace
 
 Learned super_learner(const Data &d, const std::vector<int> &variables, const Vec &y,
-                      const std::vector<int> &rows, const std::string &family) {
+                      const std::vector<int> &rows, const std::string &family, const std::vector<int> *groups) {
   const bool logistic = binary(family);
   const int n = d.n, k = static_cast<int>(LEARNERS.size());
   if (rows.size() < 2 * FOLDS) throw Error("too_few_observations", "Too few observations for the Super Learner's cross-validation.");
@@ -378,10 +379,20 @@ Learned super_learner(const Data &d, const std::vector<int> &variables, const Ve
     auto kernel = std::make_shared<KernelRidge>(d, variables, y, logistic);
     library[5] = [kernel](const std::vector<int> &r) { return (*kernel)(r); };
   }
-  // folds: by position, separately for each outcome value of a binary response
+  // folds: by position, separately for each outcome value of a binary
+  // response; whole clusters when the rows are clustered
   std::vector<int> fold(n, -1);
-  int counter[2] = {0, 0};
-  for (int i : rows) { const int c = logistic && y[i] > .5 ? 1 : 0; fold[i] = counter[c]++ % FOLDS; }
+  if (groups) {
+    std::map<int, int> clusterFold;
+    for (int i : rows) {
+      const auto found = clusterFold.find((*groups)[i]);
+      fold[i] = found != clusterFold.end() ? found->second : (clusterFold[(*groups)[i]] = static_cast<int>(clusterFold.size()) % FOLDS);
+    }
+    if (clusterFold.size() < FOLDS) throw Error("few_units", "Too few independent clusters for the Super Learner's cross-validation.");
+  } else {
+    int counter[2] = {0, 0};
+    for (int i : rows) { const int c = logistic && y[i] > .5 ? 1 : 0; fold[i] = counter[c]++ % FOLDS; }
+  }
   std::vector<Vec> cv(k, Vec(n));
   for (int v = 0; v < FOLDS; ++v) {
     std::vector<int> train;

@@ -711,6 +711,10 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
   }
   Vec stackedY(learned ? 3*n : 0);
   for(int i=0;i<n && learned;++i) stackedY[i]=y[i];
+  // the Super Learner's own folds keep clusters together, as the cross-fitting does
+  std::vector<int> stackedClusters;
+  if(learned && clustered) { stackedClusters.resize(3*n); for(int s=0;s<3;++s) for(int i=0;i<n;++i) stackedClusters[s*n+i]=d.cluster[i]; }
+  const std::vector<int> *groups=clustered ? &d.cluster : nullptr, *stackedGroups=clustered ? &stackedClusters : nullptr;
   const int units=clustered ? d.units : n;
   if(units<=2 || (p.folds>1 && units<p.folds)) throw Error("few_units","Too few independent units for this analysis or fold count.");
   std::vector<int> unitArm(units,-1), unitFold(units), fold(n);
@@ -730,7 +734,7 @@ Analysis analyze_aipw(const J &e, const Data &d, const Plan &p) {
     Vec prob,q0,q1;
     if(learned) {
       const std::string family=p.outcomeModel=="bernoulli" ? "bernoulli" : "gaussian";
-      const auto a=super_learner(d,pv,z,train,"bernoulli"), b=super_learner(stacked,ov,stackedY,train,family);
+      const auto a=super_learner(d,pv,z,train,"bernoulli",groups), b=super_learner(stacked,ov,stackedY,train,family,stackedGroups);
       prob=a.prediction;
       q0.assign(b.prediction.begin()+n,b.prediction.begin()+2*n); q1.assign(b.prediction.begin()+2*n,b.prediction.end());
       for(std::size_t l=0;l<LEARNERS.size();++l) {

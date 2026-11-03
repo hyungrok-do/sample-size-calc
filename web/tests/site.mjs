@@ -378,6 +378,13 @@ try {
   await page.click('#dag-unknown-redraw');
   await page.waitForFunction(() => /now #7/.test(document.querySelector('#dag-unknown-redraw')?.textContent ?? ''));
   await page.click('#dag-undo');
+  // Clear empties the canvas in one step, and one undo brings the model back
+  await page.click('#dag-clear');
+  assert.equal(await page.locator('#dag-canvas .dag-node').count(), 0);
+  assert.equal(await page.isDisabled('#dag-clear'), true);
+  assert.match(await page.textContent('#dag-status'), /Cleared 4 variables/);
+  await page.click('#dag-undo');
+  assert.equal(await page.locator('#dag-canvas .dag-node').count(), 4);
   await page.selectOption('#dag-example', 'binary');
   await page.click('#dag-example-load');
   await page.click('#dag-simulate');

@@ -19,8 +19,9 @@ struct Learned {
 // predictions are combined by non-negative least squares, normalized to a
 // convex combination, and the learners with weight are refitted on all `rows`.
 // family "bernoulli" uses logistic GLMs and logistic boosting and returns
-// probabilities; any other family uses squared-error learners.
+// probabilities; any other family uses squared-error learners. With `groups`
+// (a cluster per row), the folds keep each cluster together.
 Learned super_learner(const Data &data, const std::vector<int> &variables,
                       const Vec &response, const std::vector<int> &rows,
-                      const std::string &family);
+                      const std::string &family, const std::vector<int> *groups = nullptr);
 } // namespace ssc::dag

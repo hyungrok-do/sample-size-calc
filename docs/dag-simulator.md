@@ -35,7 +35,9 @@ are no steps or tabs; every part stays on the page.
    predictor. Click an arrow to select it (Delete removes it, or use its ×),
    select the child to edit coefficients or add interactions between two
    parents. **Tidy layout** arranges the graph left to right in generation
-   order, keeping each study level together.
+   order, keeping each study level together. **Clear** removes every variable,
+   arrow and study level, resets the question and the analysis settings, and
+   leaves an empty canvas; one Undo restores the model.
 4. Read the graph and the conditional equations below it. A box has two
    lines: the variable's label, then its identifier and distribution, with a
    root variable's parameters (`X · N(0, 1²)`, `A · P(1) = 0.5`) and otherwise

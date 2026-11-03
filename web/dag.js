@@ -506,6 +506,7 @@ export function mountDag(root) {
     $('dag-node-select').value = selected ?? '';
     $('dag-node-select').disabled = !graph.nodes.length;
     $('dag-tidy').disabled = graph.nodes.length < 2;
+    $('dag-clear').disabled = !graph.nodes.length;
     $('dag-level-clusters').setAttribute('aria-pressed', String(Boolean(graph.study?.clusterSizes?.length)));
     $('dag-level-visits').setAttribute('aria-pressed', String((graph.study?.times?.length ?? 0) > 1));
     for (const [role, id] of [['exposure', 'dag-role-exposure'], ['outcome', 'dag-role-outcome']])
@@ -929,6 +930,14 @@ export function mountDag(root) {
       addVariable(button.dataset.addKind);
     });
   }
+  // Start over on an empty canvas: no variables, arrows, study levels or question; the analysis settings return to
+  // their defaults. One undo brings the whole model back.
+  $('dag-clear').addEventListener('click', () => {
+    if (!graph.nodes.length) return;
+    const blank = scenarioDesign('empty'), count = graph.nodes.length;
+    if (apply(blank.graph, `Cleared ${count} variable${count === 1 ? '' : 's'} and their arrows. Undo restores the model.`, { estimand: blank.estimand, power: blank.power, fit: true }))
+      $('dag-add').focus();
+  });
   $('dag-tidy').addEventListener('click', () => {
     remember(); graph = layout(graph); persist(); view = null; draw(); buttons();
     status(graph.study ? 'Arranged by level (clusters, subjects, visits), then generation order. Undo restores the old layout.'
