@@ -45,6 +45,8 @@ def main():
         'theorem invalid : False := by sorry',
         'set_option warningAsError false in\ntheorem invalid : False := by sorry',
         'axiom invalid : False',
+        'axiom invalid._cstage2 : False',
+        'private axiom hidden : False',
         '''open Lean Elab Tactic
 elab "bogusProof" : tactic => do
   let goal ← getMainGoal

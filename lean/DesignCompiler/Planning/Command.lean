@@ -140,7 +140,12 @@ elab "#export_compiler" : command => do
   let some imported := env.importEnv?
     | throwError "Cannot independently check declarations without the import environment."
   discard <| liftIO <| imported.replay constants
-  let declarations := env.constants.foldStage2 (fun ns n _ => ns.push n) #[]
+  -- Native code generation stores unsafe implementation declarations in this
+  -- environment too. They may reference runtime-only axioms and cannot be used
+  -- by safe proofs. Audit logical declarations by their kernel safety metadata,
+  -- never by a generated-looking name (which user declarations can also have).
+  let declarations := env.constants.foldStage2
+    (fun ns n ci => if ci.isUnsafe then ns else ns.push n) #[]
   for name in declarations do
     let axioms ← collectAxioms name
     unless axioms.all (fun a => [``propext, ``Classical.choice, ``Quot.sound].contains a) do
