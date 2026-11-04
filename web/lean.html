@@ -5,7 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; worker-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lean Sample Size Compiler · Sample Size Calculator</title>
-<meta name="description" content="Specify a study in Lean, derive its estimand and variance, and calculate statistical power and sample size.">
+<meta name="description" content="Define mathematical models and goals in Lean. Check proofs and evaluate sample-size calculations in browser WebAssembly.">
 <link rel="stylesheet" href="lean.css?v=dev">
 </head>
 <body>
@@ -20,14 +20,14 @@
 </header>
 <main class="compiler-page">
   <div class="intro">
-    <h2>Lean sample-size compiler <span class="badge">Experimental</span></h2>
-    <p>Specify the study, estimand, covariance or influence function, and planned analysis. Derive power and find the sample size that meets your criterion.</p>
-    <p class="small">The compiler carries the statistical assumptions into the result and shows the variance derivation, rejection rule, power calculation, and integer search.</p>
+    <h2>Lean mathematical compiler <span class="badge">Experimental</span></h2>
+    <p>Define your equations, hypotheses and goals in ordinary Lean. Construct a derivation with Lean tactics, then check its proof and evaluate its definitions in this browser.</p>
+    <p class="small">No analysis selector or fixed statistical model is required. Proof search can leave goals unresolved; the compiler reports them without substituting a numerical answer.</p>
   </div>
   <section id="lean-connection" class="panel connection" aria-live="polite">
     <p id="lean-connection-status">Loading the browser compiler…</p>
     <div id="lean-setup" hidden>
-      <p>The Lean compiler and numerical backend run in this browser. The first visit downloads the compiler package and caches it for later use.</p>
+      <p>Lean compiles, checks proofs and evaluates definitions in this browser. The first visit downloads the compiler package and caches it for later use.</p>
       <p>Use a current desktop browser with WebAssembly and shared-memory support. If loading was interrupted, retry below to reuse completed downloads.</p>
     </div>
     <div class="actions"><button id="lean-reconnect" type="button">Reload compiler</button><a href="study.html?v=dev">Browser study sandbox &amp; simulation</a></div>
@@ -38,11 +38,9 @@
       <div class="toolbar">
         <label for="lean-example" class="sr-only">Lean example</label>
         <select id="lean-example">
-          <option value="repeated-measures">Repeated measures: treatment-by-visit contrast</option>
-          <option value="cluster-trial">Cluster-randomized trial with ICC</option>
-          <option value="unequal-allocation">Unequal-allocation randomized trial</option>
-          <option value="targeted-ate">TMLE / AIPW: efficient ATE variance</option>
-          <option value="custom-influence">User-defined influence-function variance</option>
+          <option value="exact-trial">Exact trial: derive a minimum sample size</option>
+          <option value="certified-bounds">Symbolic power bounds and minimality</option>
+          <option value="variance-propagation">Parametric covariance propagation</option>
         </select>
         <button id="lean-load" type="button">Load</button>
         <label for="lean-import" class="file-button">Open .lean</label><input id="lean-import" type="file" accept=".lean,text/plain" class="sr-only">
@@ -50,56 +48,45 @@
       </div>
       <label class="sr-only" for="lean-source">Lean module</label>
       <textarea id="lean-source" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" aria-describedby="syntax-help"></textarea>
-      <details id="syntax-help"><summary>Study language and supported inference</summary>
-        <pre class="command">open DesignCompiler.Planning
--- Define study : Study with a covariance or influence model.
-solve sample_size design using study
-solve power planned_power using study at 100
-solve effect detectable_effect using study at 100</pre>
-        <p>Ordinary Lean functions and expressions can construct the covariance, allocation, and influence variance. The Gaussian contrast model propagates an arbitrary covariance matrix; it does not select a canned test from the example name.</p>
-        <p>Known-covariance Gaussian contrasts use a z test. AIPW/TMLE and custom influence-function designs use asymptotic Wald inference. Estimated-covariance t/F inference and Monte Carlo study compilation are not implemented in this route.</p>
-        <p>For detectable effects the variance is held fixed. ATE effect queries require changing the planning strata explicitly, because the variance can change with the effect.</p>
-        <p>The browser supplies the statistical compiler module. The actual Lean kernel checks exact effect and variance arithmetic; numerical power and integer search run in the C++ WebAssembly backend. No local installation or compiler server is needed.</p>
-        <p>This browser package includes Lean's core library and the statistical study language. The separate Mathlib probability audit and general real-equation solver remain native tools; they are not loaded into this browser package.</p>
+      <details id="syntax-help"><summary>Lean syntax and proof scope</summary>
+        <pre class="command">import SSC
+-- Ordinary Lean definitions, structures, namespaces and theorems.
+-- State hypotheses as theorem parameters.
+-- Use by, have, calc, exact, simp, omega, grind, or decide +kernel.
+-- Use #eval for executable values and #check for types.</pre>
+        <p>The browser includes Lean, Init, Std and SSC. SSC adds a generic proof-carrying finite search and a proof reporter. It contains no statistical formulas or model-specific tactics. Mathlib is not bundled.</p>
+        <p>Lean's kernel checks theorem proofs. Hypotheses remain conditions of those theorems. The report shows their actual proof terms, dependencies and source tactic goals.</p>
+        <p>Evaluation output is separate from proof. A numerical value is certified only by an explicit theorem about it. Approximation error bounds and links from a probability model to a supplied formula must also be proved or stated as hypotheses.</p>
+        <p>Include <code>import SSC</code> in a complete Lean module. A failed tactic displays Lean's remaining goals. An unrestricted automatic mathematical solver is not provided.</p>
       </details>
     </section>
     <section class="panel compile-panel" aria-labelledby="compile-heading">
-      <h3 id="compile-heading"><span class="step">2</span> Derive &amp; calculate</h3>
-      <div class="actions"><button id="lean-compile" class="primary" type="button" disabled>Compile &amp; calculate</button><button id="lean-stop" type="button" hidden>Stop</button></div>
+      <h3 id="compile-heading"><span class="step">2</span> Check &amp; evaluate</h3>
+      <div class="actions"><button id="lean-compile" class="primary" type="button" disabled>Compile Lean</button><button id="lean-stop" type="button" hidden>Stop</button></div>
       <p id="lean-status" class="status" role="status" aria-live="polite">Write Lean or choose an example.</p>
       <pre id="lean-error" class="error" role="alert" hidden></pre>
       <div id="lean-compiled" hidden>
-        <label for="lean-query">Compiled query</label><select id="lean-query"></select>
-        <p id="lean-proof-status" class="basis"></p>
-        <pre id="lean-solution" class="solution"></pre>
-        <p id="lean-scope" class="small muted"></p>
-        <div id="lean-study-detail" hidden>
-          <div class="trace-scroll"><table id="lean-study-numbers"></table></div>
-          <details><summary>Planning model</summary><div id="lean-study-model" class="trace-scroll"></div></details>
-          <h4 class="derivation-heading">Statistical assumptions</h4><ul id="lean-study-assumptions"></ul>
+        <div id="lean-declarations">
+          <label for="lean-query">Checked declaration</label><select id="lean-query"></select>
+          <p id="lean-proof-status" class="basis"></p>
+          <pre id="lean-solution" class="solution"></pre>
+          <p id="lean-scope" class="small muted"></p>
+          <details id="lean-parameters"><summary>Parameters and hypotheses</summary><pre id="lean-hypotheses" class="cpp"></pre></details>
+          <h4 class="derivation-heading">Proof derivation</h4>
+          <p class="small muted">Actual source tactics and their intermediate goals. The completed theorem is checked by Lean's kernel.</p>
+          <ol id="lean-derivation" class="derivation"></ol>
+          <details id="lean-theorem"><summary>Statement and proof term</summary>
+            <pre class="cpp"><code id="lean-theorem-type"></code></pre>
+            <pre class="cpp"><code id="lean-proof-term"></code></pre>
+            <p id="lean-axioms" class="small"></p>
+            <details><summary>Declaration dependencies</summary><pre id="lean-dependencies" class="cpp"></pre></details>
+          </details>
         </div>
-        <h4 class="derivation-heading">Statistical derivation</h4>
-        <ol id="lean-derivation" class="derivation"></ol>
-        <details id="lean-theorem"><summary>Lean verification</summary>
-          <pre class="cpp"><code id="lean-theorem-type"></code></pre>
-          <p>The generated declarations are available to subsequent Lean code in this module.</p>
-          <button id="lean-proof-save" type="button">Download checked module</button>
-          <details><summary id="lean-proof-heading">Proof term (pretty-printed)</summary><pre class="cpp"><code id="lean-proof-term"></code></pre></details>
-          <p id="lean-axioms" class="small"></p>
-        </details>
-        <details id="lean-cpp-details"><summary>Generated C++ and numerical verification</summary>
-          <p id="lean-cpp-status"></p>
-          <div id="lean-cpp-output" hidden>
-            <p id="lean-cpp-parameters"></p>
-            <div id="lean-cpp-guards" hidden><p>Assumptions checked before numerical evaluation:</p><ul id="lean-cpp-assumptions"></ul></div>
-            <button id="lean-cpp-save" type="button">Download .cpp</button>
-            <pre class="cpp"><code id="lean-cpp"></code></pre>
-            <pre id="lean-cpp-command" class="command"></pre>
-            <p id="lean-numerical-scope"></p>
-          </div>
-        </details>
+        <h4 class="derivation-heading">Lean output</h4>
+        <p class="small muted">Output from #eval, #check and other source commands. Execution alone does not certify a numerical value.</p>
+        <pre id="lean-evaluation" class="cpp"></pre>
         <details><summary>Compiler diagnostics</summary><pre id="lean-diagnostics" class="cpp"></pre></details>
-        <div class="actions"><button id="lean-result-save" type="button">Download result JSON</button></div>
+        <div class="actions"><button id="lean-proof-save" type="button">Download checked source</button><button id="lean-result-save" type="button">Download proof report</button></div>
       </div>
     </section>
   </div>

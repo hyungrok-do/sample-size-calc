@@ -1,11 +1,11 @@
 # Deploy the Lean sample-size compiler
 
-This deployment serves the complete calculator, DAG simulator, and Lean tab at
-one HTTPS origin. The browser sends Lean source to `/api/lean/compile`; a fresh
-worker compiles it with Lean 4.19.0 and the repository's pinned Mathlib, executes
-the generated C++, and returns the derivation and numerical result. Users need
-only a browser. The default GitHub Pages tab now runs Lean directly as WebAssembly. This optional
-native backend is selected explicitly with `?runtime=native`.
+This deployment serves the calculator, DAG simulator, and browser Lean proof
+compiler at one HTTPS origin. The compiler tab executes entirely in WebAssembly.
+The image also exposes the legacy `/api/lean/compile` API for explicit API clients:
+a native worker checks the earlier statistical/equation language with Lean 4.19.0
+and Mathlib, executes its generated C++, and returns that routine's result.
+The browser compiler no longer uses this API or the `?runtime=native` adapter.
 Module and native-library paths are frozen when the image is built. Requests run
 the installed Lean executable directly, with no Lake/Git initialization or
 dependency downloads at runtime.
@@ -36,10 +36,10 @@ docker compose --env-file packaging/lean/.env -f packaging/lean/compose.yaml bui
 docker compose --env-file packaging/lean/.env -f packaging/lean/compose.yaml up -d compiler https
 ```
 
-Open `https://YOUR_DOMAIN/lean.html?runtime=native`, sign in with the configured username and
-password, and select **Compile & calculate**. Caddy provisions and renews TLS
-certificates. The default repeated-measures study returns **51 participants per
-arm, 102 total**. The header says **hosted compilation** when the backend is ready.
+Open `https://YOUR_DOMAIN/lean.html`, sign in with the configured username and
+password, and select **Compile Lean**. Caddy provisions and renews TLS
+certificates. The default exact-trial example derives a minimum of 25 through
+Lean's proof-carrying search. Proof checking and evaluation run in the browser.
 The other two tabs include their compiled single-threaded and multithreaded WASM
 engines in the same deployment.
 

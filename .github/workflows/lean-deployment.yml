@@ -91,19 +91,29 @@ jobs:
                   assert response.read(4) == b'\x00asm'
           print('HTTPS, authentication, readiness, and both WASM engines passed.')
           PY
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Browser to HTTPS gateway to disposable Lean worker
-        env:
-          SSC_LEAN_TEST_URL: https://localhost
-          SSC_LEAN_TEST_INSECURE_TLS: '1'
-          SSC_LEAN_TEST_PASSWORD: ci-compiler-password
+      - name: Legacy compiler through the authenticated HTTPS API
         run: |
-          npm ci --prefix web
-          cd web
-          npx playwright install --with-deps chromium
-          npm run test:lean-native-browser
+          python - <<'PYTEST'
+          import base64, json, pathlib, ssl, urllib.request, urllib.error, uuid
+          auth = 'Basic ' + base64.b64encode(b'researcher:ci-compiler-password').decode()
+          tls = ssl._create_unverified_context()  # The loopback test uses Caddy's local CA.
+          source = pathlib.Path('examples/lean-studies/repeated-measures.lean').read_text()
+          def compile(source):
+              request = urllib.request.Request('https://localhost/api/lean/compile',
+                  data=json.dumps({'source': source, 'jobId': str(uuid.uuid4())}).encode(),
+                  headers={'Authorization': auth, 'Origin': 'https://localhost', 'Content-Type': 'application/json'})
+              try:
+                  with urllib.request.urlopen(request, context=tls, timeout=180) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as error:
+                  return error.code, json.load(error)
+          status, result = compile(source)
+          assert status == 200 and result['ok'], result
+          assert result['results'][0]['evaluation']['selectedN'] == 51
+          status, result = compile('theorem invalid : False := by sorry\n' + source)
+          assert status >= 400 and not result['ok'], result
+          print('Authenticated HTTPS API compiles legacy source and rejects an unproved claim.')
+          PYTEST
       - name: Deployment logs
         if: failure()
         run: |

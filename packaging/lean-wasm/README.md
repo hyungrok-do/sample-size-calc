@@ -1,26 +1,22 @@
 # Static browser compiler
 
-This is the default compiler used by `web/lean.html`. It requires only static
-hosting; the Docker/native deployment is optional.
+`web/lean.html` runs ordinary Lean in browser WebAssembly. Build with Node 24+
+using `python scripts/build_lean_wasm.py`. If Emscripten is on PATH, the builder
+uses its configured Node runtime. The Lean compiler tab itself requires no
+Emscripten or separate C++ numerical module.
 
-With the Emscripten 6.0.13 SDK on PATH, run `python scripts/build_lean_wasm.py`. The script
-verifies immutable public runtime and library archives, builds the statistical
-module using the actual WASM compiler, builds the shared C++ numerical runtime,
-and packages all required files in `web/lean-wasm/`. `web/assemble.sh` includes
-that directory, and the Pages workflow tests the assembled application before
-publishing it.
+The builder verifies pinned public runtime and library archives, compiles
+`lean/browser/SSC.lean` with the actual WASM compiler, and packages matching
+wasm32 artifacts in `web/lean-wasm/`. Manifest schema 2 contains the Lean runtime,
+core libraries and proof reporter. The old statistical module is not imported.
 
-The build uses the SDK's configured Node runtime. An older system Node can
-reject Lean's export count before initialization, so it is not used implicitly.
+`lean-node.cjs` is adapted from cauli/lean4-wasm-in-browser (Apache-2.0). Native
+64-bit `.olean` files must not be substituted. `SSC.lean` contains a generic,
+proved finite search and observes ordinary Lean declarations/tactics; it has
+no statistical model dispatch or formula templates.
 
-`lean-node.cjs` is adapted from cauli/lean4-wasm-in-browser (Apache-2.0). The
-pinned runtime and core library target wasm32. Ordinary native 64-bit `.olean`
-files are not substituted for those artifacts. The statistical source adapter
-uses the same model/elaborator definitions as the native project, adapts integer
-quotation to the pinned core library, and separates the native Mathlib theorem
-audit from the browser's per-study arithmetic certificates.
+`web/assemble.sh` includes the package. The Pages workflow tests the actual
+assembled compiler before publishing. The calculator and DAG tabs still build
+their independent engines with Emscripten 6.0.13.
 
-`study-runtime.hpp` is used both by the WASM numerical module and the standalone
-C++ download. Statistical assumptions and floating-point power remain separate
-from Lean's exact rational certificates. Full details and the browser test are
-in [the compiler documentation](../../docs/lean-compiler.md).
+See [compiler scope and verification](../../docs/lean-compiler.md).

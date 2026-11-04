@@ -33,7 +33,7 @@ function reference(raw, from) {
   for (const ref of raw.includes('${') ? ['ssc_web', 'ssc_web_mt'].map((v) => raw.replace(/\$\{[^}]*\}/g, v)) : [raw]) {
     const [path, query = ''] = ref.replace(/^\.\//, '').split('?');
     // These runtime URLs use the compiler manifest's content hashes and version.
-    if (from === 'lean-wasm-worker.js' && ['lean-wasm/', 'manifest.json', 'lean.js', 'study.mjs'].includes(path)) continue;
+    if (from === 'lean-wasm-worker.js' && ['lean-wasm/', 'manifest.json', 'lean.js'].includes(path)) continue;
     if (path === '' || /^[a-z]+:/.test(path)) continue;
     seen.add(path);
     if (!existsSync(join(site, path))) missing.push(`${path} (from ${from})`);

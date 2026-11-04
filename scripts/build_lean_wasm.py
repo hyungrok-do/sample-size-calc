@@ -67,36 +67,17 @@ def unpack(archive, kit, runtime):
                 shutil.copyfileobj(source, output)
 
 def browser_source():
-    # The model and elaborator are the actual source used by the native compiler.
-    # The browser imports Lean's rational arithmetic instead of the much larger
-    # native Mathlib probability audit and separate general real-equation solver.
-    model = (ROOT/'lean/DesignCompiler/Planning.lean').read_text()
-    model = model[model.index('namespace DesignCompiler.Planning'):model.index('/-- The off-diagonal')]
-    command = (ROOT/'lean/DesignCompiler/Planning/Command.lean').read_text()
-    command = command[command.index('open Lean Meta Elab Command'):]
-    substitutions = {
-        '  let equations := (DesignCompiler.Equation.resultExtension.getState env).map toJson\n': '',
-        '(studies ++ equations)': 'studies',
-        '  let literal ← Term.elabTermAndSynthesize (← `(($(quote value.num) : ℚ) / ($(quote value.den) : ℚ))) (some (mkConst ``Rat))':
-            '  let numerator ← if value.num < 0 then `(term| - ($(quote value.num.natAbs) : ℚ)) else `(term| ($(quote value.num.natAbs) : ℚ))\n'
-            '  let literal ← Term.elabTermAndSynthesize (← `(($numerator) / ($(quote value.den) : ℚ))) (some (mkConst ``Rat))',
-        'and the generic normal-tail identity.':
-            'in this browser. The generic probability identities have a separate native Mathlib audit.',
-        'Uses the checked shifted-normal rejection-probability identity.':
-            'Uses the shifted-normal rejection-probability identity audited in the native Mathlib library.',
-    }
-    for before, after in substitutions.items():
-        if command.count(before) != 1:
-            raise RuntimeError(f'Browser compiler adapter needs review: {before}')
-        command = command.replace(before, after)
-    return ('import Lean\n\nnotation "ℚ" => Rat\n\nnamespace DesignCompiler\n'
-            'def rationalJson (x : Rat) : Lean.Json := Lean.Json.str s!"{x.num}/{x.den}"\n'
-            'end DesignCompiler\n\n' + model + '\nend DesignCompiler.Planning\n\n' + command)
+    # One ordinary Lean module, compiled by the exact compiler shipped to users.
+    # No model adapters, statistical dispatch, or source-to-source substitutions.
+    return (ROOT/'lean/browser/SSC.lean').read_text()
+
 
 def node_command():
     # emsdk_env.sh adds emcc to PATH, but can leave an older system Node first.
     # Use the SDK's configured engine, as emcc does. Older V8 versions reject
     # the genuine Lean runtime's 104769 exports before running any Lean code.
+    if not shutil.which('em-config'):
+        return ['node']  # Node 24+ is required by the pinned runtime's export count.
     command = ast.literal_eval(subprocess.check_output(['em-config', 'NODE_JS'], text=True).strip())
     if isinstance(command, str):
         command = [command]
@@ -145,10 +126,10 @@ def package(kit, out, source):
         entries.append({'path': rel, 'offset': size, 'bytes': len(data)})
         parts.append(data); size += len(data)
     flush()
-    manifest = {'schema': 1, 'leanCommit': LEAN_COMMIT, 'leanVersion': '4.33.0-pre',
+    manifest = {'schema': 2, 'leanCommit': LEAN_COMMIT, 'leanVersion': '4.33.0-pre',
                 'sourceSha256': hashlib.sha256(source.encode()).hexdigest(), 'packs': packs,
                 'runtime': {name: {'sha256': digest(out/name), 'bytes': (out/name).stat().st_size}
-                            for name in ['lean.js', 'lean.wasm.pack', 'study.mjs', 'study.wasm', 'study-runtime.txt']}}
+                            for name in ['lean.js', 'lean.wasm.pack']}}
     manifest['version'] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:24]
     manifest['downloadBytes'] = sum(p['compressedBytes'] for p in packs) + sum(p['bytes'] for p in manifest['runtime'].values())
     (out/'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
@@ -176,7 +157,7 @@ def main():
     build = args.cache/'build'
     build.mkdir(exist_ok=True)
     (build/'SSC.lean').write_text(source)
-    print('Compiling the statistical module with Lean WebAssembly', flush=True)
+    print('Compiling the proof reporter with Lean WebAssembly', flush=True)
     with (build/'compiler.log').open('w') as log:
         result = subprocess.run(node_command() + [str(ROOT/'packaging/lean-wasm/lean-node.cjs'), str(kit), str(build),
             '-R', '/work', '-o', '/work/SSC.olean', '/work/SSC.lean'], stdout=log, stderr=subprocess.STDOUT, timeout=300)
@@ -185,14 +166,8 @@ def main():
     shutil.copyfile(build/'SSC.olean', kit/'lib/lean/SSC.olean')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
-    print('Compiling the C++ numerical backend to WebAssembly', flush=True)
-    subprocess.run(['em++', '-std=c++17', '-O2', '-fwasm-exceptions', '-I'+str(ROOT/'core/src'),
-        str(ROOT/'packaging/lean-wasm/study-runtime.cpp'), str(ROOT/'core/src/util/json.cpp'),
-        str(ROOT/'core/src/util/numtext.cpp'), '-o', str(out/'study.mjs'),
-        '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sENVIRONMENT=worker,node', '-sALLOW_MEMORY_GROWTH=1',
-        '-sEXPORTED_FUNCTIONS=["_ssc_evaluate_study","_malloc","_free"]',
-        '-sEXPORTED_RUNTIME_METHODS=["cwrap"]'], check=True)
-    shutil.copyfile(ROOT/'packaging/lean-wasm/study-runtime.hpp', out/'study-runtime.txt')
+    for obsolete in ['study.mjs', 'study.wasm', 'study-runtime.txt']:
+        (out/obsolete).unlink(missing_ok=True)
     package(kit, out, source)
 
 if __name__ == '__main__':

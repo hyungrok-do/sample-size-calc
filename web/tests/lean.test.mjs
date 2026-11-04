@@ -51,7 +51,7 @@ test('compiler rejects unsupported Lean and incompatible study fields', () => {
 test('third tab has separate navigation and offline files', async () => {
   for (const page of ['index.html', 'dag.html', 'lean.html']) assert.match(await readFile(new URL(`../${page}`, import.meta.url), 'utf8'), /href="lean\.html\?v=dev"/);
   const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
-  for (const file of ['lean.html', 'lean.css', 'lean.js', 'lean-examples.js', 'lean-native-examples.js', 'lean-study-examples.js', 'study.html', 'study.js']) assert.ok(sw.includes(`${file}?v=dev`));
+  for (const file of ['lean.html', 'lean.css', 'lean.js', 'lean-examples.js', 'lean-native-examples.js', 'lean-study-examples.js', 'lean-proof-examples.js', 'study.html', 'study.js']) assert.ok(sw.includes(`${file}?v=dev`));
 });
 
 test('native editor examples are the actual Lean modules checked in CI', async () => {
@@ -88,4 +88,11 @@ test('statistical Lean examples match the native study files', async () => {
   const { examples: studies } = await import('../lean-study-examples.js');
   for (const [name, source] of Object.entries(studies))
     assert.equal(source, await readFile(new URL(`../../examples/lean-studies/${name}.lean`, import.meta.url), 'utf8'));
+});
+
+
+test('proof compiler examples are ordinary Lean modules checked in the browser', async () => {
+  const { examples: proofs } = await import('../lean-proof-examples.js');
+  for (const [name, source] of Object.entries(proofs))
+    assert.equal(source, await readFile(new URL(`../../examples/lean-proofs/${name}.lean`, import.meta.url), 'utf8'));
 });
