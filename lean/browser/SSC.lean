@@ -1,9 +1,11 @@
 import Lean
+import SSC.Calculation
 
 /-!
-Browser reporting for ordinary Lean modules. This module contains no statistical
-models, solver dispatch, formula rewrites, or numerical backend. Proof search is
-performed by the Lean tactics in the user's source. The kernel checks the terms.
+Browser reporting for ordinary Lean modules. Imported SSC libraries provide
+general probability programs, numerical mathematics and simulation. Statistical
+models live in ordinary source modules. Proof search is performed by Lean tactics
+in the user's source; evaluation output is distinct from kernel-checked theorems.
 
 The observer records actual elaborator goals. The exporter reads declarations
 from the checked environment, including their full transitive axiom dependencies.

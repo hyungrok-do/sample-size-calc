@@ -1,0 +1,437 @@
+{
+  "reference": "SciPy 1.17.0: scipy.stats and scipy.special, generated independently of SSC implementations",
+  "cases": [
+    {
+      "function": "normalCDF",
+      "arguments": [
+        -10
+      ],
+      "expected": 7.61985302416047e-24
+    },
+    {
+      "function": "normalCDF",
+      "arguments": [
+        -4
+      ],
+      "expected": 3.167124183311986e-05
+    },
+    {
+      "function": "normalCDF",
+      "arguments": [
+        -1
+      ],
+      "expected": 0.15865525393145707
+    },
+    {
+      "function": "normalCDF",
+      "arguments": [
+        0
+      ],
+      "expected": 0.5
+    },
+    {
+      "function": "normalCDF",
+      "arguments": [
+        1
+      ],
+      "expected": 0.8413447460685429
+    },
+    {
+      "function": "normalCDF",
+      "arguments": [
+        3
+      ],
+      "expected": 0.9986501019683699
+    },
+    {
+      "function": "normalCDF",
+      "arguments": [
+        8
+      ],
+      "expected": 0.9999999999999993
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        1e-08
+      ],
+      "expected": -5.612001244174789
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        0.001
+      ],
+      "expected": -3.090232306167813
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        0.025
+      ],
+      "expected": -1.9599639845400545
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        0.5
+      ],
+      "expected": 0.0
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        0.975
+      ],
+      "expected": 1.959963984540054
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        0.999
+      ],
+      "expected": 3.090232306167813
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        0.99999999
+      ],
+      "expected": 5.612001243305505
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        0.1,
+        0.001
+      ],
+      "expected": 0.526768568392445
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        0.5,
+        0.1
+      ],
+      "expected": 0.34527915398142317
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        1,
+        3
+      ],
+      "expected": 0.950212931632136
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        2,
+        2
+      ],
+      "expected": 0.5939941502901616
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        10,
+        20
+      ],
+      "expected": 0.9950045876916924
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        100,
+        100
+      ],
+      "expected": 0.5132987982791487
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        1000,
+        1000
+      ],
+      "expected": 0.5042052441802155
+    },
+    {
+      "function": "betaCDF",
+      "arguments": [
+        0.1,
+        0.2,
+        0.001
+      ],
+      "expected": 0.3433186839931645
+    },
+    {
+      "function": "betaCDF",
+      "arguments": [
+        0.5,
+        0.5,
+        0.3
+      ],
+      "expected": 0.36901011956554536
+    },
+    {
+      "function": "betaCDF",
+      "arguments": [
+        2,
+        3,
+        0.4
+      ],
+      "expected": 0.5247999999999999
+    },
+    {
+      "function": "betaCDF",
+      "arguments": [
+        10,
+        20,
+        0.5
+      ],
+      "expected": 0.9692858271300793
+    },
+    {
+      "function": "betaCDF",
+      "arguments": [
+        100,
+        200,
+        0.3
+      ],
+      "expected": 0.10884306564490986
+    },
+    {
+      "function": "tCDF",
+      "arguments": [
+        1,
+        -2
+      ],
+      "expected": 0.14758361765043326
+    },
+    {
+      "function": "tCDF",
+      "arguments": [
+        2,
+        3
+      ],
+      "expected": 0.9522670168666454
+    },
+    {
+      "function": "tCDF",
+      "arguments": [
+        5,
+        -1
+      ],
+      "expected": 0.18160873382456144
+    },
+    {
+      "function": "tCDF",
+      "arguments": [
+        30,
+        2
+      ],
+      "expected": 0.9726874775185085
+    },
+    {
+      "function": "tCDF",
+      "arguments": [
+        500,
+        3
+      ],
+      "expected": 0.9985827540935744
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        1,
+        2,
+        -1
+      ],
+      "expected": 0.006185760134662165
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        2,
+        3,
+        2
+      ],
+      "expected": 0.18223175257129115
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        5,
+        -4,
+        -2
+      ],
+      "expected": 0.9614667484925902
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        10,
+        3,
+        3
+      ],
+      "expected": 0.47276290990071806
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        30,
+        2,
+        4
+      ],
+      "expected": 0.9602411062409649
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        120,
+        2.8,
+        1.98
+      ],
+      "expected": 0.2068236484604948
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        500,
+        10,
+        10
+      ],
+      "expected": 0.49804089234969806
+    },
+    {
+      "function": "tQuantile",
+      "arguments": [
+        1,
+        0.975
+      ],
+      "expected": 12.706204736174694
+    },
+    {
+      "function": "tQuantile",
+      "arguments": [
+        5,
+        0.99
+      ],
+      "expected": 3.3649299989072174
+    },
+    {
+      "function": "tQuantile",
+      "arguments": [
+        30,
+        0.975
+      ],
+      "expected": 2.0422724563012378
+    },
+    {
+      "function": "tQuantile",
+      "arguments": [
+        500,
+        0.025
+      ],
+      "expected": -1.9647198374673678
+    },
+    {
+      "function": "chiSquare",
+      "arguments": [
+        1,
+        0,
+        3.84
+      ],
+      "expected": 0.9499564787512949
+    },
+    {
+      "function": "chiSquare",
+      "arguments": [
+        4,
+        5,
+        9
+      ],
+      "expected": 0.5692367217539747
+    },
+    {
+      "function": "chiSquare",
+      "arguments": [
+        100,
+        50,
+        160
+      ],
+      "expected": 0.7023707159811345
+    },
+    {
+      "function": "fisherF",
+      "arguments": [
+        2,
+        10,
+        0,
+        3
+      ],
+      "expected": 0.904632568359375
+    },
+    {
+      "function": "fisherF",
+      "arguments": [
+        3,
+        40,
+        5,
+        2
+      ],
+      "expected": 0.4066443072619022
+    },
+    {
+      "function": "fisherF",
+      "arguments": [
+        10,
+        100,
+        30,
+        4
+      ],
+      "expected": 0.5222905576367696
+    },
+    {
+      "function": "normalQuantile",
+      "arguments": [
+        0.999999999999999
+      ],
+      "expected": 7.941444487415979
+    },
+    {
+      "function": "gammaCDF",
+      "arguments": [
+        100000.0,
+        100000.0
+      ],
+      "expected": 0.5004205221103651
+    },
+    {
+      "function": "betaCDF",
+      "arguments": [
+        100000.0,
+        100000.0,
+        0.5
+      ],
+      "expected": 0.49999999999999895
+    },
+    {
+      "function": "tCDF",
+      "arguments": [
+        100000.0,
+        1.96
+      ],
+      "expected": 0.9750007184028492
+    },
+    {
+      "function": "noncentralTCDF",
+      "arguments": [
+        100000.0,
+        5,
+        5
+      ],
+      "expected": 0.49999501333162694
+    }
+  ]
+}

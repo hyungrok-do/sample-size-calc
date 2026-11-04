@@ -1,4 +1,4 @@
-// Actual static page -> Lean WASM kernel -> C++ WASM, with no compiler API.
+// Actual static page -> Lean WASM kernel and interpreter, with no compiler API.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { extname, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 import { examples } from '../lean-proof-examples.js';
+import { checkCalculations } from './lean-calculations.mjs';
 const root = resolve(process.argv[2] || new URL('..', import.meta.url).pathname);
 const prefix = '/sample-size-calc/';
 const temporary = await mkdtemp(resolve(tmpdir(),'ssc-lean-browser-'));
@@ -66,7 +67,7 @@ try {
   assert.equal(await page.evaluate(()=>crossOriginIsolated),true,'service worker supplies browser isolation on a static host');
   assert.match(await page.locator('#lean-connection-status').textContent(),/in this browser/);
   console.log('Actual Lean WASM initialized.');
-  await compile();
+  await compile(examples['exact-trial']);
   assert.match(await page.locator('#lean-evaluation').textContent(),/some 25/);
   let checked = await report('trial.json');
   assert.equal(checked.compiler, 'lean-wasm-proofs-v2');
@@ -136,6 +137,8 @@ end UserModel`;
   await reject('import SSC\ntheorem unproved (P : Nat → Prop) : P 9 := by grind',/unsolved|failed/i);
   await reject('import SSC\ntheorem native : 7 < 8 := by native_decide',/Unproved dependency|native_decide|ofReduce/i);
   console.log('False claims, missing hypotheses, user axioms, sorry and unchecked evaluation rejected.');
+
+  await checkCalculations({ compile, report, page, reject });
 
   await compile(arbitrary);
   await context.setOffline(true);

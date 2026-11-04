@@ -66,10 +66,11 @@ def unpack(archive, kit, runtime):
             with tar.extractfile(member) as source, dest.open('wb') as output:
                 shutil.copyfileobj(source, output)
 
-def browser_source():
-    # One ordinary Lean module, compiled by the exact compiler shipped to users.
-    # No model adapters, statistical dispatch, or source-to-source substitutions.
-    return (ROOT/'lean/browser/SSC.lean').read_text()
+def browser_sources():
+    # Ordinary modules in dependency order, compiled by the shipped compiler.
+    # No model adapters or source-to-source substitutions.
+    return {name: (ROOT/'lean/browser'/name).read_text() for name in
+            ['SSC/Numeric.lean', 'SSC/Probability.lean', 'SSC/Calculation.lean', 'SSC.lean']}
 
 
 def node_command():
@@ -78,6 +79,8 @@ def node_command():
     # the genuine Lean runtime's 104769 exports before running any Lean code.
     if not shutil.which('em-config'):
         return ['node']  # Node 24+ is required by the pinned runtime's export count.
+    if not shutil.which('em-config'):
+        return [shutil.which('node') or 'node']
     command = ast.literal_eval(subprocess.check_output(['em-config', 'NODE_JS'], text=True).strip())
     if isinstance(command, str):
         command = [command]
@@ -85,7 +88,7 @@ def node_command():
         raise RuntimeError('Emscripten NODE_JS must name a JavaScript runtime')
     return command
 
-def package(kit, out, source):
+def package(kit, out, sources):
     out.mkdir(parents=True, exist_ok=True)
     # Compressed opaque extensions avoid a static host decompressing them twice.
     wasm = gzip.compress((kit/'bin/lean.wasm').read_bytes(), compresslevel=9, mtime=0)
@@ -102,7 +105,9 @@ def package(kit, out, source):
             raise RuntimeError('Pinned Emscripten buffer adapter needs review')
         glue = glue.replace(before, after)
     (out/'lean.js').write_text(glue)
-    (out/'SSC.lean').write_text(source)
+    for name, source in sources.items():
+        (out/name).parent.mkdir(parents=True, exist_ok=True)
+        (out/name).write_text(source)
     packs, parts, entries, size = [], [], [], 0
     def flush():
         nonlocal parts, entries, size
@@ -127,7 +132,9 @@ def package(kit, out, source):
         parts.append(data); size += len(data)
     flush()
     manifest = {'schema': 2, 'leanCommit': LEAN_COMMIT, 'leanVersion': '4.33.0-pre',
-                'sourceSha256': hashlib.sha256(source.encode()).hexdigest(), 'packs': packs,
+                'sourceSha256': hashlib.sha256(sources['SSC.lean'].encode()).hexdigest(),
+                'librarySources': {name: hashlib.sha256(source.encode()).hexdigest()
+                                   for name, source in sources.items()}, 'packs': packs,
                 'runtime': {name: {'sha256': digest(out/name), 'bytes': (out/name).stat().st_size}
                             for name in ['lean.js', 'lean.wasm.pack']}}
     manifest['version'] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:24]
@@ -153,22 +160,26 @@ def main():
     header = (kit/'lib/lean/Init.olean').read_bytes()[:160]
     if LEAN_COMMIT.encode() not in header:
         raise RuntimeError('Lean module/toolchain version mismatch')
-    source = browser_source()
+    sources = browser_sources()
     build = args.cache/'build'
     build.mkdir(exist_ok=True)
-    (build/'SSC.lean').write_text(source)
-    print('Compiling the proof reporter with Lean WebAssembly', flush=True)
-    with (build/'compiler.log').open('w') as log:
-        result = subprocess.run(node_command() + [str(ROOT/'packaging/lean-wasm/lean-node.cjs'), str(kit), str(build),
-            '-R', '/work', '-o', '/work/SSC.olean', '/work/SSC.lean'], stdout=log, stderr=subprocess.STDOUT, timeout=300)
-    if result.returncode != 0 or not (build/'SSC.olean').is_file():
-        raise RuntimeError((build/'compiler.log').read_text()[-12000:])
-    shutil.copyfile(build/'SSC.olean', kit/'lib/lean/SSC.olean')
+    for name, source in sources.items():
+        (build/name).parent.mkdir(parents=True, exist_ok=True)
+        (build/name).write_text(source)
+        artifact = str(Path(name).with_suffix('.olean'))
+        print(f'Compiling {name} with Lean WebAssembly', flush=True)
+        with (build/'compiler.log').open('w') as log:
+            result = subprocess.run(node_command() + [str(ROOT/'packaging/lean-wasm/lean-node.cjs'), str(kit), str(build),
+                '-R', '/work', '-o', '/work/'+artifact, '/work/'+name], stdout=log, stderr=subprocess.STDOUT, timeout=300)
+        if result.returncode != 0 or not (build/artifact).is_file():
+            raise RuntimeError((build/'compiler.log').read_text()[-12000:])
+        (kit/'lib/lean'/artifact).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(build/artifact, kit/'lib/lean'/artifact)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     for obsolete in ['study.mjs', 'study.wasm', 'study-runtime.txt']:
         (out/obsolete).unlink(missing_ok=True)
-    package(kit, out, source)
+    package(kit, out, sources)
 
 if __name__ == '__main__':
     main()

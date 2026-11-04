@@ -1,3 +1,5 @@
+import { extractCalculations } from './lean-calculation-results.js?v=dev';
+
 export class BrowserLeanCompiler {
   constructor(progress) { this.progress = progress; this.worker = null; this.pending = new Map(); this.serial = 0; }
   async initialize() {
@@ -30,7 +32,7 @@ export class BrowserLeanCompiler {
           const pending = this.pending.get(data.id);
           if (!pending) return;
           this.pending.delete(data.id); clearTimeout(pending.timer);
-          if (data.type === 'error') pending.reject(Error(data.message)); else pending.resolve(data.value);
+          if (data.type === 'error') pending.reject(Error(data.message)); else pending.resolve(extractCalculations(data.value));
         }
       };
       worker.postMessage({ type: 'initialize' });

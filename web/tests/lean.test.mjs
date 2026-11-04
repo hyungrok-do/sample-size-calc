@@ -96,3 +96,33 @@ test('proof compiler examples are ordinary Lean modules checked in the browser',
   for (const [name, source] of Object.entries(proofs))
     assert.equal(source, await readFile(new URL(`../../examples/lean-proofs/${name}.lean`, import.meta.url), 'utf8'));
 });
+
+test('calculation examples match the ordinary Lean modules', async () => {
+  const { examples } = await import('../lean-calculation-examples.js');
+  for (const [name, source] of Object.entries(examples))
+    assert.equal(source, await readFile(new URL(`../../examples/lean-calculations/${name}.lean`, import.meta.url), 'utf8'));
+});
+
+test('calculation reports remain separate from proofs and preserve malformed output', async () => {
+  const { extractCalculations } = await import('../lean-calculation-results.js');
+  const p = { method: 'numerical', value: 0.8 };
+  const result = { schema: 'ssc.calculation.v1', kind: 'evaluation', evaluation: { design: 63, power: p, typeI: p } };
+  const source = { results: [{ name: 'a_theorem' }], output: 'ordinary output', diagnostics: [
+    { severity: 'information', data: 'SSC_CALCULATION '+JSON.stringify(result) },
+    { severity: 'warning', data: 'keep this warning' }] };
+  const parsed = extractCalculations(source);
+  assert.equal(parsed.calculations.length, 1);
+  assert.deepEqual(parsed.results, source.results);
+  assert.equal(parsed.output, 'ordinary output');
+  assert.deepEqual(parsed.diagnostics, [{ severity: 'warning', data: 'keep this warning' }]);
+  for (const invalid of [
+    { ...result, evaluation: { ...result.evaluation, power: { method: 'kernel-certified', value: 0.8 } } },
+    { ...result, evaluation: { ...result.evaluation, power: { method: 'simulation', value: 0.8, lower: 0.9, upper: 1, replicates: 10 } } },
+    { schema: result.schema, kind: 'search', rows: [], selected: 0, earlierUnresolved: [] },
+  ]) {
+    const output = 'SSC_CALCULATION '+JSON.stringify(invalid);
+    const parsed = extractCalculations({ output, diagnostics: [] });
+    assert.deepEqual(parsed.calculations, []);
+    assert.equal(parsed.output, output);
+  }
+});

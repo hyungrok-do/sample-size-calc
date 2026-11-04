@@ -13,9 +13,10 @@ C++ statistical backend and no compiler-server request.
 ## Write a module
 
 Start with `import SSC`, then write ordinary Lean. The bundled library contains
-`Init`, `Std`, `Lean`, and `SSC`. The last module provides reporting and a generic
-proof-carrying bounded search. It has no statistical formulas or custom tactics.
-There is no additional source grammar to learn.
+`Init`, `Std`, `Lean`, and `SSC`. SSC imports reusable numerical, probability,
+and calculation modules, and provides reporting and a generic proof-carrying
+bounded search. There is no additional source grammar to learn and no dispatch
+on statistical procedure names.
 
 Use a theorem to state a goal. Supply hypotheses as theorem parameters, and use
 Lean proof constructs such as `by`, `have`, `calc`, `exact`, `simp`, `omega`,
@@ -26,6 +27,102 @@ Lean's actual goal and context; no approximate answer substitutes for a proof.
 The compiler preserves symbolic parameters. It does not require equations to be
 closed numeric terms. User-defined types, namespaces, notation and functions
 are handled by Lean's parser and elaborator.
+
+## One specification, direct calculation and simulation
+
+`SSC.Calculation.Specification Design Outcome` contains three typed functions:
+
+```lean
+null        : Design → Law Outcome
+alternative : Design → Law Outcome
+reject      : Design → Event Outcome
+```
+
+`Design` can be a sample count, a proposed effect, or a record of allocation,
+cluster count, cluster size and other parameters. `Outcome` can be a test
+statistic or a complete dataset. `Law` has ordinary Lean `pure`, `bind` and
+`iid` operations, so latent variables, dependence, transformations and custom
+estimators can be expressed in ordinary source. There is no separate simulation
+specification to keep in sync.
+
+`evaluate spec design options` calculates both null rejection probability and
+power. `search spec candidates requirements options` searches an explicitly
+ordered candidate array. The default route uses:
+
+1. Exact rational enumeration of finite probability programs within a work budget.
+2. Numerical CDF evaluation for supported scalar laws and interval/tail events.
+3. Simulation of the same law, applying the same rejection event.
+
+Unavailable integration and exhausted enumeration budgets can trigger fallback.
+Invalid probabilities, invalid distribution parameters, invalid rejection rules,
+failed estimators, Lean errors and failed proofs do not become successful
+simulation results. Estimator failures abort; replicates are never silently
+discarded. Simulation has explicit replicate, random-draw and browser-time limits.
+
+Set `route := .simulation` to compare direct evaluation with simulation using the
+identical specification. `.exact` and `.numerical` require that route and report
+unavailability instead of falling back. An arbitrary rejection function uses
+`Event.test : (Outcome → Except String Bool) → Event Outcome`; this lets an
+estimator report nonconvergence. `Event.ofBool` is the simpler total-function form.
+
+The numerical library includes normal CDFs and quantiles, regularized incomplete
+gamma and beta, central t quantiles, noncentral t integration, and central and
+noncentral chi-square/F CDFs. Composable samplers include these distribution
+families plus uniform, exponential, gamma, beta, binomial, Bernoulli, Poisson and
+arbitrary finite rational laws. A new test requires a source definition, not a
+new compiler branch. A distribution of a statistic supplied as an asymptotic
+approximation remains an approximation; the library does not infer its validity.
+
+Simulation reports success counts, fixed replicate counts, the initial stream
+state and Hoeffding intervals. The random generator is SplitMix64. A search
+allocates its error probability across both null/alternative evaluations at
+every planned candidate. Thus the Monte Carlo intervals are simultaneous under
+the usual independent-draw assumptions, including when the search stops at its
+first acceptable candidate. They do not account for model misspecification,
+finite-precision sampling or deterministic numerical approximation error.
+
+Search uses the lower power endpoint and, when requested, the upper type-I-error
+endpoint. A candidate near a constraint can remain **unresolved**. A later
+acceptable candidate is reported with all earlier unresolved indices; no minimum
+is claimed. No monotonicity assumption or bisection shortcut is used. Search
+makes no claim about candidates outside the supplied set. Numerical comparisons
+use a configurable decision guard, not a certified error bound.
+
+`Requirements.maxTypeI` is optional. When absent, type-I error is reported but
+does not constrain the search. A Monte Carlo interval around a nominal 5% null
+rejection probability will generally not establish a strict ≤5% bound; increase
+precision or supply a justified calibration theorem rather than ignoring this
+uncertainty. Exact rational search comparisons do not round the constraints.
+
+Use standard Lean `#eval emitEvaluation (...)` or `#eval emitSearch (...)` to
+produce a structured result table and downloadable JSON. Binary64 probability
+values and interval endpoints retain all bits in the report. Numerical results
+are execution output, separate from theorem proofs.
+
+## Calculation examples and coverage
+
+`examples/lean-calculations/` contains editable complete modules:
+
+| Module | Calculation | Routes exercised |
+| --- | --- | --- |
+| `normal-means.lean` | Two normal means with known variance, per-group sample size | Numerical CDF and same-specification simulation |
+| `student-means.lean` | Equal-allocation pooled t test, sample size and detectable-effect grid | Noncentral t integration |
+| `exact-binomial.lean` | Null-calibrated one-sided binomial test, power and sample size | Exact rational evaluation and same-specification simulation; a small probability theorem is kernel checked |
+| `paired-lognormal.lean` | Correlated lognormal pairs, studentized paired differences | Automatic simulation of actual observations; null size is measured |
+| `regression-simulation.lean` | Random covariates, heteroscedastic errors, HC1 slope test | Automatic simulation with user-defined estimation and rejection |
+
+These examples establish an extensible computation path. They are not a claim
+of parity with all **71 manual procedures / 163 procedure–target combinations**.
+Full parity across every procedure option, and formal derivations of every
+statistical approximation, remain separate work. The library currently supplies
+neither a general mixed-model optimizer nor a complete formal probability theory.
+
+`web/tests/fixtures/lean-numerics.json` records 53 independent SciPy reference
+values for the numerical primitives. Browser tests execute the actual Lean WASM
+interpreter, compare direct and simulated probabilities, check eight continuous
+samplers, exercise arbitrary composed laws and nonmonotone designs, and test
+unresolved candidates, reproducibility and explicit errors. These are statistical
+computation tests, distinct from the existing frontend regression suite.
 
 ## Proof and evaluation reports
 
@@ -76,7 +173,7 @@ evaluation.
 
 ## Statistical examples
 
-The complete source modules are in `examples/lean-proofs/`:
+The proof-oriented source modules remain in `examples/lean-proofs/`:
 
 | Module | What is established | Scope |
 | --- | --- | --- |
@@ -92,7 +189,7 @@ mutating a trial equation invalidates its old conclusion.
 
 The actual Lean 4.33.0-pre WASM runtime is pinned to commit
 `62b6a2291302d4bbeace37642a066b7510d0145c`. The matching module artifacts are
-bundled, and `lean/browser/SSC.lean` is compiled by that same WASM binary.
+bundled, and all modules under `lean/browser/` are compiled by that same WASM binary.
 Native 64-bit `.olean` files cannot substitute for wasm32 files.
 
 The first load is approximately 175 MiB, cached for later and offline use.

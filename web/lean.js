@@ -1,5 +1,8 @@
 import { BrowserLeanCompiler } from './lean-wasm-client.js?v=dev';
-import { examples } from './lean-proof-examples.js?v=dev';
+import { examples as proofs } from './lean-proof-examples.js?v=dev';
+import { examples as calculations } from './lean-calculation-examples.js?v=dev';
+import { renderCalculations } from './lean-calculation-results.js?v=dev';
+const examples = { ...proofs, ...calculations };
 
 const $ = id => document.getElementById(`lean-${id}`);
 const source = $('source'), storageKey = 'ssc-lean-proofs-v3';
@@ -37,9 +40,11 @@ async function checkConnection() {
 function current() { return compiled?.results[Number($('query').value)]; }
 function render() {
   const declaration = current();
+  renderCalculations($('calculations'), compiled.calculations || []);
   $('declarations').hidden = !declaration;
   $('evaluation').textContent = [compiled.output,
-    ...compiled.diagnostics.filter(d => d.severity === 'information').map(d => d.data)].filter(Boolean).join('\n\n') || 'No evaluation commands in this module.';
+    ...compiled.diagnostics.filter(d => d.severity === 'information').map(d => d.data)].filter(Boolean).join('\n\n')
+      || (compiled.calculations?.length ? 'Structured calculation output is shown above.' : 'No evaluation commands in this module.');
   $('diagnostics').textContent = compiled.diagnostics.filter(d => d.severity !== 'information')
     .map(d => `Line ${d.pos?.line || 1}: ${d.data}`).join('\n\n') || 'No warnings or errors.';
   $('compiled').hidden = false;
@@ -78,7 +83,7 @@ function render() {
   $('dependencies').textContent = declaration.dependencies.join('\n') || 'No constant dependencies.';
 }
 
-source.value = examples['exact-trial'];
+source.value = examples['normal-means'];
 try { const saved = localStorage.getItem(storageKey); if (saved && new TextEncoder().encode(saved).length <= 131072) source.value = saved; } catch {}
 const requested = new URLSearchParams(location.search).get('example');
 if (Object.hasOwn(examples, requested)) { source.value = examples[requested]; $('example').value = requested; }
@@ -88,7 +93,7 @@ $('query').addEventListener('change', render);
 $('reconnect').addEventListener('click', () => { browserCompiler.stop(); checkConnection(); });
 $('save').addEventListener('click', () => download('source.lean', source.value));
 $('proof-save').addEventListener('click', () => { if (compiled) download('checked-source.lean', compiled.module); });
-$('result-save').addEventListener('click', () => { if (compiled) download('lean-proof-report.json', JSON.stringify(compiled, null, 2), 'application/json'); });
+$('result-save').addEventListener('click', () => { if (compiled) download('lean-report.json', JSON.stringify(compiled, null, 2), 'application/json'); });
 $('import').addEventListener('change', async () => {
   const file = $('import').files[0]; if (!file) return;
   const version = ++generation; busy = true; refresh();

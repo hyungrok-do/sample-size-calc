@@ -125,19 +125,27 @@ The separate **Lean compiler** tab accepts ordinary Lean definitions, hypotheses
 and theorem goals. It constructs and checks proofs through Lean's own tactics
 and kernel in WebAssembly, and evaluates computable definitions with `#eval`.
 There is no statistical `analysis` selector, fixed model dispatcher, or separate
-C++ numerical backend in this tab.
+C++ numerical backend in this tab. A shared specification defines the null law,
+alternative law and rejection event. Exact finite evaluation, numerical CDFs and
+simulation operate on those same definitions, with reproducible simulation
+intervals and explicit unresolved search candidates.
 
 The [browser compiler](docs/lean-compiler.md) shows actual proof terms, formal
 hypotheses, dependencies and intermediate tactic goals. Examples include an
 exact discrete trial with a proved minimum sample size, symbolic power bounds,
 and covariance propagation. A generic finite search returns a witness with
 proofs of feasibility and minimality, or proves its domain exhausted.
+Calculation examples also cover normal/t means, binomial tests, correlated
+lognormal pairs and a user-written heteroscedastic regression estimator. These
+are an extensible calculation foundation; full parity with all manual procedures
+has not yet been established.
 
 The static site includes the compiler: no local installation or compiler server
 is required. The first visit caches about 175 MiB; use a current desktop browser
 with shared-memory WebAssembly support. Failed proof obligations remain visible.
 Mathlib and unrestricted automatic statistical derivation are not bundled.
-Evaluation output is separate from proof and requires its own numerical theorem.
+Evaluation output is separate from proof. Certifying an evaluated claim requires
+a theorem about that claim.
 
 The [browser study sandbox](docs/study-language.md), calculator and DAG simulator
 retain their independent numerical engines. The earlier native Mathlib audits

@@ -15,7 +15,7 @@ const FILES = ['./', 'app.js?v=dev', 'engine.js?v=dev', 'worker.js?engine=ssc_we
   'engine/ssc_web.wasm?v=dev', 'guide.js?v=dev', 'guide-data.js?v=dev', 'guide-state.js?v=dev', 'selection.js?v=dev',
   'format.js?v=dev', 'dag.html?v=dev', 'dag.css?v=dev', 'dag-entry.js?v=dev', 'dag.js?v=dev', 'dag-scenarios.js?v=dev',
   'dag-function-editor.js?v=dev', 'dag-functions.js?v=dev', 'dag-model.js?v=dev', 'dag-view.js?v=dev', 'dag-canvas.js?v=dev', 'estimand-model.js?v=dev',
-  'dag-study.js?v=dev', 'dag-study-editor.js?v=dev', 'dag-workflow.js?v=dev', 'power-settings.js?v=dev', 'power-model.js?v=dev', 'dag-power.js?v=dev', 'dag-results.js?v=dev', 'lean.html?v=dev', 'lean.css?v=dev', 'lean.js?v=dev', 'lean-examples.js?v=dev', 'lean-native-examples.js?v=dev','lean-study-examples.js?v=dev', 'lean-proof-examples.js?v=dev', 'lean-wasm-client.js?v=dev', 'lean-wasm-worker.js?v=dev', 'study.html?v=dev', 'study.js?v=dev'];
+  'dag-study.js?v=dev', 'dag-study-editor.js?v=dev', 'dag-workflow.js?v=dev', 'power-settings.js?v=dev', 'power-model.js?v=dev', 'dag-power.js?v=dev', 'dag-results.js?v=dev', 'lean.html?v=dev', 'lean.css?v=dev', 'lean.js?v=dev', 'lean-examples.js?v=dev', 'lean-native-examples.js?v=dev','lean-study-examples.js?v=dev', 'lean-proof-examples.js?v=dev', 'lean-calculation-examples.js?v=dev', 'lean-calculation-results.js?v=dev', 'lean-wasm-client.js?v=dev', 'lean-wasm-worker.js?v=dev', 'study.html?v=dev', 'study.js?v=dev'];
 // The only copies kept, each under the one address the page asks for it by: any other address (another query
 // string on a visit, a link to a file with ?x= added) is answered from the network and not stored, so links
 // cannot fill the site's storage with copies.
