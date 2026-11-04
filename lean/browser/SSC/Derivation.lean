@@ -43,7 +43,7 @@ theorem expect_const (p : Program α) (c : Rat) : p.expect (fun _ => c) = c := b
 def toLaw : {α : Type} → Program α → SSC.Probability.Law α
   | _, .pure x => .pure x
   | _, .draw d => .finite d.atoms.toArray
-  | _, @Program.bind _ _ _ p k => .bind p.toLaw (fun x => (k x).toLaw)
+  | _, @Program.bind _ _ _ p k => .defer (fun _ => .bind p.toLaw (fun x => (k x).toLaw))
 
 def map [DecidableEq α] (p : Program α) (f : α → β) : Program β :=
   p.bind (fun x => .pure (f x))
@@ -68,6 +68,43 @@ transitions. No independence assumption is inserted by the compiler. -/
 def iterate [DecidableEq σ] (transition : σ → Program σ) (initial : σ) : Nat → Program σ
   | 0 => .pure initial
   | n+1 => (iterate transition initial n).bind transition
+
+-- Keep the original defining equations available to user proofs. The compiler
+-- uses tail-recursive construction only through these checked equalities.
+private def iidRuntime [DecidableEq α] (p : Program α) (n : Nat) : Program (List α) :=
+  Nat.repeat (fun previous => previous.bind (fun xs => p.map (fun x => xs ++ [x]))) n (.pure [])
+
+@[csimp] theorem iid_eq_runtime : @iid = @iidRuntime := by
+  funext α inst p n
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    change (iid p n).bind _ = (iidRuntime p n).bind _
+    rw [ih]
+
+private def iidFoldRuntime [DecidableEq α] [DecidableEq σ] (p : Program α)
+    (step : σ → α → σ) (initial : σ) (n : Nat) : Program σ :=
+  Nat.repeat (fun previous => previous.bind (fun s => p.map (step s))) n (.pure initial)
+
+@[csimp] theorem iidFold_eq_runtime : @iidFold = @iidFoldRuntime := by
+  funext α σ instα instσ p step initial n
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    change (iidFold p step initial n).bind _ = (iidFoldRuntime p step initial n).bind _
+    rw [ih]
+
+private def iterateRuntime [DecidableEq σ] (transition : σ → Program σ)
+    (initial : σ) (n : Nat) : Program σ :=
+  Nat.repeat (fun previous => previous.bind transition) n (.pure initial)
+
+@[csimp] theorem iterate_eq_runtime : @iterate = @iterateRuntime := by
+  funext σ inst transition initial n
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    change (iterate transition initial n).bind _ = (iterateRuntime transition initial n).bind _
+    rw [ih]
 
 /-- Generic observation-to-statistic derivation, with arbitrary state and update. -/
 theorem iidFold_eq_iid [DecidableEq α] [DecidableEq σ] (p : Program α)
@@ -178,18 +215,19 @@ private def compileBranches [DecidableEq β] (k : α → Program β)
 
 /-- A bounded proof-producing compiler. Failure produces no certificate. All
 successful branches carry the same all-expectations theorem as `derive`. -/
-def compile : {α : Type} → [DecidableEq α] → (p : Program α) → Work (Certificate p)
-  | _, _, .pure x => do
+private def compileDepth : Nat → {α : Type} → [DecidableEq α] → (p : Program α) → Work (Certificate p)
+  | 0, _, _, _ => fun _ => none
+  | _+1, _, _, .pure x => do
     spend 1
     return ⟨.pure x, fun _ => Distribution.expect_pure _ _⟩
-  | _, _, .draw d => do
+  | _+1, _, _, .draw d => do
     spend (d.atoms.length * d.atoms.length + 1)
     return ⟨d.compact, fun _ => Distribution.expect_compact _ _⟩
-  | _, _, @Program.bind _ _ inst p k => do
+  | depth+1, _, _, @Program.bind _ _ inst p k => do
     letI := inst
     spend 1
-    let left ← compile p
-    let branches ← compileBranches k (fun x => compile (k x))
+    let left ← compileDepth depth p
+    let branches ← compileBranches k (fun x => compileDepth depth (k x))
       left.distribution.atoms left.distribution.nonnegative
     return {
       distribution := {
@@ -205,6 +243,11 @@ def compile : {α : Type} → [DecidableEq α] → (p : Program α) → Work (Ce
         change expectation branches.atoms f = _
         rw [branches.correct]
         exact left.correct _ }
+
+/-- Bound interpreter recursion as well as table work. Deep programs remain
+available to the stack-safe sampler; no truncated certificate is returned. -/
+def compile {α : Type} [DecidableEq α] (p : Program α) : Work (Certificate p) :=
+  compileDepth 64 p
 
 def compileWithin [DecidableEq α] (p : Program α) (budget : Nat := 1000000) :
     Option (Certificate p) := ((compile p).run budget).map Prod.fst
@@ -298,12 +341,12 @@ private unsafe def checkpoint (certificate : Expr) : MetaM Expr := do
   let proposition ← mkEq atoms proposed
   let proof ← mkDecideProof proposition
   -- addDecl checks this proof in the kernel. No evaluator-trust axiom is used.
-  let checked ← withOptions (Lean.Elab.async.set · false) do
+  let checked ← withOptions (fun o => Lean.debug.skipKernelTC.set (Lean.Elab.async.set o false) false) do
     mkAuxLemma [] proposition proof (kind? := some `_finiteEquality)
   let value ← mkAppM ``Certificate.repack #[certificate, proposed, mkConst checked]
   let name ← mkAuxDeclName (kind := `_finiteCheckpoint)
   let type ← inferType value
-  withOptions (Lean.Elab.async.set · false) do
+  withOptions (fun o => Lean.debug.skipKernelTC.set (Lean.Elab.async.set o false) false) do
     addAndCompile (.defnDecl {
       name := name
       levelParams := []

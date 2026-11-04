@@ -7,6 +7,7 @@ project. This adapter supplies the default import and transports its results.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -92,7 +93,7 @@ def compile_source(source, *, timeout=60, olean=None, cancel=None, threads=None,
                 reports.append(line[len(MARKER):])
             else:
                 diagnostics.append(line.replace(str(path), 'source.lean'))
-        if returncode or len(reports) != 1 or 'sorryAx' in stdout:
+        if returncode or len(reports) != 1 or re.search(r"sorryAx|declaration uses [`'\"]sorry", stdout):
             return {'ok': False, 'error': '\n'.join(diagnostics).strip() or 'Lean did not produce a checked result.'}
         try:
             equations = json.loads(reports[0])

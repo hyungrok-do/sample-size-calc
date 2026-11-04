@@ -13,11 +13,24 @@ import threading
 import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'packaging/lean'))
 from app import Application, MAX_REQUEST_BYTES
 from containers import DockerCompiler
+from lean_equations import compile_source
+
+
+def check_proof_diagnostics():
+    # Lean exits successfully after sorry, so exit status alone is insufficient.
+    for warning in ["warning: declaration uses 'sorry'", 'warning: declaration uses `sorry`', 'sorryAx']:
+        output = warning + '\nSSC_LEAN_REPORT [{}]\n'
+        with patch('lean_equations.compiler_available', return_value=True), \
+                patch('lean_equations.run_process', return_value=(0, output)):
+            result = compile_source('theorem invalid : False := by sorry')
+        assert not result['ok'], result
+    print('Legacy adapter rejects unfinished-proof diagnostics even with exit status zero.')
 
 
 def request(app, path, *, method='GET', value=None, headers=None):
@@ -176,6 +189,7 @@ if __name__ == '__main__':
     parser.add_argument('--native', action='store_true')
     parser.add_argument('--docker', action='store_true')
     args = parser.parse_args()
+    check_proof_diagnostics()
     check_protocol()
     if args.native:
         check_native()

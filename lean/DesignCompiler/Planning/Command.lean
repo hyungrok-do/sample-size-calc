@@ -1,5 +1,6 @@
 import DesignCompiler.Planning.Theory
 import DesignCompiler.Solve
+import Lean.Replay
 
 open Lean Meta Elab Command
 
@@ -132,6 +133,18 @@ elab_rules : command
 
 elab "#export_compiler" : command => do
   let env ← getEnv
+  -- Audit the whole submitted module, including declarations unused by solve.
+  -- A sorry warning can be silenced, so diagnostics alone are not proof evidence.
+  let constants := env.constants.foldStage2 (fun m n ci => m.insert n ci)
+    ({} : Std.HashMap Name ConstantInfo)
+  let some imported := env.importEnv?
+    | throwError "Cannot independently check declarations without the import environment."
+  discard <| liftIO <| imported.replay constants
+  let declarations := env.constants.foldStage2 (fun ns n _ => ns.push n) #[]
+  for name in declarations do
+    let axioms ← collectAxioms name
+    unless axioms.all (fun a => [``propext, ``Classical.choice, ``Quot.sound].contains a) do
+      throwError "Unproved dependency in {name}: {axioms.toList}. Unfinished proofs and user axioms are not accepted."
   let equations := (DesignCompiler.Equation.resultExtension.getState env).map toJson
   let studies := planningResults.getState env
   liftIO <| IO.println ("SSC_LEAN_REPORT " ++ (toJson (studies ++ equations)).compress)

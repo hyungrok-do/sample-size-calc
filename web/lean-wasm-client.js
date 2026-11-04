@@ -28,7 +28,7 @@ export class BrowserLeanCompiler {
         if (data.type === 'progress') this.progress(data.text);
         else if (data.type === 'ready') { clearTimeout(this.initializationTimer); this.rejectInitialization = null; this.ready = true; resolve(data); }
         else if (data.type === 'result' || data.type === 'error') {
-          if (data.id == null) { this.stop(data.message); return; }
+          if (data.id == null || data.fatal) { this.stop(data.message); return; }
           const pending = this.pending.get(data.id);
           if (!pending) return;
           this.pending.delete(data.id); clearTimeout(pending.timer);

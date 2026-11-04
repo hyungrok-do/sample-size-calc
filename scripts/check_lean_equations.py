@@ -41,6 +41,20 @@ def cpp_run(equation, *arguments, succeeds=True):
 
 
 def main():
+    for unfinished in [
+        'theorem invalid : False := by sorry',
+        'set_option warningAsError false in\ntheorem invalid : False := by sorry',
+        'axiom invalid : False',
+        '''open Lean Elab Tactic
+elab "bogusProof" : tactic => do
+  let goal ← getMainGoal
+  goal.assign (mkConst ``True.intro)
+  replaceMainGoal []
+set_option debug.skipKernelTC true in
+theorem invalid : False := by bogusProof''',
+    ]:
+        result = compile_source(unfinished + '\nsolve for x : ℝ where x = 1')
+        assert not result['ok'], result
     examples = {}
     for path in sorted((ROOT/'examples/lean-equations').glob('*.lean')):
         examples[path.stem] = compile_ok(path.read_text(), 'unresolved' if path.stem == 'numerical' else 'solved')

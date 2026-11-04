@@ -6,7 +6,11 @@ no `Study`, `Model`, `Analysis`, or `solve` dispatcher in the browser compiler.
 Statistical equations live in the source, not in compiler cases.
 
 Lean elaborates that source, constructs proof terms through the specified tactics,
-and checks those terms in its kernel. `#eval` runs computable definitions using
+and checks those terms in its kernel. Before reporting success, all local
+declarations are independently replayed from the saved import environment with
+unconditional kernel checking. This also checks declarations produced while
+`debug.skipKernelTC` was enabled, including scoped options inside tactics.
+`#eval` runs computable definitions using
 Lean's interpreter inside the same WebAssembly runtime. There is no separate
 C++ statistical backend and no compiler-server request.
 
@@ -101,7 +105,11 @@ forced `.simulation` route also uses the original program, not the compiled
 distribution. Invalid proofs do not trigger fallback. Budget exhaustion does
 not truncate, renormalize, or discard outcomes. The default compilation budget
 is 1,000,000 units; it accounts for branch operations and bounds on table-merging
-work, not arbitrary source computations or elapsed time. The browser execution
+work. Exact compilation also limits structural recursion to 64 levels and
+returns no certificate when that limit is reached. Program builders use Lean's
+proved tail-recursive iteration, and simulation uses suspended conversion and
+a typed explicit continuation stack to process long observation sequences.
+These budgets do not bound arbitrary source computations or elapsed time. The browser execution
 limit still applies. Calibration functions written using unbounded `derive`
 must themselves be computationally feasible.
 

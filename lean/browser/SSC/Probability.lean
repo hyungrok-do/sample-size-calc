@@ -36,6 +36,8 @@ def ScalarLaw.validate : ScalarLaw → Result Unit
 /-- Ordinary Lean constructors and bind allow arbitrary records, longitudinal
 data, latent variables, missingness, transformations, and user-written estimators. -/
 inductive Law : Type → Type 1 where
+  /-- Suspend program construction until the interpreter reaches this node. -/
+  | defer {α : Type} (next : Unit → Law α) : Law α
   | pure {α : Type} (value : α) : Law α
   | finite {α : Type} (weights : Array (α × Rat)) : Law α
   | binomial (n : Nat) (p : Rat) : Law Nat
@@ -129,6 +131,9 @@ private def spend (n : Nat := 1) : StateT Nat (Except EvaluationError) Unit := d
 
 /-- Bounded finite interpreter. It never truncates or renormalizes a law. -/
 def enumerate : {α : Type} → Law α → StateT Nat (Except EvaluationError) (Array (α × Rat))
+  | _, .defer next => do
+    spend
+    enumerate (next ())
   | _, .samplingOnly reason _ => throw (.unavailable reason)
   | _, .invalid message => throw (.invalid message)
   | _, .pure x => do
@@ -267,8 +272,7 @@ def ScalarLaw.sample (d : ScalarLaw) : Draw Float := do
       pure ((u/d1)/(v/d2))
   finite value
 
-def sample : {α : Type} → Law α → Draw α
-  | _, .samplingOnly _ model => sample model
+private def sampleAtom : {α : Type} → Law α → Draw α
   | _, .invalid message => throw message
   | _, .pure x => do
     tick
@@ -296,10 +300,30 @@ def sample : {α : Type} → Law α → Draw α
   | _, .scalar d => do
     tick
     d.sample
-  | _, .bind first next => do
-    tick
-    let x ← sample first
-    sample (next x)
+  | _, .bind .. | _, .defer .. | _, .samplingOnly .. =>
+    throw "Internal error: composite law passed to the atomic sampler."
+
+/-- A typed continuation stack keeps nested binds off the browser call stack. -/
+private inductive SampleStack : Type → Type → Type 1 where
+  | done : SampleStack α α
+  | next (continuation : α → Law β) (rest : SampleStack β γ) : SampleStack α γ
+
+private partial def sampleLoop {α β : Type} (law : Law α) (stack : SampleStack α β)
+    (state : RandomState) : Result (β × RandomState) := do
+  match law with
+  | .defer next => sampleLoop (next ()) stack state
+  | .samplingOnly _ model => sampleLoop model stack state
+  | .bind first next =>
+    let (_, state) ← tick.run state
+    sampleLoop first (.next next stack) state
+  | atom =>
+    let (value, state) ← (sampleAtom atom).run state
+    match (dependent := true) (generalizing := true) α, stack, value with
+    | _, .done, value => return (value, state)
+    | _, .next next rest, value => sampleLoop (next value) rest state
+
+def sample {α : Type} (law : Law α) : Draw α :=
+  fun state => sampleLoop law .done state
 
 private def poissonMixture (lambda : Float) (cdf : Nat → Result Float) : Result Float := do
   if lambda == 0 then return (← cdf 0)

@@ -1,4 +1,5 @@
 import Lean
+import Lean.Replay
 import SSC.Calculation
 import SSC.Derivation
 
@@ -108,6 +109,16 @@ def exportReport (nonce : String) : CommandElabM Unit := do
   -- examining results. Never certify an elaborator-only environment entry.
   let checked := env.checked.get
   let declarations := checked.constants.foldStage2 (fun xs n ci => xs.push (n, ci)) #[]
+  -- A source module can disable elaborator kernel checks, even temporarily
+  -- inside a custom tactic. Start with only the imported constants and replay ALL
+  -- local declarations with the kernel's unconditional addDeclCore. Replay
+  -- orders dependencies and reconstructs inductives/recursors, so unchecked
+  -- constants cannot validate themselves or each other.
+  let some imported := env.importEnv?
+    | throwError "Cannot independently check declarations without the import environment."
+  let constants := declarations.foldl (fun m (n, ci) => m.insert n ci)
+    ({} : Std.HashMap Name ConstantInfo)
+  discard <| imported.replay constants
   let mut results : Array Json := #[]
   for (n, ci) in declarations do
     let axioms ← collectAxioms n

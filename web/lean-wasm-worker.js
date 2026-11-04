@@ -161,7 +161,10 @@ self.onmessage = async ({ data }) => {
         .filter(d => d.data.trim()),
     } });
   } catch (error) {
-    self.postMessage({ type: 'error', id: data.id, message: error?.message || 'Lean could not complete this compilation. Reload the compiler to retry.' });
+    // A host stack overflow or WASM trap can leave the runtime unusable.
+    // Normal Lean diagnostics keep the worker; runtime failures require restart.
+    const fatal = error instanceof RangeError || error instanceof WebAssembly.RuntimeError;
+    self.postMessage({ type: 'error', id: data.id, fatal, message: error?.message || 'Lean could not complete this compilation. Reload the compiler to retry.' });
   }
 };
 })();
