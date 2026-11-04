@@ -121,19 +121,20 @@ and they install with `python -m pip install sample_size_calculator-*.whl`.
 
 ## Usage
 
-The separate **Lean compiler** tab accepts actual Lean definitions and a custom
-`solve answer for x : ℝ where equation` command. Lean elaborates the source,
-searches over composable proved equivalences, and kernel-checks a reusable
-solution theorem. Users can extend the solver with `@[equation_rule]` theorems.
-The tab uses a [local native compiler service](docs/lean-compiler.md); the static
-host is an editor and does not run Lean. Imports are supplied by a default prelude.
-An optional C++17 backend accepts named real parameters, checks supported theorem
-assumptions at runtime, and evaluates conditional solution sets or attempts
-bracketed numerical root finding. Numerical values and guard comparisons use
-ordinary floating point. Proof search is bounded.
-The earlier [browser study sandbox](docs/study-language.md) remains available
-for Gaussian calculations and Monte Carlo simulation. Its custom language is
-separate from native Lean. The DAG simulator remains a separate tab.
+The separate **Lean compiler** tab accepts a statistical study written in actual
+Lean: a covariance/contrast or influence-function model, estimand, analysis,
+allocation, and power criterion. `solve sample_size design using study` derives
+the effect and variance, explains the rejection rule and power function, then
+runs generated C++ to find an admissible integer sample size. Power and detectable
+effect queries use the same model. The examples include repeated measures,
+clustered trials, unequal allocation, and AIPW/TMLE planning.
+
+The [native compiler service](docs/lean-compiler.md) checks exact model arithmetic
+in Lean; numerical power uses ordinary floating point. Gaussian contrasts assume
+known covariance, and influence-function designs use asymptotic Wald inference.
+The static host is an editor and does not run native compilation. The
+[browser study sandbox](docs/study-language.md) retains its Monte Carlo engine;
+the DAG simulator remains a separate tab.
 
 ### Web page
 

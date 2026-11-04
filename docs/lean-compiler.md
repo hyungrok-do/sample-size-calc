@@ -1,36 +1,168 @@
-# Native Lean equation compiler
+# Native Lean sample-size compiler
 
-The third tab, `web/lean.html`, accepts **actual Lean 4**. The `solve` command is a
-Lean language extension: Lean parses and elaborates the module, the solver
-transforms Lean expressions while constructing proofs, and the kernel checks a
-new theorem. The editor displays that derivation before any optional C++ output.
+The third tab is for **statistical study planning**. A Lean study specifies a
+model, an estimand, an analysis, allocation/counting units, and a power criterion.
+The compiler derives the effect and variance coefficient, constructs the
+rejection probability, and executes generated C++ to find an admissible integer
+sample size. The result shows the statistical reasoning before the optional
+C++ source. Low-level algebra commands remain available as implementation tools.
 
-## Run it
+## Run the native compiler
 
-Install the toolchain pinned by `lean/lean-toolchain` (Lean 4.19.0), then:
+With the pinned Lean 4.19.0 toolchain, a C++17 compiler, and Python 3.9+ on POSIX:
 
 ```sh
 cd lean
 lake exe cache get
-lake build DesignCompiler.Solve
+lake build
 cd ..
 python scripts/serve_lean.py
 ```
 
-Open `http://127.0.0.1:8765/lean.html`. The service requires Python 3.9 or later
-on a POSIX host. It serves the editor and compiler from the same loopback origin.
-The GitHub Pages version cannot execute the native toolchain and says so;
-it never substitutes the old C++ parser for Lean.
+Open `http://127.0.0.1:8765/lean.html`. The GitHub Pages version is an editor;
+it does not run the native Lean or C++ toolchains. This local service is for
+trusted source: Lean modules can perform IO. It checks the loopback origin and
+host, accepts one job at a time, and bounds source size, output, and total elapsed
+time across Lean checking, C++ compilation, and execution. Stop cancels the
+active process group, including the numerical phase.
 
-Lean modules can perform IO. This service is for trusted local code, not a public
-sandbox. It rejects other origins/hosts, allows one compilation at a time, and
-limits source size, compiler output, and wall time. **Stop** kills the compiler
-process group and invalidates the pending result. A public compiler service would
-need an isolated execution environment.
+## Specify a statistical design
 
-## Write and solve actual Lean
+```lean
+open DesignCompiler.Planning
 
-The service supplies `import DesignCompiler.Solve`, so no header is required in
+def study : Study := {
+  name := "Treatment-by-visit contrast"
+  estimand := "Between-arm difference in mean change"
+  analysis := .knownCovarianceZ
+  sizeUnit := "participants per arm"
+  groups := [{ label := "Control" }, { label := "Treatment" }]
+  model := .gaussianContrast {
+    labels := ["Control baseline", "Control follow-up", "Treatment baseline", "Treatment follow-up"]
+    means := [0, 0, 0, 1/2]
+    coefficients := [1, -1, -1, 1]
+    covariance := [[1, 3/5, 0, 0], [3/5, 1, 0, 0],
+                   [0, 0, 1, 3/5], [0, 0, 3/5, 1]]
+  }
+  criterion := { alpha := 1/20, targetPower := 4/5, minN := 2, maxN := 10000 }
+}
+
+solve sample_size repeated_measures using study
+solve power at_one_hundred using study at 100
+solve effect detectable_change using study at 100
+```
+
+The contrast and matrix are arbitrary numerical Lean expressions, not a lookup
+by example or test name. Ordinary user functions can construct them. The example
+derives the effect `1/2` and variance coefficient `8/5`, hence estimator variance
+`(8/5)/n`. It evaluates both tails of the shifted-normal rejection region and
+selects **51 participants per arm (102 total)**: power is 0.80591384, versus
+0.79817620 at 50 per arm. The dominant-tail closed-form approximation is displayed
+for comparison, but the final answer uses the full two-sided power function.
+
+The covariance describes the vector in **one independent sampling block**.
+In this example, a block contains one participant from each arm, with two
+measurements per participant. Repeated observations are correlated within a
+participant; participants and arms are independent. Allocation entries map one
+increment of `n` into arm counts and total participants. They are part of the
+user's design specification, not inferred from labels.
+
+A covariance matrix must be dimensionally conformable, symmetric and positive
+semidefinite. Validation uses exact rational Schur complements and permits
+singular matrices when the requested contrast still has positive variance.
+Changing the covariance changes the derived variance and sample size. An
+incompatible analysis method is rejected rather than silently relabeled.
+
+## Supported statistical models
+
+| Model | What is derived | Statistical basis |
+| --- | --- | --- |
+| Arbitrary Gaussian linear contrast | `psi = c^T mu`, `V = c^T Sigma c`, `Var(psi_hat) = V/n` | Exact z-test power under independent jointly Gaussian blocks with known population covariance |
+| Finite-stratum ATE | Weighted ATE, efficient influence function, outcome-noise and treatment-heterogeneity variance terms | Asymptotic Wald power for AIPW/TMLE attaining the specified EIF |
+| User-defined influence model | Effect and variance computed by arbitrary closed Lean expressions | Conditional on the supplied asymptotically linear representation and variance source |
+
+The examples cover repeated measures, unequal allocation, a cluster-randomized
+trial with fixed cluster size and exchangeable ICC, targeted ATE planning, and a
+custom pilot influence distribution. Cluster counts are reported separately
+from participants. **The Gaussian cluster example assumes known covariance**;
+it is not a small-cluster t approximation. The generic covariance representation
+can describe many contrasts, but choosing valid sampling blocks and an appropriate
+analysis remains part of specifying the statistical model.
+
+For an ATE, the compiler calculates
+
+```text
+psi = E[mu1(W) - mu0(W)]
+V = E[v1(W)/g(W) + v0(W)/(1-g(W))] + Var[mu1(W)-mu0(W)]
+```
+
+The source provides the baseline-stratum probabilities, treatment propensities,
+conditional means and variances. The generated explanation shows the EIF and
+both variance components. Positivity, consistency/exchangeability for a causal
+interpretation, nuisance-estimation conditions, asymptotic linearity and standard
+error consistency are stated explicitly. Double robustness alone does not imply
+efficiency. Solving for an ATE effect while holding this variance fixed is
+rejected; change the planning strata and recompile instead.
+
+All statistical queries currently use two-sided Gaussian/Wald inference.
+Estimated-covariance t/F inference, survival likelihoods, and automatic lowering
+of arbitrary Lean stochastic models to Monte Carlo simulation are not implemented
+in this route. The separate browser study sandbox retains its simulation engine.
+An unproved CLT or a suitable estimator is not inferred from arbitrary source code.
+
+## Derivation, numerical execution, and verification
+
+The displayed steps are: estimand/estimator, covariance or EIF variance,
+null hypothesis/rejection rule, distribution under the alternative, both-tail
+power, and the requested numerical inversion. The generated C++ runs as part of
+compilation, so the main output is the requested sample size, power, or detectable
+effect, rather than merely a downloadable program. Every statistical result
+includes its assumptions and counting units.
+
+```sh
+python scripts/lean_equations.py examples/lean-studies/targeted-ate.lean \
+  --output result.json --cpp study.cpp
+c++ -std=c++17 -O2 study.cpp -o study
+./study
+```
+
+Lean produces reusable declarations such as `repeated_measures_variance` and
+`repeated_measures_effect` proving the exact rational arithmetic in the actual
+source module. General checked results include finite-contrast second-moment
+propagation, independent-average `V/n` scaling, exchangeable-cluster variance,
+and the shifted-normal rejection identity. These theorems are conditional on
+their mathematical hypotheses. They do not certify that an actual study satisfies
+the sampling assumptions, prove the EIF/CLT for arbitrary nuisance fitting, or
+certify the generated floating-point program.
+
+Integer search evaluates every admissible count in ascending order and reports
+the selected count's predecessor power. A comparison within `1e-12` of the target
+returns `numerically_unresolved`. This is an ambiguity guard, not a certified
+error bound. Minimality is numerical and restricted to the requested domain.
+Detectable-effect inversion holds the supplied variance coefficient fixed.
+
+Implementation: `lean/DesignCompiler/Planning.lean`, `Planning/Theory.lean`,
+`Planning/Command.lean`, and `scripts/lean_study_cpp.py`. Validation runs the native
+Lean kernel and emitted C++, compares sample sizes/power/effect inversion with
+SciPy, checks a multivariate Gaussian simulation independently, and tests
+invalid covariance matrices, analysis mismatches, ATE positivity, theorem reuse,
+multiple commands, counting units, and the real browser/service pipeline.
+
+```sh
+python scripts/check_lean_studies.py
+python scripts/check_lean_equations.py
+cd web && npm run test:lean-native-browser
+```
+
+Related sources: the pinned Mathlib probability/variance and Gaussian modules;
+[Designing efficient randomized trials: power and sample size calculation when
+using semiparametric efficient estimators](https://pubmed.ncbi.nlm.nih.gov/34364314/);
+and [Estimating the efficiency gain of covariate-adjusted analyses in future
+clinical trials using external data](https://pmc.ncbi.nlm.nih.gov/articles/PMC10433828/).
+
+## Underlying equation engine
+
+The service supplies `import DesignCompiler.Planning.Command` (which includes the equation engine), so no header is required in
 the editor. Additional imports may refer to installed Lean modules.
 
 ```lean

@@ -10,3 +10,11 @@ import DesignCompiler
 #print axioms DesignCompiler.normal_rejection_formula
 #print axioms DesignCompiler.normal_ncp_lowering
 #print axioms DesignCompiler.ate_variance_term_nonnegative
+
+#print axioms DesignCompiler.Planning.contrast_second_moment
+
+#print axioms DesignCompiler.Planning.independent_average_variance
+
+#print axioms DesignCompiler.Planning.two_measurement_contrast_variance
+
+#print axioms DesignCompiler.Planning.exchangeable_average_variance

@@ -1,9 +1,9 @@
 name: Lean compiler
 on:
   push:
-    paths: ['lean/**', 'core/src/design/**', 'examples/design/**', 'examples/programs/**', 'examples/lean-equations/**', 'web/lean*', 'web/tests/lean-native-browser.mjs', 'scripts/*lean*', 'scripts/*study*', 'scripts/check_design_compiler.py', '.github/workflows/lean.yml']
+    paths: ['lean/**', 'core/src/design/**', 'examples/design/**', 'examples/programs/**', 'examples/lean-equations/**', 'examples/lean-studies/**', 'web/lean*', 'web/tests/lean-native-browser.mjs', 'scripts/*lean*', 'scripts/*study*', 'scripts/check_design_compiler.py', '.github/workflows/lean.yml']
   pull_request:
-    paths: ['lean/**', 'core/src/design/**', 'examples/design/**', 'examples/programs/**', 'examples/lean-equations/**', 'web/lean*', 'web/tests/lean-native-browser.mjs', 'scripts/*lean*', 'scripts/*study*', 'scripts/check_design_compiler.py', '.github/workflows/lean.yml']
+    paths: ['lean/**', 'core/src/design/**', 'examples/design/**', 'examples/programs/**', 'examples/lean-equations/**', 'examples/lean-studies/**', 'web/lean*', 'web/tests/lean-native-browser.mjs', 'scripts/*lean*', 'scripts/*study*', 'scripts/check_design_compiler.py', '.github/workflows/lean.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
       - name: Build checked library and compiler
         working-directory: lean
         run: |
-          lake exe cache get Mathlib.Probability.Distributions.Gaussian Mathlib.Probability.CDF Mathlib.Tactic
+          lake exe cache get Mathlib.Probability.Distributions.Gaussian Mathlib.Probability.CDF Mathlib.Probability.Variance Mathlib.Tactic
           lake build
           lake env lean Audit.lean > audit.txt
           python ../scripts/check_lean_audit.py audit.txt
@@ -50,6 +50,8 @@ jobs:
           python scripts/check_design_compiler.py
           python scripts/check_study_compiler.py
           python scripts/check_study_derivations.py
+      - name: Statistical Lean designs and independent power references
+        run: python scripts/check_lean_studies.py
       - name: Native Lean equations and generated C++
         run: python scripts/check_lean_equations.py
       - uses: actions/setup-node@v4
