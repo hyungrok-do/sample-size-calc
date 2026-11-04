@@ -17,6 +17,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Validate deployment configuration
+        env:
+          SSC_DOMAIN: localhost
+          SSC_PASSWORD_HASH: unused-during-configuration-validation
+        run: |
+          docker compose -f packaging/lean/compose.yaml config --format json > /tmp/ssc-compose.json
+          python - <<'PY'
+          import json
+          config = json.load(open('/tmp/ssc-compose.json'))
+          mounts = config['services']['compiler']['tmpfs']
+          assert len(mounts) == 1 and mounts[0].startswith('/tmp:'), mounts
+          PY
+          python scripts/check_lean_deployment.py
       - uses: docker/setup-buildx-action@v3
       - name: Build pinned Lean worker
         uses: docker/build-push-action@v6

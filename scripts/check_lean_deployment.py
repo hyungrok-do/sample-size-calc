@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from urllib.error import HTTPError
@@ -91,9 +92,20 @@ def check_protocol():
 def check_native():
     env = dict(os.environ, PYTHONPATH=str(ROOT/'scripts'), SSC_JOB_TIMEOUT='60')
     source = (ROOT/'examples/lean-studies/repeated-measures.lean').read_text()
-    worker = subprocess.run([sys.executable, str(ROOT/'packaging/lean/worker.py')],
-                            input=json.dumps({'source': source}), capture_output=True, text=True,
-                            env=env, check=True, timeout=90)
+    with tempfile.TemporaryDirectory() as directory:
+        frozen = str(Path(directory)/'lean-env.json')
+        subprocess.run(['lake', 'env', sys.executable, str(ROOT/'packaging/lean/freeze_environment.py'), frozen],
+                       cwd=ROOT/'lean', check=True, env=env)
+        env['SSC_LEAN_ENV_FILE'] = frozen
+        # A runtime regression that calls either package tool must fail this test.
+        for name in ['lake', 'git']:
+            forbidden = Path(directory)/name
+            forbidden.write_text('#!/bin/sh\necho "Package initialization at runtime is forbidden" >&2\nexit 97\n')
+            forbidden.chmod(0o755)
+        env['PATH'] = directory + os.pathsep + env['PATH']
+        worker = subprocess.run([sys.executable, str(ROOT/'packaging/lean/worker.py')],
+                                input=json.dumps({'source': source}), capture_output=True, text=True,
+                                env=env, check=True, timeout=90)
     result = json.loads(worker.stdout)
     assert result['ok'], result
     assert result['results'][0]['evaluation']['selectedN'] == 51
@@ -131,6 +143,8 @@ print('isolation passed')
         create = compiler.create_command(name)
         subprocess.run(create[:-1] + ['--entrypoint=python', create[-1], '-c', probe], check=True, capture_output=True)
         config = json.loads(subprocess.check_output(['docker', 'inspect', name]))[0]['HostConfig']
+        assert config['ReadonlyRootfs'] and config['NetworkMode'] == 'none'
+        assert not config.get('Binds')
         assert config['Memory'] == 2048*1024*1024 and config['PidsLimit'] == 128
         assert config['NanoCpus'] == 2_000_000_000
         r = subprocess.run(['docker', 'start', '--attach', name], capture_output=True, text=True, timeout=15)

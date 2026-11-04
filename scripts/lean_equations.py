@@ -23,17 +23,17 @@ MAX_SOURCE_BYTES = 131072
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 
-def compiler_available():
-    return bool(shutil.which('lake') and shutil.which('c++') and
+def compiler_available(*, use_lake=True):
+    return bool(shutil.which('lake' if use_lake else 'lean') and shutil.which('c++') and
                 (ROOT/'lean/.lake/build/lib/lean/DesignCompiler/Planning/Command.olean').exists())
 
 
-def run_process(command, *, cwd, deadline, cancel=None):
+def run_process(command, *, cwd, deadline, cancel=None, env=None):
     if cancel is not None and cancel.is_set():
         raise RuntimeError('Compilation stopped.')
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(command, cwd=cwd, stdout=output,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+                                   stderr=subprocess.STDOUT, start_new_session=True, env=env)
         failure = None
         try:
             while process.poll() is None:
@@ -63,25 +63,27 @@ def run_process(command, *, cwd, deadline, cancel=None):
         return process.returncode, output.read().decode('utf-8', errors='replace')
 
 
-def compile_source(source, *, timeout=60, olean=None, cancel=None, threads=None):
+def compile_source(source, *, timeout=60, olean=None, cancel=None, threads=None, use_lake=True, compiler_env=None):
     if not isinstance(source, str) or not 0 < len(source.encode('utf-8')) <= MAX_SOURCE_BYTES:
         return {'ok': False, 'error': 'Supply 1–131072 bytes of Lean source.'}
-    if not compiler_available():
+    if not compiler_available(use_lake=use_lake):
         return {'ok': False, 'error': 'Build the native compiler first: cd lean && lake build DesignCompiler.Planning.Command'}
     module = 'import DesignCompiler.Planning.Command\n' + source + '\n'
     with tempfile.TemporaryDirectory(prefix='ssc-lean-') as directory:
         path = Path(directory)/((Path(olean).stem if olean else 'Source') + '.lean')
         path.write_text(module + '\n#export_compiler\n', encoding='utf-8')
-        command = ['lake', 'env', 'lean', '-DmaxHeartbeats=2000000', '-DmaxRecDepth=2048', '-R', directory, str(path)]
+        command = ['lake', 'env', 'lean'] if use_lake else ['lean']
         if threads is not None:
             if not isinstance(threads, int) or not 1 <= threads <= 16:
                 return {'ok': False, 'error': 'Use 1–16 compiler threads.'}
-            command.insert(3, f'-j{threads}')
+            command.append(f'-j{threads}')
+        command += ['-DmaxHeartbeats=2000000', '-DmaxRecDepth=2048', '-R', directory, str(path)]
         if olean:
             command += ['-o', str(Path(olean).resolve())]
         deadline = time.monotonic() + timeout
         try:
-            returncode, stdout = run_process(command, cwd=ROOT/'lean', deadline=deadline, cancel=cancel)
+            returncode, stdout = run_process(command, cwd=ROOT/'lean', deadline=deadline, cancel=cancel,
+                                            env={**os.environ, **compiler_env} if compiler_env else None)
         except (RuntimeError, OSError) as error:
             return {'ok': False, 'error': str(error)}
         reports, diagnostics = [], []

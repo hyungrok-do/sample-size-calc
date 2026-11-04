@@ -5,6 +5,9 @@ one HTTPS origin. The browser sends Lean source to `/api/lean/compile`; a fresh
 worker compiles it with Lean 4.19.0 and the repository's pinned Mathlib, executes
 the generated C++, and returns the derivation and numerical result. Users need
 only a browser. The GitHub Pages site is still static and cannot run this backend.
+Module and native-library paths are frozen when the image is built. Requests run
+the installed Lean executable directly, with no Lake/Git initialization or
+dependency downloads at runtime.
 
 ## Start on a Linux host
 

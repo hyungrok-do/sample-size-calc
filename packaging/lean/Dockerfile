@@ -18,10 +18,13 @@ COPY lean/lakefile.toml lean/lake-manifest.json lean/lean-toolchain ./
 RUN lake exe cache get Mathlib.Probability.Distributions.Gaussian Mathlib.Probability.CDF \
     Mathlib.Probability.Variance Mathlib.Tactic
 COPY lean/ ./
-COPY scripts/lean_equations.py scripts/lean_cpp.py scripts/lean_study_cpp.py scripts/check_lean_audit.py /opt/compiler/scripts/
-RUN lake build && lake env lean Audit.lean > /tmp/audit.txt \
+COPY scripts/check_lean_audit.py /opt/compiler/scripts/
+RUN lake build DesignCompiler && lake env lean Audit.lean > /tmp/audit.txt \
     && python /opt/compiler/scripts/check_lean_audit.py /tmp/audit.txt \
     && rm /tmp/audit.txt
+COPY scripts/lean_equations.py scripts/lean_cpp.py scripts/lean_study_cpp.py /opt/compiler/scripts/
+COPY packaging/lean/freeze_environment.py /opt/compiler/freeze_environment.py
+RUN lake env python /opt/compiler/freeze_environment.py /opt/compiler/lean-env.json
 COPY packaging/lean/worker.py /opt/compiler/worker.py
 LABEL ssc.lean.worker="1"
 USER 65532:65532
@@ -31,9 +34,11 @@ FROM emscripten/emsdk:6.0.13 AS web-build
 WORKDIR /src
 COPY CMakeLists.txt LICENSE THIRD_PARTY_NOTICES.md ./
 COPY core/ core/
+COPY web/build.sh web/build.sh
+RUN web/build.sh
 COPY web/ web/
 ARG SITE_VERSION=container
-RUN web/build.sh && web/assemble.sh /site "$SITE_VERSION"
+RUN web/assemble.sh /site "$SITE_VERSION"
 
 FROM docker:28-cli AS docker-client
 FROM python:3.12-slim-bookworm AS gateway
@@ -47,4 +52,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s CMD ["python", "healthcheck.py"]
 # A single process owns the capacity/cancellation registry. Threads keep health
 # and cancellation responsive while at most SSC_LEAN_MAX_JOBS workers compile.
-CMD ["gunicorn", "app:create_app()", "--bind=0.0.0.0:8080", "--workers=1", "--threads=16", "--timeout=120", "--graceful-timeout=90", "--access-logfile=-", "--error-logfile=-", "--limit-request-line=2048", "--limit-request-fields=40", "--limit-request-field_size=4096"]
+CMD ["gunicorn", "app:create_app()", "--bind=0.0.0.0:8080", "--workers=1", "--threads=16", "--timeout=120", "--graceful-timeout=90", "--no-control-socket", "--access-logfile=-", "--error-logfile=-", "--limit-request-line=2048", "--limit-request-fields=40", "--limit-request-field_size=4096"]

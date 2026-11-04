@@ -1,3 +1,14 @@
+{
+    servers {
+        timeouts {
+            read_header 10s
+            read_body 15s
+            write 330s
+            idle 2m
+        }
+    }
+}
+
 {$SSC_DOMAIN} {
     basic_auth {
         {$SSC_USERNAME} {$SSC_PASSWORD_HASH}
