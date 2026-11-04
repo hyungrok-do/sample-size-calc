@@ -1,0 +1,14 @@
+{$SSC_DOMAIN} {
+    basic_auth {
+        {$SSC_USERNAME} {$SSC_PASSWORD_HASH}
+    }
+    request_body {
+        max_size 1MB
+    }
+    encode zstd gzip
+    reverse_proxy compiler:8080 {
+        transport http {
+            response_header_timeout 330s
+        }
+    }
+}

@@ -1,0 +1,61 @@
+name: sample-size-lean
+services:
+  worker-image:
+    image: ssc-lean-worker:${SSC_VERSION:-local}
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: packaging/lean/Dockerfile
+      target: lean-worker
+    # Build artifact only: the gateway creates one container for each request.
+    profiles: [build]
+
+  compiler:
+    image: ssc-lean-web:${SSC_VERSION:-local}
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: packaging/lean/Dockerfile
+      target: gateway
+      args:
+        SITE_VERSION: ${SSC_VERSION:-local}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=64m,noexec,nosuid,nodev]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      SSC_LEAN_WORKER_IMAGE: ssc-lean-worker:${SSC_VERSION:-local}
+      SSC_LEAN_PUBLIC_ORIGIN: https://${SSC_DOMAIN:?Set SSC_DOMAIN in .env}
+      SSC_LEAN_DEPLOYMENT: ${SSC_DEPLOYMENT:-sample-size-lean}
+      SSC_LEAN_MAX_JOBS: ${SSC_MAX_JOBS:-2}
+      SSC_LEAN_JOB_TIMEOUT: ${SSC_JOB_TIMEOUT:-60}
+      SSC_LEAN_JOB_MEMORY_MB: ${SSC_JOB_MEMORY_MB:-2048}
+      SSC_LEAN_JOB_CPUS: ${SSC_JOB_CPUS:-2}
+      SSC_LEAN_RUNTIME: ${SSC_RUNTIME:-}
+    # Deliberately no published gateway port or Docker socket in job containers.
+
+  https:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    depends_on:
+      compiler:
+        condition: service_healthy
+    environment:
+      SSC_DOMAIN: ${SSC_DOMAIN:?Set SSC_DOMAIN in .env}
+      SSC_USERNAME: ${SSC_USERNAME:-researcher}
+      SSC_PASSWORD_HASH: ${SSC_PASSWORD_HASH:?Set a Caddy bcrypt password hash in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

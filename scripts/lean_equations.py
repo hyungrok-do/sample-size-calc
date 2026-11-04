@@ -63,7 +63,7 @@ def run_process(command, *, cwd, deadline, cancel=None):
         return process.returncode, output.read().decode('utf-8', errors='replace')
 
 
-def compile_source(source, *, timeout=60, olean=None, cancel=None):
+def compile_source(source, *, timeout=60, olean=None, cancel=None, threads=None):
     if not isinstance(source, str) or not 0 < len(source.encode('utf-8')) <= MAX_SOURCE_BYTES:
         return {'ok': False, 'error': 'Supply 1–131072 bytes of Lean source.'}
     if not compiler_available():
@@ -73,6 +73,10 @@ def compile_source(source, *, timeout=60, olean=None, cancel=None):
         path = Path(directory)/((Path(olean).stem if olean else 'Source') + '.lean')
         path.write_text(module + '\n#export_compiler\n', encoding='utf-8')
         command = ['lake', 'env', 'lean', '-DmaxHeartbeats=2000000', '-DmaxRecDepth=2048', '-R', directory, str(path)]
+        if threads is not None:
+            if not isinstance(threads, int) or not 1 <= threads <= 16:
+                return {'ok': False, 'error': 'Use 1–16 compiler threads.'}
+            command.insert(3, f'-j{threads}')
         if olean:
             command += ['-o', str(Path(olean).resolve())]
         deadline = time.monotonic() + timeout

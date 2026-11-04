@@ -22,16 +22,21 @@ function download(name, body, type = 'text/plain') {
 }
 async function checkConnection() {
   ready = false; refresh();
+  let execution = 'unknown';
   $('connection-status').textContent = 'Checking the native compiler…';
   try {
     const response = await fetch('api/lean/health', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
-    if (response.ok) {
+    if (response.ok || response.status === 503) {
       const health = await response.json();
-      ready = health.ready === true && health.compiler === 'lean-equation-compiler-v1';
+      ready = response.ok && health.ready === true && health.compiler === 'lean-equation-compiler-v1';
+      execution = health.execution || 'local';
     }
   } catch {}
-  $('connection-status').textContent = ready ? 'Native Lean compiler connected. Compilation runs on this computer.' : 'Native Lean compiler unavailable. The source editor is ready.';
-  $('setup').hidden = ready; refresh();
+  $('connection-status').textContent = execution === 'hosted'
+    ? ready ? 'Hosted Lean compiler connected. Compile directly from this browser.' : 'The hosted compiler is temporarily unavailable. Your source remains in the editor.'
+    : ready ? 'Native Lean compiler connected. Compilation runs on this computer.' : 'Native Lean compiler unavailable. The source editor is ready.';
+  $('runtime').textContent = execution === 'hosted' ? 'Lean · hosted compilation' : ready ? 'Native Lean · local compilation' : 'Lean · browser editor';
+  $('setup').hidden = ready || execution === 'hosted'; refresh();
 }
 function current() { return compiled?.results[Number($('query').value)]; }
 function render() {

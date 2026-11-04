@@ -9,6 +9,12 @@ C++ source. Low-level algebra commands remain available as implementation tools.
 
 ## Run the native compiler
 
+For a hosted application that compiles directly from the browser, use the
+[Docker deployment](../packaging/lean/README.md). It bundles all three tabs and
+their WASM engines, HTTPS/authentication, and disposable native compiler workers.
+GitHub Pages alone remains an editor because it cannot execute the Lean backend.
+The following setup is the local development option.
+
 With the pinned Lean 4.19.0 toolchain, a C++17 compiler, and Python 3.9+ on POSIX:
 
 ```sh

@@ -16,7 +16,7 @@
     <a href="./">Calculator</a><a href="dag.html?v=dev">DAG simulator</a>
     <a href="lean.html?v=dev" aria-current="page">Lean compiler</a>
   </nav>
-  <p class="muted small">Native Lean · local compilation</p>
+  <p id="lean-runtime" class="muted small">Lean · browser editor</p>
 </header>
 <main class="compiler-page">
   <div class="intro">
@@ -34,6 +34,7 @@ lake build DesignCompiler.Planning.Command
 cd ..
 python scripts/serve_lean.py</pre>
       <p>Then open <a href="http://127.0.0.1:8765/lean.html">the local Lean editor</a>. Run code you trust: Lean modules can perform IO.</p>
+      <p>For browser access without a local installation, the repository includes a <a href="https://github.com/hyungrok-do/sample-size-calc/blob/main/packaging/lean/README.md">hosted compiler deployment</a>. GitHub Pages alone serves the editor.</p>
     </div>
     <div class="actions"><button id="lean-reconnect" type="button">Check connection</button><a href="study.html?v=dev">Browser study sandbox &amp; simulation</a></div>
   </section>

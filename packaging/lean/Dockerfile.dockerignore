@@ -1,0 +1,17 @@
+.git
+.github
+lean/.lake
+web/node_modules
+web/engine
+build
+build-*
+build_*
+.venv
+venv
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*
+**/*.log
+dist
+_site

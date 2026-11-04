@@ -136,6 +136,10 @@ The static host is an editor and does not run native compilation. The
 [browser study sandbox](docs/study-language.md) retains its Monte Carlo engine;
 the DAG simulator remains a separate tab.
 
+For browser-only access to native compilation, the [hosted compiler deployment](packaging/lean/README.md)
+packages the complete three-tab site, HTTPS/login, and a fresh isolated Lean/C++
+worker for each request. It runs with Docker Compose on a Linux server.
+
 ### Web page
 
 Search for a method or pick one from the list, choose what to solve for, fill

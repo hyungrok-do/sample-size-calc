@@ -7,9 +7,9 @@ import { examples } from '../lean-native-examples.js';
 import { examples as studies } from '../lean-study-examples.js';
 
 const repo = resolve(new URL('../..', import.meta.url).pathname);
-const server = spawn('python', ['scripts/serve_lean.py', '--port', '0'], { cwd: repo });
+const server = process.env.SSC_LEAN_TEST_URL ? null : spawn('python', ['scripts/serve_lean.py', '--port', '0'], { cwd: repo });
 let startup = '';
-const base = await new Promise((resolve, reject) => {
+const base = process.env.SSC_LEAN_TEST_URL || await new Promise((resolve, reject) => {
   const timeout = setTimeout(() => reject(Error('Native compiler service did not start')), 10000);
   server.stdout.on('data', chunk => {
     startup += chunk;
@@ -20,7 +20,12 @@ const base = await new Promise((resolve, reject) => {
 });
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
   args: ['--disable-dev-shm-usage', ...JSON.parse(process.env.SSC_CHROMIUM_ARGS || '[]')] });
-const context = await browser.newContext({ viewport: { width: 1360, height: 1000 } });
+const context = await browser.newContext({ viewport: { width: 1360, height: 1000 },
+  serviceWorkers: 'block',
+  ignoreHTTPSErrors: process.env.SSC_LEAN_TEST_INSECURE_TLS === '1',
+  httpCredentials: process.env.SSC_LEAN_TEST_PASSWORD ? {
+    username: process.env.SSC_LEAN_TEST_USERNAME || 'researcher', password: process.env.SSC_LEAN_TEST_PASSWORD,
+  } : undefined });
 const page = await context.newPage(), errors = [], violations = [];
 page.on('pageerror', e => errors.push(e.message));
 await page.exposeFunction('recordViolation', e => violations.push(e));
@@ -34,6 +39,7 @@ async function compile(source) {
 try {
   await page.goto(`${base}/lean.html`);
   await page.waitForFunction(() => !document.getElementById('lean-compile').disabled);
+  if (process.env.SSC_LEAN_TEST_URL) assert.match(await page.locator('#lean-connection-status').textContent(), /Hosted Lean compiler connected/);
   assert.equal(await page.locator('.workspace-tabs a').count(), 3);
   assert.match(await page.locator('#lean-source').inputValue(), /gaussianContrast/);
   assert.equal(await page.locator('#lean-example option').count(), 5);
@@ -107,6 +113,14 @@ try {
   await page.reload();
   assert.equal(await page.locator('#lean-source').inputValue(), studies['repeated-measures']);
   assert.equal(await page.locator('#lean-compiled').isVisible(), false);
+  // A hosted outage must not tell users to install a local compiler.
+  await context.route('**/api/lean/health', route => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ ready: false, execution: 'hosted', compiler: 'lean-equation-compiler-v1' }) }));
+  await page.reload();
+  await page.waitForFunction(() => document.getElementById('lean-connection-status').textContent.includes('temporarily unavailable'));
+  assert.equal(await page.locator('#lean-setup').isVisible(), false);
+  assert.equal(await page.locator('#lean-compile').isDisabled(), true);
+  await context.unroute('**/api/lean/health');
   // Static hosting must never pretend that a kernel has run.
   await context.route('**/api/lean/health', route => route.fulfill({ status: 404, body: '' }));
   await page.reload();
@@ -116,5 +130,5 @@ try {
   assert.deepEqual(errors, []); assert.deepEqual(violations, []);
   console.log('Native Lean editor: actual kernel results, user rules, fallback, multiple queries, errors, cancellation, mobile, persistence, and static-host state passed.');
 } finally {
-  await context.close(); await browser.close(); server.kill('SIGINT');
+  await context.close(); await browser.close(); server?.kill('SIGINT');
 }

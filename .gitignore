@@ -29,3 +29,6 @@ web/node_modules/
 
 # Lean package artifacts
 lean/.lake/
+
+# Deployment credentials stay on the deployment host.
+packaging/lean/.env

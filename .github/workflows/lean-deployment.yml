@@ -1,0 +1,97 @@
+name: Lean deployment
+on:
+  push:
+    branches: [main]
+    paths: ['packaging/lean/**', 'lean/**', 'scripts/*lean*', 'core/**', 'CMakeLists.txt', 'web/**', '.github/workflows/lean-deployment.yml']
+  pull_request:
+    paths: ['packaging/lean/**', 'lean/**', 'scripts/*lean*', 'core/**', 'CMakeLists.txt', 'web/**', '.github/workflows/lean-deployment.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lean-deployment-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build pinned Lean worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/lean/Dockerfile
+          target: lean-worker
+          tags: ssc-lean-worker:local
+          load: true
+          cache-from: type=gha,scope=lean-worker
+          cache-to: type=gha,scope=lean-worker,mode=max
+      - name: Build hosted web application
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/lean/Dockerfile
+          target: gateway
+          tags: ssc-lean-web:local
+          build-args: SITE_VERSION=${{ github.sha }}
+          load: true
+          cache-from: type=gha,scope=lean-gateway
+          cache-to: type=gha,scope=lean-gateway,mode=max
+      - name: Test real container compilation and isolation
+        run: python scripts/check_lean_deployment.py --docker
+      - name: Start HTTPS deployment
+        env:
+          SSC_DOMAIN: localhost
+          SSC_USERNAME: researcher
+        run: |
+          export SSC_PASSWORD_HASH="$(docker run --rm caddy:2.10.2-alpine caddy hash-password --plaintext ci-compiler-password)"
+          docker compose -f packaging/lean/compose.yaml up --no-build -d compiler https
+          python - <<'PY'
+          import base64, json, ssl, time, urllib.request, urllib.error
+          tls = ssl._create_unverified_context()
+          auth = 'Basic ' + base64.b64encode(b'researcher:ci-compiler-password').decode()
+          for attempt in range(30):
+              try:
+                  req = urllib.request.Request('https://localhost/api/lean/health', headers={'Authorization': auth})
+                  with urllib.request.urlopen(req, context=tls, timeout=5) as response:
+                      assert json.load(response)['ready']
+                  break
+              except (OSError, AssertionError):
+                  time.sleep(2)
+          else:
+              raise SystemExit('HTTPS deployment did not become ready')
+          try:
+              urllib.request.urlopen('https://localhost/lean.html', context=tls)
+              raise AssertionError('Unauthenticated access was accepted')
+          except urllib.error.HTTPError as error:
+              assert error.code == 401
+          for name in ['ssc_web', 'ssc_web_mt']:
+              req = urllib.request.Request(f'https://localhost/engine/{name}.wasm', headers={'Authorization': auth})
+              with urllib.request.urlopen(req, context=tls) as response:
+                  assert response.read(4) == b'\x00asm'
+          print('HTTPS, authentication, readiness, and both WASM engines passed.')
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Browser to HTTPS gateway to disposable Lean worker
+        env:
+          SSC_LEAN_TEST_URL: https://localhost
+          SSC_LEAN_TEST_INSECURE_TLS: '1'
+          SSC_LEAN_TEST_PASSWORD: ci-compiler-password
+        run: |
+          npm ci --prefix web
+          cd web
+          npx playwright install --with-deps chromium
+          npm run test:lean-native-browser
+      - name: Deployment logs
+        if: failure()
+        run: docker logs sample-size-lean-compiler-1 && docker logs sample-size-lean-https-1
+      - name: Stop deployment
+        if: always()
+        env:
+          SSC_DOMAIN: localhost
+          SSC_PASSWORD_HASH: unused-during-shutdown
+        run: docker compose -f packaging/lean/compose.yaml down --volumes
