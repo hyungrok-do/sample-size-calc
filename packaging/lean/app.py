@@ -82,7 +82,7 @@ class Application:
                     self.jobs[job_id] = cancel
                 try:
                     result = self.compiler.compile(source, cancel)
-                    return respond(200, result)
+                    return respond(200 if result.get('ok') or cancel.is_set() else 422, result)
                 except Exception:
                     logging.exception('Compiler adapter failed')
                     return respond(503, {'ok': False, 'error': 'Compiler temporarily unavailable.'})

@@ -109,6 +109,10 @@ work. Exact compilation also limits structural recursion to 64 levels and
 returns no certificate when that limit is reached. Program builders use Lean's
 proved tail-recursive iteration, and simulation uses suspended conversion and
 a typed explicit continuation stack to process long observation sequences.
+The general probability-law enumerator also uses an explicit continuation stack,
+preserving branch weights, order and work accounting for deeply nested laws.
+If its work budget is insufficient, automatic evaluation simulates the same law;
+an explicitly requested exact route returns an error instead of a partial table.
 These budgets do not bound arbitrary source computations or elapsed time. The browser execution
 limit still applies. Calibration functions written using unbounded `derive`
 must themselves be computationally feasible.

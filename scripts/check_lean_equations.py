@@ -211,6 +211,10 @@ end UserModel
         code, response = request('POST', '/api/lean/compile', {'source': 'solve for x : ℝ where 7*x=21', 'jobId': 'after-cancel'})
         assert code == 200 and response['ok']
         assert response['results'][0]['solution'] == 'x = 3'
+        code, response = request('POST', '/api/lean/compile', {
+            'source': 'theorem invalid : False := by sorry\nsolve for x : ℝ where x=1',
+            'jobId': 'invalid-proof'})
+        assert code == 422 and not response['ok'], response
     finally:
         server.shutdown()
         server.server_close()

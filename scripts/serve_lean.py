@@ -87,7 +87,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.server.jobs[job_id] = cancel
         try:
             result = compile_source(source, cancel=cancel)
-            self.json(200, result)
+            self.json(200 if result.get('ok') or cancel.is_set() else 422, result)
         finally:
             with self.server.jobs_lock:
                 self.server.jobs.pop(job_id, None)

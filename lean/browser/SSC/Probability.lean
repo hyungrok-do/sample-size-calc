@@ -129,11 +129,7 @@ private def spend (n : Nat := 1) : StateT Nat (Except EvaluationError) Unit := d
   if n > remaining then throw (.unavailable "Finite enumeration exceeded its work budget.")
   set (remaining-n)
 
-/-- Bounded finite interpreter. It never truncates or renormalizes a law. -/
-def enumerate : {α : Type} → Law α → StateT Nat (Except EvaluationError) (Array (α × Rat))
-  | _, .defer next => do
-    spend
-    enumerate (next ())
+private def enumerateAtom : {α : Type} → Law α → StateT Nat (Except EvaluationError) (Array (α × Rat))
   | _, .samplingOnly reason _ => throw (.unavailable reason)
   | _, .invalid message => throw (.invalid message)
   | _, .pure x => do
@@ -155,15 +151,64 @@ def enumerate : {α : Type} → Law α → StateT Nat (Except EvaluationError) (
   | _, .scalar d => do
     validated d.validate
     throw (.unavailable "Continuous law requires numerical integration or simulation.")
-  | _, .bind first next => do
-    spend
-    let xs ← enumerate first
-    let mut out := #[]
-    for (x, p) in xs do
-      let ys ← enumerate (next x)
-      spend ys.size
-      for (y, q) in ys do out := out.push (y, p*q)
-    return out
+  | _, .bind .. | _, .defer .. =>
+    throw (.invalid "Internal error: composite law passed to atomic enumeration.")
+
+/-- Continuations retain the output type and the weight of each pending branch. -/
+private inductive EnumerationStack : Type → Type → Type 1 where
+  | done : EnumerationStack α α
+  | first (next : α → Law β) (rest : EnumerationStack β γ) : EnumerationStack α γ
+  | branch (next : α → Law β) (inputs : Array (α × Rat)) (index : Nat)
+      (weight : Rat) (output : Array (β × Rat)) (rest : EnumerationStack β γ) :
+      EnumerationStack β γ
+
+private inductive EnumerationStep (α : Type) where
+  | visit (law : Law α)
+  | value (atoms : Array (α × Rat))
+
+-- This loop mirrors the recursive finite interpreter, including its work
+-- charges and branch order. Pending binds live on the heap, not the WASM stack.
+private def enumerateLoop (fuel : Nat) {α β : Type} (step : EnumerationStep α)
+    (stack : EnumerationStack α β) (budget : Nat) :
+    Except EvaluationError (Array (β × Rat) × Nat) :=
+  match fuel with
+  | 0 => .error (.unavailable "Finite enumeration exceeded its work budget.")
+  | fuel+1 => do
+    match step with
+    | .visit (.defer next) =>
+      let (_, budget) ← spend.run budget
+      enumerateLoop fuel (.visit (next ())) stack budget
+    | .visit (.bind first next) =>
+      let (_, budget) ← spend.run budget
+      enumerateLoop fuel (.visit first) (.first next stack) budget
+    | .visit atom =>
+      let (xs, budget) ← (enumerateAtom atom).run budget
+      enumerateLoop fuel (.value xs) stack budget
+    | .value xs =>
+      match (dependent := true) (generalizing := true) α, stack, xs with
+      | _, .done, xs => return (xs, budget)
+      | _, .first next rest, xs =>
+        if h : 0 < xs.size then
+          let (x, p) := xs[0]
+          enumerateLoop fuel (.visit (next x)) (.branch next xs 1 p #[] rest) budget
+        else
+          enumerateLoop fuel (.value #[]) rest budget
+      | _, .branch next inputs index weight output rest, ys =>
+        let (_, budget) ← (spend ys.size).run budget
+        let mut output := output
+        for (y, q) in ys do output := output.push (y, weight*q)
+        if h : index < inputs.size then
+          let (x, p) := inputs[index]
+          enumerateLoop fuel (.visit (next x)) (.branch next inputs (index+1) p output rest) budget
+        else
+          enumerateLoop fuel (.value output) rest budget
+
+/-- Bounded, stack-safe finite interpreter. It never truncates or renormalizes a law. -/
+def enumerate {α : Type} (law : Law α) : StateT Nat (Except EvaluationError) (Array (α × Rat)) :=
+  -- Charged visits/branches and their administrative returns take at most
+  -- four transitions per work unit. Fuel makes the interpreter total and
+  -- kernel-reducible without introducing a fixed structural-depth limit.
+  fun budget => enumerateLoop (4*budget+1) (.visit law) .done budget
 
 def exactProbability {α : Type} (law : Law α) (event : Event α)
     (budget : Nat := 10000) : Except EvaluationError Rat := do

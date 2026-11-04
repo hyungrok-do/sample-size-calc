@@ -9,6 +9,7 @@ import { examples } from '../lean-proof-examples.js';
 import { checkCalculations } from './lean-calculations.mjs';
 import { checkDerivations } from './lean-derivations.mjs';
 import { checkVerification } from './lean-verification.mjs';
+import { checkEnumeration } from './lean-enumeration.mjs';
 const root = resolve(process.argv[2] || new URL('..', import.meta.url).pathname);
 const prefix = '/sample-size-calc/';
 const temporary = await mkdtemp(resolve(tmpdir(),'ssc-lean-browser-'));
@@ -70,6 +71,7 @@ try {
   assert.match(await page.locator('#lean-connection-status').textContent(),/in this browser/);
   console.log('Actual Lean WASM initialized.');
   await checkVerification({ compile, reject, report });
+  await checkEnumeration({ compile, reject, report });
   await checkDerivations({ compile, report, page, reject });
   await compile(examples['exact-trial']);
   assert.match(await page.locator('#lean-evaluation').textContent(),/some 25/);

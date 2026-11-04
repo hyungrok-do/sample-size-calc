@@ -81,6 +81,12 @@ def check_protocol():
     for value in [{}, [], {'source': '', 'jobId': 'x'}, {'source': 'x', 'jobId': '../bad'},
                   {'source': 'x' * 131073, 'jobId': 'x'}]:
         assert request(app, '/api/lean/compile', method='POST', value=value)['status'] == 400
+    for result, expected in [({'ok': True, 'results': []}, 200),
+                             ({'ok': False, 'error': 'Unproved dependency: sorryAx'}, 422)]:
+        with patch.object(compiler, 'compile', return_value=result):
+            r = request(app, '/api/lean/compile', method='POST', value={'source': 'x', 'jobId': 'status-test'})
+        assert r['status'] == expected and r['body'] == result, r
+        assert not app.jobs
     with ThreadPoolExecutor() as pool:
         future = pool.submit(request, app, '/api/lean/compile', method='POST', value={'source': 'x', 'jobId': 'one'})
         assert compiler.started.wait(2)
@@ -88,7 +94,8 @@ def check_protocol():
             r = request(app, '/api/lean/compile', method='POST', value={'source': 'x', 'jobId': job})
             assert r['status'] == 429 and r['headers']['Retry-After'] == '2'
         assert request(app, '/api/lean/compile/one', method='DELETE')['status'] == 200
-        assert future.result(timeout=3)['body']['error'] == 'Compilation stopped.'
+        stopped = future.result(timeout=3)
+        assert stopped['status'] == 200 and stopped['body']['error'] == 'Compilation stopped.'
     request(app, '/api/lean/compile/early', method='DELETE')
     assert not request(app, '/api/lean/compile', method='POST', value={'source': 'x', 'jobId': 'early'})['body']['ok']
     assert not app.jobs
