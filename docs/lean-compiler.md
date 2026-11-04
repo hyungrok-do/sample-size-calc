@@ -78,14 +78,14 @@ The generated theorem can be used by subsequent proofs in the source module.
 
 The built-in rules cover arithmetic rearrangement, exponential/logarithm
 inversion with hypotheses, squares, square roots, absolute values, products,
-zero-coefficient cases, and completing the square. These are mathematical
+reciprocals, zero-coefficient cases, and completing the square. These are mathematical
 primitives, not complete-example printouts. Search composes their proofs on the
 actual elaborated expression; Lean simplification, exact arithmetic, and ring
 normalization provide further transformations. Each displayed step is drawn
 from the proof-producing transformation that ran.
 
 Search explores at most 96 states, favors expressions closer to isolating the
-unknown, and has heartbeat/time limits. It is not a complete computer algebra
+unknown (preferring fewer branches at equal depth), and has heartbeat/time limits. It is not a complete computer algebra
 system or an arbitrary theorem prover. It currently rewrites the first matching
 occurrence per rule, so rule ordering and expression form can affect discovery.
 An **unresolved** result is a checked partial equivalence, not a proof that an
@@ -106,11 +106,56 @@ python scripts/lean_equations.py examples/lean-equations/composition.lean \
   --output result.json --olean Checked.olean --cpp equation.cpp --run
 ```
 
+Parameterized formulas compile once and accept named real inputs at runtime:
+
+```sh
+python scripts/lean_equations.py examples/lean-equations/parameters.lean \
+  --cpp equation.cpp --run --param a=2 --param b=1 --param y=5
+c++ -std=c++17 -O2 equation.cpp -o equation
+./equation a=2 b=1 y=5
+./equation y=10 a=3 b=0
+```
+
+Every real section variable becomes an input, and every section hypothesis in
+the generated theorem becomes a runtime guard. The first example checks `a ≠ 0`
+and `0 < y` before evaluating `(log y - b) / a`. Missing, duplicated, unknown,
+non-finite, and out-of-range inputs are rejected. Parameter names retain their
+Lean spelling, including Unicode; generated C++ identifiers are separate.
+An unsupported parameter type or hypothesis disables C++ export with an
+explanation. It does not silently drop a theorem assumption.
+
+The result preserves conditional solution sets. With `a*x = y` and no nonzero
+assumption, the same executable returns a finite root for `a=2 y=6`, an empty set
+for `a=0 y=6`, and all reals for `a=0 y=0`. JSON reports `solutionSet` as
+`finite`, `empty`, or `all_reals`, with `roots` populated only for finite sets.
+The exported report carries branch predicates separately from their roots.
+Conjunctions intersect solution sets, and disjunctions take their union.
+
+For a precision-planning example:
+
+```lean
+variable (variance targetVariance : ℝ) (hv : 0 < variance) (ht : 0 < targetVariance)
+solve precision_size for n : ℝ where variance / n = targetVariance
+-- n = variance / targetVariance
+```
+
+```sh
+python scripts/lean_equations.py examples/lean-equations/precision.lean \
+  --run --param variance=2 --param targetVariance=0.01
+```
+
+This returns `n = 200`. It solves the continuous variance equation conditional
+on the stipulated variance model; it does not establish integer minimality or
+derive a test's power from a data-generating model. Reciprocal rules preserve
+Lean's totalized division: without positivity restrictions, `1/x = 0` has the
+Lean solution `x = 0`. Add appropriate hypotheses or domain conditions when
+that is outside the intended statistical model.
+
 The Python adapter supplies the prelude, invokes Lean, and transports its report.
 It does not parse equations. The Lean backend lowers elaborated real expressions
 to numeric C++ expressions; Python packages these into a standalone executable.
-The generated code checks for finite values. Its standard real arithmetic
-instances are checked before lowering, and helpers preserve Lean's totalized
+The generated code checks for finite intermediate values. Standard real arithmetic
+and order instances are checked before lowering, and helpers preserve Lean's totalized
 `Real.log`, `Real.sqrt`, and division semantics (including exceptional arguments).
 
 For an unresolved equation that has numerical lowering:
@@ -120,14 +165,19 @@ python scripts/lean_equations.py examples/lean-equations/numerical.lean \
   --cpp equation.cpp --run --lower 0 --upper 1
 ```
 
-This attempts `cos x = x` with bracketed bisection. It requires a continuous,
+This attempts `cos x = x` with bracketed bisection. Parameterized unresolved
+equations also accept `--param NAME=VALUE`; their standalone C++ takes the
+positional bounds first, followed by the named inputs. It requires a continuous,
 sign-changing bracket, checks the residual, and reports failure if the bracket
 or precision is inadequate. It does not establish uniqueness or prove the
 absence of other roots. C++17 and a `c++` command are required for `--run`.
 
-The C++ backend currently supports closed real arithmetic, constant natural
-powers, exp/log/sqrt, sin/cos, and absolute value. Parameterized formulas remain
-symbolic until values are supplied. Binary64 evaluation, numerical roots, the
+The C++ backend supports real parameters, arithmetic, constant natural
+powers, exp/log/sqrt, sin/cos, and absolute value. Guards support real equality,
+inequality, order comparisons, and Boolean combinations. Runtime guard
+comparisons use binary64, so rounding can affect branch or assumption decisions
+near a boundary. They are not formal proofs of the supplied hypotheses.
+Binary64 evaluation, numerical roots, the
 transport layer, and the C++ compiler are **not certified by the Lean theorem**.
 The theorem certifies exact symbolic equivalence over the stated Lean types.
 
@@ -157,7 +207,9 @@ npm run test:lean-browser
 
 Tests invoke the actual Lean kernel and compile emitted C++ independently. They
 cover user-defined functions/rules, namespaces/structures/notation, theorem
-reuse, parameters, degenerate cases, both roots, no roots, invalid proofs and
+reuse, executable parameters, checked runtime guards, degenerate cases, both
+roots, empty and all-real solution sets, intersections, reciprocals, Unicode
+parameter names, unsupported hypotheses, invalid numeric input, overflow, invalid proofs and
 axioms, unresolved equations, numerical evaluation, and process cancellation.
 The native browser test checks the actual service, mobile layout, CSP, multiple
 queries, stale-result invalidation, and the static-host unavailable state.

@@ -98,7 +98,11 @@ def main():
     parser.add_argument('--run', action='store_true', help='Compile and execute the exported C++')
     parser.add_argument('--lower', type=float, help='Lower bound for numerical fallback')
     parser.add_argument('--upper', type=float, help='Upper bound for numerical fallback')
+    parser.add_argument('--param', action='append', default=[], metavar='NAME=VALUE',
+                        help='Real parameter value for --run; repeat for each parameter')
     args = parser.parse_args()
+    if args.param and not args.run:
+        parser.error('--param requires --run; exported C++ accepts NAME=VALUE at runtime.')
     result = compile_source(args.source.read_text(encoding='utf-8'), olean=args.olean)
     if args.cpp or args.run:
         if not result['ok']:
@@ -120,7 +124,11 @@ def main():
                     if args.lower is None or args.upper is None:
                         parser.error('Numerical fallback needs --lower and --upper.')
                     command += [str(args.lower), str(args.upper)]
-                result['numericalEvaluation'] = json.loads(subprocess.check_output(command, text=True, timeout=10))
+                command += args.param
+                evaluation = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                if evaluation.returncode:
+                    parser.exit(2, evaluation.stderr.strip() + '\n')
+                result['numericalEvaluation'] = json.loads(evaluation.stdout)
     encoded = json.dumps(result, indent=2, ensure_ascii=False)
     if args.output:
         args.output.write_text(encoded + '\n', encoding='utf-8')

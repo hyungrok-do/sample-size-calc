@@ -46,6 +46,8 @@ python scripts/serve_lean.py</pre>
           <option value="composition">Compose functions: exponential equation</option>
           <option value="branches">Find both roots of a square</option>
           <option value="parameters">Derive a formula with parameters</option>
+          <option value="precision">Solve a variance target for sample size</option>
+          <option value="conditional">Keep zero-coefficient cases</option>
           <option value="custom-rule">Teach it a new function with a theorem</option>
           <option value="quadratic">Complete the square</option>
           <option value="numerical">Equation needing numerical fallback</option>
@@ -90,10 +92,12 @@ solve answer for x : ℝ where response x = 5
         <details id="lean-cpp-details"><summary>C++ numerical evaluation (optional)</summary>
           <p id="lean-cpp-status"></p>
           <div id="lean-cpp-output" hidden>
+            <p id="lean-cpp-parameters"></p>
+            <div id="lean-cpp-guards" hidden><p>Assumptions checked before numerical evaluation:</p><ul id="lean-cpp-assumptions"></ul></div>
             <button id="lean-cpp-save" type="button">Download .cpp</button>
             <pre class="cpp"><code id="lean-cpp"></code></pre>
             <pre id="lean-cpp-command" class="command"></pre>
-            <p>Binary64 evaluation is approximate. The Lean theorem certifies the symbolic derivation. Numerical root finding needs a continuous, sign-changing bracket and does not prove uniqueness.</p>
+            <p>Binary64 values and comparisons are approximate, including assumption checks near boundaries. The Lean theorem certifies the symbolic derivation. Numerical root finding needs a continuous, sign-changing bracket and does not prove uniqueness.</p>
           </div>
         </details>
         <details><summary>Compiler diagnostics</summary><pre id="lean-diagnostics" class="cpp"></pre></details>

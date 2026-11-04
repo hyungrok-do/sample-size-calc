@@ -54,6 +54,11 @@ private partial def complexity (x e : Expr) : Nat :=
     e.getAppArgs.foldl (fun n a => max n (complexity x a)) 0
   else 1 + e.getAppArgs.foldl (fun n a => max n (complexity x a)) 0
 
+private partial def branchCount (e : Expr) : Nat :=
+  if e.isAppOfArity ``Or 2 || e.isAppOfArity ``And 2 then
+    1 + e.getAppArgs.foldl (fun n a => n + branchCount a) 0
+  else 0
+
 private partial def bothSides (x e : Expr) : Bool :=
   if e.isAppOfArity ``Eq 3 then
     let args := e.getAppArgs
@@ -127,7 +132,10 @@ private def derive (x original : Expr) : TermElabM (Node × Nat) := do
   let mut explored := 0
   let rules := ruleExtension.getState (← getEnv)
   while !queue.isEmpty && explored < 96 do
-    queue := queue.qsort fun a b => complexity x a.expression < complexity x b.expression
+    queue := queue.qsort fun a b =>
+      let ca := complexity x a.expression
+      let cb := complexity x b.expression
+      ca < cb || (ca == cb && branchCount a.expression < branchCount b.expression)
     let some node := queue[0]? | break
     queue := queue.extract 1 queue.size
     node.saved.restore
@@ -221,6 +229,10 @@ private def compileEquation (name : Name) (binderStx : TSyntax `ident)
       let unexpected := axioms.filter fun n => !([``propext, ``Classical.choice, ``Quot.sound].contains n)
       unless unexpected.isEmpty do
         throwError "The derivation depends on unapproved axioms: {unexpected}"
+      let mut hypotheses := #[]
+      for argument in sectionVariables do
+        let type ← inferType argument
+        if ← isProp type then hypotheses := hypotheses.push (← unfoldUser type)
       return {
         name := declarationName.toString
         status := if isolated x node.expression then "solved" else "unresolved"
@@ -232,7 +244,7 @@ private def compileEquation (name : Name) (binderStx : TSyntax `ident)
         steps := node.steps
         explored
         lowering := ← lowerEquation x (← unfoldUser original) (← unfoldUser node.expression)
-          (isolated x node.expression) : EquationResult }
+          sectionVariables hypotheses (isolated x node.expression) : EquationResult }
   modifyEnv fun env => resultExtension.addEntry env record
   logInfo m!"{record.name}: {record.status}\n{record.solution}"
 

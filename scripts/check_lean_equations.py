@@ -63,7 +63,72 @@ def main():
     assert compile_ok('solve for x : ℝ where 3*x + 1 = x + 7')['solution'] == 'x = 3'
     conditional = compile_ok('variable (a b y : ℝ)\nsolve for x : ℝ where Real.exp (a*x+b)=y')
     assert '0 < y' in conditional['solution'] and 'a = 0' in conditional['solution']
-    assert conditional['lowering']['kind'] == 'unavailable'
+    assert conditional['lowering']['kind'] == 'analytic_roots'
+    assert cpp_run(conditional, 'a=0', 'b=0', 'y=1')['solutionSet'] == 'all_reals'
+    assert cpp_run(conditional, 'a=0', 'b=0', 'y=2')['solutionSet'] == 'empty'
+    assert cpp_run(conditional, 'a=2', 'b=1', 'y=-1')['solutionSet'] == 'empty'
+    # Reusable parameterized code, including every hypothesis of its theorem.
+    parameterized = examples['parameters']
+    assert [p['name'] for p in parameterized['lowering']['parameters']] == ['a', 'b', 'y']
+    assert [h['statement'] for h in parameterized['lowering']['assumptions']] == ['a ≠ 0', '0 < y']
+    result = cpp_run(parameterized, 'y=5', 'a=2', 'b=1')
+    assert math.isclose(result['roots'][0], (math.log(5)-1)/2, rel_tol=1e-13)
+    assert 'Assumption failed' in cpp_run(parameterized, 'a=0', 'b=1', 'y=5', succeeds=False)
+    assert 'Assumption failed' in cpp_run(parameterized, 'a=2', 'b=1', 'y=-5', succeeds=False)
+    for arguments, message in [
+        (['a=2', 'b=1'], 'Missing parameter'),
+        (['a=2', 'b=1', 'y=5', 'a=3'], 'Duplicate parameter'),
+        (['a=2', 'b=1', 'y=5', 'z=3'], 'Unknown parameter'),
+        (['a=nan', 'b=1', 'y=5'], 'Invalid finite'),
+        (['a=1e-9999', 'b=1', 'y=5'], 'Invalid finite'),
+    ]:
+        assert message in cpp_run(parameterized, *arguments, succeeds=False)
+    assert examples['precision']['solution'] == 'n = variance / targetVariance'
+    assert cpp_run(examples['precision'], 'variance=2', 'targetVariance=0.01')['roots'] == [200]
+    assert 'Assumption failed' in cpp_run(examples['precision'], 'variance=2', 'targetVariance=0', succeeds=False)
+    # Same compiled conditional expression gives finite, empty, or all-real sets.
+    for arguments, kind, roots in [
+        (['a=2', 'y=6'], 'finite', [3]),
+        (['a=-2', 'y=6'], 'finite', [-3]),
+        (['a=0', 'y=6'], 'empty', []),
+        (['a=0', 'y=0'], 'all_reals', []),
+    ]:
+        result = cpp_run(examples['conditional'], *arguments)
+        assert result['solutionSet'] == kind and result['roots'] == roots
+    square = compile_ok('variable (y : ℝ)\nsolve for x : ℝ where x^2=y')
+    assert cpp_run(square, 'y=9')['roots'] == [-3, 3]
+    assert cpp_run(square, 'y=0')['roots'] == [0]
+    assert cpp_run(square, 'y=-1')['solutionSet'] == 'empty'
+    reciprocal = compile_ok('variable (a b : ℝ)\nsolve for x : ℝ where a/x=b')
+    assert cpp_run(reciprocal, 'a=6', 'b=2')['roots'] == [3]
+    assert cpp_run(reciprocal, 'a=6', 'b=0')['roots'] == [0]  # Lean's totalized division.
+    assert cpp_run(reciprocal, 'a=0', 'b=0')['solutionSet'] == 'all_reals'
+    assert cpp_run(reciprocal, 'a=0', 'b=2')['solutionSet'] == 'empty'
+    intersection = compile_ok('variable (a b : ℝ)\nsolve for x : ℝ where x=a ∧ x=b')
+    assert cpp_run(intersection, 'a=2', 'b=2')['roots'] == [2]
+    assert cpp_run(intersection, 'a=2', 'b=3')['solutionSet'] == 'empty'
+    assert cpp_run(compile_ok('solve for x : ℝ where x=x'))['solutionSet'] == 'all_reals'
+    unicode = compile_ok('variable (σ «class» : ℝ)\nsolve for x : ℝ where x=σ + «class»')
+    assert cpp_run(unicode, 'σ=2', 'class=3')['roots'] == [5]
+    numerical = compile_ok('variable (a : ℝ) (ha : 0 < a)\nsolve for x : ℝ where Real.cos x=a*x', 'unresolved')
+    answer = cpp_run(numerical, 0, 1, 'a=2')['solution']
+    assert abs(math.cos(answer)-2*answer) <= 1e-10
+    assert 'Assumption failed' in cpp_run(numerical, 0, 1, 'a=-1', succeeds=False)
+    unsupported_guard = compile_ok('variable (a : ℝ) (h : ∃ y : ℝ, y=a)\nsolve for x : ℝ where x=a')
+    assert unsupported_guard['lowering']['kind'] == 'unavailable'
+    assert 'No C++ guard' in unsupported_guard['lowering']['reason']
+    order_override = compile_ok('local instance : LE ℝ := ⟨fun a b => b<a⟩\nvariable (a : ℝ) (h : 0 ≤ a)\nsolve for x : ℝ where x=a')
+    assert order_override['lowering']['kind'] == 'unavailable'
+    assert 'standard real arithmetic' in order_override['lowering']['reason']
+    overflow = compile_ok('variable (a : ℝ)\nsolve for x : ℝ where x=Real.log (Real.exp a + 1)')
+    assert 'Non-finite' in cpp_run(overflow, 'a=1000', succeeds=False)
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory)/'result.json'
+        subprocess.run(['python', str(ROOT/'scripts/lean_equations.py'),
+                        str(ROOT/'examples/lean-equations/precision.lean'), '--run',
+                        '--param', 'variance=2', '--param', 'targetVariance=0.01',
+                        '--output', str(output)], check=True, timeout=90)
+        assert json.loads(output.read_text())['numericalEvaluation']['roots'] == [200]
     # Actual Lean structures, namespaces, custom notation, and subsequent proof reuse.
     module = '''namespace UserModel
 structure Model where
@@ -133,7 +198,7 @@ end UserModel
     finally:
         server.shutdown()
         server.server_close()
-    print('Native Lean: language elaboration, extensible proofs, parameters, branches, axiom rejection, C++ evaluation, numerical fallback, and API cancellation passed.')
+    print('Native Lean: elaboration, extensible proofs, executable parameters and guards, conditional solution sets, reciprocal solving, axiom rejection, C++ evaluation, numerical fallback, CLI, and API cancellation passed.')
 
 
 if __name__ == '__main__':

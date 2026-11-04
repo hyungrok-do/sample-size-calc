@@ -63,12 +63,24 @@ function render() {
   $('cpp-output').hidden = !equation.cpp;
   $('cpp').textContent = equation.cpp;
   $('cpp-status').textContent = equation.lowering.kind === 'analytic_roots'
-    ? 'Evaluate the derived roots numerically in standalone C++17.'
+    ? 'Evaluate the derived solution set numerically in standalone C++17. Conditional branches are preserved.'
     : equation.lowering.kind === 'bracketed_bisection'
       ? 'The elaborated equation can be evaluated in C++. Supply bounds to attempt numerical root finding.'
       : equation.lowering.reason;
+  const parameters = equation.lowering.parameters || [];
+  $('cpp-parameters').textContent = parameters.length
+    ? `Runtime inputs: ${parameters.map(parameter => parameter.name).join(', ')}. Supply each as NAME=VALUE; order does not matter.`
+    : '';
+  $('cpp-assumptions').replaceChildren();
+  for (const assumption of equation.lowering.assumptions || []) {
+    const li = document.createElement('li'); li.textContent = assumption.statement;
+    $('cpp-assumptions').append(li);
+  }
+  $('cpp-guards').hidden = !(equation.lowering.assumptions || []).length;
+  const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
   $('cpp-command').textContent = 'c++ -std=c++17 -O2 equation.cpp -o equation\n' +
-    (equation.lowering.kind === 'bracketed_bisection' ? './equation LOWER UPPER' : './equation');
+    (equation.lowering.kind === 'bracketed_bisection' ? './equation LOWER UPPER' : './equation') +
+    parameters.map(parameter => ' ' + shellQuote(`${parameter.name}=VALUE`)).join('');
   $('compiled').hidden = false;
 }
 

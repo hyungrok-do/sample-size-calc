@@ -127,8 +127,10 @@ searches over composable proved equivalences, and kernel-checks a reusable
 solution theorem. Users can extend the solver with `@[equation_rule]` theorems.
 The tab uses a [local native compiler service](docs/lean-compiler.md); the static
 host is an editor and does not run Lean. Imports are supplied by a default prelude.
-An optional C++17 backend evaluates closed solutions or attempts bracketed
-numerical root finding for supported real expressions. Proof search is bounded.
+An optional C++17 backend accepts named real parameters, checks supported theorem
+assumptions at runtime, and evaluates conditional solution sets or attempts
+bracketed numerical root finding. Numerical values and guard comparisons use
+ordinary floating point. Proof search is bounded.
 The earlier [browser study sandbox](docs/study-language.md) remains available
 for Gaussian calculations and Monte Carlo simulation. Its custom language is
 separate from native Lean. The DAG simulator remains a separate tab.

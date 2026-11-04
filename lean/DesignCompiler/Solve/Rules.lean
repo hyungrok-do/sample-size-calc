@@ -28,6 +28,31 @@ namespace DesignCompiler.Equation
 @[equation_rule] theorem div_right (u a b : ℝ) (ha : a ≠ 0) :
     u / a = b ↔ u = b * a := by exact div_eq_iff ha
 
+@[equation_rule] theorem reciprocal (u a b : ℝ) (ha : a ≠ 0) (hb : b ≠ 0) :
+    a / u = b ↔ u = a / b := by
+  constructor
+  · intro h
+    have hu : u ≠ 0 := by
+      intro hz
+      simp [hz] at h
+      exact hb h.symm
+    apply (eq_div_iff hb).mpr
+    have hm := (div_eq_iff hu).mp h
+    nlinarith
+  · intro h
+    rw [h]
+    field_simp
+
+-- Lean's division is total: a / 0 = 0. Keep these cases unless hypotheses
+-- exclude them, so both the theorem and executable preserve that meaning.
+@[equation_rule] theorem reciprocal_cases (u a b : ℝ) :
+    a / u = b ↔ (b = 0 ∧ (a = 0 ∨ u = 0)) ∨ (b ≠ 0 ∧ a ≠ 0 ∧ u = a / b) := by
+  by_cases hb : b = 0
+  · simp [hb, div_eq_zero_iff]
+  · by_cases ha : a = 0
+    · simp [ha, hb, eq_comm]
+    · simp [ha, hb, reciprocal u a b ha hb]
+
 @[equation_rule] theorem negative (u b : ℝ) :
     -u = b ↔ u = -b := by constructor <;> intro h <;> linarith
 
