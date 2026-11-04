@@ -42,7 +42,7 @@ The C++ WASM backend consumes the elaborated statistical plan. Downloaded C++
 embeds that same numerical runtime with the current planning values. There is no
 browser C++ JIT, server compilation, or canned numerical result.
 
-Build the complete static application with Emscripten on PATH:
+Build the complete static application with the Emscripten 6.0.13 SDK on PATH:
 
 ```sh
 web/build.sh

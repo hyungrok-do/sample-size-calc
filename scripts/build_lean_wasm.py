@@ -5,6 +5,7 @@ No native Lean installation, server, or private Actions artifact is required.
 Downloaded archives are immutable releases authenticated before extraction.
 """
 import argparse
+import ast
 import gzip
 import hashlib
 import json
@@ -92,6 +93,17 @@ def browser_source():
             'def rationalJson (x : Rat) : Lean.Json := Lean.Json.str s!"{x.num}/{x.den}"\n'
             'end DesignCompiler\n\n' + model + '\nend DesignCompiler.Planning\n\n' + command)
 
+def node_command():
+    # emsdk_env.sh adds emcc to PATH, but can leave an older system Node first.
+    # Use the SDK's configured engine, as emcc does. Older V8 versions reject
+    # the genuine Lean runtime's 104769 exports before running any Lean code.
+    command = ast.literal_eval(subprocess.check_output(['em-config', 'NODE_JS'], text=True).strip())
+    if isinstance(command, str):
+        command = [command]
+    if not isinstance(command, list) or not command or not all(isinstance(x, str) for x in command):
+        raise RuntimeError('Emscripten NODE_JS must name a JavaScript runtime')
+    return command
+
 def package(kit, out, source):
     out.mkdir(parents=True, exist_ok=True)
     # Compressed opaque extensions avoid a static host decompressing them twice.
@@ -166,7 +178,7 @@ def main():
     (build/'SSC.lean').write_text(source)
     print('Compiling the statistical module with Lean WebAssembly', flush=True)
     with (build/'compiler.log').open('w') as log:
-        result = subprocess.run(['node', str(ROOT/'packaging/lean-wasm/lean-node.cjs'), str(kit), str(build),
+        result = subprocess.run(node_command() + [str(ROOT/'packaging/lean-wasm/lean-node.cjs'), str(kit), str(build),
             '-R', '/work', '-o', '/work/SSC.olean', '/work/SSC.lean'], stdout=log, stderr=subprocess.STDOUT, timeout=300)
     if result.returncode != 0 or not (build/'SSC.olean').is_file():
         raise RuntimeError((build/'compiler.log').read_text()[-12000:])
