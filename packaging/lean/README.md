@@ -13,7 +13,8 @@ dependency downloads at runtime.
 
 Use an x86-64 Linux host with Docker Engine and Docker Compose v2, a DNS name
 pointing to the host, and inbound ports 80 and 443. Budget about 8 GB RAM and
-20 GB free disk for building and running the default two-worker configuration.
+40 GB free disk for building and running the default two-worker configuration,
+including temporary Docker build layers and image-export copies.
 The compiler and web assets are built from this checkout, without a prepublished
 image or cloud-provider dependency.
 

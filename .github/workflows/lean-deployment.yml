@@ -17,6 +17,11 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Reserve disk for Lean and Docker image layers
+        run: |
+          # This disposable runner does not use Android, .NET, Haskell, or CodeQL.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Validate deployment configuration
         env:
           SSC_DOMAIN: localhost
@@ -101,7 +106,11 @@ jobs:
           npm run test:lean-native-browser
       - name: Deployment logs
         if: failure()
-        run: docker logs sample-size-lean-compiler-1 && docker logs sample-size-lean-https-1
+        run: |
+          df -h /
+          docker system df
+          docker logs sample-size-lean-compiler-1 || true
+          docker logs sample-size-lean-https-1 || true
       - name: Stop deployment
         if: always()
         env:

@@ -10,3 +10,8 @@ _skbuild/
 *.egg-info/
 python/ssc/_native/
 docs/images/
+# Never overwrite image-built dependencies/assets with a developer's local build.
+lean/.lake/
+web/node_modules/
+web/engine/
+packaging/lean/.env
