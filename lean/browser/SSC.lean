@@ -1,9 +1,10 @@
 import Lean
 import SSC.Calculation
+import SSC.Derivation
 
 /-!
 Browser reporting for ordinary Lean modules. Imported SSC libraries provide
-general probability programs, numerical mathematics and simulation. Statistical
+general probability programs, certified finite derivation, numerical mathematics and simulation. Statistical
 models live in ordinary source modules. Proof search is performed by Lean tactics
 in the user's source; evaluation output is distinct from kernel-checked theorems.
 

@@ -1,8 +1,9 @@
 import { BrowserLeanCompiler } from './lean-wasm-client.js?v=dev';
 import { examples as proofs } from './lean-proof-examples.js?v=dev';
 import { examples as calculations } from './lean-calculation-examples.js?v=dev';
+import { examples as derivations } from './lean-derivation-examples.js?v=dev';
 import { renderCalculations } from './lean-calculation-results.js?v=dev';
-const examples = { ...proofs, ...calculations };
+const examples = { ...proofs, ...calculations, ...derivations };
 
 const $ = id => document.getElementById(`lean-${id}`);
 const source = $('source'), storageKey = 'ssc-lean-proofs-v3';
@@ -83,7 +84,7 @@ function render() {
   $('dependencies').textContent = declaration.dependencies.join('\n') || 'No constant dependencies.';
 }
 
-source.value = examples['normal-means'];
+source.value = examples['bernoulli-observations'];
 try { const saved = localStorage.getItem(storageKey); if (saved && new TextEncoder().encode(saved).length <= 131072) source.value = saved; } catch {}
 const requested = new URLSearchParams(location.search).get('example');
 if (Object.hasOwn(examples, requested)) { source.value = examples[requested]; $('example').value = requested; }

@@ -28,6 +28,114 @@ The compiler preserves symbolic parameters. It does not require equations to be
 closed numeric terms. User-defined types, namespaces, notation and functions
 are handled by Lean's parser and elaborator.
 
+## Derive a finite distribution from observations
+
+`SSC.Finite` formalizes finite probability distributions over rational weights.
+Every `Distribution α` includes proofs that its weights are nonnegative and sum
+to one. Expectation, probability bounds, composition, and the collection of equal
+outcomes are proved in Lean. No user axioms or floating-point results are used in
+these proofs.
+
+`SSC.Derivation.Program α` describes observations and their transformations using
+ordinary Lean definitions:
+
+| Operation | Meaning |
+| --- | --- |
+| `Program.draw distribution` | Draw from a proved finite probability distribution. |
+| `Program.pure value` | A deterministic value. |
+| `program.bind next` | Continue with a distribution that may depend on the previous outcome. |
+| `program.map statistic` | Apply a deterministic statistic. |
+| `program.iid n` | Retain a complete independent dataset. |
+| `program.iidFold update initial n` | Process independent observations with an arbitrary state update. |
+| `Program.iterate transition initial n` | Run dependent or adaptive state transitions. |
+
+Bind needs decidable equality of its intermediate type so equal states can be
+combined. These are typed library functions, not additional source grammar.
+Programs can use arbitrary user-defined finite outcomes, states and predicates.
+
+`compileWithin program budget` returns either no result or a `Certificate program`:
+
+```lean
+distribution : SSC.Finite.Distribution α
+correct : ∀ f, distribution.expect f = program.expect f
+```
+
+The proof applies to **every** rational-valued function of the output, including
+every rejection indicator. It follows from finite additivity and composition,
+not from identifying a statistical procedure. Compilation combines equal
+intermediate states, so a count based on 25 binary observations has 26 output
+states without enumerating all 33,554,432 datasets. The compiler constructs its
+certificate alongside that computation. `derive` is the unbounded reference
+version intended for mathematical definitions and proofs.
+
+For a larger closed program, `def evidence : Certificate program := by
+finite_derive` checks intermediate distributions separately. The tactic
+evaluates each proposed table, then requires a kernel-checked equality before
+using it in the next certificate. Balanced merging reduces the depth of each
+check. Evaluation and quotation are untrusted proposal mechanisms: neither can
+introduce an axiom or bypass the equality proof. This also avoids asking the
+browser kernel to reduce an entire long computation in a single proof.
+
+Intermediate types need `Lean.ToExpr` instances to propose literal values.
+The tactic stages a sequential bind chain, with a limit of 256 checkpoints;
+individual continuations must still fit the browser's resource limits.
+Parameterized programs use the symbolic correctness theorems above. Staging
+changes proof construction, not the observation program or simulation route.
+
+`Program.iidFold_eq_iid` proves that the state update gives the same expectation
+as applying the fold to the full dataset. Thus the reduction from observations
+to a statistic is explicit and checked. A statistic must have the stated fold
+representation to use this reduction; the compiler does not infer an efficient
+sufficient statistic from an arbitrary function on datasets.
+
+The corresponding `SSC.Derivation.Specification Design Outcome` defines
+`null`, `alternative` and `reject`. The two laws are observation programs, and
+the rejection rule is a `Rejection Outcome`. Construct it with `.test predicate`,
+or compose rules with `.both`, `.either`, `.all` and `.any`. Preparing a rejection
+rule at a design is separated from applying it to each replicate, so calibration
+can be computed once.
+
+Its `evaluate` and `search` methods compile these same programs. If the compiler
+exhausts its budget, they simulate the original observations and statistic. A
+forced `.simulation` route also uses the original program, not the compiled
+distribution. Invalid proofs do not trigger fallback. Budget exhaustion does
+not truncate, renormalize, or discard outcomes. The default compilation budget
+is 1,000,000 units; it accounts for branch operations and bounds on table-merging
+work, not arbitrary source computations or elapsed time. The browser execution
+limit still applies. Calibration functions written using unbounded `derive`
+must themselves be computationally feasible.
+
+The three complete modules in `examples/lean-derivations/` are available in the
+editor:
+
+| Module | Checked statistical connection |
+| --- | --- |
+| `bernoulli-observations.lean` | Individual Bernoulli observations imply the count recurrence and derived distribution. A kernel-checked theorem proves minimum n = 25 for the specified calibrated upper-tail rules, and the cutoff 6 satisfies type-I error ≤ 0.05 and power ≥ 0.80. |
+| `paired-categorical.lean` | An arbitrary joint distribution of binary pairs implies the distribution of their summed differences. Under the supplied dependent joint laws, n = 23 and cutoff 5 satisfy the stated bounds. |
+| `dependent-observations.lean` | State-dependent transitions imply the distribution of a repeated-observation count. A concrete probability is kernel checked without assuming independent observations. |
+
+The observation-to-distribution theorems are symbolic and reusable. The examples
+also check concrete probability or sample-size claims with `decide +kernel`,
+using staged certificates for the larger paired calculation.
+The structured calculation tables remain execution output: only the separate
+theorem declarations certify their stated mathematical claims. Monte Carlo and
+floating-point samplers are tested implementations, not formally verified
+samplers.
+
+The browser regression compares every exact design row in these examples against
+independent rational references. `scripts/generate_lean_derivation_references.py`
+uses combinatorial binomial and multinomial formulas, and exhaustive Markov
+trajectories, rather than the compiler's state-merging algorithm. It also tests
+false certificates, changed observation assumptions, invalid probability mass,
+bounded compilation, and equality of seeded original-program simulations across
+automatic and explicitly requested routes.
+
+This layer establishes finite probability semantics and proof-producing
+distribution derivation. Continuous observation-to-statistic theorems,
+noncentral-t derivations, asymptotic normality, and certified numerical
+integration are not yet included. The numerical examples below continue to
+assume their supplied sampling distributions or approximations.
+
 ## One specification, direct calculation and simulation
 
 `SSC.Calculation.Specification Design Outcome` contains three typed functions:
@@ -115,7 +223,7 @@ These examples establish an extensible computation path. They are not a claim
 of parity with all **71 manual procedures / 163 procedure–target combinations**.
 Full parity across every procedure option, and formal derivations of every
 statistical approximation, remain separate work. The library currently supplies
-neither a general mixed-model optimizer nor a complete formal probability theory.
+neither a general mixed-model optimizer nor a complete formal theory for continuous probability.
 
 `web/tests/fixtures/lean-numerics.json` records 53 independent SciPy reference
 values for the numerical primitives. Browser tests execute the actual Lean WASM
@@ -198,9 +306,9 @@ hosting, the service worker establishes cross-origin isolation and may reload
 once. Stop terminates the worker; restart reuses authenticated cached assets.
 Compilation has a 120-second browser limit and a 128-KiB source limit.
 
-Mathlib is not bundled. General real analysis, probability theory, automatic
-statistical model derivation, and a universal automated mathematician are not
-implemented. Real-valued noncomputable definitions require computable bridges
+Mathlib is not bundled. General real analysis, continuous probability theory,
+unrestricted statistical derivation, and a universal automated mathematician are
+not implemented. Real-valued noncomputable definitions require computable bridges
 before numerical execution. These are explicit limits of the available library
 and automation, not a hidden fallback to predefined statistical routines.
 

@@ -70,7 +70,8 @@ def browser_sources():
     # Ordinary modules in dependency order, compiled by the shipped compiler.
     # No model adapters or source-to-source substitutions.
     return {name: (ROOT/'lean/browser'/name).read_text() for name in
-            ['SSC/Numeric.lean', 'SSC/Probability.lean', 'SSC/Calculation.lean', 'SSC.lean']}
+            ['SSC/Numeric.lean', 'SSC/Probability.lean', 'SSC/Calculation.lean',
+             'SSC/Finite.lean', 'SSC/Derivation.lean', 'SSC.lean']}
 
 
 def node_command():
@@ -79,8 +80,6 @@ def node_command():
     # the genuine Lean runtime's 104769 exports before running any Lean code.
     if not shutil.which('em-config'):
         return ['node']  # Node 24+ is required by the pinned runtime's export count.
-    if not shutil.which('em-config'):
-        return [shutil.which('node') or 'node']
     command = ast.literal_eval(subprocess.check_output(['em-config', 'NODE_JS'], text=True).strip())
     if isinstance(command, str):
         command = [command]

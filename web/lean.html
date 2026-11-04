@@ -21,7 +21,7 @@
 <main class="compiler-page">
   <div class="intro">
     <h2>Lean mathematical compiler <span class="badge">Experimental</span></h2>
-    <p>Specify sampling distributions and a rejection rule in ordinary Lean. Calculate power and search designs, with simulation available under the same specification.</p>
+    <p>Define observations, a statistic and a rejection rule in ordinary Lean. Derive finite distributions with checked proofs, calculate power and search designs, with simulation under the same specification.</p>
     <p class="small">Exact finite evaluation, numerical integration and simulation are reported separately from kernel-checked proofs. Invalid models and unfinished proofs remain errors.</p>
   </div>
   <section id="lean-connection" class="panel connection" aria-live="polite">
@@ -38,6 +38,11 @@
       <div class="toolbar">
         <label for="lean-example" class="sr-only">Lean example</label>
         <select id="lean-example">
+          <optgroup label="Derived from observations">
+          <option value="bernoulli-observations">Binary observations: prove power and minimum sample size</option>
+          <option value="paired-categorical">Dependent paired outcomes: derive the score distribution</option>
+          <option value="dependent-observations">State-dependent observations: derive rejection probability</option>
+          </optgroup>
           <optgroup label="Sample size and power">
           <option value="normal-means">Normal means: numerical and simulation</option>
           <option value="student-means">Student t: sample size and detectable effect</option>
@@ -65,6 +70,7 @@
 -- Use #eval for executable values and #check for types.</pre>
         <p>The browser includes Lean, Init, Std and SSC. SSC provides composable probability laws, numerical distribution functions, seeded simulation, design search and a proof reporter. Statistical models and test equations are defined in your source. Mathlib is not bundled.</p>
         <p>A <code>Specification</code> defines the null law, alternative law and rejection event for any design type. Automatic evaluation tries finite rational enumeration, then supported numerical integration, then samples the same law and evaluates the same event. It never replaces a failed proof with simulation.</p>
+        <p>The observation examples use <code>SSC.Derivation</code>. Its finite-program compiler returns a distribution with a proof that every expectation agrees with the observation program. Equal intermediate states can be combined without changing probabilities. If its work budget is exhausted, evaluation samples the original program. Continuous distribution derivations are not yet provided.</p>
         <p>Search covers the supplied ordered candidates. Monte Carlo intervals can leave candidates unresolved. When a type-I error constraint is omitted, the null rejection rate is reported but does not constrain the search.</p>
         <p>Lean's kernel checks theorem proofs. Hypotheses remain conditions of those theorems. The report shows their actual proof terms, dependencies and source tactic goals.</p>
         <p>Evaluation output is separate from proof. A numerical value is certified only by an explicit theorem about it. Approximation error bounds and links from a probability model to a supplied formula must also be proved or stated as hypotheses.</p>

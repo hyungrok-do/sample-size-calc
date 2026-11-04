@@ -42,6 +42,8 @@ inductive Law : Type → Type 1 where
   | poisson (rate : Float) : Law Nat
   | scalar (distribution : ScalarLaw) : Law Float
   | bind {α β : Type} (first : Law α) (next : α → Law β) : Law β
+  /-- Preserve the model while requiring sampling after a bounded derivation fails. -/
+  | samplingOnly {α : Type} (reason : String) (model : Law α) : Law α
   | invalid {α : Type} (message : String) : Law α
 
 instance : Monad Law where
@@ -127,6 +129,7 @@ private def spend (n : Nat := 1) : StateT Nat (Except EvaluationError) Unit := d
 
 /-- Bounded finite interpreter. It never truncates or renormalizes a law. -/
 def enumerate : {α : Type} → Law α → StateT Nat (Except EvaluationError) (Array (α × Rat))
+  | _, .samplingOnly reason _ => throw (.unavailable reason)
   | _, .invalid message => throw (.invalid message)
   | _, .pure x => do
     spend
@@ -265,6 +268,7 @@ def ScalarLaw.sample (d : ScalarLaw) : Draw Float := do
   finite value
 
 def sample : {α : Type} → Law α → Draw α
+  | _, .samplingOnly _ model => sample model
   | _, .invalid message => throw message
   | _, .pure x => do
     tick

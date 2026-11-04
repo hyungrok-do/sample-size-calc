@@ -6,9 +6,9 @@ uses its configured Node runtime. The Lean compiler tab itself requires no
 Emscripten or separate C++ numerical module.
 
 The builder verifies pinned public runtime and library archives, compiles
-`lean/browser/SSC.lean` with the actual WASM compiler, and packages matching
+the modules under `lean/browser/` with the actual WASM compiler, and packages matching
 wasm32 artifacts in `web/lean-wasm/`. Manifest schema 2 contains the Lean runtime,
-core libraries and proof reporter. The old statistical module is not imported.
+core libraries, the finite probability derivation library and proof reporter. The old statistical module is not imported.
 
 `lean-node.cjs` is adapted from cauli/lean4-wasm-in-browser (Apache-2.0). Native
 64-bit `.olean` files must not be substituted. `SSC.lean` contains a generic,

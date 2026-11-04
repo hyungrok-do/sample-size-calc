@@ -7,6 +7,7 @@ import { extname, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 import { examples } from '../lean-proof-examples.js';
 import { checkCalculations } from './lean-calculations.mjs';
+import { checkDerivations } from './lean-derivations.mjs';
 const root = resolve(process.argv[2] || new URL('..', import.meta.url).pathname);
 const prefix = '/sample-size-calc/';
 const temporary = await mkdtemp(resolve(tmpdir(),'ssc-lean-browser-'));
@@ -139,6 +140,7 @@ end UserModel`;
   console.log('False claims, missing hypotheses, user axioms, sorry and unchecked evaluation rejected.');
 
   await checkCalculations({ compile, report, page, reject });
+  await checkDerivations({ compile, report, page, reject });
 
   await compile(arbitrary);
   await context.setOffline(true);

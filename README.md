@@ -124,11 +124,19 @@ and they install with `python -m pip install sample_size_calculator-*.whl`.
 The separate **Lean compiler** tab accepts ordinary Lean definitions, hypotheses,
 and theorem goals. It constructs and checks proofs through Lean's own tactics
 and kernel in WebAssembly, and evaluates computable definitions with `#eval`.
-There is no statistical `analysis` selector, fixed model dispatcher, or separate
-C++ numerical backend in this tab. A shared specification defines the null law,
+There is no statistical `analysis` selector, dispatch on procedure names, or
+separate C++ numerical backend in this tab. A shared specification defines the null law,
 alternative law and rejection event. Exact finite evaluation, numerical CDFs and
 simulation operate on those same definitions, with reproducible simulation
 intervals and explicit unresolved search candidates.
+
+For finite observation models, a proof-producing compiler derives the statistic's
+distribution and proves equality of every expectation with the original program.
+It combines equal intermediate states and supports dependent transitions. The
+observation examples connect individual binary outcomes to a proved sample-size
+minimum, derive scores from dependent pairs, and check a state-dependent model.
+When its compilation budget is exhausted, the same program supplies simulation.
+Continuous sampling-distribution derivations remain unfinished.
 
 The [browser compiler](docs/lean-compiler.md) shows actual proof terms, formal
 hypotheses, dependencies and intermediate tactic goals. Examples include an

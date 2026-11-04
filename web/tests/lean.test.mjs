@@ -103,6 +103,13 @@ test('calculation examples match the ordinary Lean modules', async () => {
     assert.equal(source, await readFile(new URL(`../../examples/lean-calculations/${name}.lean`, import.meta.url), 'utf8'));
 });
 
+test('observation derivation examples match their actual Lean modules', async () => {
+  const { examples } = await import('../lean-derivation-examples.js');
+  for (const [name, source] of Object.entries(examples))
+    assert.equal(source, await readFile(new URL(`../../examples/lean-derivations/${name}.lean`, import.meta.url), 'utf8'));
+  assert.match(await readFile(new URL('../sw.js', import.meta.url), 'utf8'), /lean-derivation-examples\.js\?v=dev/);
+});
+
 test('calculation reports remain separate from proofs and preserve malformed output', async () => {
   const { extractCalculations } = await import('../lean-calculation-results.js');
   const p = { method: 'numerical', value: 0.8 };

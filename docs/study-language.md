@@ -1,5 +1,5 @@
 > This is the earlier custom language at `web/study.html`. The third tab now
-> opens the [native Lean equation compiler](lean-compiler.md), which accepts
+> opens the [Lean compiler in WebAssembly](lean-compiler.md), which accepts
 > actual Lean source and checks generated theorems in Lean's kernel.
 
 # Browser study language sandbox
