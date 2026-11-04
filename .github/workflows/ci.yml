@@ -74,7 +74,7 @@ jobs:
   web:
     name: WebAssembly engine and frontend
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -95,10 +95,13 @@ jobs:
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           web/build.sh
+          python scripts/build_lean_wasm.py
       - uses: actions/upload-artifact@v4
         with:
-          name: web-engines
-          path: web/engine/
+          name: web-artifacts
+          path: |
+            web/engine/
+            web/lean-wasm/
           retention-days: 3
       - name: Guide coverage and number formatting
         run: |
@@ -109,6 +112,8 @@ jobs:
       - name: Guide and calculator in Chromium
         if: ${{ !cancelled() }}
         run: cd web && npm run test:browser
+      - name: Actual Lean compiler in WebAssembly
+        run: cd web && npm run test:lean-wasm-browser
       - name: Lean compiler tab in Chromium
         if: ${{ !cancelled() }}
         run: cd web && npm run test:lean-browser
@@ -157,8 +162,8 @@ jobs:
           node-version: 24
       - uses: actions/download-artifact@v4
         with:
-          name: web-engines
-          path: web/engine
+          name: web-artifacts
+          path: web
       - name: Browser
         id: browser
         timeout-minutes: 10

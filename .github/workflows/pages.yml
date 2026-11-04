@@ -9,6 +9,9 @@ on:
     branches: [main]
     paths:
       - "core/**"
+      - "lean/**"
+      - "packaging/lean-wasm/**"
+      - "scripts/build_lean_wasm.py"
       - "web/**"
       - "CMakeLists.txt"
       - "LICENSE"
@@ -26,7 +29,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Emscripten
@@ -38,6 +41,7 @@ jobs:
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           web/build.sh
+          python scripts/build_lean_wasm.py
       - name: The site
         run: |
           web/assemble.sh _site "${GITHUB_SHA::12}"
@@ -50,6 +54,7 @@ jobs:
           npm ci --prefix web
           cd web
           npx playwright install --with-deps chromium
+          npm run test:lean-wasm-browser -- ../_site
           npm run test:site -- ../_site
       - uses: actions/upload-pages-artifact@v3
 

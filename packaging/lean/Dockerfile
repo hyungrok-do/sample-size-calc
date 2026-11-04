@@ -36,7 +36,12 @@ COPY CMakeLists.txt LICENSE THIRD_PARTY_NOTICES.md ./
 COPY core/ core/
 COPY web/build.sh web/build.sh
 RUN web/build.sh
+COPY lean/ lean/
+COPY packaging/lean-wasm/ packaging/lean-wasm/
+COPY scripts/build_lean_wasm.py scripts/build_lean_wasm.py
+RUN python3 scripts/build_lean_wasm.py --output /browser-compiler
 COPY web/ web/
+RUN cp -R /browser-compiler web/lean-wasm
 ARG SITE_VERSION=container
 RUN web/assemble.sh /site "$SITE_VERSION"
 

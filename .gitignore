@@ -32,3 +32,6 @@ lean/.lake/
 
 # Deployment credentials stay on the deployment host.
 packaging/lean/.env
+
+# Pinned Lean WebAssembly artifacts are built, tested and deployed by CI.
+web/lean-wasm/

@@ -1,19 +1,69 @@
-# Native Lean sample-size compiler
+# Lean sample-size compiler in WebAssembly
 
 The third tab is for **statistical study planning**. A Lean study specifies a
 model, an estimand, an analysis, allocation/counting units, and a power criterion.
 The compiler derives the effect and variance coefficient, constructs the
-rejection probability, and executes generated C++ to find an admissible integer
+rejection probability, and executes a C++ WebAssembly backend to find an admissible integer
 sample size. The result shows the statistical reasoning before the optional
-C++ source. Low-level algebra commands remain available as implementation tools.
+C++ source. The default tab runs entirely in the browser.
 
-## Run the native compiler
+## Run in the browser
 
-For a hosted application that compiles directly from the browser, use the
-[Docker deployment](../packaging/lean/README.md). It bundles all three tabs and
-their WASM engines, HTTPS/authentication, and disposable native compiler workers.
-GitHub Pages alone remains an editor because it cannot execute the Lean backend.
-The following setup is the local development option.
+Open the Lean tab on the static site and wait for the compiler to load. Source,
+Lean elaboration, proof checking, and numerical calculations stay in the browser.
+There are no `/api/lean` calls in the default route. The compiler is the actual
+Lean 4.33.0-pre WASM build pinned to commit
+`62b6a2291302d4bbeace37642a066b7510d0145c`, with its matching core library and a
+statistical compiler module built by that same WASM binary.
+
+The first load transfers about 175 MiB, stored in the browser cache when space
+is available. A current desktop browser with shared-memory WebAssembly is
+required. GitHub Pages gets cross-origin isolation from the site's service
+worker and may reload once on the first visit. Editing and compilation can
+continue offline after loading. Stop terminates the compiler worker, and the
+next worker reuses the cached package.
+
+The browser module is generated from the same statistical model and elaborator
+source as the native tool. Lean's parser, type checker, evaluator and kernel
+handle user definitions and proofs. No JavaScript/C++ parser imitates Lean.
+The bundle includes Lean core, `Std`, `Lean`, and the statistical study module
+`SSC`; it does not include the full Mathlib library or the separate real-equation
+solver. Closed rational model expressions, functions, structures, proof terms,
+and all five statistical examples are supported.
+
+For every query, the browser kernel checks fresh exact effect and variance
+certificates. The general probability/variance theorems remain in the separately
+audited native Mathlib project below. Their proof environments are not represented
+as loaded into the browser. Neither those theorems nor the arithmetic certificates
+certify floating-point tails, sampling-model assumptions or arbitrary EIF/CLT
+conditions.
+
+The C++ WASM backend consumes the elaborated statistical plan. Downloaded C++
+embeds that same numerical runtime with the current planning values. There is no
+browser C++ JIT, server compilation, or canned numerical result.
+
+Build the complete static application with Emscripten on PATH:
+
+```sh
+web/build.sh
+python scripts/build_lean_wasm.py
+web/assemble.sh _site development
+cd web && npm ci && npm run test:lean-wasm-browser
+```
+
+The build downloads checksum-pinned public releases, extracts matching core
+artifacts, and uses the WASM compiler itself to build `SSC.olean`. Private or
+expiring Actions artifacts are not needed. The browser test exercises actual
+compilation with all compiler API requests rejected, changes a study through a
+new Lean function, compares the downloadable C++ result, and checks offline
+reload, compilation and cancellation under a static-host subpath without server
+isolation headers.
+
+## Optional native tools and Mathlib audit
+
+The native Lean 4.19.0/Mathlib project supports the additional real-equation
+solver and general probability theorem audit. The [Docker deployment](../packaging/lean/README.md)
+can host these optional native tools. It is not required by the browser tab.
 
 With the pinned Lean 4.19.0 toolchain, a C++17 compiler, and Python 3.9+ on POSIX:
 
@@ -25,8 +75,8 @@ cd ..
 python scripts/serve_lean.py
 ```
 
-Open `http://127.0.0.1:8765/lean.html`. The GitHub Pages version is an editor;
-it does not run the native Lean or C++ toolchains. This local service is for
+Open `http://127.0.0.1:8765/lean.html?runtime=native` to explicitly select the
+optional native adapter. This local service is for
 trusted source: Lean modules can perform IO. It checks the loopback origin and
 host, accepts one job at a time, and bounds source size, output, and total elapsed
 time across Lean checking, C++ compilation, and execution. Stop cancels the
@@ -166,9 +216,9 @@ using semiparametric efficient estimators](https://pubmed.ncbi.nlm.nih.gov/34364
 and [Estimating the efficiency gain of covariate-adjusted analyses in future
 clinical trials using external data](https://pmc.ncbi.nlm.nih.gov/articles/PMC10433828/).
 
-## Underlying equation engine
+## Native general real-equation engine
 
-The service supplies `import DesignCompiler.Planning.Command` (which includes the equation engine), so no header is required in
+In the explicit native route, the service supplies `import DesignCompiler.Planning.Command` (which includes the equation engine), so no header is required in
 the editor. Additional imports may refer to installed Lean modules.
 
 ```lean
@@ -350,7 +400,7 @@ roots, empty and all-real solution sets, intersections, reciprocals, Unicode
 parameter names, unsupported hypotheses, invalid numeric input, overflow, invalid proofs and
 axioms, unresolved equations, numerical evaluation, and process cancellation.
 The native browser test checks the actual service, mobile layout, CSP, multiple
-queries, stale-result invalidation, and the static-host unavailable state.
+queries, stale-result invalidation, and the unavailable-native-service state.
 
 ## Earlier Lean declaration templates
 
@@ -412,8 +462,7 @@ uses a C++ compiler for a closed subset:
   executable commands produce a line/column error.
 
 This older declaration route is **syntax and parameter compilation**, not a Lean kernel invocation in the
-browser. Compilation explicitly returns `leanKernelChecked: false`. The static
-site contains neither a general Lean compiler nor a C++ JIT. **Solve** interprets
+browser. Compilation explicitly returns `leanKernelChecked: false`. That legacy route does not use the new browser Lean compiler and contains no C++ JIT. **Solve** interprets
 the compiled plan in the precompiled C++/WebAssembly engine. The downloadable C++
 implements the same calculation independently using the standard library.
 

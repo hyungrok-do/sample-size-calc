@@ -32,6 +32,8 @@ function reference(raw, from) {
   // an engine named by a variable: both engines
   for (const ref of raw.includes('${') ? ['ssc_web', 'ssc_web_mt'].map((v) => raw.replace(/\$\{[^}]*\}/g, v)) : [raw]) {
     const [path, query = ''] = ref.replace(/^\.\//, '').split('?');
+    // These runtime URLs use the compiler manifest's content hashes and version.
+    if (from === 'lean-wasm-worker.js' && ['lean-wasm/', 'manifest.json', 'lean.js', 'study.mjs'].includes(path)) continue;
     if (path === '' || /^[a-z]+:/.test(path)) continue;
     seen.add(path);
     if (!existsSync(join(site, path))) missing.push(`${path} (from ${from})`);
@@ -48,6 +50,11 @@ for (const file of scripts) {
     const list = /const FILES = \[([^\]]*)\]/.exec(code)?.[1] ?? '';
     for (const m of list.matchAll(/'([^']*)'/g)) if (m[1] !== './') reference(m[1], 'sw.js (offline copies)');
   }
+}
+const compilerManifest = JSON.parse(await text('lean-wasm/manifest.json'));
+for (const entry of [...Object.entries(compilerManifest.runtime).map(([file,meta])=>({file,...meta})), ...compilerManifest.packs]) {
+  const bytes = await readFile(join(site,'lean-wasm',entry.file));
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),entry.sha256,`compiler asset ${entry.file}`);
 }
 assert.deepEqual(missing, [], 'files the page loads but the site does not have');
 assert.deepEqual(unversioned, [], 'files loaded without the version in their address');

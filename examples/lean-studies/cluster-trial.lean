@@ -6,7 +6,7 @@ def clusterSize : Nat := 20
 def individualVariance : ℚ := 1
 def icc : ℚ := 1/20
 def clusterVariance : ℚ := clusterMeanVariance individualVariance icc clusterSize
-  (by norm_num [clusterSize]) (by norm_num [individualVariance]) (by norm_num [icc])
+  (by decide +kernel) (by decide +kernel) (by decide +kernel)
 
 def study : Study := {
   name := "Parallel cluster-randomized trial"

@@ -125,20 +125,23 @@ The separate **Lean compiler** tab accepts a statistical study written in actual
 Lean: a covariance/contrast or influence-function model, estimand, analysis,
 allocation, and power criterion. `solve sample_size design using study` derives
 the effect and variance, explains the rejection rule and power function, then
-runs generated C++ to find an admissible integer sample size. Power and detectable
+runs the C++ WebAssembly backend to find an admissible integer sample size. Power and detectable
 effect queries use the same model. The examples include repeated measures,
 clustered trials, unequal allocation, and AIPW/TMLE planning.
 
-The [native compiler service](docs/lean-compiler.md) checks exact model arithmetic
-in Lean; numerical power uses ordinary floating point. Gaussian contrasts assume
-known covariance, and influence-function designs use asymptotic Wald inference.
-The static host is an editor and does not run native compilation. The
-[browser study sandbox](docs/study-language.md) retains its Monte Carlo engine;
-the DAG simulator remains a separate tab.
+The [browser compiler](docs/lean-compiler.md) runs the actual Lean elaborator and
+kernel in WebAssembly, then evaluates power and integer search in a C++ WASM
+backend. The static GitHub Pages site includes the compiler: no local Lean,
+Python, C++ installation, or compiler server is required. The first visit loads
+about 175 MiB of compiler/library assets and caches them; use a current desktop
+browser with shared-memory WebAssembly support.
 
-For browser-only access to native compilation, the [hosted compiler deployment](packaging/lean/README.md)
-packages the complete three-tab site, HTTPS/login, and a fresh isolated Lean/C++
-worker for each request. It runs with Docker Compose on a Linux server.
+Exact model arithmetic is Lean checked. Gaussian contrasts assume known
+covariance, and influence-function designs use asymptotic Wald inference.
+Floating-point power is numerical. The [browser study sandbox](docs/study-language.md)
+retains its Monte Carlo engine, and the DAG simulator remains a separate tab.
+The native Mathlib audit and general real-equation tools remain available for
+development; [Docker hosting](packaging/lean/README.md) is optional.
 
 ### Web page
 

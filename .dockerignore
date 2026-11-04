@@ -15,3 +15,5 @@ lean/.lake/
 web/node_modules/
 web/engine/
 packaging/lean/.env
+
+web/lean-wasm/

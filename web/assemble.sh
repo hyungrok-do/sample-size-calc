@@ -10,7 +10,10 @@ version=$2
 [ -f "$here/engine/ssc_web.wasm" ] && [ -f "$here/engine/ssc_web_mt.wasm" ] ||
   { echo "web/engine has no engines: run web/build.sh first" >&2; exit 1; }
 if [ -e "$site" ] && [ -n "$(ls -A "$site")" ]; then echo "$site exists and is not empty" >&2; exit 1; fi
+[ -f "$here/lean-wasm/manifest.json" ] ||
+  { echo "Browser compiler missing: run python scripts/build_lean_wasm.py with Emscripten on PATH" >&2; exit 1; }
 mkdir -p "$site/engine"
+cp -R "$here/lean-wasm" "$site/lean-wasm"
 cp "$here"/*.html "$here"/*.css "$here"/*.js "$site/"
 cp "$here/engine/ssc_web.mjs" "$here/engine/ssc_web.wasm" "$here/engine/ssc_web_mt.mjs" "$here/engine/ssc_web_mt.wasm" "$site/engine/"
 cp "$repo/LICENSE" "$repo/THIRD_PARTY_NOTICES.md" "$site/"

@@ -37,7 +37,7 @@ async function compile(source) {
   assert.equal(await page.locator('#lean-error').isVisible(), false, await page.locator('#lean-error').textContent());
 }
 try {
-  await page.goto(`${base}/lean.html`);
+  await page.goto(`${base}/lean.html?runtime=native`);
   await page.waitForFunction(() => !document.getElementById('lean-compile').disabled);
   if (process.env.SSC_LEAN_TEST_URL) assert.match(await page.locator('#lean-connection-status').textContent(), /Hosted Lean compiler connected/);
   assert.equal(await page.locator('.workspace-tabs a').count(), 3);
@@ -121,14 +121,14 @@ try {
   assert.equal(await page.locator('#lean-setup').isVisible(), false);
   assert.equal(await page.locator('#lean-compile').isDisabled(), true);
   await context.unroute('**/api/lean/health');
-  // Static hosting must never pretend that a kernel has run.
+  // An explicitly selected native service must report an unavailable endpoint.
   await context.route('**/api/lean/health', route => route.fulfill({ status: 404, body: '' }));
   await page.reload();
   await page.waitForFunction(() => !document.getElementById('lean-setup').hidden);
   assert.equal(await page.locator('#lean-compile').isDisabled(), true);
   assert.match(await page.locator('#lean-connection-status').textContent(), /unavailable/);
   assert.deepEqual(errors, []); assert.deepEqual(violations, []);
-  console.log('Native Lean editor: actual kernel results, user rules, fallback, multiple queries, errors, cancellation, mobile, persistence, and static-host state passed.');
+  console.log('Native Lean editor: actual kernel results, user rules, fallback, multiple queries, errors, cancellation, mobile, persistence, and unavailable-service state passed.');
 } finally {
   await context.close(); await browser.close(); server?.kill('SIGINT');
 }

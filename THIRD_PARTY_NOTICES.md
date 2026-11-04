@@ -21,3 +21,15 @@ system libraries:
 The full license texts are in the Emscripten SDK
 (`emscripten/LICENSE`, `emscripten/system/lib/*/LICENSE*`) and at
 <https://github.com/emscripten-core/emscripten>.
+
+## Lean browser compiler
+
+The browser compiler build downloads the Lean 4 WebAssembly runtime from
+[cauli/lean4-wasm-in-browser](https://github.com/cauli/lean4-wasm-in-browser),
+built from [cauli/lean4](https://github.com/cauli/lean4) at
+`62b6a2291302d4bbeace37642a066b7510d0145c`, a fork of the
+[Lean 4 theorem prover](https://github.com/leanprover/lean4). Lean and the browser
+project use Apache-2.0. Exact release URLs and SHA-256 hashes are recorded in
+`scripts/build_lean_wasm.py`. The adapted Node build driver and runtime
+initialization acknowledge that project; its license is included in
+`packaging/lean-wasm/UPSTREAM-LICENSE` and the deployed compiler directory.

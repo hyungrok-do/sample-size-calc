@@ -8,7 +8,8 @@
     "test:page": "node tests/page.mjs",
     "test:site": "node tests/site.mjs",
     "test:lean-browser": "node tests/lean-browser.mjs",
-    "test:lean-native-browser": "node tests/lean-native-browser.mjs"
+    "test:lean-native-browser": "node tests/lean-native-browser.mjs",
+    "test:lean-wasm-browser": "node tests/lean-wasm-browser.mjs"
   },
   "devDependencies": {
     "playwright": "1.57.0"

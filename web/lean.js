@@ -1,10 +1,13 @@
+import { BrowserLeanCompiler } from './lean-wasm-client.js?v=dev';
 import { examples as algebraExamples } from './lean-native-examples.js?v=dev';
 import { examples as studyExamples } from './lean-study-examples.js?v=dev';
-const examples = { ...algebraExamples, ...studyExamples };
+const useNative = new URLSearchParams(location.search).get('runtime') === 'native';
+const examples = useNative ? { ...algebraExamples, ...studyExamples } : studyExamples;
 
 const $ = id => document.getElementById(`lean-${id}`);
 const source = $('source'), storageKey = 'ssc-native-lean-statistical-v2';
-let ready = false, busy = false, compiled = null, generation = 0, activeJob = null, controller = null;
+const browserCompiler = new BrowserLeanCompiler(text => { $('connection-status').textContent = text; });
+let ready = false, busy = false, compiled = null, generation = 0, connectionGeneration = 0, activeJob = null, controller = null;
 
 function refresh() {
   $('compile').disabled = busy || !ready;
@@ -21,7 +24,21 @@ function download(name, body, type = 'text/plain') {
   a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function checkConnection() {
+  const check = ++connectionGeneration;
   ready = false; refresh();
+  if (!useNative) {
+    $('runtime').textContent = 'Lean · WebAssembly'; $('setup').hidden = true;
+    try {
+      await browserCompiler.initialize();
+      if (check !== connectionGeneration) return;
+      ready = true;
+      $('connection-status').textContent = 'Lean compiler ready in this browser. Source and calculations stay here.';
+    } catch (error) {
+      if (check !== connectionGeneration) return;
+      $('connection-status').textContent = error.message; $('setup').hidden = false;
+    }
+    refresh(); return;
+  }
   let execution = 'unknown';
   $('connection-status').textContent = 'Checking the native compiler…';
   try {
@@ -181,10 +198,11 @@ function renderStudy(plan) {
   $('theorem-type').textContent = plan.theoremType;
   $('proof-heading').textContent = 'Verification scope';
   $('proof-term').textContent = plan.verification;
-  $('axioms').textContent = `Arithmetic proof dependencies: ${plan.axioms.join(', ') || 'none'}. The normal-tail identity is DesignCompiler.normal_rejection_formula.`;
+  $('axioms').textContent = `Arithmetic proof dependencies: ${plan.axioms.join(', ') || 'none'}.` +
+    (useNative ? ' The normal-tail identity is DesignCompiler.normal_rejection_formula.' : ' The general normal-tail identity has a separate native Mathlib audit.');
   $('diagnostics').textContent = compiled.diagnostics;
   $('cpp-output').hidden = false; $('cpp').textContent = plan.cpp;
-  $('cpp-status').textContent = 'The generated C++ has already calculated this result. Download it to reproduce the same power calculation and integer search.';
+  $('cpp-status').textContent = useNative ? 'The generated C++ has calculated this result.' : 'The C++ numerical runtime ran as WebAssembly in this browser. The download uses the same runtime and planning values.';
   $('cpp-parameters').textContent = 'The planning values are compiled from this Lean source. Change the study assumptions and compile again to evaluate a different design.';
   $('cpp-assumptions').replaceChildren(); $('cpp-guards').hidden = true;
   $('cpp-command').textContent = 'c++ -std=c++17 -O2 study.cpp -o study\n./study';
@@ -199,7 +217,7 @@ if (Object.hasOwn(examples, requested)) { source.value = examples[requested]; $(
 source.addEventListener('input', invalidate);
 $('load').addEventListener('click', () => { source.value = examples[$('example').value]; invalidate(); });
 $('query').addEventListener('change', render);
-$('reconnect').addEventListener('click', checkConnection);
+$('reconnect').addEventListener('click', () => { if (!useNative) browserCompiler.stop(); checkConnection(); });
 $('save').addEventListener('click', () => download('study.lean', source.value));
 $('proof-save').addEventListener('click', () => { if (compiled) download('checked-study.lean', compiled.module); });
 $('cpp-save').addEventListener('click', () => {
@@ -223,10 +241,13 @@ $('compile').addEventListener('click', async () => {
   $('status').textContent = 'Compiling the Lean specification, checking its derivation, and evaluating the design…';
   const jobId = crypto.randomUUID(); activeJob = jobId; controller = new AbortController();
   try {
-    const response = await fetch('api/lean/compile', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: source.value, jobId }), signal: controller.signal });
-    const value = await response.json();
-    if (!response.ok || !value.ok) throw Error(value.error || 'Native compilation failed.');
+    let value;
+    if (useNative) {
+      const response = await fetch('api/lean/compile', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: source.value, jobId }), signal: controller.signal });
+      value = await response.json();
+      if (!response.ok || !value.ok) throw Error(value.error || 'Native compilation failed.');
+    } else value = await browserCompiler.compile(source.value);
     if (version !== generation) return;
     compiled = value; $('query').replaceChildren();
     value.results.forEach((equation, index) => { const option = document.createElement('option'); option.value = index; option.textContent = equation.title ? `${equation.title} · ${equation.solveFor}` : equation.name; $('query').append(option); });
@@ -241,10 +262,12 @@ $('stop').addEventListener('click', async () => {
   ++generation; controller?.abort();
   const jobId = activeJob; activeJob = null;
   $('status').textContent = 'Stopping Lean…';
-  try { if (jobId) await fetch(`api/lean/compile/${jobId}`, { method: 'DELETE', signal: AbortSignal.timeout(5000) }); }
+  if (!useNative) { browserCompiler.stop(); ready = false; }
+  try { if (useNative && jobId) await fetch(`api/lean/compile/${jobId}`, { method: 'DELETE', signal: AbortSignal.timeout(5000) }); }
   catch {}
   busy = false; refresh(); $('status').textContent = 'Stopped.';
+  if (!useNative) checkConnection();
 });
-window.addEventListener('pagehide', () => { if (activeJob) fetch(`api/lean/compile/${activeJob}`, { method: 'DELETE', keepalive: true }).catch(() => {}); });
+window.addEventListener('pagehide', () => { if (!useNative) browserCompiler.stop(); if (useNative && activeJob) fetch(`api/lean/compile/${activeJob}`, { method: 'DELETE', keepalive: true }).catch(() => {}); });
 checkConnection();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

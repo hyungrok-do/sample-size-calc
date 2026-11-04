@@ -16,7 +16,7 @@
     <a href="./">Calculator</a><a href="dag.html?v=dev">DAG simulator</a>
     <a href="lean.html?v=dev" aria-current="page">Lean compiler</a>
   </nav>
-  <p id="lean-runtime" class="muted small">Lean · browser editor</p>
+  <p id="lean-runtime" class="muted small">Lean · WebAssembly</p>
 </header>
 <main class="compiler-page">
   <div class="intro">
@@ -25,18 +25,12 @@
     <p class="small">The compiler carries the statistical assumptions into the result and shows the variance derivation, rejection rule, power calculation, and integer search.</p>
   </div>
   <section id="lean-connection" class="panel connection" aria-live="polite">
-    <p id="lean-connection-status">Checking the native compiler…</p>
+    <p id="lean-connection-status">Loading the browser compiler…</p>
     <div id="lean-setup" hidden>
-      <p>This hosted page is an editor. To compile studies, start the local service from a checkout with Python 3, a C++17 compiler, and the pinned Lean toolchain:</p>
-      <pre class="command">cd lean
-lake exe cache get
-lake build DesignCompiler.Planning.Command
-cd ..
-python scripts/serve_lean.py</pre>
-      <p>Then open <a href="http://127.0.0.1:8765/lean.html">the local Lean editor</a>. Run code you trust: Lean modules can perform IO.</p>
-      <p>For browser access without a local installation, the repository includes a <a href="https://github.com/hyungrok-do/sample-size-calc/blob/main/packaging/lean/README.md">hosted compiler deployment</a>. GitHub Pages alone serves the editor.</p>
+      <p>The Lean compiler and numerical backend run in this browser. The first visit downloads the compiler package and caches it for later use.</p>
+      <p>Use a current desktop browser with WebAssembly and shared-memory support. If loading was interrupted, retry below to reuse completed downloads.</p>
     </div>
-    <div class="actions"><button id="lean-reconnect" type="button">Check connection</button><a href="study.html?v=dev">Browser study sandbox &amp; simulation</a></div>
+    <div class="actions"><button id="lean-reconnect" type="button">Reload compiler</button><a href="study.html?v=dev">Browser study sandbox &amp; simulation</a></div>
   </section>
   <div class="workbench">
     <section class="panel editor-panel" aria-labelledby="source-heading">
@@ -63,9 +57,10 @@ solve sample_size design using study
 solve power planned_power using study at 100
 solve effect detectable_effect using study at 100</pre>
         <p>Ordinary Lean functions and expressions can construct the covariance, allocation, and influence variance. The Gaussian contrast model propagates an arbitrary covariance matrix; it does not select a canned test from the example name.</p>
-        <p>Known-covariance Gaussian contrasts use a z test. AIPW/TMLE and custom influence-function designs use asymptotic Wald inference. Estimated-covariance t/F inference and native Monte Carlo study compilation are not implemented in this route.</p>
+        <p>Known-covariance Gaussian contrasts use a z test. AIPW/TMLE and custom influence-function designs use asymptotic Wald inference. Estimated-covariance t/F inference and Monte Carlo study compilation are not implemented in this route.</p>
         <p>For detectable effects the variance is held fixed. ATE effect queries require changing the planning strata explicitly, because the variance can change with the effect.</p>
-        <p>The service supplies the import. Lean checks exact effect and variance arithmetic; numerical power and integer search run in generated C++.</p>
+        <p>The browser supplies the statistical compiler module. The actual Lean kernel checks exact effect and variance arithmetic; numerical power and integer search run in the C++ WebAssembly backend. No local installation or compiler server is needed.</p>
+        <p>This browser package includes Lean's core library and the statistical study language. The separate Mathlib probability audit and general real-equation solver remain native tools; they are not loaded into this browser package.</p>
       </details>
     </section>
     <section class="panel compile-panel" aria-labelledby="compile-heading">

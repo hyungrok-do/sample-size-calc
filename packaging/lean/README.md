@@ -4,7 +4,8 @@ This deployment serves the complete calculator, DAG simulator, and Lean tab at
 one HTTPS origin. The browser sends Lean source to `/api/lean/compile`; a fresh
 worker compiles it with Lean 4.19.0 and the repository's pinned Mathlib, executes
 the generated C++, and returns the derivation and numerical result. Users need
-only a browser. The GitHub Pages site is still static and cannot run this backend.
+only a browser. The default GitHub Pages tab now runs Lean directly as WebAssembly. This optional
+native backend is selected explicitly with `?runtime=native`.
 Module and native-library paths are frozen when the image is built. Requests run
 the installed Lean executable directly, with no Lake/Git initialization or
 dependency downloads at runtime.
@@ -35,7 +36,7 @@ docker compose --env-file packaging/lean/.env -f packaging/lean/compose.yaml bui
 docker compose --env-file packaging/lean/.env -f packaging/lean/compose.yaml up -d compiler https
 ```
 
-Open `https://YOUR_DOMAIN/lean.html`, sign in with the configured username and
+Open `https://YOUR_DOMAIN/lean.html?runtime=native`, sign in with the configured username and
 password, and select **Compile & calculate**. Caddy provisions and renews TLS
 certificates. The default repeated-measures study returns **51 participants per
 arm, 102 total**. The header says **hosted compilation** when the backend is ready.

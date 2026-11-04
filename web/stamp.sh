@@ -6,7 +6,7 @@
 set -eu
 site=$1
 version=$2
-for file in lean.html lean.js study.html study.js index.html app.js engine.js worker.js sw.js guide.js dag.html dag-entry.js dag.js dag-scenarios.js dag-function-editor.js dag-study-editor.js dag-model.js power-settings.js estimand-model.js power-model.js dag-power.js; do
+for file in lean.html lean.js lean-wasm-client.js study.html study.js index.html app.js engine.js worker.js sw.js guide.js dag.html dag-entry.js dag.js dag-scenarios.js dag-function-editor.js dag-study-editor.js dag-model.js power-settings.js estimand-model.js power-model.js dag-power.js; do
   grep -q 'v=dev' "$site/$file" || { echo "$file: no ?v=dev to stamp" >&2; exit 1; }
   sed -i "s/v=dev/v=$version/g; s/'ssc-dev'/'ssc-$version'/" "$site/$file"
 done
