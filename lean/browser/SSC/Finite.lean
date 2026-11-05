@@ -46,27 +46,22 @@ theorem expectation_append (xs ys : Table α) (f : α → Rat) :
 atom while normalizing large rational weights. Zero fuel remains exact. -/
 def expectationBalanced : Nat → Table α → (α → Rat) → Rat
   | 0, xs, f => expectation xs f
-  | _+1, [], _ => 0
-  | _+1, [x], f => x.2 * f x.1
-  | fuel+1, x :: y :: xs, f =>
-    let atoms := x :: y :: xs
-    let mid := atoms.length / 2
-    expectationBalanced fuel (atoms.take mid) f +
-      expectationBalanced fuel (atoms.drop mid) f
+  | fuel+1, xs, f =>
+    if xs.length ≤ 8 then expectation xs f
+    else
+      let mid := xs.length / 2
+      expectationBalanced fuel (xs.take mid) f +
+        expectationBalanced fuel (xs.drop mid) f
 
 theorem expectationBalanced_eq (fuel : Nat) (xs : Table α) (f : α → Rat) :
     expectationBalanced fuel xs f = expectation xs f := by
   induction fuel generalizing xs with
   | zero => rfl
   | succ fuel ih =>
-    cases xs with
-    | nil => rfl
-    | cons x xs =>
-      cases xs with
-      | nil => simp only [expectationBalanced, expectation, Rat.add_zero]
-      | cons y xs =>
-        simp only [expectationBalanced, ih]
-        rw [← expectation_append, List.take_append_drop]
+    simp only [expectationBalanced, ih]
+    split
+    · rfl
+    · rw [← expectation_append, List.take_append_drop]
 
 def scale (p : Rat) (xs : Table α) : Table α := xs.map (fun (x, q) => (x, p*q))
 
@@ -256,7 +251,8 @@ namespace Distribution
 
 def expect (d : Distribution α) (f : α → Rat) := expectation d.atoms f
 def probability (d : Distribution α) (event : α → Bool) : Rat :=
-  expectationBalanced d.atoms.length d.atoms (fun x => if event x then 1 else 0)
+  -- The depth bound controls summation shape only; zero fuel remains exact.
+  expectationBalanced 64 d.atoms (fun x => if event x then 1 else 0)
 
 theorem probability_eq_expect (d : Distribution α) (event : α → Bool) :
     d.probability event = d.expect (fun x => if event x then 1 else 0) :=

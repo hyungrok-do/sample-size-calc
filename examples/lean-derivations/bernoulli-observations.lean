@@ -57,14 +57,16 @@ def specification : Specification Nat Nat where
 theorem typeI_from_observations (n : Nat) :
     (derive (nullCount n)).distribution.probability (upper (cutoff n)) =
       ((participant (1/10) (by decide +kernel)).iid n).probability
-        (fun xs => upper (cutoff n) (xs.foldl update 0)) :=
-  distribution_from_observations _ _ _ _
+        (fun xs => upper (cutoff n) (xs.foldl update 0)) := by
+  rw [Distribution.probability_eq_expect]
+  exact distribution_from_observations _ _ _ _
 
 theorem power_from_observations (n : Nat) :
     (derive (alternativeCount n)).distribution.probability (upper (cutoff n)) =
       ((participant (3/10) (by decide +kernel)).iid n).probability
-        (fun xs => upper (cutoff n) (xs.foldl update 0)) :=
-  distribution_from_observations _ _ _ _
+        (fun xs => upper (cutoff n) (xs.foldl update 0)) := by
+  rw [Distribution.probability_eq_expect]
+  exact distribution_from_observations _ _ _ _
 
 -- These are concrete kernel checks connected to the participant model by the
 -- preceding derivation, not merely theorems about a supplied binomial formula.

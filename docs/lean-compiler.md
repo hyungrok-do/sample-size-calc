@@ -44,6 +44,8 @@ Finite event probabilities use balanced rational summation to keep kernel
 reduction shallow when weights have large numerators and denominators. Its
 equivalence to the defining expectation is proved for every table and event;
 the optimization changes neither the model nor the exact probability.
+Use `Distribution.probability_eq_expect` to connect a probability expression
+to an expectation proof.
 
 `SSC.Derivation.Program α` describes observations and their transformations using
 ordinary Lean definitions:
