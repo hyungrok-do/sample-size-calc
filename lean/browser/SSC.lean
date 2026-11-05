@@ -166,23 +166,34 @@ private def checkedReport : CommandElabM Json := do
 def exportReport (nonce : String) : CommandElabM Unit := do
   IO.println s!"SSC_PROOF_REPORT {nonce} {(← checkedReport).compress}"
 
+private structure CachedImport where
+  imports : Array Import
+  isModule : Bool
+  env : Environment
+
 /-- Prepare the ordinary Lean frontend one command at a time. The host executes
 returned native frontend actions directly, so the kernel does not run beneath
 an interpreted driver or a nested command evaluation stack. Diagnostics and info
 trees are retained before each top-level command resets them. -/
-private def prepareSource (imported : Environment) (source nonce : String) :
+private def prepareSource (imports : IO.Ref (Array CachedImport)) (source nonce : String) :
     IO (IO (Option (IO Unit))) := do
   let inputCtx := Parser.mkInputContext source "/workspace/source.lean"
   let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
   let opts := Elab.async.set ({} : Options) false
+  let key := Elab.HeaderSyntax.imports header
+  let isModule := Elab.HeaderSyntax.isModule header
   let (env, headerMessages) ←
-    if Elab.HeaderSyntax.imports header == imported.header.imports &&
-        !Elab.HeaderSyntax.isModule header then
-      pure (imported.setMainModule (Name.mkSimple "SSCInput"), headerMessages)
-    else do
+    match (← imports.get).find? (fun entry => entry.imports == key && entry.isModule == isModule) with
+    | some entry => pure (entry.env.setMainModule (Name.mkSimple "SSCInput"), headerMessages)
+    | none => do
       unsafe enableInitializersExecution
-      Elab.processHeader header opts headerMessages inputCtx
+      let (env, log) ← Elab.processHeader header opts headerMessages inputCtx
         (leakEnv := true) (mainModule := Name.mkSimple "SSCInput")
+      -- Initializers retain references to imported regions. Keep each clean
+      -- import environment once, rather than leaking a new copy per request.
+      if log.toList.isEmpty then
+        imports.modify (·.push { imports := key, isModule, env })
+      pure (env, log)
   let context : Elab.Frontend.Context := { inputCtx }
   let state ← IO.mkRef ({
     commandState := Command.mkState env {} opts
@@ -240,7 +251,9 @@ syntax (name := browserDriver) "#ssc_browser_driver" : command
   | `(#ssc_browser_driver) => do
       let some imported := (← getEnv).importEnv?
         | throwError "Missing trusted compiler import environment."
-      let driver ← liftM (m := BaseIO) <| Runtime.markPersistent (prepareSource imported)
+      let entry : CachedImport := { imports := imported.header.imports, isModule := false, env := imported }
+      let imports ← IO.mkRef #[entry]
+      let driver ← liftM (m := BaseIO) <| Runtime.markPersistent (prepareSource imports)
       IO.println s!"SSC_BROWSER_DRIVER {(ptrAddrUnsafe driver).toNat}"
   | _ => throwUnsupportedSyntax
 

@@ -206,14 +206,22 @@ theorem afterMacro : True := by trivial
 
   const many=await compile('import SSC\n'+Array.from({length:1000},(_,i)=>'def value'+i+' : Nat := '+i).join('\n'),'1000 declarations');
   assert.equal(many.results.filter(d=>/^value\d+$/.test(d.name)).length,1000);
+  // Earlier intentional runtime failures restart the worker. Load each import
+  // environment before measuring repeated requests, excluding first-use cost.
+  for(const header of ['import SSC\n','import Std\n',''])
+    await compile(header+'def importWarmup : Nat := 1','import cache warmup');
   const before=await heap();
   for(let i=0;i<50;i++) {
-    const r=await compile('import SSC\ndef isolated'+i+' : Nat := '+i,'soak '+i);
+    const header=['import SSC\n','import Std\n',''][i%3];
+    const r=await compile(header+'def isolated'+i+' : Nat := '+i,'soak '+i);
     assert.deepEqual(r.results.map(d=>d.name),['isolated'+i]);
-    await reject('import SSC\ndef rejected'+i+' : Nat := false',/type mismatch/i,'soak rejection');
+    await reject(header+'def rejected'+i+' : Nat := false',/type mismatch/i,'soak rejection');
   }
   const after=await heap();
-  console.log('100-request success/failure soak passed. WASM heap bytes:',before,'->',after);
+  console.log('Import-cache soak WASM heap bytes:',before,'->',after);
+  assert.ok(Number.isFinite(before)&&Number.isFinite(after),'WASM heap measurement is available');
+  assert.ok(after<=before+64*1024*1024,'Repeated import sets must reuse their environments');
+  console.log('100-request success/failure soak across SSC, Std and Init passed.');
   await compile(`import SSC
 open SSC.Probability
 def deepLaw := (Law.pure (1 : Nat)).iid 100000

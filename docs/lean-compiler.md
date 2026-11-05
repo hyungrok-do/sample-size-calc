@@ -270,6 +270,8 @@ directly. The audit is not appended to user source, so `#exit` and user macros
 cannot skip or replace it. The report identifier is absent from the input's
 source and declaration environment. Printed report-shaped text is ordinary
 output; tactic steps come directly from the elaborator's information trees.
+Clean import environments are cached by import list and module mode, so repeated
+requests reuse initialized libraries without accumulating imported regions.
 
 The report is an observation of elaboration; it does not generate mathematical
 claims or fill explanation templates. A tactic trace is not itself the proof;
@@ -335,6 +337,9 @@ hosting, the service worker establishes cross-origin isolation and may reload
 once. Stop terminates the worker; restart reuses authenticated cached assets.
 Compilation has a 120-second browser limit and a 128-KiB source limit.
 Source and output limits count UTF-8 bytes; output is limited to 8 MiB.
+Large valid proofs can reach the time limit on slower or freshly initialized
+browsers. A timeout is a resource failure, not a mathematical counterexample;
+the worker is discarded and a subsequent request starts a fresh runtime.
 
 This deployment runs Lean's parser, elaborator, dependent type checker, kernel
 and executable interpreter. The statistical constructions are libraries in Lean,
@@ -390,7 +395,8 @@ and restart in the latter case. Raising Lean's recursion budget does not enlarge
 the browser's host stack. Additional tests cover dependent types, type classes, macros,
 symbolic proofs, invalid syntax and types, forged report/trace text, an early
 exit after bypassed kernel checking, UTF-8 boundaries, 1,000 declarations,
-100 alternating successful/failed requests, a 100,000-level deterministic exact
+100 alternating successful/failed requests across `SSC`, `Std` and implicit
+`Init` imports with a heap-growth check, a 100,000-level deterministic exact
 program, concurrent requests, cancellation, runtime exit, output flooding and
 recovery. `SSC_STRESS_DEADLINE=1`
 also waits for the actual 120-second deadline and verifies restart. These are
