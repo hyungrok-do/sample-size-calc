@@ -2,6 +2,7 @@
 // An explicit larger deadline is for diagnosing baselines that already time out.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
@@ -34,10 +35,14 @@ const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_C
 const page = await browser.newPage();
 const browserCdp = await browser.newBrowserCDPSession();
 const cpuSnapshot = async () => (await browserCdp.send('SystemInfo.getProcessInfo')).processInfo;
-const rendererCpu = (before, after) => after.filter(p => p.type === 'renderer').reduce((total, p) => {
-  const previous = before.find(old => old.id === p.id);
-  return total + (previous ? Math.max(0, p.cpuTime - previous.cpuTime) : 0);
-}, 0);
+const rendererCpu = (before, after) => {
+  const pairs = after.filter(p => p.type === 'renderer').map(p => [before.find(old => old.id === p.id), p]);
+  // Some sandboxes expose process IDs but return zero for every CPU counter.
+  // A missing/replaced process is not a measured zero-cost compilation either.
+  if (!pairs.length || pairs.some(([p]) => !p) ||
+      pairs.every(([p, q]) => p.cpuTime === 0 && q.cpuTime === 0)) return null;
+  return pairs.reduce((total, [p, q]) => total + Math.max(0, q.cpuTime - p.cpuTime), 0);
+};
 const measurements = { browser: browser.version(), deadlineMs, diagnosticDeadline: deadlineMs > 120000,
   cpuProfiled: Boolean(process.env.SSC_PERFORMANCE_CPU), cases: [] };
 page.on('console', message => { if (message.text().startsWith('Performance:')) console.log(message.text()); });
@@ -93,7 +98,12 @@ try {
   const fast = [];
   for (let i = 0; i < 31; i++) {
     const started = performance.now();
-    await compile('import SSC\ndef warm : Nat := 7');
+    const result = await compile('import SSC\ndef warm : Nat := 7');
+    assert.equal(result.ok, true);
+    if (!i) {
+      measurements.leanVersion = result.leanVersion;
+      measurements.packageVersion = result.packageVersion;
+    }
     if (i) fast.push(performance.now() - started);
   }
   fast.sort((a, b) => a - b);
@@ -101,13 +111,15 @@ try {
   console.log('Performance: warm requests', JSON.stringify(measurements.warm));
   for (const { name, source } of cases) {
     console.log('Performance: starting', name);
+    const input = { name, sourceBytes: Buffer.byteLength(source),
+      sourceSha256: createHash('sha256').update(source).digest('hex') };
     if (profileCommand) await profileCommand('Profiler.start');
     const cpuBefore = await cpuSnapshot();
     const started = performance.now();
     let result;
     try { result = await compile(source); }
     catch (error) {
-      measurements.cases.push({ name, elapsedMs: performance.now() - started,
+      measurements.cases.push({ ...input, elapsedMs: performance.now() - started,
         rendererCpuSeconds: rendererCpu(cpuBefore, await cpuSnapshot()), error: error.message });
       throw error;
     }
@@ -119,8 +131,8 @@ try {
     }
     assert.equal(result.ok, true);
     const finiteProfiles = result.diagnostics.filter(d => d.severity === 'information' && d.data.startsWith('finite_derive:')).map(d => d.data);
-    measurements.cases.push({ name, elapsedMs, rendererCpuSeconds,
-      sourceBytes: Buffer.byteLength(source), packageVersion: result.packageVersion,
+    measurements.cases.push({ ...input, elapsedMs, rendererCpuSeconds,
+      packageVersion: result.packageVersion,
       declarations: result.results.length, phases: result.performance,
       calculationMessages: result.diagnostics.filter(d => d.severity === 'information' && d.data.startsWith('SSC_CALCULATION ')).map(d => d.data),
       ...(finiteProfiles.length ? { finiteProfiles } : {}) });

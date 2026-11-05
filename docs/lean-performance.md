@@ -186,6 +186,8 @@ not establish that the workload passes the production deadline.
 The report records both elapsed time and renderer-process CPU seconds. They
 measure different things: elapsed time includes scheduling delays, while the
 CPU counter also includes renderer background and compilation threads. CPU
+time is `null` when the sandbox does not expose usable counters. Source hashes
+identify the exact inputs used for each measurement. CPU
 profiling is opt-in and marked in the report because it can perturb timings.
 CI runs the standard benchmark at the production deadline and uploads the
 `lean-performance` artifact, including measurements completed before a failure.
