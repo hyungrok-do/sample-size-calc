@@ -437,9 +437,6 @@ Procedure one_prop() {
                    {"Reject H0 if", "Rejection region for the observed number of successes X."}};
   p.notes = {"Because the binomial distribution is discrete, exact power does not increase monotonically with N; "
              "the reported N is the smallest sample size whose power reaches the target."};
-  p.references = {REF_CHOW, REF_FLEISS, REF_MACHIN,
-                  "Chernick, M. R. & Liu, C. Y. (2002). The saw-toothed behavior of power versus sample size and "
-                  "software solutions. The American Statistician 56, 149–155."};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.curve_min = 1;
@@ -742,13 +739,6 @@ Procedure one_prop_ci() {
   p.definitions = {{"N", "Sample size."},
                    {"Width", "Upper minus lower limit (two-sided) or distance from P to the bound (one-sided)."},
                    {"P", "Anticipated sample proportion at which the interval is evaluated."}};
-  p.references = {"Newcombe, R. G. (1998). Two-sided confidence intervals for the single proportion: comparison of "
-                  "seven methods. Statistics in Medicine 17, 857–872.",
-                  "Clopper, C. J. & Pearson, E. S. (1934). The use of confidence or fiducial limits illustrated in the "
-                  "case of the binomial. Biometrika 26, 404–413.",
-                  "Agresti, A. & Coull, B. A. (1998). Approximate is better than 'exact' for interval estimation of "
-                  "binomial proportions. The American Statistician 52, 119–126.",
-                  REF_FLEISS};
   p.example_solve = "n";
   p.example = {{"width", "0.05 0.1 0.15"}, {"p", "0.1 0.3 0.5"}};
   return p;

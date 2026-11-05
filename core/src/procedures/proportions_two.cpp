@@ -614,11 +614,6 @@ Procedure two_props() {
                    {"Actual Alpha", "Exact probability of rejecting H0 when both groups have proportion P2."}};
   p.notes = {"With exact enumeration, power is a saw-toothed function of N; the reported N is the first one that "
              "reaches the target power."};
-  p.references = {REF_FLEISS, REF_CHOW, REF_MACHIN,
-                  "Casagrande, J. T., Pike, M. C. & Smith, P. G. (1978). An improved approximate formula for "
-                  "calculating sample sizes for comparing two binomial distributions. Biometrics 34, 483–486.",
-                  "Fisher, R. A. (1935). The logic of inductive inference. Journal of the Royal Statistical Society 98, "
-                  "39–54."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};
@@ -971,12 +966,6 @@ Procedure two_props_ci() {
   p.definitions = {{"N1, N2", "Group sample sizes; N2 = R·N1 rounded up."},
                    {"Width", "Upper minus lower limit (two-sided) or distance from P1 − P2 to the bound (one-sided)."},
                    {"P1, P2", "Anticipated proportions at which the interval is evaluated."}};
-  p.references = {"Newcombe, R. G. (1998). Interval estimation for the difference between independent proportions: "
-                  "comparison of eleven methods. Statistics in Medicine 17, 873–890.",
-                  "Agresti, A. & Caffo, B. (2000). Simple and effective confidence intervals for proportions and "
-                  "differences of proportions result from adding two successes and two failures. The American "
-                  "Statistician 54, 280–288.",
-                  REF_FLEISS};
   p.example_solve = "n";
   p.example = {{"width", "0.1 0.2"}, {"p1", "0.6"}, {"p2", "0.4 0.5"}};
   return p;
@@ -1033,8 +1022,6 @@ ParamDef or_direction_param() {
       .show(when({solving({"or"}), is("alternative", {"two"})}));
 }
 
-const char* REF_SCHLESSELMAN = "Schlesselman, J. J. (1982). Case-Control Studies: Design, Conduct, Analysis. Oxford "
-                               "University Press.";
 
 // The cases as group 1 and the controls as group 0 of the test of two proportions, following what was solved for:
 // solving for the cases, Schlesselman's closed form for comparison, the power at the numbers found and one case
@@ -1276,9 +1263,6 @@ Procedure case_control() {
              "is the first one that reaches the target power.",
              "Cases and controls are sampled independently; for individually matched controls use the matched "
              "case-control procedure."};
-  p.references = {REF_SCHLESSELMAN, REF_FLEISS,
-                  "Kelsey, J. L., Whittemore, A. S., Evans, A. S. & Thompson, W. D. (1996). Methods in Observational "
-                  "Epidemiology, 2nd ed. Oxford University Press."};
   p.curve_param = "ncase";
   p.curve_label = "Number of Cases";
   p.example_solve = "n";
@@ -1546,11 +1530,6 @@ Procedure matched_case_control() {
                    {"φ", "Correlation between the exposures of a case and a matched control."}};
   p.notes = {"Power uses Dupont's normal approximation to the conditional test on the matched sets in which some but "
              "not all members are exposed."};
-  p.references = {"Dupont, W. D. (1988). Power calculations for matched case-control studies. Biometrics 44, "
-                  "1157–1168.",
-                  REF_SCHLESSELMAN,
-                  "Breslow, N. E. & Day, N. E. (1980). Statistical Methods in Cancer Research, Vol. I: The Analysis of "
-                  "Case-Control Studies. IARC."};
   p.curve_param = "n";
   p.curve_label = "Matched Sets";
   p.curve_min = 1;

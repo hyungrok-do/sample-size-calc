@@ -162,9 +162,6 @@ Procedure signed_rank() {
   };
   p.definitions = {{"ARE", "Asymptotic relative efficiency of the signed-rank test relative to the t-test."},
                    {"δ", "Shift in location (mean/median) from the null value."}};
-  p.references = {"Lehmann, E. L. (1975). Nonparametrics: Statistical Methods Based on Ranks. Holden-Day.",
-                  "Al-Sunduqchi, M. S. (1990). Determining the Appropriate Sample Size for Inferences Based on the "
-                  "Wilcoxon Statistics. PhD thesis, University of Wyoming."};
   p.notes = {"The asymptotic relative efficiency is a large-sample result. For normal data the power agrees with "
              "simulation of the exact test; for flat or heavy-tailed data at small N it can be clearly lower "
              "(uniform data, δ = 0.5, N = 34: 0.81, against 0.73 by simulation; Laplace data, N = 7: 0.83, against "
@@ -353,9 +350,6 @@ Procedure mann_whitney() {
   };
   p.definitions = {{"P(X1>X2)", "Probability that a random observation from group 1 exceeds one from group 2."},
                    {"ARE", "Asymptotic relative efficiency relative to the two-sample t-test."}};
-  p.references = {"Noether, G. E. (1987). Sample size determination for some common nonparametric tests. Journal of "
-                  "the American Statistical Association 82, 645–647.",
-                  "Lehmann, E. L. (1975). Nonparametrics: Statistical Methods Based on Ranks. Holden-Day."};
   p.notes = {"Both methods are large-sample results. With the ARE adjustment the power agrees with simulation for "
              "normal data and can be lower for other shapes (uniform data, δ = 0.5, 64 per group: 0.80, against "
              "0.77 by simulation); Noether's formula is conservative for large effects (P(X1 > X2) = 0.85, 15 per "
@@ -508,9 +502,6 @@ Procedure kruskal() {
     }
     return out;
   };
-  p.references = {"Lehmann, E. L. (1975). Nonparametrics: Statistical Methods Based on Ranks. Holden-Day.",
-                  "Mahoney, M. & Magel, R. (1996). Estimation of the power of the Kruskal-Wallis test. Biometrical "
-                  "Journal 38, 613–630."};
   p.notes = {"The asymptotic relative efficiency is a large-sample result. For normal data the power agrees with "
              "simulation; for heavy-tailed data at small n it can be clearly lower (Laplace data, means 0 0 1, 11 "
              "per group: 0.83, against 0.72 by simulation)."};
@@ -688,9 +679,6 @@ Procedure sign_test() {
     }
     return out;
   };
-  p.references = {"Noether, G. E. (1987). Sample size determination for some common nonparametric tests. Journal of "
-                  "the American Statistical Association 82, 645–647.",
-                  REF_MACHIN};
   p.notes = {"Exact power is saw-toothed in N; the reported N is the first that reaches the target."};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
@@ -965,9 +953,6 @@ Procedure ci_one_mean() {
   p.derivation = [](const Scenario& s, const Row& r) { return ci_mean_steps(s, r, false); };
   p.definitions = {{"E", "Distance from the sample mean to a confidence limit (half the width of a two-sided interval)."},
                    {"P(E ≤ Target)", "Probability that the realized half-width is no larger than the target."}};
-  p.references = {"Kupper, L. L. & Hafner, K. B. (1989). How appropriate are popular sample size formulas? The American "
-                  "Statistician 43, 101–105.",
-                  REF_MACHIN};
   p.example_solve = "n";
   p.example = {{"e", "0.25 0.5"}, {"sigma", "1 2"}};
   return p;
@@ -1002,9 +987,6 @@ Procedure ci_two_means() {
            " confidence interval for the difference in means with a half-width of " + fnum(r.num("e")) +
            " when the common standard deviation is " + fnum(r.num("sigma")) + tolerance_words(s, r) + ".";
   };
-  p.references = {"Kupper, L. L. & Hafner, K. B. (1989). How appropriate are popular sample size formulas? The American "
-                  "Statistician 43, 101–105.",
-                  REF_MACHIN};
   p.example_solve = "n";
   p.example = {{"e", "0.25 0.5"}, {"sigma", "1"}};
   return p;

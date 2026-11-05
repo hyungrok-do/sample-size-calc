@@ -933,15 +933,6 @@ Procedure multiarm() {
              "With no effective treatment, the power to find at least one is the familywise error rate.",
              "Hochberg's procedure assumes positively dependent tests, which comparisons with a shared control "
              "are."};
-  p.references = {"Dunnett, C. W. (1955). A multiple comparison procedure for comparing several treatments with a "
-                  "control. Journal of the American Statistical Association 50, 1096–1121.",
-                  "Holm, S. (1979). A simple sequentially rejective multiple test procedure. Scandinavian Journal "
-                  "of Statistics 6, 65–70.",
-                  "Hochberg, Y. (1988). A sharper Bonferroni procedure for multiple tests of significance. "
-                  "Biometrika 75, 800–802.",
-                  "Horn, M. & Vollandt, R. (1995). Multiple Tests und Auswahlverfahren. Gustav Fischer (sample sizes "
-                  "for many-to-one comparisons).",
-                  simc::REF_SIM};
   p.curve_param = "n";
   p.curve_label = "n (Subjects per Treatment Arm)";
   p.example_solve = "n";

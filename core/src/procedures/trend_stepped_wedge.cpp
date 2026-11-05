@@ -293,9 +293,6 @@ Procedure trend() {
   p.derivation = trend_derivation;
   p.definitions = {{"Scores", "Values assigned to the ordered groups (for example doses)."},
                    {"Group Sizes", "Subjects per group: n times the relative size, rounded up."}};
-  p.references = {"Nam, J. (1987). A simple approximation for calculating sample sizes for detecting linear trend in "
-                  "proportions. Biometrics 43, 701–705.",
-                  "Armitage, P. (1955). Tests for linear trends in proportions and frequencies. Biometrics 11, 375–386."};
   p.notes = {"Power uses the normal approximation without continuity correction."};
   p.curve_param = "n";
   p.curve_label = "n (Per Group)";
@@ -596,10 +593,6 @@ Procedure stepped_wedge() {
   p.definitions = {{"Steps", "Number of times a group of clusters switches from control to intervention."},
                    {"Periods", "Measurement periods: one baseline period plus one per step."},
                    {"ICC", "Correlation between two subjects in the same cluster (and period)."}};
-  p.references = {"Hussey, M. A. & Hughes, J. P. (2007). Design and analysis of stepped wedge cluster randomized "
-                  "trials. Contemporary Clinical Trials 28, 182–191.",
-                  "Hemming, K., Haines, T. P., Chilton, P. J., Girling, A. J. & Lilford, R. J. (2015). The stepped wedge "
-                  "cluster randomised trial: rationale, design, analysis, and reporting. BMJ 350, h391."};
   p.notes = {"Cross-sectional design: different subjects are measured in each period. Power uses the normal "
              "approximation of Hussey & Hughes."};
   p.curve_param = "";

@@ -201,7 +201,6 @@ Procedure one_sample() {
                    {"δ/σ", "Standardized effect size (Cohen's d)."},
                    {"Alpha", "Probability of rejecting a true null hypothesis."},
                    {"Power", "Probability of rejecting the null hypothesis when μ = μ1."}};
-  p.references = {REF_CHOW, REF_JULIOUS, REF_MACHIN, REF_LENTH, REF_BK};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.curve_min = 2;
@@ -334,7 +333,6 @@ Procedure paired() {
                    {"μD", "Mean of the paired differences under H1."},
                    {"σD", "SD of the paired differences: √(σ1² + σ2² − 2ρσ1σ2)."},
                    {"Alpha", "Significance level."}};
-  p.references = {REF_CHOW, REF_JULIOUS, REF_MACHIN};
   p.curve_param = "n";
   p.curve_label = "N (Number of Pairs)";
   p.dropout_groups = {"n"};
@@ -611,10 +609,6 @@ Procedure two_sample(bool welch) {
   if (welch)
     p.notes = {"The degrees of freedom are Welch–Satterthwaite's at the true standard deviations: accurate from about 8 "
                "subjects per group, while with 3–5 per group the power can be overstated by several points."};
-  p.references = {REF_CHOW, REF_JULIOUS, REF_MACHIN, REF_LENTH, REF_BK};
-  if (welch)
-    p.references.push_back("Welch, B. L. (1947). The generalization of 'Student's' problem when several different "
-                           "population variances are involved. Biometrika 34, 28–35.");
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.curve_min = 2;

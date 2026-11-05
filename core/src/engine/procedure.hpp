@@ -275,6 +275,7 @@ struct Procedure {
   std::function<Derivation(const Scenario&, const Row&)> derivation;
 
   std::vector<std::string> references;
+  std::vector<std::string> reference_keys;  // retrieved BibTeX records, resolved at registration
   std::vector<std::pair<std::string, std::string>> definitions;
   std::vector<std::string> notes;
 

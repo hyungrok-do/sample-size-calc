@@ -142,10 +142,6 @@ inline std::string achieves_singular(const Scenario& s, const Row& r) {
   return t;
 }
 
-/// Commonly cited methodological references.
-inline const char* REF_CHOW =
-    "Chow, S.-C., Shao, J., Wang, H. & Lokhnygina, Y. (2018). Sample Size Calculations in Clinical Research, "
-    "3rd ed. Chapman & Hall/CRC.";
 /// "0, 1, 2, 4" for list inputs shown in result tables and statements.
 inline std::string list_text(const std::vector<double>& v) {
   std::string out;
@@ -161,20 +157,5 @@ inline std::string text_of(const Row& r, const std::string& key) {
   return {};
 }
 
-inline const char* REF_JULIOUS = "Julious, S. A. (2010). Sample Sizes for Clinical Trials. Chapman & Hall/CRC.";
-inline const char* REF_MACHIN =
-    "Machin, D., Campbell, M. J., Tan, S. B. & Tan, S. H. (2018). Sample Sizes for Clinical, Laboratory and "
-    "Epidemiology Studies, 4th ed. Wiley-Blackwell.";
-inline const char* REF_COHEN =
-    "Cohen, J. (1988). Statistical Power Analysis for the Behavioral Sciences, 2nd ed. Lawrence Erlbaum.";
-inline const char* REF_LENTH =
-    "Lenth, R. V. (1989). Algorithm AS 243: cumulative distribution function of the non-central t distribution. "
-    "Applied Statistics 38, 185–189.";
-inline const char* REF_BK =
-    "Benton, D. & Krishnamoorthy, K. (2003). Computing discrete mixtures of continuous distributions: noncentral "
-    "chisquare, noncentral t and the distribution of the square of the sample multiple correlation coefficient. "
-    "Computational Statistics & Data Analysis 43, 249–267.";
-inline const char* REF_FLEISS =
-    "Fleiss, J. L., Levin, B. & Paik, M. C. (2003). Statistical Methods for Rates and Proportions, 3rd ed. Wiley.";
 
 }  // namespace ssc::procs

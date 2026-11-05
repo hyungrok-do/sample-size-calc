@@ -460,6 +460,17 @@ function derivation(res, rows) {
   }
   if (defs.length) parts.push(el('h4', {}, 'Symbols'), el('dl', { class: 'symbols' }, defs.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])));
   if (refs.length) parts.push(el('h4', {}, 'References'), el('ol', { class: 'refs' }, refs.map((r) => el('li', {}, r))));
+  if (res.bibliography?.length) {
+    parts.push(el('button', { type: 'button', onclick: () => {
+      const text = res.bibliography.map((r) => r.bibtex.trim()).join('\n\n') + '\n';
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/x-bibtex;charset=utf-8' }));
+      const link = el('a', { href: url, download: `${state.proc.id}-references.bib` });
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } }, 'Download BibTeX'));
+  }
   const box = el('details', { class: 'derivation', id: 'derivation' }, el('summary', {}, 'How this was calculated'), ...parts);
   box.open = state.derivationOpen;
   box.addEventListener('toggle', () => { state.derivationOpen = box.open; });

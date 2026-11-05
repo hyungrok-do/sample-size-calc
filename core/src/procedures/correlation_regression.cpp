@@ -355,11 +355,6 @@ Procedure one_corr() {
     return out;
   };
   p.definitions = {{"ρ0", "Population correlation under H0."}, {"ρ1", "Population correlation under H1."}};
-  p.references = {"Guenther, W. C. (1977). Desk calculation of probabilities for the distribution of the sample "
-                  "correlation coefficient. The American Statistician 31, 45–48.",
-                  "Fisher, R. A. (1921). On the 'probable error' of a coefficient of correlation deduced from a small "
-                  "sample. Metron 1, 3–32.",
-                  REF_COHEN, REF_MACHIN};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.curve_min = 4;
@@ -482,8 +477,6 @@ Procedure two_corr() {
     return out;
   };
   p.definitions = {{"ρ1, ρ2", "Population correlations in the two groups."}};
-  p.references = {REF_COHEN, "Fisher, R. A. (1921). On the 'probable error' of a coefficient of correlation deduced "
-                             "from a small sample. Metron 1, 3–32."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.curve_min = 4;
@@ -625,7 +618,6 @@ Procedure corr_ci() {
     }
     return out;
   };
-  p.references = {REF_MACHIN};
   p.example_solve = "n";
   p.example = {{"width", "0.1 0.2"}, {"rho", "0.3 0.5 0.7"}};
   return p;
@@ -823,8 +815,6 @@ Procedure multiple_regression() {
                    {"A", "Number of predictors already in the model."},
                    {"ΔR²", "Increase in R² due to the B tested predictors."},
                    {"f²", "Cohen's effect size ΔR²/(1 − R²c − ΔR²)."}};
-  p.references = {REF_COHEN, "Gatsonis, C. & Sampson, A. R. (1989). Multiple correlation: exact power and sample size "
-                             "calculations. Psychological Bulletin 106, 516–524.", REF_BK};
   p.notes = {"The power treats the predictor values as fixed (noncentrality λ = N f², Cohen's model). When the "
              "predictors are random, as in an observational study, the exact power (Gatsonis and Sampson) is lower: "
              "for B = 3 and ΔR² = 0.1, N = 103 gives 0.79 rather than 0.80 (105 reach 0.80), and the gap grows with "
@@ -1029,9 +1019,6 @@ Procedure linreg_slope() {
   };
   p.definitions = {{"β1", "Slope under H1."}, {"σx", "Standard deviation of the predictor X."},
                    {"σ", "Residual standard deviation of Y given X."}};
-  p.references = {"Dupont, W. D. & Plummer, W. D. (1998). Power and sample size calculations for studies involving "
-                  "linear regression. Controlled Clinical Trials 19, 589–601.",
-                  REF_MACHIN};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.curve_min = 3;
@@ -1252,9 +1239,6 @@ Procedure logistic() {
   p.definitions = {{"P0", "Event probability at X = 0 (binary X) or at the mean of X (normal X)."},
                    {"OR", "Odds ratio for X = 1 vs 0, or per one-SD increase of X."},
                    {"R²", "Squared multiple correlation of X with the other covariates (VIF = 1/(1 − R²))."}};
-  p.references = {"Hsieh, F. Y., Bloch, D. A. & Larsen, M. D. (1998). A simple method of sample size calculation for "
-                  "linear and logistic regression. Statistics in Medicine 17, 1623–1634.",
-                  "Hsieh, F. Y. (1989). Sample size tables for logistic regression. Statistics in Medicine 8, 795–802."};
   p.notes = {"Hsieh's formula is accurate for a binary covariate. For a normal covariate it overstates the power "
              "when the odds ratio per standard deviation is large: at OR 2.5 (P0 = 0.3, N = 45) the Wald test's "
              "power is about 0.70 by simulation rather than 0.80, and at OR 1.5 about 0.77."};
@@ -1431,10 +1415,6 @@ Procedure cox() {
   };
   p.definitions = {{"Events", "Expected number of events: N × P(Event)."},
                    {"Var(X)", "Variance of the covariate (p(1 − p) for a binary covariate)."}};
-  p.references = {"Hsieh, F. Y. & Lavori, P. W. (2000). Sample-size calculations for the Cox proportional hazards "
-                  "regression model with nonbinary covariates. Controlled Clinical Trials 21, 552–560.",
-                  "Schoenfeld, D. A. (1983). Sample-size formula for the proportional-hazards regression model. "
-                  "Biometrics 39, 499–503."};
   p.notes = {"Hsieh and Lavori's formula is a large-sample approximation. For a binary covariate far from half "
              "exposed and a hazard ratio far from 1, it overstates the power when the larger group has the higher "
              "hazard (20% exposed, HR 0.6: 0.90, against 0.83 by simulation) and understates it in the opposite "

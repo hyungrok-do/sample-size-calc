@@ -807,16 +807,6 @@ Procedure winratio() {
              "in which every pair ties does for the Finkelstein–Schoenfeld test.",
              "The expected win, loss and tie probabilities, and the quick approximation (Yu & Ganju 2022), come "
              "from 200,000 simulated pairs drawn from a fixed stream."};
-  p.references = {"Pocock, S. J., Ariti, C. A., Collier, T. J. & Wang, D. (2012). The win ratio: a new approach to "
-                  "the analysis of composite endpoints in clinical trials based on clinical priorities. European "
-                  "Heart Journal 33, 176–182.",
-                  "Finkelstein, D. M. & Schoenfeld, D. A. (1999). Combining mortality and longitudinal measures in "
-                  "clinical trials. Statistics in Medicine 18, 1341–1354.",
-                  "Bebu, I. & Lachin, J. M. (2016). Large sample inference for a win ratio analysis of a composite "
-                  "outcome based on prioritized components. Biostatistics 17, 178–187.",
-                  "Yu, R. X. & Ganju, J. (2022). Sample size formula for a win ratio endpoint. Statistics in "
-                  "Medicine 41, 950–963.",
-                  simc::REF_SIM};
   p.curve_param = "n1";
   p.curve_label = "N1 (Patients in the Treatment Group)";
   p.example_solve = "n";

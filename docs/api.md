@@ -112,9 +112,16 @@ Another thread can watch progress and cancel it through the token.
   ],
   "definitions": [["N1, N2", "Number of subjects in groups 1 and 2; N = N1 + N2."], …],
   "references": ["…"],
+  "bibliography": [{"key":"…", "citation":"…", "bibtex":"…", "source":"…", "export_url":"https://…"}],
   "notes": ["…"]
 }
 ```
+
+- **`references`** contains display citations formatted from retrieved records.
+  **`bibliography`** contains the corresponding citation keys, BibTeX records and
+  source export URLs. The source metadata and any unresolved legacy citations are
+  documented in [the bibliography review](reference-audit.md). These arrays describe
+  procedure-level references; they do not certify every selectable approximation.
 
 - **`columns`** lists the result table's columns in order. `fmt` is one of:
 
@@ -232,7 +239,7 @@ form:
     …
   ],
   "example": {"solve_for": "n", "inputs": {…}},
-  "definitions": […], "references": […], "notes": […]
+  "definitions": […], "references": […], "bibliography": […], "notes": […]
 }
 ```
 

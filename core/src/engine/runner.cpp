@@ -1,4 +1,5 @@
 #include "engine/runner.hpp"
+#include "engine/bibliography.hpp"
 
 #include "engine/search.hpp"
 
@@ -356,6 +357,7 @@ json::Value procedure_json(const Procedure& p) {
   json::Value refs = json::Value::array();
   for (const auto& r : p.references) refs.push(r);
   o.set("references", refs);
+  o.set("bibliography", bibliography::to_json(p));
   json::Value defs = json::Value::array();
   for (const auto& d : p.definitions) {
     json::Value pair = json::Value::array();
@@ -1199,6 +1201,7 @@ json::Value run_request(const json::Value& req, Token* token) {
   json::Value refs = json::Value::array();
   for (const auto& r : proc->references) refs.push(r);
   out.set("references", refs);
+  out.set("bibliography", bibliography::to_json(*proc));
   json::Value defs = json::Value::array();
   for (const auto& d : proc->definitions) {
     json::Value pr = json::Value::array();

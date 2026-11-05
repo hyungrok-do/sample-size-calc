@@ -433,14 +433,6 @@ Procedure logrank() {
                    {"Events", "Expected number of events N1·P(Event)1 + N2·P(Event)2."},
                    {"P(Event)", "Probability that a subject has an event before the end of the study."},
                    {"Accrual, Follow-Up", "Length of uniform enrollment and of follow-up after enrollment ends."}};
-  p.references = {"Schoenfeld, D. (1981). The asymptotic properties of nonparametric tests for comparing survival "
-                  "distributions. Biometrika 68, 316–319.",
-                  "Freedman, L. S. (1982). Tables of the number of patients required in clinical trials using the "
-                  "logrank test. Statistics in Medicine 1, 121–129.",
-                  "Lachin, J. M. & Foulkes, M. A. (1986). Evaluation of sample size and power for analyses of survival "
-                  "with allowance for nonuniform patient entry, losses to follow-up, noncompliance, and "
-                  "stratification. Biometrics 42, 507–519.",
-                  REF_MACHIN};
   p.notes = {"Both formulas are large-sample approximations. With equal groups they agree with simulation. With "
              "unequal groups and a hazard ratio far from 1, Schoenfeld's overstates the power when the larger group "
              "has the higher hazard (HR 0.3 with 1:4 allocation: 0.86, against 0.74 by simulation) and understates "
@@ -644,11 +636,6 @@ Procedure logrank_ni() {
   p.definitions = {{"M", "Non-inferiority margin for the hazard ratio (treatment/control)."},
                    {"HR", "Actual hazard ratio at which power is computed."},
                    {"Events", "Expected number of events N1·P(Event)1 + N2·P(Event)2."}};
-  p.references = {"Schoenfeld, D. (1981). The asymptotic properties of nonparametric tests for comparing survival "
-                  "distributions. Biometrika 68, 316–319.",
-                  "Jung, S.-H., Kang, S. J., McCall, L. M. & Blumenstein, B. (2005). Sample size computation for "
-                  "two-sample noninferiority log-rank test. Journal of Biopharmaceutical Statistics 15, 969–979.",
-                  REF_MACHIN};
   p.curve_param = "n1";
   p.curve_label = "N1 (Treatment Group Size)";
   p.curve_min = 1;
@@ -1171,10 +1158,6 @@ Procedure one_poisson() {
                    {"Reject H0 if", "Rejection region for the observed number of events X."}};
   p.notes = {"Because the number of events is discrete, exact power does not increase monotonically with N; the "
              "reported N is the smallest sample size whose power reaches the target."};
-  p.references = {"Garwood, F. (1936). Fiducial limits for the Poisson distribution. Biometrika 28, 437–442.",
-                  "Gu, K., Ng, H. K. T., Tang, M. L. & Schucany, W. R. (2008). Testing the ratio of two Poisson "
-                  "rates. Biometrical Journal 50, 283–298.",
-                  REF_MACHIN};
   p.curve_param = "n";
   p.curve_label = "N (Number of Subjects)";
   p.curve_min = 1;
@@ -1467,9 +1450,6 @@ Procedure two_poisson() {
     return out;
   };
   p.definitions = {{"λ1, λ2", "Event rates per unit of exposure."}, {"t", "Exposure time per subject."}};
-  p.references = {"Gu, K., Ng, H. K. T., Tang, M. L. & Schucany, W. R. (2008). Testing the ratio of two Poisson rates. "
-                  "Biometrical Journal 50, 283–298.",
-                  REF_MACHIN};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.curve_min = 1;
@@ -1681,10 +1661,6 @@ Procedure two_negbin() {
   p.definitions = {{"λ1, λ2", "Event rates in the treatment and control groups."},
                    {"R", "Rate ratio λ1/λ2."},
                    {"κ", "Negative binomial dispersion (Var = μ + κμ²; κ = 0 is Poisson)."}};
-  p.references = {"Zhu, H. & Lakkis, H. (2014). Sample size calculation for comparing two negative binomial rates. "
-                  "Statistics in Medicine 33, 376–387.",
-                  "Keene, O. N., Jones, M. R. K., Lane, P. W. & Anderson, J. (2007). Analysis of exacerbation rates in "
-                  "asthma and chronic obstructive pulmonary disease. Pharmaceutical Statistics 6, 89–97."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Treatment Group Size)";
   p.curve_min = 1;
@@ -1856,7 +1832,6 @@ Procedure one_variance() {
     }
     return out;
   };
-  p.references = {"Ostle, B. & Malone, L. C. (1988). Statistics in Research, 4th ed. Iowa State University Press.", REF_MACHIN};
   p.curve_param = "n";
   p.curve_label = "N (Sample Size)";
   p.dropout_groups = {"n"};
@@ -1971,7 +1946,6 @@ Procedure two_variances() {
     }
     return out;
   };
-  p.references = {"Desu, M. M. & Raghavarao, D. (1990). Sample Size Methodology. Academic Press.", REF_MACHIN};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};

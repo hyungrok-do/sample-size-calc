@@ -16,11 +16,6 @@ namespace {
 
 using namespace blocks;
 
-const char* REF_SIMON =
-    "Simon, R. (1989). Optimal two-stage designs for phase II clinical trials. Controlled Clinical Trials 10, 1–10.";
-const char* REF_JUNG =
-    "Jung, S.-H., Lee, T., Kim, K. & George, S. L. (2004). Admissible two-stage designs for phase II cancer clinical "
-    "trials. Statistics in Medicine 23, 561–569.";
 
 // Binomial probability tables for every sample size m ≤ nmax.
 struct BinomTables {
@@ -553,7 +548,6 @@ Procedure simon() {
       {"Optimal", "The design with the smallest expected sample size under P0."},
       {"Minimax", "The design with the smallest maximum sample size (ties: smallest E(N | p0))."},
       {"Admissible", "Designs minimizing q·n + (1 − q)·E(N | p0) for some weight q between 0 and 1."}};
-  p.references = {REF_SIMON, REF_JUNG};
   p.notes = {"Error rates are exact (binomial); the type I error is one-sided."};
   p.example_solve = "n";
   p.example = {{"p0", "0.1 0.2"}, {"p1", "0.3"}, {"alpha", "0.05"}, {"power", "0.8"}};

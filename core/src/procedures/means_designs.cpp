@@ -325,9 +325,6 @@ Procedure anova() {
                    {"σm", "Standard deviation of the group means: √(Σ nᵢ(μᵢ − μ̄)²/N)."},
                    {"f", "Cohen's effect size σm/σ."},
                    {"λ", "Noncentrality parameter N f² of the F distribution with (k − 1, N − k) df."}};
-  p.references = {REF_COHEN,
-                  "Desu, M. M. & Raghavarao, D. (1990). Sample Size Methodology. Academic Press.",
-                  "Fleiss, J. L. (1986). The Design and Analysis of Clinical Experiments. Wiley.", REF_BK};
   p.curve_param = "n";
   p.curve_label = "n (Per-Group Size)";
   p.dropout_groups = {"N"};
@@ -507,8 +504,6 @@ Procedure crossover_diff() {
                    {"σw", "Within-subject (residual) standard deviation."},
                    {"σd", "SD of a subject's period difference, √2 σw."},
                    {"δ", "Difference between the treatment means."}};
-  p.references = {REF_CHOW, REF_JULIOUS,
-                  "Senn, S. (2002). Cross-over Trials in Clinical Research, 2nd ed. Wiley."};
   p.curve_param = "n";
   p.curve_label = "N (Total Subjects)";
   p.curve_min = 4;
@@ -676,13 +671,6 @@ Procedure bioequivalence() {
                    {"θL, θU", "Bioequivalence acceptance limits for the ratio."},
                    {"CV", "Coefficient of variation; within-subject for cross-over designs."},
                    {"σ (log)", "√ln(1 + CV²), the standard deviation of log-transformed data."}};
-  p.references = {"Schuirmann, D. J. (1987). A comparison of the two one-sided tests procedure and the power approach "
-                  "for assessing the equivalence of average bioavailability. Journal of Pharmacokinetics and "
-                  "Biopharmaceutics 15, 657–680.",
-                  "Owen, D. B. (1965). A special case of a bivariate non-central t-distribution. Biometrika 52, 437–446.",
-                  "Diletti, E., Hauschke, D. & Steinijans, V. W. (1991). Sample size determination for bioequivalence "
-                  "assessment by means of confidence intervals. Int. J. Clin. Pharmacol. Ther. Toxicol. 29, 1–8.",
-                  REF_CHOW};
   p.curve_param = "n";
   p.curve_label = "N (Total Subjects)";
   p.curve_min = 4;
@@ -935,11 +923,6 @@ Procedure cluster_means() {
                    {"m", "Number of subjects per cluster."},
                    {"ICC", "Intracluster correlation coefficient ρ."},
                    {"Design Effect", "Variance inflation 1 + (m − 1)ρ relative to individual randomization."}};
-  p.references = {"Donner, A. & Klar, N. (2000). Design and Analysis of Cluster Randomization Trials in Health "
-                  "Research. Arnold.",
-                  "Campbell, M. J. & Walters, S. J. (2014). How to Design, Analyse and Report Cluster Randomised "
-                  "Trials in Medicine and Health Related Research. Wiley.",
-                  REF_MACHIN};
   p.curve_param = "k1";
   p.curve_label = "k1 (Clusters in Group 1)";
   p.example_solve = "k";
@@ -1166,10 +1149,6 @@ Procedure repeated() {
   p.definitions = {{"m", "Number of repeated measurements per subject."},
                    {"ρ", "Correlation between measurements (between adjacent ones for AR(1))."},
                    {"Variance Factor", "m·Var(subject average)/σ² — 1 + (m − 1)ρ under compound symmetry."}};
-  p.references = {"Diggle, P. J., Heagerty, P., Liang, K.-Y. & Zeger, S. L. (2002). Analysis of Longitudinal Data, "
-                  "2nd ed. Oxford University Press.",
-                  "Liu, G. & Liang, K.-Y. (1997). Sample size calculations for studies with correlated observations. "
-                  "Biometrics 53, 937–947."};
   p.curve_param = "n1";
   p.curve_label = "N1 (Group 1 Sample Size)";
   p.dropout_groups = {"n1", "n2"};

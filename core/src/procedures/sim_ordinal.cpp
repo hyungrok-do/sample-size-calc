@@ -721,13 +721,6 @@ Procedure ordinal() {
              "Wald test, the expected share of separated studies is given when it is 1% or more.",
              "Giving group 1's probabilities directly shows the power when the odds are not proportional, for "
              "example when a treatment helps only the most severe patients."};
-  p.references = {"Whitehead, J. (1993). Sample size calculations for ordered categorical data. Statistics in "
-                  "Medicine 12, 2257–2271.",
-                  "McCullagh, P. (1980). Regression models for ordinal data. Journal of the Royal Statistical "
-                  "Society B 42, 109–142.",
-                  "Roozenbeek, B. et al. (2011). The added value of ordinal analysis in clinical trials: an example "
-                  "in traumatic brain injury. Critical Care 15, R127.",
-                  simc::REF_SIM};
   p.curve_param = "n1";
   p.curve_label = "N1 (Subjects in Group 1)";
   p.example_solve = "n";
