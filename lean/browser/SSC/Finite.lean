@@ -291,6 +291,171 @@ theorem flattenMerged_nonnegative [DecidableEq β] (xs : Table α)
   obtain ⟨x, hmem, rfl⟩ := List.mem_map.mp ht
   exact scale_nonnegative x.2 (hx x hmem) _ (hk x.1)
 
+namespace Ordered
+variable {α : Type}
+
+/-- Ordered stream merging avoids scanning the whole accumulated table for
+ each incoming state. Equality is checked independently of `compare`, so even an
+ arbitrary user ordering preserves every expectation and nonnegative weight. -/
+def mergeHead [DecidableEq α] [Ord α] (x : α × Rat) (xs : Table α)
+    (rest : Table α → Table α) : Table α → Table α
+  | [] => x :: xs
+  | y :: ys =>
+    if x.1 = y.1 then (x.1, x.2 + y.2) :: rest ys
+    else if compare x.1 y.1 == .lt then x :: rest (y :: ys)
+    else y :: mergeHead x xs rest ys
+
+def merge [DecidableEq α] [Ord α] : Table α → Table α → Table α
+  | [], ys => ys
+  | x :: xs, ys => mergeHead x xs (merge xs) ys
+
+theorem expectation_mergeHead [DecidableEq α] [Ord α] (x : α × Rat) (xs : Table α)
+    (rest : Table α → Table α) (f : α → Rat)
+    (hrest : ∀ ys, expectation (rest ys) f = expectation xs f + expectation ys f)
+    (ys : Table α) : expectation (mergeHead x xs rest ys) f =
+      expectation (x :: xs) f + expectation ys f := by
+  induction ys with
+  | nil => simp [mergeHead, expectation, Rat.add_zero]
+  | cons y ys ih =>
+    simp only [mergeHead]
+    split
+    · rename_i h
+      simp only [expectation, hrest, h]
+      grind
+    · split
+      · simp only [expectation, hrest]
+        grind
+      · simp only [expectation, ih]
+        grind
+
+theorem expectation_merge [DecidableEq α] [Ord α] (xs ys : Table α) (f : α → Rat) :
+    expectation (merge xs ys) f = expectation xs f + expectation ys f := by
+  induction xs generalizing ys with
+  | nil => simp [merge, expectation, Rat.zero_add]
+  | cons x xs ih => exact expectation_mergeHead x xs (merge xs) f ih ys
+
+theorem nonnegative_cons (x : α × Rat) (xs : Table α)
+    (hx : 0 ≤ x.2) (hxs : Nonnegative xs) : Nonnegative (x :: xs) := by
+  intro y hy
+  rcases List.mem_cons.mp hy with rfl | hy
+  · exact hx
+  · exact hxs y hy
+
+theorem mergeHead_nonnegative [DecidableEq α] [Ord α] (x : α × Rat) (xs : Table α)
+    (rest : Table α → Table α) (hx : 0 ≤ x.2) (hxs : Nonnegative xs)
+    (hrest : ∀ ys, Nonnegative ys → Nonnegative (rest ys))
+    (ys : Table α) (hys : Nonnegative ys) : Nonnegative (mergeHead x xs rest ys) := by
+  induction ys with
+  | nil => exact nonnegative_cons x xs hx hxs
+  | cons y ys ih =>
+    have hy := hys y (by simp)
+    have ht : Nonnegative ys := fun z hz => hys z (by simp [hz])
+    simp only [mergeHead]
+    split
+    · exact nonnegative_cons _ _ (Rat.add_nonneg hx hy) (hrest ys ht)
+    · split
+      · exact nonnegative_cons x _ hx (hrest (y :: ys) hys)
+      · exact nonnegative_cons y _ hy (ih ht)
+
+theorem merge_nonnegative [DecidableEq α] [Ord α] (xs ys : Table α)
+    (hx : Nonnegative xs) (hy : Nonnegative ys) : Nonnegative (merge xs ys) := by
+  induction xs generalizing ys with
+  | nil => exact hy
+  | cons x xs ih =>
+    exact mergeHead_nonnegative x xs (merge xs) (hx x (by simp))
+      (fun z hz => hx z (by simp [hz]))
+      (fun ys hy => ih ys (fun z hz => hx z (by simp [hz])) hy) ys hy
+
+def mergeMany [DecidableEq α] [Ord α] : Nat → List (Table α) → Table α
+  | 0, tables => tables.foldr merge []
+  | _+1, [] => []
+  | _+1, [table] => table
+  | fuel+1, tables =>
+    let mid := tables.length / 2
+    merge (mergeMany fuel (tables.take mid)) (mergeMany fuel (tables.drop mid))
+
+theorem expectation_mergeMany [DecidableEq α] [Ord α] (fuel : Nat)
+    (tables : List (Table α)) (f : α → Rat) :
+    expectation (mergeMany fuel tables) f = (tables.map (fun t => expectation t f)).sum := by
+  induction fuel generalizing tables with
+  | zero =>
+    induction tables with
+    | nil => rfl
+    | cons t ts ih =>
+      simp only [mergeMany, List.foldr_cons, expectation_merge, List.map_cons, List.sum_cons] at *
+      rw [ih]
+  | succ fuel ih =>
+    cases tables with
+    | nil => rfl
+    | cons t ts =>
+      cases ts with
+      | nil => simp only [mergeMany, List.map_cons, List.map_nil, List.sum_cons, List.sum_nil]; grind
+      | cons u us =>
+        simp only [mergeMany, expectation_merge, ih]
+        rw [← List.sum_append, ← List.map_append, List.take_append_drop]
+
+theorem mergeMany_nonnegative [DecidableEq α] [Ord α] (fuel : Nat)
+    (tables : List (Table α)) (h : ∀ t ∈ tables, Nonnegative t) :
+    Nonnegative (mergeMany fuel tables) := by
+  induction fuel generalizing tables with
+  | zero =>
+    induction tables with
+    | nil => intro x hx; contradiction
+    | cons t ts ih =>
+      exact merge_nonnegative _ _ (h t (by simp))
+        (ih (fun x hx => h x (by simp [hx])))
+  | succ fuel ih =>
+    cases tables with
+    | nil => intro x hx; contradiction
+    | cons t ts =>
+      cases ts with
+      | nil => exact h t (by simp)
+      | cons u us =>
+        exact merge_nonnegative _ _
+          (ih _ (fun x hx => h x (List.mem_of_mem_take hx)))
+          (ih _ (fun x hx => h x (List.mem_of_mem_drop hx)))
+
+/-- Arrange and combine outcomes using balanced stream merges. -/
+def sort [DecidableEq α] [Ord α] (xs : Table α) : Table α :=
+  mergeMany 64 (xs.map (fun x => [x]))
+
+theorem expectation_sort [DecidableEq α] [Ord α] (xs : Table α) (f : α → Rat) :
+    expectation (sort xs) f = expectation xs f := by
+  rw [sort, expectation_mergeMany]
+  induction xs with
+  | nil => rfl
+  | cons x xs ih => simp only [List.map_cons, List.sum_cons, expectation, Rat.add_zero, ih]
+
+theorem sort_nonnegative [DecidableEq α] [Ord α] (xs : Table α)
+    (hx : Nonnegative xs) : Nonnegative (sort xs) := by
+  apply mergeMany_nonnegative
+  intro table ht
+  obtain ⟨x, hmem, rfl⟩ := List.mem_map.mp ht
+  exact nonnegative_cons x [] (hx x hmem) (by intro y hy; contradiction)
+
+def flattenMerged [DecidableEq β] [Ord β] (xs : Table α) (k : α → Table β) : Table β :=
+  mergeMany xs.length (xs.map (fun (x, p) => scale p (sort (k x))))
+
+theorem expectation_flattenMerged [DecidableEq β] [Ord β] (xs : Table α)
+    (k : α → Table β) (f : β → Rat) :
+    expectation (flattenMerged xs k) f = expectation xs (fun x => expectation (k x) f) := by
+  simp only [flattenMerged, expectation_mergeMany, List.map_map]
+  induction xs with
+  | nil => rfl
+  | cons x xs ih =>
+    simp only [List.map_cons, List.sum_cons, Function.comp_apply,
+      expectation_scale_weights, expectation_sort, expectation, ih]
+
+theorem flattenMerged_nonnegative [DecidableEq β] [Ord β] (xs : Table α)
+    (hx : Nonnegative xs) (k : α → Table β) (hk : ∀ x, Nonnegative (k x)) :
+    Nonnegative (flattenMerged xs k) := by
+  apply mergeMany_nonnegative
+  intro t ht
+  obtain ⟨x, hmem, rfl⟩ := List.mem_map.mp ht
+  exact scale_nonnegative x.2 (hx x hmem) _ (sort_nonnegative _ (hk x.1))
+
+end Ordered
+
 /-- A finite probability distribution, including proofs of positivity and mass one. -/
 structure Distribution (α : Type) where
   atoms : Table α

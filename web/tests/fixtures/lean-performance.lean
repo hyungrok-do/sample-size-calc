@@ -19,6 +19,11 @@ run_cmd do
   let count : Nat := env.checked.get.constants.foldStage2 (fun count name _ =>
     if (name.toString.splitOn "_finiteCheckpoint").length > 1 then count + 1 else count) 0
   Lean.logInfo m!"SSC_FINITE_CHECKPOINTS {count}"
+  let ordered : Nat := env.checked.get.constants.foldStage2 (fun count name ci =>
+    if (name.toString.splitOn "_finiteCheckpoint").length > 1 &&
+        ci.value?.any (fun value => value.getUsedConstants.contains
+          ``SSC.Derivation.Certificate.bindDerivedOrdered) then count + 1 else count) 0
+  Lean.logInfo m!"SSC_ORDERED_CHECKPOINTS {ordered}"
 
 -- Multiple goals must survive a tactic invocation. Nested finite families are
 -- also checked from their actual closed programs, including repeated prefixes.
@@ -48,6 +53,35 @@ theorem quotientCertificate_correct :
     quotientCertificate.distribution.probability (fun _ => true) = 1 := by
   rw [quotientCertificate.probability_eq]
   rfl
+
+-- A bind with no Ord instance uses the generic equality-only composition.
+def quotientBindCertificate : Certificate
+    ((Program.pure (0 : Nat)).bind (fun _ => Program.pure labelTrue)) := by finite_derive
+theorem quotientBindCertificate_correct :
+    quotientBindCertificate.distribution.probability (fun _ => true) = 1 := by
+  rw [quotientBindCertificate.probability_eq]
+  rfl
+
+section ArbitraryOrdering
+-- An ordering is a performance capability, never evidence that two values
+-- are equal. Even a comparator that always says equal must preserve outcomes.
+local instance (priority := 3000) : Ord Nat where
+  compare _ _ := .eq
+def unorderedCoin : Program Nat :=
+  (Program.draw (Distribution.bernoulli (1/3) (by decide +kernel))).map
+    (fun b => if b then 7 else 11)
+def unorderedCertificate : Certificate unorderedCoin := by finite_derive
+theorem arbitrary_order_preserves_distinct_outcomes :
+    unorderedCertificate.distribution.probability (fun n => n == 7) = 1/3 := by
+  decide +kernel
+end ArbitraryOrdering
+
+-- An ordering parameter must not turn an otherwise closed program into an
+-- open staged expression. Its equality-only certificate remains available.
+def contextualOrdering (order : Ord Nat) : Certificate
+    ((Program.pure (0 : Nat)).bind (fun _ => Program.pure (1 : Nat))) := by
+  letI := order
+  finite_derive
 
 -- Independent copy of the original finite sampling interpreter. This checks
 -- exact draw sequences and work charges, including adaptive weight changes,

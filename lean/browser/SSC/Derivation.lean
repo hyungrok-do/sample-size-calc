@@ -211,6 +211,26 @@ def bindDerived [DecidableEq α] [DecidableEq β] {p : Program α}
       (fun x => expectation_deriveAtoms (next x) f)]
     exact left.correct _
 
+/-- Generic ordered-table composition with the same all-expectations guarantee. -/
+def bindDerivedOrdered [DecidableEq α] [DecidableEq β] [Ord β] {p : Program α}
+    (left : Certificate p) (next : α → Program β) : Certificate (p.bind next) where
+  distribution := {
+    atoms := SSC.Finite.Ordered.flattenMerged left.distribution.atoms (fun x => deriveAtoms (next x))
+    nonnegative := SSC.Finite.Ordered.flattenMerged_nonnegative _ left.distribution.nonnegative _
+      (fun x => deriveAtoms_nonnegative (next x))
+    normalized := by
+      rw [SSC.Finite.Ordered.expectation_flattenMerged]
+      rw [expectation_congr _ _ (fun _ => 1)
+        (fun x => (expectation_deriveAtoms (next x) _).trans (Program.expect_const (next x) 1))]
+      exact left.distribution.normalized }
+  correct := by
+    intro f
+    change expectation (SSC.Finite.Ordered.flattenMerged left.distribution.atoms (fun x => deriveAtoms (next x))) f =
+      p.expect (fun x => (next x).expect f)
+    rw [SSC.Finite.Ordered.expectation_flattenMerged]
+    rw [expectation_congr _ _ (fun x => (next x).expect f)
+      (fun x => expectation_deriveAtoms (next x) f)]
+    exact left.correct _
 /-- A proposed table replaces a computed one only after an equality proof. -/
 def repack {p : Program α} (certificate : Certificate p) (atoms : Table α)
     (checked : certificate.distribution.atoms = atoms) : Certificate p where
@@ -478,7 +498,20 @@ private unsafe def stage (memo : CheckedPrefixes) : Nat → Expr → MetaM Expr
     let certificate ← if reduced.isAppOfArity ``Program.bind 5 then do
         let args := reduced.getAppArgs
         let left ← stage memo fuel args[3]!
-        mkAppM ``Certificate.bindDerived #[left, args[4]!]
+        let saved ← saveState
+        let ordered ← try
+          let order ← instantiateMVars (← synthInstance (mkApp (mkConst ``Ord [.zero]) args[1]!))
+          -- A closed program can appear under an unrelated ordering parameter.
+          -- Evaluated certificates must stay closed, so retain the generic path.
+          if order.hasFVar || order.hasMVar then
+            saved.restore
+            pure false
+          else pure true
+        catch _ =>
+          saved.restore
+          pure false
+        if ordered then mkAppM ``Certificate.bindDerivedOrdered #[left, args[4]!]
+        else mkAppM ``Certificate.bindDerived #[left, args[4]!]
       else mkAppM ``derive #[program]
     let checked ← checkpoint memo certificate
     memo.modify fun s => { s with certificates := s.certificates.insert reduced checked }

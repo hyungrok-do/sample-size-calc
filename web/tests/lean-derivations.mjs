@@ -128,9 +128,13 @@ theorem exact_observation_probability : small.probability (fun k => k == 3) = 1/
   checkedTheorem(result, 'family_correct');
   checkedTheorem(result, 'memoized_law_is_original');
   checkedTheorem(result, 'quotientCertificate_correct');
+  checkedTheorem(result, 'quotientBindCertificate_correct');
+  checkedTheorem(result, 'arbitrary_order_preserves_distinct_outcomes');
+  assert.equal(result.results.find(d => d.name === 'contextualOrdering').parameters.length, 1);
   assert.ok(result.results.find(d => d.name === 'quotientCertificate').axioms.includes('Quot.sound'));
   const messages = [result.output, ...result.diagnostics.map(d => d.data)].join('\n');
   assert.match(messages, /SSC_FINITE_CHECKPOINTS 9(?:\s|$)/);
+  assert.match(messages, /SSC_ORDERED_CHECKPOINTS 8(?:\s|$)/);
   assert.match(messages, /SSC_PERFORMANCE_SEMANTICS_OK/);
   assert.ok(result.performance.totalMs >= 0);
   for (const key of ['headerMs', 'parseMs', 'kernelReplayMs', 'axiomAuditMs',
@@ -157,6 +161,14 @@ local instance (priority := 2000) : Lean.ToExpr Nat where
   toTypeExpr := Lean.mkConst \`\`Nat
   toExpr _ := Lean.mkNatLit 0
 def invalidProposal : Certificate (Program.pure (1 : Nat)) := by finite_derive`,
+    /kernel|type mismatch|false|failed/i);
+  await reject(`import SSC
+open SSC.Derivation
+local instance (priority := 2000) : Lean.ToExpr Nat where
+  toTypeExpr := Lean.mkConst \`\`Nat
+  toExpr _ := Lean.mkNatLit 0
+def invalidBranchProposal : Certificate
+  ((Program.pure (0 : Nat)).bind (fun n => Program.pure (n + 1))) := by finite_derive`,
     /kernel|type mismatch|false|failed/i);
   await reject(`import SSC
 open SSC.Finite

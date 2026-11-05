@@ -66,6 +66,22 @@ path; positivity, normalization and all-expectations correctness follow from
 that equality and the existing generic composition theorems. This separates
 data computation from proof construction without weakening either check.
 
+For result types with an `Ord` instance, composition sorts each branch table
+and merges ordered streams. With a lawful ordering, merging two sorted tables
+takes at most their combined number of stream steps, avoiding repeated scans
+of the accumulated support. Balanced merging combines the branches. Types
+without `Ord` retain the equality-only composition path.
+An ordering supplied as a local parameter also uses that path, keeping the
+evaluated certificate closed even when its surrounding theorem has parameters.
+
+The optimization does not assume that an arbitrary user comparator is lawful.
+It checks outcome equality independently before combining weights. Generic
+theorems prove conservation of every expectation and of nonnegative weights
+for any comparator, even one that always returns `equal`. Poor ordering can
+reduce compaction efficiency but cannot identify distinct outcomes or alter
+their probabilities. Tests cover that comparator, the missing-instance path,
+quotient-valued outcomes and malicious literal quotation.
+
 For detailed diagnosis, `set_option ssc.profileFinite true` reports each
 checkpoint's support size and evaluation, quotation, kernel-checking and
 registration times. It is off by default and does not affect proof acceptance.
