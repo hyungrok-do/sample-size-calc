@@ -42,6 +42,32 @@ theorem expectation_append (xs ys : Table α) (f : α → Rat) :
   | nil => simp only [List.nil_append, expectation]; grind
   | cons x xs ih => simp only [List.cons_append, expectation, ih]; grind
 
+/-- Balanced exact summation avoids retaining one kernel reduction frame per
+atom while normalizing large rational weights. Zero fuel remains exact. -/
+def expectationBalanced : Nat → Table α → (α → Rat) → Rat
+  | 0, xs, f => expectation xs f
+  | _+1, [], _ => 0
+  | _+1, [x], f => x.2 * f x.1
+  | fuel+1, x :: y :: xs, f =>
+    let atoms := x :: y :: xs
+    let mid := atoms.length / 2
+    expectationBalanced fuel (atoms.take mid) f +
+      expectationBalanced fuel (atoms.drop mid) f
+
+theorem expectationBalanced_eq (fuel : Nat) (xs : Table α) (f : α → Rat) :
+    expectationBalanced fuel xs f = expectation xs f := by
+  induction fuel generalizing xs with
+  | zero => rfl
+  | succ fuel ih =>
+    cases xs with
+    | nil => rfl
+    | cons x xs =>
+      cases xs with
+      | nil => simp only [expectationBalanced, expectation, Rat.add_zero]
+      | cons y xs =>
+        simp only [expectationBalanced, ih]
+        rw [← expectation_append, List.take_append_drop]
+
 def scale (p : Rat) (xs : Table α) : Table α := xs.map (fun (x, q) => (x, p*q))
 
 theorem expectation_scale_weights (p : Rat) (xs : Table α) (f : α → Rat) :
@@ -230,7 +256,11 @@ namespace Distribution
 
 def expect (d : Distribution α) (f : α → Rat) := expectation d.atoms f
 def probability (d : Distribution α) (event : α → Bool) : Rat :=
-  d.expect (fun x => if event x then 1 else 0)
+  expectationBalanced d.atoms.length d.atoms (fun x => if event x then 1 else 0)
+
+theorem probability_eq_expect (d : Distribution α) (event : α → Bool) :
+    d.probability event = d.expect (fun x => if event x then 1 else 0) :=
+  expectationBalanced_eq _ _ _
 
 theorem expect_const (d : Distribution α) (c : Rat) : d.expect (fun _ => c) = c := by
   have h := expectation_scale d.atoms c (fun _ => 1)
@@ -242,6 +272,7 @@ theorem expect_nonnegative (d : Distribution α) (f : α → Rat)
 
 theorem probability_bounds (d : Distribution α) (event : α → Bool) :
     0 ≤ d.probability event ∧ d.probability event ≤ 1 := by
+  rw [probability_eq_expect]
   have h0 := d.expect_nonnegative (fun x => if event x then 1 else 0) (by intro x; split <;> decide)
   have h1 := d.expect_nonnegative (fun x => if event x then 0 else 1) (by intro x; split <;> decide)
   have hs := expectation_add d.atoms (fun x => if event x then 1 else 0)
@@ -251,7 +282,7 @@ theorem probability_bounds (d : Distribution α) (event : α → Bool) :
     calc
       _ = expectation d.atoms (fun _ => 1) := by apply expectation_congr; intro x; split <;> grind
       _ = 1 := d.normalized
-  unfold probability expect at *
+  unfold expect at *
   grind
 
 def pure (x : α) : Distribution α where

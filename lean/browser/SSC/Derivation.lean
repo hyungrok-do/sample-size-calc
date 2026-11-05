@@ -131,7 +131,8 @@ structure Certificate (p : Program α) where
 namespace Certificate
 
 theorem probability_eq {p : Program α} (c : Certificate p) (event : α → Bool) :
-    c.distribution.probability event = p.probability event := c.correct _
+    c.distribution.probability event = p.probability event :=
+  (c.distribution.probability_eq_expect event).trans (c.correct _)
 
 end Certificate
 

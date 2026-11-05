@@ -68,6 +68,7 @@ export async function checkDerivations({ compile, report, page, reject }) {
     assert.ok(certificate.dependencies.some(x => x.includes('_finiteCheckpoint')));
     assert.ok(!certificate.axioms.some(x => /sorry|trustCompiler|ofReduce/.test(x)));
   }
+  console.log('Paired observations: exact cutoff and power bounds kernel checked.');
 
   await compile(examples['dependent-observations']);
   result = await report('dependent-observations.json');

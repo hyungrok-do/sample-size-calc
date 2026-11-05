@@ -30,6 +30,7 @@ const server=createServer(async(req,res)=>{
 });
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH||undefined,args:['--disable-dev-shm-usage',...JSON.parse(process.env.SSC_CHROMIUM_ARGS||'[]')]});
+console.log('Lean WASM test browser:', browser.version());
 const context=await browser.newContext({viewport:{width:1400,height:1000}});
 const page=await context.newPage();
 page.on('pageerror',e=>errors.push(e.message));
