@@ -1,0 +1,966 @@
+{
+  "seed": 541903,
+  "method": "exhaustive paths with fractions.Fraction",
+  "cases": [
+    {
+      "id": 0,
+      "n": 2,
+      "a": -1,
+      "b": -2,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        0,
+        5,
+        5,
+        2
+      ],
+      "other": [
+        4,
+        3,
+        4,
+        3
+      ],
+      "threshold": 1,
+      "modulus": 2,
+      "residue": 0,
+      "probability": "77/144",
+      "complement": "67/144",
+      "mean": "521/144"
+    },
+    {
+      "id": 1,
+      "n": 3,
+      "a": 1,
+      "b": 0,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        2,
+        2,
+        5,
+        3
+      ],
+      "other": [
+        4,
+        5,
+        2,
+        5
+      ],
+      "threshold": -4,
+      "modulus": 3,
+      "residue": 1,
+      "probability": "4205/6912",
+      "complement": "2707/6912",
+      "mean": "7457/3456"
+    },
+    {
+      "id": 2,
+      "n": 4,
+      "a": -1,
+      "b": 0,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        4,
+        3,
+        0,
+        2
+      ],
+      "other": [
+        3,
+        3,
+        0,
+        2
+      ],
+      "threshold": 1,
+      "modulus": 4,
+      "residue": 0,
+      "probability": "303289/839808",
+      "complement": "536519/839808",
+      "mean": "1657/26244"
+    },
+    {
+      "id": 3,
+      "n": 5,
+      "a": 1,
+      "b": 2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        0,
+        1,
+        0,
+        0
+      ],
+      "other": [
+        5,
+        2,
+        4,
+        3
+      ],
+      "threshold": 0,
+      "modulus": 2,
+      "residue": 1,
+      "probability": "1/1",
+      "complement": "0/1",
+      "mean": "2/1"
+    },
+    {
+      "id": 4,
+      "n": 2,
+      "a": 1,
+      "b": 1,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        3,
+        4,
+        2,
+        1
+      ],
+      "other": [
+        2,
+        1,
+        0,
+        0
+      ],
+      "threshold": -4,
+      "modulus": 3,
+      "residue": 0,
+      "probability": "13/15",
+      "complement": "2/15",
+      "mean": "-397/300"
+    },
+    {
+      "id": 5,
+      "n": 3,
+      "a": -1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        3,
+        4,
+        0,
+        2
+      ],
+      "other": [
+        4,
+        5,
+        2,
+        4
+      ],
+      "threshold": 2,
+      "modulus": 4,
+      "residue": 1,
+      "probability": "712/3645",
+      "complement": "2933/3645",
+      "mean": "-2473/2025"
+    },
+    {
+      "id": 6,
+      "n": 4,
+      "a": 1,
+      "b": 1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        4,
+        5,
+        4,
+        2
+      ],
+      "other": [
+        5,
+        5,
+        4,
+        0
+      ],
+      "threshold": -1,
+      "modulus": 2,
+      "residue": 0,
+      "probability": "54037/214375",
+      "complement": "160338/214375",
+      "mean": "-8761208/5788125"
+    },
+    {
+      "id": 7,
+      "n": 5,
+      "a": 1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        5,
+        0,
+        1,
+        4
+      ],
+      "other": [
+        4,
+        5,
+        0,
+        0
+      ],
+      "threshold": -4,
+      "modulus": 3,
+      "residue": 1,
+      "probability": "1186099/2025000",
+      "complement": "838901/2025000",
+      "mean": "-224497/180000"
+    },
+    {
+      "id": 8,
+      "n": 2,
+      "a": 1,
+      "b": -2,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        3,
+        0,
+        1,
+        1
+      ],
+      "other": [
+        5,
+        4,
+        0,
+        2
+      ],
+      "threshold": 4,
+      "modulus": 4,
+      "residue": 0,
+      "probability": "0/1",
+      "complement": "1/1",
+      "mean": "-432/275"
+    },
+    {
+      "id": 9,
+      "n": 3,
+      "a": 1,
+      "b": 1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        2,
+        4,
+        0,
+        2
+      ],
+      "other": [
+        1,
+        2,
+        4,
+        0
+      ],
+      "threshold": 2,
+      "modulus": 2,
+      "residue": 1,
+      "probability": "47/448",
+      "complement": "401/448",
+      "mean": "1441/3136"
+    },
+    {
+      "id": 10,
+      "n": 4,
+      "a": -1,
+      "b": -2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        1,
+        5,
+        1,
+        3
+      ],
+      "other": [
+        0,
+        5,
+        4,
+        0
+      ],
+      "threshold": 2,
+      "modulus": 3,
+      "residue": 0,
+      "probability": "156767/303750",
+      "complement": "146983/303750",
+      "mean": "1685257/455625"
+    },
+    {
+      "id": 11,
+      "n": 5,
+      "a": 1,
+      "b": -2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        4,
+        4,
+        3,
+        4
+      ],
+      "other": [
+        1,
+        1,
+        3,
+        0
+      ],
+      "threshold": 4,
+      "modulus": 4,
+      "residue": 1,
+      "probability": "47977/84375",
+      "complement": "36398/84375",
+      "mean": "4164673/759375"
+    },
+    {
+      "id": 12,
+      "n": 2,
+      "a": 1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        0,
+        0,
+        3,
+        5
+      ],
+      "other": [
+        4,
+        1,
+        0,
+        3
+      ],
+      "threshold": 3,
+      "modulus": 2,
+      "residue": 0,
+      "probability": "0/1",
+      "complement": "1/1",
+      "mean": "0/1"
+    },
+    {
+      "id": 13,
+      "n": 3,
+      "a": 1,
+      "b": 2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        2,
+        1,
+        0,
+        2
+      ],
+      "other": [
+        2,
+        0,
+        1,
+        4
+      ],
+      "threshold": 4,
+      "modulus": 3,
+      "residue": 1,
+      "probability": "12/25",
+      "complement": "13/25",
+      "mean": "21452/6125"
+    },
+    {
+      "id": 14,
+      "n": 4,
+      "a": 1,
+      "b": 1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        4,
+        0,
+        4,
+        5
+      ],
+      "other": [
+        0,
+        4,
+        1,
+        5
+      ],
+      "threshold": -1,
+      "modulus": 4,
+      "residue": 0,
+      "probability": "1966656/3570125",
+      "complement": "1603469/3570125",
+      "mean": "11775826/3570125"
+    },
+    {
+      "id": 15,
+      "n": 5,
+      "a": 1,
+      "b": -2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        1,
+        5,
+        2,
+        0
+      ],
+      "other": [
+        2,
+        4,
+        1,
+        2
+      ],
+      "threshold": -3,
+      "modulus": 2,
+      "residue": 1,
+      "probability": "183515/331776",
+      "complement": "148261/331776",
+      "mean": "74591/31104"
+    },
+    {
+      "id": 16,
+      "n": 2,
+      "a": -1,
+      "b": 0,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        3,
+        1,
+        1,
+        4
+      ],
+      "other": [
+        1,
+        4,
+        2,
+        1
+      ],
+      "threshold": -2,
+      "modulus": 3,
+      "residue": 0,
+      "probability": "67/162",
+      "complement": "95/162",
+      "mean": "85/648"
+    },
+    {
+      "id": 17,
+      "n": 3,
+      "a": 1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        3,
+        5,
+        5,
+        2
+      ],
+      "other": [
+        5,
+        3,
+        3,
+        3
+      ],
+      "threshold": -4,
+      "modulus": 4,
+      "residue": 1,
+      "probability": "517/756",
+      "complement": "239/756",
+      "mean": "-8384/33075"
+    },
+    {
+      "id": 18,
+      "n": 4,
+      "a": -1,
+      "b": -2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        0,
+        2,
+        1,
+        2
+      ],
+      "other": [
+        0,
+        4,
+        4,
+        0
+      ],
+      "threshold": 3,
+      "modulus": 2,
+      "residue": 0,
+      "probability": "1477/5000",
+      "complement": "3523/5000",
+      "mean": "15273/5000"
+    },
+    {
+      "id": 19,
+      "n": 5,
+      "a": 1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        4,
+        0,
+        1,
+        2
+      ],
+      "other": [
+        5,
+        2,
+        3,
+        2
+      ],
+      "threshold": -4,
+      "modulus": 3,
+      "residue": 1,
+      "probability": "46381193/87127488",
+      "complement": "40746295/87127488",
+      "mean": "-221504369/87127488"
+    },
+    {
+      "id": 20,
+      "n": 2,
+      "a": -1,
+      "b": -2,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        1,
+        3,
+        2,
+        4
+      ],
+      "other": [
+        0,
+        3,
+        3,
+        1
+      ],
+      "threshold": -1,
+      "modulus": 4,
+      "residue": 0,
+      "probability": "39/70",
+      "complement": "31/70",
+      "mean": "718/175"
+    },
+    {
+      "id": 21,
+      "n": 3,
+      "a": -1,
+      "b": 1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "other": [
+        3,
+        5,
+        2,
+        2
+      ],
+      "threshold": -3,
+      "modulus": 2,
+      "residue": 1,
+      "probability": "31133/49392",
+      "complement": "18259/49392",
+      "mean": "31763/12348"
+    },
+    {
+      "id": 22,
+      "n": 4,
+      "a": -1,
+      "b": 2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        3,
+        4,
+        3,
+        1
+      ],
+      "other": [
+        1,
+        1,
+        0,
+        5
+      ],
+      "threshold": 1,
+      "modulus": 3,
+      "residue": 0,
+      "probability": "1616115/5021863",
+      "complement": "3405748/5021863",
+      "mean": "-45368/41503"
+    },
+    {
+      "id": 23,
+      "n": 5,
+      "a": 1,
+      "b": 0,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        4,
+        2,
+        0,
+        4
+      ],
+      "other": [
+        0,
+        3,
+        5,
+        4
+      ],
+      "threshold": -1,
+      "modulus": 4,
+      "residue": 1,
+      "probability": "313759/450000",
+      "complement": "136241/450000",
+      "mean": "4152713/1200000"
+    },
+    {
+      "id": 24,
+      "n": 2,
+      "a": 1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "other": [
+        3,
+        1,
+        4,
+        3
+      ],
+      "threshold": -3,
+      "modulus": 2,
+      "residue": 0,
+      "probability": "0/1",
+      "complement": "1/1",
+      "mean": "0/1"
+    },
+    {
+      "id": 25,
+      "n": 3,
+      "a": 1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        3,
+        1,
+        2,
+        3
+      ],
+      "other": [
+        1,
+        1,
+        5,
+        3
+      ],
+      "threshold": 1,
+      "modulus": 3,
+      "residue": 1,
+      "probability": "3991/8100",
+      "complement": "4109/8100",
+      "mean": "21836/18225"
+    },
+    {
+      "id": 26,
+      "n": 4,
+      "a": -1,
+      "b": 0,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        4,
+        3,
+        4,
+        2
+      ],
+      "other": [
+        4,
+        0,
+        0,
+        0
+      ],
+      "threshold": 3,
+      "modulus": 4,
+      "residue": 0,
+      "probability": "6420/28561",
+      "complement": "22141/28561",
+      "mean": "-36624/28561"
+    },
+    {
+      "id": 27,
+      "n": 5,
+      "a": -1,
+      "b": 2,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        1,
+        4,
+        4,
+        2
+      ],
+      "other": [
+        5,
+        1,
+        1,
+        4
+      ],
+      "threshold": 3,
+      "modulus": 2,
+      "residue": 1,
+      "probability": "34240/161051",
+      "complement": "126811/161051",
+      "mean": "354/121"
+    },
+    {
+      "id": 28,
+      "n": 2,
+      "a": -1,
+      "b": 2,
+      "scores": [
+        -2,
+        0,
+        1,
+        1
+      ],
+      "weights": [
+        1,
+        3,
+        0,
+        3
+      ],
+      "other": [
+        1,
+        1,
+        2,
+        1
+      ],
+      "threshold": 0,
+      "modulus": 3,
+      "residue": 0,
+      "probability": "3/49",
+      "complement": "46/49",
+      "mean": "-414/245"
+    },
+    {
+      "id": 29,
+      "n": 3,
+      "a": -1,
+      "b": 0,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        5,
+        5,
+        0,
+        4
+      ],
+      "other": [
+        1,
+        1,
+        3,
+        4
+      ],
+      "threshold": 2,
+      "modulus": 4,
+      "residue": 1,
+      "probability": "54493/222264",
+      "complement": "167771/222264",
+      "mean": "3313/27783"
+    },
+    {
+      "id": 30,
+      "n": 4,
+      "a": -1,
+      "b": -1,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        2,
+        5,
+        5,
+        5
+      ],
+      "other": [
+        4,
+        1,
+        0,
+        1
+      ],
+      "threshold": 0,
+      "modulus": 2,
+      "residue": 0,
+      "probability": "77203/1061208",
+      "complement": "984005/1061208",
+      "mean": "8178617/18040536"
+    },
+    {
+      "id": 31,
+      "n": 5,
+      "a": -1,
+      "b": 0,
+      "scores": [
+        -2,
+        0,
+        1,
+        3
+      ],
+      "weights": [
+        1,
+        3,
+        0,
+        3
+      ],
+      "other": [
+        1,
+        1,
+        3,
+        0
+      ],
+      "threshold": 2,
+      "modulus": 3,
+      "residue": 1,
+      "probability": "140946/420175",
+      "complement": "279229/420175",
+      "mean": "1515337/1500625"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import Lean
 import Lean.Replay
+import Lean.Elab.Frontend
 import SSC.Calculation
 import SSC.Derivation
 
@@ -68,11 +69,12 @@ private def approvedAxiom (n : Name) : Bool :=
 private def displayName (n : Name) : String :=
   (privateToUserName? n |>.getD n).toString
 
-/-- Record source tactics and the goals they actually transformed. -/
-private def observe (_ : Syntax) : CommandElabM Unit := do
-  if (← get).messages.hasErrors then return
+/-- Read actual elaborator trees. User stdout is never a proof trace. -/
+private def collectTrace : CommandElabM (Array Json × Array String) := do
   let trees := (← getInfoState).substituteLazy.get.trees
-  let count ← IO.mkRef (0 : Nat)
+  let steps ← IO.mkRef (#[] : Array Json)
+  let limits ← IO.mkRef (#[] : Array String)
+  let counts ← IO.mkRef ({} : Std.HashMap Name Nat)
   for tree in trees do
     discard <| tree.visitM (m := CommandElabM) (α := Unit)
       (postNode := fun ctx info _ _ => do
@@ -82,15 +84,16 @@ private def observe (_ : Syntax) : CommandElabM Unit := do
         -- Synthetic automation internals are available in the proof term. Only
         -- original source tactics are useful as a navigable derivation trace.
         unless tactic.stx.getHeadInfo matches .original .. do return
-        if (← count.get) >= 256 then
-          if (← count.get) == 256 then
-            IO.println s!"SSC_PROOF_TRACE_LIMIT {displayName decl}"
-            count.modify (· + 1)
+        let count := (← counts.get).getD decl 0
+        if count >= 256 then
+          if count == 256 then
+            limits.modify (·.push (displayName decl))
+            counts.modify (·.insert decl (count + 1))
           return
         let before ← ({ ctx with mctx := tactic.mctxBefore }).ppGoals tactic.goalsBefore
         let after ← ({ ctx with mctx := tactic.mctxAfter }).ppGoals tactic.goalsAfter
         if before.pretty == after.pretty then return
-        count.modify (· + 1)
+        counts.modify (·.insert decl (count + 1))
         let step := Json.mkObj [
           ("declaration", displayName decl),
           ("line", toJson (ctx.fileMap.toPosition range.start).line),
@@ -98,12 +101,11 @@ private def observe (_ : Syntax) : CommandElabM Unit := do
           ("endLine", toJson (ctx.fileMap.toPosition range.stop).line),
           ("tactic", toJson (String.Pos.Raw.extract ctx.fileMap.source range.start range.stop)),
           ("before", toJson before.pretty), ("after", toJson after.pretty)]
-        IO.println s!"SSC_PROOF_STEP {step.compress}")
+        steps.modify (·.push step))
+  return (← steps.get, ← limits.get)
 
-initialize Lean.Elab.Command.addLinter { run := observe }
-
-/-- Called by the browser using Lean's standard `run_cmd` command. -/
-def exportReport (nonce : String) : CommandElabM Unit := do
+/-- Audit the completed environment, independently of the input's command syntax. -/
+private def checkedReport : CommandElabM Json := do
   let env ← getEnv
   -- Force kernel checking, including any asynchronous declarations, before
   -- examining results. Never certify an elaborator-only environment entry.
@@ -156,6 +158,90 @@ def exportReport (nonce : String) : CommandElabM Unit := do
       ("parameters", toJson parameters),
       ("dependencies", strings (used.map displayName)),
       ("axioms", strings (axioms.map Name.toString))]
-  IO.println s!"SSC_PROOF_REPORT {nonce} {(Json.mkObj [("declarations", toJson results)]).compress}"
+  let (steps, limits) ← collectTrace
+  return Json.mkObj [("declarations", toJson results), ("steps", toJson steps),
+    ("traceLimits", toJson limits)]
+
+/-- Standalone reporting helper. The browser does not trust calls in user source. -/
+def exportReport (nonce : String) : CommandElabM Unit := do
+  IO.println s!"SSC_PROOF_REPORT {nonce} {(← checkedReport).compress}"
+
+/-- Prepare the ordinary Lean frontend one command at a time. The host executes
+returned native frontend actions directly, so the kernel does not run beneath
+an interpreted driver or a nested command evaluation stack. Diagnostics and info
+trees are retained before each top-level command resets them. -/
+private def prepareSource (imported : Environment) (source nonce : String) :
+    IO (IO (Option (IO Unit))) := do
+  let inputCtx := Parser.mkInputContext source "/workspace/source.lean"
+  let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
+  let opts := Elab.async.set ({} : Options) false
+  let (env, headerMessages) ←
+    if Elab.HeaderSyntax.imports header == imported.header.imports &&
+        !Elab.HeaderSyntax.isModule header then
+      pure (imported.setMainModule (Name.mkSimple "SSCInput"), headerMessages)
+    else do
+      unsafe enableInitializersExecution
+      Elab.processHeader header opts headerMessages inputCtx
+        (leakEnv := true) (mainModule := Name.mkSimple "SSCInput")
+  let context : Elab.Frontend.Context := { inputCtx }
+  let state ← IO.mkRef ({
+    commandState := Command.mkState env {} opts
+    parserState, cmdPos := parserState.pos } : Elab.Frontend.State)
+  let messages ← IO.mkRef headerMessages
+  let trees ← IO.mkRef ({} : PersistentArray InfoTree)
+  let pending ← IO.mkRef false
+  let done ← IO.mkRef false
+  return do
+    if ← pending.get then
+      let current ← state.get
+      messages.modify (· ++ current.commandState.messages)
+      trees.modify (·.append current.commandState.infoState.substituteLazy.get.trees)
+      pending.set false
+    if ← done.get then
+      let current ← state.get
+      let allMessages ← messages.get
+      let allTrees ← trees.get
+      state.set { current with commandState := {
+        current.commandState with messages := allMessages
+                                  infoState.trees := allTrees } }
+      let result ← (show IO Json from do
+        try
+          let log ← messages.get
+          let diagnostics ← liftM (m := BaseIO) <| log.toList.toArray.mapM Message.toJson
+          if log.hasErrors then
+            return Json.mkObj [("ok", toJson false), ("diagnostics", toJson diagnostics)]
+          let report ← Elab.Frontend.runCommandElabM checkedReport context state
+          return Json.mkObj [("ok", toJson true), ("report", report),
+            ("diagnostics", toJson diagnostics)]
+        catch error =>
+          return Json.mkObj [("ok", toJson false), ("error", toJson error.toString)])
+      IO.println s!"SSC_COMPILE_RESULT {nonce} {result.compress}"
+      return none
+    let current ← state.get
+    let scope := current.commandState.scopes.head!
+    let parserContext : Parser.ParserModuleContext := {
+      env := current.commandState.env, options := scope.opts
+      currNamespace := scope.currNamespace, openDecls := scope.openDecls }
+    let (command, parserState, parseMessages) := Parser.parseCommand inputCtx
+      parserContext current.parserState {}
+    messages.modify (· ++ parseMessages)
+    state.set { current with parserState, cmdPos := current.parserState.pos }
+    done.set (Parser.isTerminalCommand command)
+    pending.set true
+    return some (Elab.Frontend.elabCommandAtFrontend command context state)
+
+/-- Prepare one persistent host-callable function. It captures only the trusted
+import environment, never a user's module or a report nonce. The host invokes
+this function directly through Lean's runtime ABI, without nesting a second
+compiler inside a command evaluation stack. -/
+syntax (name := browserDriver) "#ssc_browser_driver" : command
+
+@[command_elab browserDriver] private unsafe def elabBrowserDriver : CommandElab
+  | `(#ssc_browser_driver) => do
+      let some imported := (← getEnv).importEnv?
+        | throwError "Missing trusted compiler import environment."
+      let driver ← liftM (m := BaseIO) <| Runtime.markPersistent (prepareSource imported)
+      IO.println s!"SSC_BROWSER_DRIVER {(ptrAddrUnsafe driver).toNat}"
+  | _ => throwUnsupportedSyntax
 
 end SSC.Report

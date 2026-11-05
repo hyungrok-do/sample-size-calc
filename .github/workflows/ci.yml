@@ -114,6 +114,13 @@ jobs:
         run: cd web && npm run test:browser
       - name: Actual Lean compiler in WebAssembly
         run: cd web && npm run test:lean-wasm-browser
+      - name: Lean differential, adversarial and resource stress tests
+        env:
+          SSC_STRESS_DEADLINE: "1"
+        run: |
+          python scripts/generate_lean_stress_references.py
+          git diff --exit-code -- web/tests/fixtures/lean-stress.json
+          cd web && npm run test:lean-stress
       - name: Lean compiler tab in Chromium
         if: ${{ !cancelled() }}
         run: cd web && npm run test:lean-browser

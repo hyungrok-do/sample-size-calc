@@ -261,10 +261,20 @@ The report reads declarations from the kernel-checked environment. It shows:
 - Direct declaration dependencies and transitive foundational axiom dependencies.
 - Separate output from `#eval`, `#check` and other source commands.
 
+The browser prepares a trusted Lean frontend function once and calls it through
+the pinned runtime ABI, passing source bytes and the report token separately.
+The driver parses the input in a separate environment and returns each native
+frontend action for the host to execute directly. This keeps command elaboration
+off an interpreted driver's call stack. After the last command it calls the audit
+directly. The audit is not appended to user source, so `#exit` and user macros
+cannot skip or replace it. The report identifier is absent from the input's
+source and declaration environment. Printed report-shaped text is ordinary
+output; tactic steps come directly from the elaborator's information trees.
+
 The report is an observation of elaboration; it does not generate mathematical
 claims or fill explanation templates. A tactic trace is not itself the proof;
 the completed proof term is kernel checked. A direct term proof can have no
-source tactic trace. Traces are limited to 256 entries per source command and
+source tactic trace. Traces are limited to 256 entries per declaration and
 explicitly marked when truncated. Pretty printing may abbreviate large terms; the downloaded
 source is the reproducible proof script.
 
@@ -324,6 +334,16 @@ A current desktop browser with shared-memory WebAssembly is required. On static
 hosting, the service worker establishes cross-origin isolation and may reload
 once. Stop terminates the worker; restart reuses authenticated cached assets.
 Compilation has a 120-second browser limit and a 128-KiB source limit.
+Source and output limits count UTF-8 bytes; output is limited to 8 MiB.
+
+This deployment runs Lean's parser, elaborator, dependent type checker, kernel
+and executable interpreter. The statistical constructions are libraries in Lean,
+not additional grammar or a model-name dispatcher. Its proof-report policy is
+deliberately stricter than the language: legal Lean modules using additional
+axioms or native-evaluation proof axioms are rejected. The browser does not
+provide the complete Lake/project/native-code toolchain or an independent
+implementation of Lean's kernel. Replaying declarations is an extra kernel
+check in the same runtime, not an external proof-checker certification.
 
 Mathlib is not bundled. General real analysis, continuous probability theory,
 unrestricted statistical derivation, and a universal automated mathematician are
@@ -352,6 +372,32 @@ server isolation headers. It checks proof traces, symbolic hypotheses, changed
 equations, failed proofs, axiom auditing, numerical-output separation, cancellation
 and offline restart. API requests and the removed C++ statistical module are
 explicitly excluded from this compiler path.
+
+Run the differential and resource stress suite against the assembled site:
+
+```sh
+python scripts/generate_lean_stress_references.py
+cd web
+SSC_STRESS_DEADLINE=1 npm run test:lean-stress -- ../_site
+```
+
+The seeded reference generator exhaustively enumerates observation trajectories
+with Python rational arithmetic. The browser compares 32 generated dependent
+models against 160 exact results and invariants, with eight kernel-checked
+certificates using intermediate checkpoints. A separate large evaluation expression
+may succeed or exhaust the browser stack; the test requires a clean rejection
+and restart in the latter case. Raising Lean's recursion budget does not enlarge
+the browser's host stack. Additional tests cover dependent types, type classes, macros,
+symbolic proofs, invalid syntax and types, forged report/trace text, an early
+exit after bypassed kernel checking, UTF-8 boundaries, 1,000 declarations,
+100 alternating successful/failed requests, a 100,000-level deterministic exact
+program, concurrent requests, cancellation, runtime exit, output flooding and
+recovery. `SSC_STRESS_DEADLINE=1`
+also waits for the actual 120-second deadline and verifies restart. These are
+regression and stress checks of a pinned implementation, not a claim of full
+language conformance or exhaustive statistical coverage.
+CI runs the complete stress suite including the real deadline; publication also
+runs the stress suite before deploying, with the deadline test left to CI.
 
 The earlier native Lean 4.19/Mathlib routines and probability audits remain
 separate [legacy command-line tools](lean-native-tools.md). The old

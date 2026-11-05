@@ -55,6 +55,7 @@ jobs:
           cd web
           npx playwright install --with-deps chromium
           npm run test:lean-wasm-browser -- ../_site
+          npm run test:lean-stress -- ../_site
           npm run test:site -- ../_site
       - uses: actions/upload-pages-artifact@v3
 

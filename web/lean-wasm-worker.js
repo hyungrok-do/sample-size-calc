@@ -1,7 +1,7 @@
 (() => {
 // The genuine Lean parser, elaborator, interpreter and kernel run in this worker.
 // Runtime initialization follows cauli/lean4-wasm-in-browser (Apache-2.0).
-let manifest, cache, output = [], diagnostics = [], outputBytes = 0;
+let manifest, cache, checker, output = [], diagnostics = [], outputBytes = 0;
 const base = new URL('lean-wasm/', self.location.href);
 const progress = text => self.postMessage({ type: 'progress', text });
 const hash = async bytes => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x => x.toString(16).padStart(2, '0')).join('');
@@ -32,30 +32,72 @@ function mkdir(path) {
   }
 }
 function line(text) {
+  outputBytes += new TextEncoder().encode(text).byteLength;
+  if (outputBytes > 8 * 1024 * 1024) return;
   if (/^\s*\[(?:DEBUG|WASM DEBUG)/.test(text)) {
     const match = /\[DEBUG:PROGRESS\]\s*(\d+)\/(\d+)/.exec(text);
     if (match) progress(`Loading Lean modules: ${match[1]} / ${match[2]}`);
     return;
   }
-  outputBytes += text.length;
-  if (outputBytes > 8 * 1024 * 1024) return;
   if (text.startsWith('{')) {
     try { const item = JSON.parse(text); if (item.severity) { diagnostics.push(item); return; } } catch {}
   }
   output.push(text);
 }
 function leanString(text) {
-  const ptr = Module.stringToNewUTF8(text), result = Module._lean_mk_string(ptr);
+  // Use the length-aware constructor: a NUL inside a source comment must not
+  // truncate the rest of the module at the C-string boundary.
+  const ptr = Module.stringToNewUTF8(text);
+  const result = Module._lean_mk_string_from_bytes(ptr, new TextEncoder().encode(text).byteLength);
   Module._free(ptr); return result;
 }
-function run(source) {
-  output = []; diagnostics = []; outputBytes = 0;
-  const result = Module._lean_wasm_compile(leanString(source), leanString('/workspace/source.lean'));
+function release(result) {
+  // Pinned Lean runtime ABI: mirror lean_dec_ref from lean/lean.h. The cold
+  // runtime function handles the final reference and multi-threaded objects.
+  const count = Module.getValue(result, 'i32');
+  if (count > 1) Module.setValue(result, count - 1, 'i32');
+  else if (count !== 0) Module._lean_dec_ref_cold(result);
+}
+function retain(value) {
+  const count = Module.getValue(value, 'i32');
+  if (count > 0) Module.setValue(value, count + 1, 'i32');
+  else if (count < 0) Atomics.sub(Module.HEAP32, value >>> 2, 1);
+  return value;
+}
+function ioValue(result) {
   if ((Module.getValue(result + 7, 'i8') & 255) !== 0) {
     Module._lean_io_result_show_error(result);
-    throw Error(output.join('\n') || 'Lean could not import the requested module.');
+    throw Error(output.join('\n') || 'Lean could not process the requested module.');
   }
-  const errors = diagnostics.filter(d => d.severity === 'error' || d.kind === 'hasSorry' || /sorryAx|declaration uses [`'"]sorry/.test(d.data));
+  return Module.getValue(result + 8, 'i32');
+}
+function run(source, nonce) {
+  output = []; diagnostics = []; outputBytes = 0;
+  if (nonce === undefined) {
+    const result = Module._lean_wasm_compile(leanString(source), leanString('/workspace/source.lean'));
+    try { ioValue(result); } finally { release(result); }
+  } else {
+    // Each returned action is Lean's native frontend specialized to the current
+    // command. Execute it with a flat host stack, outside the interpreted driver.
+    // IO results own their fields; retain before passing a consumed argument.
+    const session = Module._lean_apply_3(checker, leanString(source), leanString(nonce), 1);
+    try {
+      const next = ioValue(session);
+      for (;;) {
+        const step = Module._lean_apply_1(retain(next), 1);
+        try {
+          const option = ioValue(step);
+          if (option === 1) break; // Option.none
+          const action = Module.getValue(option + 8, 'i32');
+          const result = Module._lean_apply_1(retain(action), 1);
+          try { ioValue(result); } finally { release(result); }
+        } finally { release(step); }
+        if (outputBytes > 8 * 1024 * 1024) throw Error('Compiler output exceeded 8 MB.');
+      }
+    } finally { release(session); }
+  }
+  const errors = diagnostics.filter(d => d.severity === 'error' || d.kind === 'hasSorry'
+    || (d.severity === 'warning' && /declaration uses [`'"]sorry/.test(d.data)));
   if (errors.length) throw Error(errors.map(d => `source.lean:${d.pos?.line || 1}:${(d.pos?.column || 0) + 1}: ${d.data}`).join('\n'));
   if (outputBytes > 8 * 1024 * 1024) throw Error('Compiler output exceeded 8 MB.');
   return { output, diagnostics };
@@ -118,7 +160,15 @@ async function initialize() {
     }
   }));
   progress('Initializing Lean proof checking…');
-  run('import SSC\n#check SSC.Report.exportReport');
+  const bootstrap = run('import SSC\n#ssc_browser_driver');
+  const drivers = [...bootstrap.output, ...bootstrap.diagnostics.filter(d => d.severity === 'information').map(d => d.data)]
+    .flatMap(text => text.split('\n')).filter(text => /^SSC_BROWSER_DRIVER \d+$/.test(text));
+  if (drivers.length !== 1) throw Error('Missing trusted compiler runtime entry point.');
+  checker = Number(drivers[0].slice('SSC_BROWSER_DRIVER '.length));
+  // LeanClosure = 245, with reference count 0 for Runtime.markPersistent.
+  if (!Number.isSafeInteger(checker) || checker <= 0 || checker % 8 !== 0
+      || (Module.getValue(checker + 7, 'i8') & 255) !== 245 || Module.getValue(checker, 'i32') !== 0)
+    throw Error('Incompatible compiler runtime entry point.');
   self.postMessage({ type: 'ready', version: manifest.leanVersion });
 }
 self.onmessage = async ({ data }) => {
@@ -127,26 +177,28 @@ self.onmessage = async ({ data }) => {
     if (data.type !== 'compile') return;
     const source = data.source;
     if (typeof source !== 'string' || !source.trim() || new TextEncoder().encode(source).length > 131072) throw Error('Supply 1–131072 bytes of Lean source.');
-    // The editor contains a complete ordinary Lean module, including its imports.
-    // run_cmd is standard Lean syntax. A per-run token separates the authenticated
-    // reporter's output from ordinary #eval output in the same stdout stream.
+    // User syntax is parsed by Lean inside a trusted driver. Neither the nonce
+    // nor the final audit command is appended to the user-controlled module.
     const nonce = crypto.randomUUID();
-    const prefix = `SSC_PROOF_REPORT ${nonce} `;
-    const result = run(source + `\n\nrun_cmd _root_.SSC.Report.exportReport "${nonce}"\n`);
-    // run_cmd uses Lean's output-capture machinery. The WASM frontend can
-    // deliver its output as an information diagnostic instead of raw stdout.
+    const prefix = 'SSC_COMPILE_RESULT ' + nonce + ' ';
+    const result = run(source, nonce);
     const lines = [...result.output, ...result.diagnostics.filter(d => d.severity === 'information').map(d => d.data)]
       .flatMap(text => text.split('\n'));
-    const internal = line => line.startsWith(prefix) || line.startsWith('SSC_PROOF_STEP ') || line.startsWith('SSC_PROOF_TRACE_LIMIT ');
     const reports = lines.filter(text => text.startsWith(prefix));
-    if (reports.length !== 1) throw Error('No checked declaration report. Include import SSC at the start of the Lean module.');
-    const report = JSON.parse(reports[0].slice(prefix.length));
-    const traces = lines.filter(text => text.startsWith('SSC_PROOF_STEP '))
-      .map(text => JSON.parse(text.slice('SSC_PROOF_STEP '.length)));
+    if (reports.length !== 1) throw Error('No independently checked declaration report.');
+    const envelope = JSON.parse(reports[0].slice(prefix.length));
+    const sourceDiagnostics = envelope.diagnostics || [];
+    const errors = sourceDiagnostics.filter(d => d.severity === 'error' || d.kind === 'hasSorry'
+      || (d.severity === 'warning' && /declaration uses [\u0060'"]sorry/.test(d.data)));
+    if (!envelope.ok || errors.length) throw Error(envelope.error || errors.map(d =>
+      'source.lean:' + (d.pos?.line || 1) + ':' + ((d.pos?.column || 0) + 1) + ': ' + d.data).join('\n')
+      || 'Lean could not check this module.');
+    const report = envelope.report;
+    const traces = report.steps, limits = report.traceLimits;
     const declarations = report.declarations.sort((a, b) => a.line - b.line || a.column - b.column);
     for (const declaration of declarations) {
       const seen = new Set();
-      declaration.traceTruncated = lines.includes('SSC_PROOF_TRACE_LIMIT ' + declaration.name);
+      declaration.traceTruncated = limits.includes(declaration.name);
       declaration.steps = traces.filter(step => step.declaration === declaration.name && !/^by(?:\s|$)/.test(step.tactic))
         .filter(step => { const key = JSON.stringify(step); if (seen.has(key)) return false; seen.add(key); return true; })
         .sort((a, b) => a.line - b.line || a.column - b.column);
@@ -154,17 +206,16 @@ self.onmessage = async ({ data }) => {
     self.postMessage({ type: 'result', id: data.id, value: {
       ok: true, compiler: 'lean-wasm-proofs-v2', language: 'Lean 4', leanVersion: manifest.leanVersion,
       packageVersion: manifest.version, reporterSourceSha256: manifest.sourceSha256,
-      traceTruncated: lines.some(line => line.startsWith('SSC_PROOF_TRACE_LIMIT ')),
+      traceTruncated: limits.length > 0,
       results: declarations, module: source,
-      output: result.output.flatMap(text => text.split('\n')).filter(line => !internal(line)).join('\n'),
-      diagnostics: result.diagnostics.map(d => ({ ...d, data: d.data.split('\n').filter(line => !internal(line)).join('\n') }))
-        .filter(d => d.data.trim()),
+      output: lines.filter(line => !line.startsWith(prefix)).join('\n'),
+      diagnostics: sourceDiagnostics,
     } });
   } catch (error) {
     // A host stack overflow or WASM trap can leave the runtime unusable.
     // Normal Lean diagnostics keep the worker; runtime failures require restart.
-    const fatal = error instanceof RangeError || error instanceof WebAssembly.RuntimeError;
-    self.postMessage({ type: 'error', id: data.id, fatal, message: error?.message || 'Lean could not complete this compilation. Reload the compiler to retry.' });
+    const fatal = !(error instanceof Error) || error instanceof RangeError || error instanceof WebAssembly.RuntimeError;
+    self.postMessage({ type: 'error', id: data.id, fatal, message: error?.message || 'Lean execution stopped unexpectedly. The compiler will restart for the next request.' });
   }
 };
 })();
