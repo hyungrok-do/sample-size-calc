@@ -9,11 +9,13 @@ import ast
 import gzip
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 LEAN_COMMIT = '62b6a2291302d4bbeace37642a066b7510d0145c'
@@ -87,6 +89,62 @@ def node_command():
         raise RuntimeError('Emscripten NODE_JS must name a JavaScript runtime')
     return command
 
+def toolchain_digest(kit):
+    """Fingerprint actual compiler inputs, including a caller-supplied kit."""
+    files = [kit/'bin/lean.js', kit/'bin/lean.wasm', ROOT/'packaging/lean-wasm/lean-node.cjs',
+             Path(__file__).resolve()]
+    files += sorted(p for p in (kit/'lib/lean').rglob('*') if p.is_file()
+                    and p.suffix in ['.olean', '.ir', '.sig']
+                    and p.relative_to(kit/'lib/lean').parts[0].split('.')[0] in ['Init', 'Std', 'Lean'])
+    return hashlib.sha256(json.dumps([(str(p.relative_to(kit)) if p.is_relative_to(kit) else p.name,
+                                       digest(p)) for p in files]).encode()).hexdigest()
+
+def compile_module(kit, build, cache, name, source, inputs):
+    # Include prior outputs, not just source hashes. This conservatively
+    # invalidates downstream modules even after a toolchain or dependency change.
+    key = hashlib.sha256(json.dumps([1, inputs, name, source]).encode()).hexdigest()
+    cached = cache/key
+    artifact = Path(name).with_suffix('.olean')
+    destination = kit/'lib/lean'/artifact
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    metadata = cached.with_suffix('.json')
+    if cached.is_file() and metadata.is_file():
+        try:
+            expected = json.loads(metadata.read_text())['sha256']
+            if digest(cached) == expected:
+                shutil.copyfile(cached, destination)
+                print(f'Reusing checked build artifact {name}', flush=True)
+                return expected
+        except (ValueError, KeyError):
+            pass
+    path = build/name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source)
+    output = build/artifact
+    # A failed compiler invocation must never reuse yesterday's output.
+    output.unlink(missing_ok=True)
+    started = time.monotonic()
+    print(f'Compiling {name} with Lean WebAssembly', flush=True)
+    with (build/'compiler.log').open('w') as log:
+        result = subprocess.run(node_command() + [str(ROOT/'packaging/lean-wasm/lean-node.cjs'), str(kit), str(build),
+            '-R', '/work', '-o', '/work/'+artifact.as_posix(), '/work/'+name],
+            stdout=log, stderr=subprocess.STDOUT, timeout=300)
+    log = (build/'compiler.log').read_text()
+    if result.returncode != 0 or not output.is_file() or re.search(r'hasErrors\s*=\s*true', log):
+        output.unlink(missing_ok=True)
+        raise RuntimeError(log[-12000:])
+    if LEAN_COMMIT.encode() not in output.read_bytes()[:160]:
+        raise RuntimeError(f'Compiler produced an incompatible artifact for {name}')
+    sha = digest(output)
+    cache.mkdir(parents=True, exist_ok=True)
+    temporary = cached.with_suffix('.tmp')
+    shutil.copyfile(output, temporary)
+    temporary.replace(cached)
+    metadata.write_text(json.dumps({'sha256': sha}))
+    shutil.copyfile(output, destination)
+    print(f'Compiled {name} in {time.monotonic()-started:.1f}s', flush=True)
+    return sha
+
 def package(kit, out, sources):
     out.mkdir(parents=True, exist_ok=True)
     # Compressed opaque extensions avoid a static host decompressing them twice.
@@ -108,11 +166,15 @@ def package(kit, out, sources):
         (out/name).parent.mkdir(parents=True, exist_ok=True)
         (out/name).write_text(source)
     packs, parts, entries, size = [], [], [], 0
+    group, group_index = None, 0
     def flush():
-        nonlocal parts, entries, size
+        nonlocal parts, entries, size, group_index
         if not parts:
             return
-        name = f'library-{len(packs):03d}.pack'
+        # Changing SSC must not move every subsequent Std byte into a different
+        # pack. Stable namespace boundaries and names preserve content-cache hits.
+        name = f'library-{group.lower()}-{group_index:03d}.pack'
+        group_index += 1
         data = gzip.compress(b''.join(parts), compresslevel=9, mtime=0)
         (out/name).write_bytes(data)
         packs.append({'file': name, 'sha256': digest(out/name), 'compressedBytes': len(data),
@@ -122,8 +184,12 @@ def package(kit, out, sources):
         if not file.is_file() or not str(file).endswith(('.olean', '.ir', '.ir.sig')):
             continue
         rel = file.relative_to(kit/'lib/lean').as_posix()
-        if rel.split('/')[0].split('.')[0] not in ['Init', 'Std', 'Lean', 'SSC']:
+        next_group = rel.split('/')[0].split('.')[0]
+        if next_group not in ['Init', 'Std', 'Lean', 'SSC']:
             continue
+        if next_group != group:
+            flush()
+            group, group_index = next_group, 0
         data = file.read_bytes()
         if parts and size + len(data) > 16*1024*1024:
             flush()
@@ -139,6 +205,10 @@ def package(kit, out, sources):
     manifest['version'] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:24]
     manifest['downloadBytes'] = sum(p['compressedBytes'] for p in packs) + sum(p['bytes'] for p in manifest['runtime'].values())
     (out/'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
+    active = {pack['file'] for pack in packs}
+    for obsolete in out.glob('library-*.pack'):
+        if obsolete.name not in active:
+            obsolete.unlink()
     shutil.copyfile(ROOT/'packaging/lean-wasm/UPSTREAM-LICENSE', out/'UPSTREAM-LICENSE')
     print(f'Browser compiler: {len(packs)} packs, {manifest["downloadBytes"]/1048576:.1f} MiB compressed', flush=True)
 
@@ -162,18 +232,9 @@ def main():
     sources = browser_sources()
     build = args.cache/'build'
     build.mkdir(exist_ok=True)
+    inputs = [toolchain_digest(kit)]
     for name, source in sources.items():
-        (build/name).parent.mkdir(parents=True, exist_ok=True)
-        (build/name).write_text(source)
-        artifact = str(Path(name).with_suffix('.olean'))
-        print(f'Compiling {name} with Lean WebAssembly', flush=True)
-        with (build/'compiler.log').open('w') as log:
-            result = subprocess.run(node_command() + [str(ROOT/'packaging/lean-wasm/lean-node.cjs'), str(kit), str(build),
-                '-R', '/work', '-o', '/work/'+artifact, '/work/'+name], stdout=log, stderr=subprocess.STDOUT, timeout=300)
-        if result.returncode != 0 or not (build/artifact).is_file():
-            raise RuntimeError((build/'compiler.log').read_text()[-12000:])
-        (kit/'lib/lean'/artifact).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(build/artifact, kit/'lib/lean'/artifact)
+        inputs.append(compile_module(kit, build, args.cache/'modules', name, source, inputs))
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     for obsolete in ['study.mjs', 'study.wasm', 'study-runtime.txt']:

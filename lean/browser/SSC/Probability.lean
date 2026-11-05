@@ -228,12 +228,48 @@ def probabilityFloat (p : Rat) : Float :=
   let exponent := if ns >= ds then nf (ns-ds) else -(nf (ds-ns))
   ratio * exponent.exp2
 
+private def prepareWeights (weights : Array Rat) : Result (Array Float) := do
+  checkWeights (weights.map (fun p => ((), p)))
+  let mut mass : Rat := 0
+  let mut thresholds := #[]
+  for p in weights do
+    mass := mass + p
+    thresholds := thresholds.push (probabilityFloat mass)
+  return thresholds
+
+-- Only the deterministic preparation is cached. The proof prevents a caller
+-- from inserting thresholds unrelated to the exact weights. Values and their
+-- types never enter the key, so this also handles dependent observation models.
+private structure PreparedWeights where
+  weights : Array Rat
+  thresholds : Array Float
+  correct : prepareWeights weights = .ok thresholds
+  deriving Repr
+
 structure RandomState where
   seed : UInt64
   remaining : Nat
   deriving Repr
 
 abbrev Draw := StateT RandomState Result
+
+private structure SamplingState where
+  random : RandomState
+  prepared : Array PreparedWeights := #[]
+
+private def cumulative (weights : Array Rat) : StateT SamplingState Result (Array Float) := do
+  if let some cached := (← get).prepared.find? (·.weights == weights) then
+    return cached.thresholds
+  match h : prepareWeights weights with
+  | .error message => throw message
+  | .ok thresholds =>
+    -- Bounded across arbitrarily many adaptive laws; large supports are valid
+    -- but bypass the cache. Eviction affects speed only, never draws or budgets.
+    if weights.size ≤ 1024 then
+      modify fun s =>
+        let entries := if s.prepared.size < 8 then s.prepared else s.prepared.extract 1
+        { s with prepared := entries.push ⟨weights, thresholds, h⟩ }
+    return thresholds
 
 private def tick : Draw Unit := do
   let s ← get
@@ -353,22 +389,53 @@ private inductive SampleStack : Type → Type → Type 1 where
   | done : SampleStack α α
   | next (continuation : α → Law β) (rest : SampleStack β γ) : SampleStack α γ
 
+private def samplePreparedAtom {α : Type} (law : Law α) : StateT SamplingState Result α := do
+  match law with
+  | .finite xs =>
+    let thresholds ← cumulative (xs.map Prod.snd)
+    let (u, random) ← uniform01.run (← get).random
+    modify fun s => { s with random }
+    let mut index := 0
+    for (x, _) in xs do
+      if u < thresholds[index]! then return x
+      index := index + 1
+    throw "Finite sampler failed to accumulate unit mass."
+  | atom =>
+    let (value, random) ← (sampleAtom atom).run (← get).random
+    modify fun s => { s with random }
+    return value
+
 private partial def sampleLoop {α β : Type} (law : Law α) (stack : SampleStack α β)
-    (state : RandomState) : Result (β × RandomState) := do
+    (state : SamplingState) : Result (β × SamplingState) := do
   match law with
   | .defer next => sampleLoop (next ()) stack state
   | .samplingOnly _ model => sampleLoop model stack state
   | .bind first next =>
-    let (_, state) ← tick.run state
-    sampleLoop first (.next next stack) state
+    let (_, random) ← tick.run state.random
+    sampleLoop first (.next next stack) { state with random }
   | atom =>
-    let (value, state) ← (sampleAtom atom).run state
+    let (value, state) ← (samplePreparedAtom atom).run state
     match (dependent := true) (generalizing := true) α, stack, value with
     | _, .done, value => return (value, state)
     | _, .next next rest, value => sampleLoop (next value) rest state
 
 def sample {α : Type} (law : Law α) : Draw α :=
-  fun state => sampleLoop law .done state
+  fun random => do
+    let (value, state) ← sampleLoop law .done { random }
+    return (value, state.random)
+
+/-- Repeat the original sampler with a bounded cache of validated finite-weight
+preparations. Every draw, branch, rejection evaluation and budget charge occurs
+in the original order. Failure returns no partial count. -/
+def countSamples {α : Type} (law : Law α) (accept : α → Result Bool)
+    (replicates : Nat) : Draw Nat := fun random => do
+  let mut state : SamplingState := { random }
+  let mut successes := 0
+  for _ in [:replicates] do
+    let (value, next) ← sampleLoop law .done state
+    state := next
+    if ← accept value then successes := successes + 1
+  return (successes, state.random)
 
 private def poissonMixture (lambda : Float) (cdf : Nat → Result Float) : Result Float := do
   if lambda == 0 then return (← cdf 0)

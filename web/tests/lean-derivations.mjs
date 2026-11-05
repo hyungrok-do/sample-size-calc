@@ -123,6 +123,25 @@ theorem exact_observation_probability : small.probability (fun k => k == 3) = 1/
   checkedTheorem(result, 'staged_observation_probability');
   console.log('State compaction, bounded certificate soundness, joint rules and identical fallback draws checked.');
 
+  await compile(await readFile(new URL('./fixtures/lean-performance.lean', import.meta.url), 'utf8'));
+  result = await report('performance-semantics.json');
+  checkedTheorem(result, 'family_correct');
+  checkedTheorem(result, 'memoized_law_is_original');
+  checkedTheorem(result, 'quotientCertificate_correct');
+  assert.ok(result.results.find(d => d.name === 'quotientCertificate').axioms.includes('Quot.sound'));
+  const messages = [result.output, ...result.diagnostics.map(d => d.data)].join('\n');
+  assert.match(messages, /SSC_FINITE_CHECKPOINTS 9(?:\s|$)/);
+  assert.match(messages, /SSC_PERFORMANCE_SEMANTICS_OK/);
+  assert.ok(result.performance.totalMs >= 0);
+  for (const key of ['headerMs', 'parseMs', 'kernelReplayMs', 'axiomAuditMs',
+    'declarationRenderMs', 'traceRenderMs', 'commandMs']) assert.ok(result.performance[key] >= 0, key);
+  assert.ok(result.performance.commands.every(command => command.line > 0 && command.ms >= 0));
+  console.log('Shared finite families and cached sampling preserve certificates, draws, budgets and failures.');
+
+  await reject(`import SSC
+open SSC.Derivation
+def tooWide : (n : Fin 257) → Certificate (Program.pure n.val) := by finite_derive`, /256 finite-family cases/);
+
   // Change an observation assumption; the previous mathematical claim must fail.
   const changed = examples['bernoulli-observations'].replaceAll('(3/10)', '(2/10)');
   await reject(changed.slice(0, changed.indexOf('#eval emitSearch')) + '\nend ObservedTrial',

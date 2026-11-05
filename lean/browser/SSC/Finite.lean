@@ -63,19 +63,69 @@ theorem expectationBalanced_eq (fuel : Nat) (xs : Table α) (f : α → Rat) :
     · rfl
     · rw [← expectation_append, List.take_append_drop]
 
-def scale (p : Rat) (xs : Table α) : Table α := xs.map (fun (x, q) => (x, p*q))
+/-- Boolean events need only selected masses, not multiplication by 0 and 1. -/
+def eventMass : Table α → (α → Bool) → Rat
+  | [], _ => 0
+  | (x, p) :: xs, event =>
+    if event x then p + eventMass xs event else eventMass xs event
+
+theorem eventMass_eq (xs : Table α) (event : α → Bool) :
+    eventMass xs event = expectation xs (fun x => if event x then 1 else 0) := by
+  induction xs with
+  | nil => rfl
+  | cons x xs ih =>
+    simp only [eventMass, expectation, ih]
+    cases h : event x.1 <;> simp [h, Rat.mul_one, Rat.mul_zero, Rat.zero_add]
+
+def eventMassBalanced : Nat → Table α → (α → Bool) → Rat
+  | 0, xs, event => eventMass xs event
+  | fuel+1, xs, event =>
+    if xs.length ≤ 8 then eventMass xs event
+    else
+      let mid := xs.length / 2
+      eventMassBalanced fuel (xs.take mid) event +
+        eventMassBalanced fuel (xs.drop mid) event
+
+theorem eventMassBalanced_eq (fuel : Nat) (xs : Table α) (event : α → Bool) :
+    eventMassBalanced fuel xs event = expectation xs (fun x => if event x then 1 else 0) := by
+  induction fuel generalizing xs with
+  | zero => exact eventMass_eq _ _
+  | succ fuel ih =>
+    simp only [eventMassBalanced, ih, eventMass_eq]
+    split
+    · rfl
+    · rw [← expectation_append, List.take_append_drop]
+
+/-- Generic algebraic identities avoid rational GCD/division work at pure
+program nodes and zero-weight branches. Each branch has an equality proof. -/
+def multiplyWeight (p q : Rat) : Rat :=
+  if q = 1 then p else if p = 1 then q else if q = 0 then 0 else if p = 0 then 0 else p*q
+
+@[simp] theorem multiplyWeight_eq (p q : Rat) : multiplyWeight p q = p*q := by
+  unfold multiplyWeight
+  split
+  · rename_i h; subst q; exact (Rat.mul_one p).symm
+  · split
+    · rename_i h; subst p; exact (Rat.one_mul q).symm
+    · split
+      · rename_i h; subst q; exact (Rat.mul_zero p).symm
+      · split
+        · rename_i h; subst p; exact (Rat.zero_mul q).symm
+        · rfl
+
+def scale (p : Rat) (xs : Table α) : Table α := xs.map (fun (x, q) => (x, multiplyWeight p q))
 
 theorem expectation_scale_weights (p : Rat) (xs : Table α) (f : α → Rat) :
     expectation (scale p xs) f = p * expectation xs f := by
   induction xs with
   | nil => simp [scale, expectation]
-  | cons x xs ih => simp only [scale, List.map_cons, expectation] at *; grind
+  | cons x xs ih => simp only [scale, List.map_cons, expectation, multiplyWeight_eq] at *; grind
 
 theorem scale_nonnegative (p : Rat) (hp : 0 ≤ p) (xs : Table α)
     (hx : Nonnegative xs) : Nonnegative (scale p xs) := by
   intro y hy
   obtain ⟨x, hmem, rfl⟩ := List.mem_map.mp hy
-  exact Rat.mul_nonneg hp (hx x hmem)
+  simpa only [multiplyWeight_eq] using Rat.mul_nonneg hp (hx x hmem)
 
 def flatten (xs : Table α) (k : α → Table β) : Table β :=
   xs.flatMap (fun (x, p) => scale p (k x))
@@ -252,11 +302,11 @@ namespace Distribution
 def expect (d : Distribution α) (f : α → Rat) := expectation d.atoms f
 def probability (d : Distribution α) (event : α → Bool) : Rat :=
   -- The depth bound controls summation shape only; zero fuel remains exact.
-  expectationBalanced 64 d.atoms (fun x => if event x then 1 else 0)
+  eventMassBalanced 64 d.atoms event
 
 theorem probability_eq_expect (d : Distribution α) (event : α → Bool) :
     d.probability event = d.expect (fun x => if event x then 1 else 0) :=
-  expectationBalanced_eq _ _ _
+  eventMassBalanced_eq _ _ _
 
 theorem expect_const (d : Distribution α) (c : Rat) : d.expect (fun _ => c) = c := by
   have h := expectation_scale d.atoms c (fun _ => 1)

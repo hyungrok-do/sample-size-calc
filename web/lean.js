@@ -7,7 +7,7 @@ const examples = { ...proofs, ...calculations, ...derivations };
 
 const $ = id => document.getElementById(`lean-${id}`);
 const source = $('source'), storageKey = 'ssc-lean-proofs-v3';
-const browserCompiler = new BrowserLeanCompiler(text => { $('connection-status').textContent = text; });
+const browserCompiler = new BrowserLeanCompiler(text => { $(busy ? 'status' : 'connection-status').textContent = text; });
 let ready = false, busy = false, compiled = null, generation = 0, connectionGeneration = 0;
 
 function refresh() {
@@ -48,6 +48,19 @@ function render() {
       || (compiled.calculations?.length ? 'Structured calculation output is shown above.' : 'No evaluation commands in this module.');
   $('diagnostics').textContent = compiled.diagnostics.filter(d => d.severity !== 'information')
     .map(d => `Line ${d.pos?.line || 1}: ${d.data}`).join('\n\n') || 'No warnings or errors.';
+  const timing = compiled.performance;
+  const seconds = ms => Number.isFinite(ms) ? `${(ms / 1000).toFixed(3)} s` : 'unavailable';
+  $('performance').textContent = timing ? [
+    `Total worker time: ${seconds(timing.totalMs)}`,
+    `Source elaboration and evaluation: ${seconds(timing.commandMs)}`,
+    `Independent kernel replay: ${seconds(timing.kernelReplayMs)}`,
+    `Axiom dependency audit: ${seconds(timing.axiomAuditMs)}`,
+    `Declaration and trace rendering: ${seconds(timing.declarationRenderMs + timing.traceRenderMs)}`,
+    `Header/imports: ${seconds(timing.headerMs)} · Parsing: ${seconds(timing.parseMs)}`,
+    '', 'Source commands (includes their elaboration, compilation, kernel checks and any evaluation):',
+    ...(timing.commands || []).map(command => `Line ${command.line}: ${seconds(command.ms)} · ${command.kind}`),
+    '', 'Startup/download time is separate. Small residual overhead includes diagnostics, serialization and the host bridge.'
+  ].join('\n') : 'Timing information is unavailable for this compiler package.';
   $('compiled').hidden = false;
   if (!declaration) return;
   const theorem = declaration.kind === 'theorem';
@@ -119,7 +132,8 @@ $('compile').addEventListener('click', async () => {
     });
     const theorem = value.results.findLastIndex(d => d.kind === 'theorem');
     if (theorem >= 0) $('query').value = String(theorem);
-    render(); $('status').textContent = 'Lean compilation complete.';
+    render(); $('status').textContent = 'Lean compilation complete.' +
+      (value.performance ? ` ${(value.performance.totalMs / 1000).toFixed(2)} s.` : '');
   } catch (error) {
     if (version === generation) {
       $('error').textContent = error.message; $('error').hidden = false;

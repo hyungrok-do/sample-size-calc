@@ -14,6 +14,7 @@ const root = resolve(process.argv[2] || new URL('..', import.meta.url).pathname)
 const prefix = '/sample-size-calc/';
 const temporary = await mkdtemp(resolve(tmpdir(),'ssc-lean-browser-'));
 const requests=[], errors=[], warnings=[];
+let manifestRevision = null;
 const types={'.html':'text/html','.js':'text/javascript','.mjs':'text/javascript','.wasm':'application/wasm','.json':'application/json','.css':'text/css'};
 const server=createServer(async(req,res)=>{
   const path=new URL(req.url,'http://localhost').pathname;
@@ -23,7 +24,11 @@ const server=createServer(async(req,res)=>{
   const file=resolve(root,path.slice(prefix.length)||'index.html');
   if(!file.startsWith(root+sep)) {res.writeHead(404).end();return;}
   try {
-    const bytes=await readFile(file);
+    let bytes=await readFile(file);
+    if (manifestRevision && path.endsWith('/lean-wasm/manifest.json')) {
+      const manifest = JSON.parse(bytes); manifest.version = manifestRevision;
+      bytes = Buffer.from(JSON.stringify(manifest));
+    }
     // Match static Pages hosting: a subpath with no isolation headers.
     res.writeHead(200,{'Content-Type':types[extname(file)]||'application/octet-stream'}).end(bytes);
   } catch {res.writeHead(404).end();}
@@ -43,7 +48,7 @@ const progressTimer=setInterval(async()=>{
 const compile=async source=>{
   if(source) await page.locator('#lean-source').fill(source);
   await page.locator('#lean-compile').click();
-  await page.waitForFunction(()=>document.getElementById('lean-status').textContent==='Lean compilation complete.'||!document.getElementById('lean-error').hidden,null,{timeout:120000});
+  await page.waitForFunction(()=>document.getElementById('lean-status').textContent.startsWith('Lean compilation complete.')||!document.getElementById('lean-error').hidden,null,{timeout:120000});
   assert.equal(await page.locator('#lean-error').isVisible(),false,await page.locator('#lean-error').textContent());
 };
 const ready=async()=>{
@@ -148,6 +153,29 @@ end UserModel`;
   await checkCalculations({ compile, report, page, reject });
 
   await compile(arbitrary);
+  manifestRevision = 'content-cache-regression';
+  const beforeReload = requests.length;
+  await page.locator('#lean-reconnect').click();
+  await ready();
+  await compile(arbitrary);
+  assert.equal((await report('content-cache.json')).packageVersion, manifestRevision);
+  assert.equal(requests.slice(beforeReload).filter(r => /\.pack$/.test(r.path)).length, 0,
+    'A new manifest version must reuse unchanged authenticated compiler assets');
+  manifestRevision = null;
+  console.log('Changed package metadata reuses unchanged content without downloading library/runtime packs.');
+  await page.evaluate(async () => {
+    const cache = await caches.open('ssc-lean-content-v1');
+    const key = (await cache.keys()).find(request => new URL(request.url).pathname.endsWith('/lean-wasm/lean.js'));
+    if (!key) throw Error('Missing authenticated glue cache entry');
+    await cache.put(key, new Response('damaged cache', { headers: { 'Content-Type': 'text/javascript' } }));
+  });
+  await page.locator('#lean-reconnect').click();
+  await page.waitForFunction(() => !document.getElementById('lean-setup').hidden, null, { timeout: 300000 });
+  assert.match(await page.locator('#lean-connection-status').textContent(), /Cached compiler asset is damaged/);
+  await page.locator('#lean-reconnect').click();
+  await ready();
+  await compile(arbitrary);
+  console.log('Corrupt cached code is rejected before execution; retry replaces it with authenticated content.');
   await context.setOffline(true);
   await page.reload(); await ready(); await compile(arbitrary);
   assert.match(await page.locator('#lean-evaluation').textContent(),/some 7/);

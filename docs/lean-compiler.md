@@ -1,5 +1,8 @@
 # Lean mathematical compiler in WebAssembly
 
+For phase timings, checked-prefix reuse, sampling preparation, build caching
+and reproducible benchmarks, see [compiler performance](lean-performance.md).
+
 The independent third tab accepts ordinary Lean modules: definitions, hypotheses,
 structures, recursive functions, theorem statements, and proof scripts. There is
 no `Study`, `Model`, `Analysis`, or `solve` dispatcher in the browser compiler.

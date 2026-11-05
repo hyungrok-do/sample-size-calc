@@ -9,7 +9,8 @@
     "test:site": "node tests/site.mjs",
     "test:lean-browser": "node tests/lean-browser.mjs",
     "test:lean-wasm-browser": "node tests/lean-wasm-browser.mjs",
-    "test:lean-stress": "node tests/lean-stress.mjs"
+    "test:lean-stress": "node tests/lean-stress.mjs",
+    "test:lean-performance": "node tests/lean-performance.mjs"
   },
   "devDependencies": {
     "playwright": "1.57.0"

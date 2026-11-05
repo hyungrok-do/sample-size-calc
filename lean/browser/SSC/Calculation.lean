@@ -49,10 +49,7 @@ private def simulation {α : Type} (law : Law α) (event : Event α)
     (o : Options) (failureProbability : Float) (reason : String) : Draw Estimate := do
   event.validate
   let initial ← get
-  let mut successes := 0
-  for _ in [:o.replicates] do
-    let x ← sample law
-    if ← event.accepts x then successes := successes + 1
+  let successes ← countSamples law event.accepts o.replicates
   let value := nf successes / nf o.replicates
   -- Fixed simulation budget: no optional stopping. A union bound across all
   -- null/alternative evaluations in a search gives simultaneous coverage.

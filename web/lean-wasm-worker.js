@@ -2,11 +2,14 @@
 // The genuine Lean parser, elaborator, interpreter and kernel run in this worker.
 // Runtime initialization follows cauli/lean4-wasm-in-browser (Apache-2.0).
 let manifest, cache, checker, output = [], diagnostics = [], outputBytes = 0;
+const cacheWrites = new Set();
 const base = new URL('lean-wasm/', self.location.href);
 const progress = text => self.postMessage({ type: 'progress', text });
 const hash = async bytes => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x => x.toString(16).padStart(2, '0')).join('');
 async function asset(file, expected) {
-  const url = new URL(file, base); url.searchParams.set('v', manifest.version);
+  // Unchanged runtime/library content survives a new site or reporter build.
+  // Authentication still runs on every cache read before any bytes are used.
+  const url = new URL(file, base); url.searchParams.set('v', expected);
   let response = await cache?.match(url.href);
   if (!response) {
     response = await fetch(url);
@@ -14,7 +17,11 @@ async function asset(file, expected) {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (await hash(bytes) !== expected) throw Error(`Compiler asset checksum failed: ${file}`);
     // Keep the MIME type: cached JavaScript must still load as a module offline.
-    try { await cache?.put(url.href, new Response(bytes, { headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream' } })); } catch {}
+    if (cache) {
+      const write = cache.put(url.href, new Response(bytes, { headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream' } }))
+        .catch(() => {}).finally(() => cacheWrites.delete(write));
+      cacheWrites.add(write);
+    }
     return bytes;
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -72,6 +79,8 @@ function ioValue(result) {
   return Module.getValue(result + 8, 'i32');
 }
 function run(source, nonce) {
+  const started = performance.now();
+  const timing = { prepareMs: 0, commandMs: 0, driverMs: 0 };
   output = []; diagnostics = []; outputBytes = 0;
   if (nonce === undefined) {
     const result = Module._lean_wasm_compile(leanString(source), leanString('/workspace/source.lean'));
@@ -81,16 +90,27 @@ function run(source, nonce) {
     // command. Execute it with a flat host stack, outside the interpreted driver.
     // IO results own their fields; retain before passing a consumed argument.
     const session = Module._lean_apply_3(checker, leanString(source), leanString(nonce), 1);
+    timing.prepareMs = performance.now() - started;
     try {
       const next = ioValue(session);
+      let count = 0, lastProgress = started;
       for (;;) {
+        const driverStarted = performance.now();
         const step = Module._lean_apply_1(retain(next), 1);
+        timing.driverMs += performance.now() - driverStarted;
         try {
           const option = ioValue(step);
           if (option === 1) break; // Option.none
           const action = Module.getValue(option + 8, 'i32');
+          const commandStarted = performance.now();
+          if (commandStarted - lastProgress >= 500) {
+            progress(`Processing Lean command ${count + 1} (${((commandStarted - started) / 1000).toFixed(1)} s)…`);
+            lastProgress = commandStarted;
+          }
           const result = Module._lean_apply_1(retain(action), 1);
           try { ioValue(result); } finally { release(result); }
+          timing.commandMs += performance.now() - commandStarted;
+          count++;
         } finally { release(step); }
         if (outputBytes > 8 * 1024 * 1024) throw Error('Compiler output exceeded 8 MB.');
       }
@@ -100,7 +120,7 @@ function run(source, nonce) {
     || (d.severity === 'warning' && /declaration uses [`'"]sorry/.test(d.data)));
   if (errors.length) throw Error(errors.map(d => `source.lean:${d.pos?.line || 1}:${(d.pos?.column || 0) + 1}: ${d.data}`).join('\n'));
   if (outputBytes > 8 * 1024 * 1024) throw Error('Compiler output exceeded 8 MB.');
-  return { output, diagnostics };
+  return { output, diagnostics, timing: { ...timing, totalMs: performance.now() - started } };
 }
 async function initialize() {
   let response;
@@ -116,12 +136,12 @@ async function initialize() {
   }
   manifest = await response.json();
   if (manifest.schema !== 2 || !Array.isArray(manifest.packs)) throw Error('Unsupported browser compiler package.');
-  cache = await caches.open(`ssc-lean-${manifest.version}`).catch(() => null);
+  cache = await caches.open('ssc-lean-content-v1').catch(() => null);
   progress(`Loading the browser compiler (${Math.ceil(manifest.downloadBytes / 1048576)} MB on first use)…`);
   const binary = await inflate(await asset('lean.wasm.pack', manifest.runtime['lean.wasm.pack'].sha256));
   // Authenticate the exact glue too. importScripts uses the same immutable URL.
   await asset('lean.js', manifest.runtime['lean.js'].sha256);
-  const script = new URL('lean.js', base); script.searchParams.set('v', manifest.version);
+  const script = new URL('lean.js', base); script.searchParams.set('v', manifest.runtime['lean.js'].sha256);
   await new Promise((resolve, reject) => {
     self.Module = {
       wasmBinary: binary, noInitialRun: true, thisProgram: '/bin/lean',
@@ -169,12 +189,16 @@ async function initialize() {
   if (!Number.isSafeInteger(checker) || checker <= 0 || checker % 8 !== 0
       || (Module.getValue(checker + 7, 'i8') & 255) !== 245 || Module.getValue(checker, 'i32') !== 0)
     throw Error('Incompatible compiler runtime entry point.');
+  // A ready compiler must also be ready for the immediately-following offline
+  // reload. Writes overlap validation/decompression/imports, but finish here.
+  await Promise.all(cacheWrites);
   self.postMessage({ type: 'ready', version: manifest.leanVersion });
 }
 self.onmessage = async ({ data }) => {
   try {
     if (data.type === 'initialize') { await initialize(); return; }
     if (data.type !== 'compile') return;
+    const compileStarted = performance.now();
     const source = data.source;
     if (typeof source !== 'string' || !source.trim() || new TextEncoder().encode(source).length > 131072) throw Error('Supply 1–131072 bytes of Lean source.');
     // User syntax is parsed by Lean inside a trusted driver. Neither the nonce
@@ -196,16 +220,27 @@ self.onmessage = async ({ data }) => {
     const report = envelope.report;
     const traces = report.steps, limits = report.traceLimits;
     const declarations = report.declarations.sort((a, b) => a.line - b.line || a.column - b.column);
+    // Index traces once. Scanning the whole trace for every declaration makes
+    // report assembly quadratic in the size of a module.
+    const byDeclaration = new Map();
+    for (const step of traces) {
+      if (/^by(?:\s|$)/.test(step.tactic)) continue;
+      let entry = byDeclaration.get(step.declaration);
+      if (!entry) byDeclaration.set(step.declaration, entry = { seen: new Set(), steps: [] });
+      const key = JSON.stringify(step);
+      if (!entry.seen.has(key)) { entry.seen.add(key); entry.steps.push(step); }
+    }
+    const truncated = new Set(limits);
     for (const declaration of declarations) {
-      const seen = new Set();
-      declaration.traceTruncated = limits.includes(declaration.name);
-      declaration.steps = traces.filter(step => step.declaration === declaration.name && !/^by(?:\s|$)/.test(step.tactic))
-        .filter(step => { const key = JSON.stringify(step); if (seen.has(key)) return false; seen.add(key); return true; })
+      declaration.traceTruncated = truncated.has(declaration.name);
+      declaration.steps = (byDeclaration.get(declaration.name)?.steps || [])
         .sort((a, b) => a.line - b.line || a.column - b.column);
     }
     self.postMessage({ type: 'result', id: data.id, value: {
       ok: true, compiler: 'lean-wasm-proofs-v2', language: 'Lean 4', leanVersion: manifest.leanVersion,
       packageVersion: manifest.version, reporterSourceSha256: manifest.sourceSha256,
+      performance: { ...result.timing, ...envelope.performance, ...report.performance,
+        totalMs: performance.now() - compileStarted },
       traceTruncated: limits.length > 0,
       results: declarations, module: source,
       output: lines.filter(line => !line.startsWith(prefix)).join('\n'),

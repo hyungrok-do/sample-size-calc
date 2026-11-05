@@ -106,6 +106,7 @@ private def collectTrace : CommandElabM (Array Json × Array String) := do
 
 /-- Audit the completed environment, independently of the input's command syntax. -/
 private def checkedReport : CommandElabM Json := do
+  let started ← IO.monoMsNow
   let env ← getEnv
   -- Force kernel checking, including any asynchronous declarations, before
   -- examining results. Never certify an elaborator-only environment entry.
@@ -121,12 +122,17 @@ private def checkedReport : CommandElabM Json := do
   let constants := declarations.foldl (fun m (n, ci) => m.insert n ci)
     ({} : Std.HashMap Name ConstantInfo)
   discard <| imported.replay constants
+  let replayMs := (← IO.monoMsNow) - started
+  let mut axiomMs := 0
+  let mut renderMs := 0
   let mut results : Array Json := #[]
   for (n, ci) in declarations do
+    let auditStarted ← IO.monoMsNow
     let axioms ← collectAxioms n
     let unapproved := axioms.filter (!approvedAxiom ·)
     unless unapproved.isEmpty do
       throwError "Unproved dependency in {n}: {unapproved.toList}. State hypotheses as theorem parameters and discharge the goal. Axioms, sorry, and native_decide are not proof certificates here."
+    axiomMs := axiomMs + ((← IO.monoMsNow) - auditStarted)
     let some ranges ← findDeclarationRangesCore? n | continue
     if (privateToUserName? n |>.getD n).isInternal then continue
     let kind := match ci with
@@ -136,6 +142,7 @@ private def checkedReport : CommandElabM Json := do
       | .inductInfo _ => "type"
       | _ => "generated"
     if kind == "generated" then continue
+    let renderStarted ← IO.monoMsNow
     let (type, body, parameters) ← liftTermElabM do
       let type := (← ppExpr ci.type).pretty
       let body ← withOptions (fun o => o.setBool `pp.proofs true) do
@@ -158,9 +165,14 @@ private def checkedReport : CommandElabM Json := do
       ("parameters", toJson parameters),
       ("dependencies", strings (used.map displayName)),
       ("axioms", strings (axioms.map Name.toString))]
+    renderMs := renderMs + ((← IO.monoMsNow) - renderStarted)
+  let traceStarted ← IO.monoMsNow
   let (steps, limits) ← collectTrace
   return Json.mkObj [("declarations", toJson results), ("steps", toJson steps),
-    ("traceLimits", toJson limits)]
+    ("traceLimits", toJson limits),
+    ("performance", Json.mkObj [("kernelReplayMs", toJson replayMs),
+      ("axiomAuditMs", toJson axiomMs), ("declarationRenderMs", toJson renderMs),
+      ("traceRenderMs", toJson ((← IO.monoMsNow) - traceStarted))])]
 
 /-- Standalone reporting helper. The browser does not trust calls in user source. -/
 def exportReport (nonce : String) : CommandElabM Unit := do
@@ -177,6 +189,7 @@ an interpreted driver or a nested command evaluation stack. Diagnostics and info
 trees are retained before each top-level command resets them. -/
 private def prepareSource (imports : IO.Ref (Array CachedImport)) (source nonce : String) :
     IO (IO (Option (IO Unit))) := do
+  let started ← IO.monoMsNow
   let inputCtx := Parser.mkInputContext source "/workspace/source.lean"
   let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
   let opts := Elab.async.set ({} : Options) false
@@ -194,20 +207,26 @@ private def prepareSource (imports : IO.Ref (Array CachedImport)) (source nonce 
       if log.toList.isEmpty then
         imports.modify (·.push { imports := key, isModule, env })
       pure (env, log)
+  let headerMs := (← IO.monoMsNow) - started
   let context : Elab.Frontend.Context := { inputCtx }
   let state ← IO.mkRef ({
     commandState := Command.mkState env {} opts
     parserState, cmdPos := parserState.pos } : Elab.Frontend.State)
   let messages ← IO.mkRef headerMessages
   let trees ← IO.mkRef ({} : PersistentArray InfoTree)
-  let pending ← IO.mkRef false
+  let pending ← IO.mkRef (none : Option (Nat × Nat × String))
+  let commands ← IO.mkRef (#[] : Array Json)
+  let parseMs ← IO.mkRef 0
   let done ← IO.mkRef false
   return do
-    if ← pending.get then
+    if let some (commandStarted, line, kind) ← pending.get then
+      let commandMs := (← IO.monoMsNow) - commandStarted
+      commands.modify (·.push (Json.mkObj [("line", toJson line),
+        ("kind", toJson kind), ("ms", toJson commandMs)]))
       let current ← state.get
       messages.modify (· ++ current.commandState.messages)
       trees.modify (·.append current.commandState.infoState.substituteLazy.get.trees)
-      pending.set false
+      pending.set none
     if ← done.get then
       let current ← state.get
       let allMessages ← messages.get
@@ -223,22 +242,28 @@ private def prepareSource (imports : IO.Ref (Array CachedImport)) (source nonce 
             return Json.mkObj [("ok", toJson false), ("diagnostics", toJson diagnostics)]
           let report ← Elab.Frontend.runCommandElabM checkedReport context state
           return Json.mkObj [("ok", toJson true), ("report", report),
-            ("diagnostics", toJson diagnostics)]
+            ("diagnostics", toJson diagnostics),
+            ("performance", Json.mkObj [("headerMs", toJson headerMs),
+              ("parseMs", toJson (← parseMs.get)), ("commands", toJson (← commands.get))])]
         catch error =>
           return Json.mkObj [("ok", toJson false), ("error", toJson error.toString)])
       IO.println s!"SSC_COMPILE_RESULT {nonce} {result.compress}"
       return none
     let current ← state.get
+    let parseStarted ← IO.monoMsNow
     let scope := current.commandState.scopes.head!
     let parserContext : Parser.ParserModuleContext := {
       env := current.commandState.env, options := scope.opts
       currNamespace := scope.currNamespace, openDecls := scope.openDecls }
     let (command, parserState, parseMessages) := Parser.parseCommand inputCtx
       parserContext current.parserState {}
+    let elapsed := (← IO.monoMsNow) - parseStarted
+    parseMs.modify (· + elapsed)
     messages.modify (· ++ parseMessages)
     state.set { current with parserState, cmdPos := current.parserState.pos }
     done.set (Parser.isTerminalCommand command)
-    pending.set true
+    let line := inputCtx.fileMap.toPosition (command.getPos?.getD current.parserState.pos)
+    pending.set (some ((← IO.monoMsNow), line.line, command.getKind.toString))
     return some (Elab.Frontend.elabCommandAtFrontend command context state)
 
 /-- Prepare one persistent host-callable function. It captures only the trusted

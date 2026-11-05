@@ -43,7 +43,13 @@ theorem expect_const (p : Program α) (c : Rat) : p.expect (fun _ => c) = c := b
 def toLaw : {α : Type} → Program α → SSC.Probability.Law α
   | _, .pure x => .pure x
   | _, .draw d => .finite d.atoms.toArray
-  | _, @Program.bind _ _ _ p k => .defer (fun _ => .bind p.toLaw (fun x => (k x).toLaw))
+  | _, @Program.bind _ _ _ p k =>
+    let suspended := Thunk.mk (fun _ => .bind p.toLaw (fun x => (k x).toLaw))
+    .defer (fun _ => suspended.get)
+
+/-- Memoization changes construction cost, not the law or its interpreter steps. -/
+theorem toLaw_bind [DecidableEq α] (p : Program α) (k : α → Program β) :
+    (p.bind k).toLaw = .defer (fun _ => .bind p.toLaw (fun x => (k x).toLaw)) := rfl
 
 def map [DecidableEq α] (p : Program α) (f : α → β) : Program β :=
   p.bind (fun x => .pure (f x))
@@ -153,17 +159,56 @@ def derive : {α : Type} → [DecidableEq α] → (p : Program α) → Certifica
         rw [expectation_congr _ _ (fun x => (k x).expect f) (fun x => (right x).correct f)]
         exact left.correct _ }
 
+/-- Compute only table data during conversion. Keeping recursive certificate
+records out of this path avoids repeatedly expanding their proof fields. -/
+def deriveAtoms : {α : Type} → [DecidableEq α] → Program α → Table α
+  | _, _, .pure x => [(x, 1)]
+  | _, _, .draw d => collect d.atoms
+  | _, _, @Program.bind _ _ inst p k =>
+    letI := inst
+    collect (flatten (deriveAtoms p) (fun x => deriveAtoms (k x)))
+
+theorem deriveAtoms_eq : {α : Type} → [DecidableEq α] → (p : Program α) →
+    deriveAtoms p = (derive p).distribution.atoms
+  | _, _, .pure _ => rfl
+  | _, _, .draw _ => rfl
+  | _, _, @Program.bind _ _ inst p k => by
+    letI := inst
+    exact congrArg collect
+      ((congrArg (fun xs => flatten xs (fun x => deriveAtoms (k x))) (deriveAtoms_eq p)).trans
+        (congrArg (flatten (derive p).distribution.atoms) (funext (fun x => deriveAtoms_eq (k x)))))
+
+theorem expectation_deriveAtoms [DecidableEq α] (p : Program α) (f : α → Rat) :
+    expectation (deriveAtoms p) f = p.expect f := by
+  rw [deriveAtoms_eq]
+  exact (derive p).correct f
+
+theorem deriveAtoms_nonnegative [DecidableEq α] (p : Program α) :
+    Nonnegative (deriveAtoms p) := by
+  rw [deriveAtoms_eq]
+  exact (derive p).distribution.nonnegative
+
 namespace Certificate
 
 /-- Compose already checked intermediate evidence with an arbitrary next program. -/
 def bindDerived [DecidableEq α] [DecidableEq β] {p : Program α}
     (left : Certificate p) (next : α → Program β) : Certificate (p.bind next) where
-  distribution := left.distribution.bindBalanced (fun x => (derive (next x)).distribution)
+  distribution := {
+    atoms := flattenMerged left.distribution.atoms (fun x => deriveAtoms (next x))
+    nonnegative := flattenMerged_nonnegative _ left.distribution.nonnegative _
+      (fun x => deriveAtoms_nonnegative (next x))
+    normalized := by
+      rw [expectation_flattenMerged]
+      rw [expectation_congr _ _ (fun _ => 1)
+        (fun x => (expectation_deriveAtoms (next x) _).trans (Program.expect_const (next x) 1))]
+      exact left.distribution.normalized }
   correct := by
     intro f
-    rw [Distribution.expect_bindBalanced]
-    change expectation left.distribution.atoms (fun x => (derive (next x)).distribution.expect f) = _
-    rw [expectation_congr _ _ (fun x => (next x).expect f) (fun x => (derive (next x)).correct f)]
+    change expectation (flattenMerged left.distribution.atoms (fun x => deriveAtoms (next x))) f =
+      p.expect (fun x => (next x).expect f)
+    rw [expectation_flattenMerged]
+    rw [expectation_congr _ _ (fun x => (next x).expect f)
+      (fun x => expectation_deriveAtoms (next x) f)]
     exact left.correct _
 
 /-- A proposed table replaces a computed one only after an equality proof. -/
@@ -332,18 +377,79 @@ with an ordinary kernel reduction before it can be used in the next step.
 namespace Staging
 open Lean Meta Elab Tactic
 
-private def quoteTable [ToExpr α] (atoms : Table α) : Expr := toExpr atoms
+register_option ssc.profileFinite : Bool := {
+  defValue := false
+  descr := "Report finite certificate evaluation, quotation, kernel checking and registration times." }
 
-private unsafe def checkpoint (certificate : Expr) : MetaM Expr := do
+private structure StagedCache where
+  certificates : Std.HashMap Expr Expr := {}
+  rationals : Std.HashMap Rat Expr := {}
+
+private abbrev CheckedPrefixes := IO.Ref StagedCache
+
+private structure QuotedAtom where
+  value : Expr
+  weight : Rat
+
+private def quoteTable [ToExpr α] (atoms : Table α) : Array QuotedAtom :=
+  atoms.toArray.map fun (value, weight) => ⟨toExpr value, weight⟩
+
+private def checkedRational (memo : CheckedPrefixes) (q : Rat) : MetaM Expr := do
+  if let some value := (← memo.get).rationals[q]? then return value
+  let num := match q.num with
+    | .ofNat n => mkApp (mkConst ``Int.ofNat) (mkNatLit n)
+    | .negSucc n => mkApp (mkConst ``Int.negSucc) (mkNatLit n)
+  let den := mkNatLit q.den
+  let nonzero ← mkAppM ``Ne #[den, mkNatLit 0]
+  let coprime ← mkAppM ``Nat.Coprime #[mkNatLit q.num.natAbs, den]
+  let value := mkApp4 (mkConst ``Rat.mk') num den
+    (← mkDecideProof nonzero) (← mkDecideProof coprime)
+  let name ← mkAuxDeclName (kind := `_finiteRat)
+  -- The evaluator supplies only integer data. The kernel checks both rational
+  -- invariants once; later tables project data without repeating division/GCD.
+  withOptions (fun o => Lean.debug.skipKernelTC.set (Lean.Elab.async.set o false) false) do
+    addAndCompile (.defnDecl {
+      name := name
+      levelParams := []
+      type := mkConst ``Rat
+      value := value
+      hints := .regular 0
+      safety := .safe })
+  let result := mkConst name
+  memo.modify fun s => { s with rationals := s.rationals.insert q result }
+  return result
+
+private unsafe def checkpoint (memo : CheckedPrefixes) (certificate : Expr) : MetaM Expr := do
+  let started ← IO.monoMsNow
   let distribution ← mkAppM ``Certificate.distribution #[certificate]
   let atoms ← mkAppM ``Distribution.atoms #[distribution]
   let quotation ← mkAppM ``quoteTable #[atoms]
-  let proposed ← evalExpr Expr (mkConst ``Expr) quotation
+  let quoted ← evalExpr (Array QuotedAtom)
+    (mkApp (mkConst ``Array [.zero]) (mkConst ``QuotedAtom)) quotation
+  let evaluated ← IO.monoMsNow
+  let α := (← inferType distribution).getAppArgs[0]!
+  let pairType := mkApp2 (mkConst ``Prod [.zero, .zero]) α (mkConst ``Rat)
+  let mut proposed := mkApp (mkConst ``List.nil [.zero]) pairType
+  for atom in quoted.reverse do
+    let pair := mkApp4 (mkConst ``Prod.mk [.zero, .zero]) α (mkConst ``Rat)
+      atom.value (← checkedRational memo atom.weight)
+    proposed := mkApp3 (mkConst ``List.cons [.zero]) pairType pair proposed
+  let proposedAt ← IO.monoMsNow
   let proposition ← mkEq atoms proposed
-  let proof ← mkDecideProof proposition
   -- addDecl checks this proof in the kernel. No evaluator-trust axiom is used.
   let checked ← withOptions (fun o => Lean.debug.skipKernelTC.set (Lean.Elab.async.set o false) false) do
-    mkAuxLemma [] proposition proof (kind? := some `_finiteEquality)
+    -- Compare the actual computed table directly with its quoted normal form.
+    -- Reflecting through DecidableEq builds and reduces a second list/rational
+    -- equality program. Reflexivity needs only the kernel's conversion check.
+    -- Unusual ToExpr/DecidableEq instances may require propositional equality,
+    -- so retain the original checked path after restoring failed speculation.
+    let saved ← saveState
+    try
+      mkAuxLemma [] proposition (← mkEqRefl proposed) (kind? := some `_finiteEquality)
+    catch _ =>
+      saved.restore
+      mkAuxLemma [] proposition (← mkDecideProof proposition) (kind? := some `_finiteEquality)
+  let checkedAt ← IO.monoMsNow
   let value ← mkAppM ``Certificate.repack #[certificate, proposed, mkConst checked]
   let name ← mkAuxDeclName (kind := `_finiteCheckpoint)
   let type ← inferType value
@@ -355,34 +461,76 @@ private unsafe def checkpoint (certificate : Expr) : MetaM Expr := do
       value := value
       hints := .regular 0
       safety := .safe })
+  if ssc.profileFinite.get (← getOptions) then
+    logInfo m!"finite_derive: {quoted.size} states; evaluate={evaluated-started}ms quote={proposedAt-evaluated}ms kernel={checkedAt-proposedAt}ms register={(← IO.monoMsNow)-checkedAt}ms"
   return mkConst name
 
-private unsafe def stage : Nat → Expr → MetaM Expr
+-- The memo is local to one tactic invocation. It contains only closed,
+-- kernel-checked certificates in this environment, never evaluator answers.
+-- Structural expression equality resolves hash collisions; no model names or
+-- distribution families participate in lookup.
+private unsafe def stage (memo : CheckedPrefixes) : Nat → Expr → MetaM Expr
   | 0, _ => throwError "finite_derive exceeded 256 intermediate checkpoints. Split the program into proved parts."
   | fuel+1, program => do
     let reduced ← whnf program
+    if let some certificate := (← memo.get).certificates[reduced]? then
+      return certificate
     let certificate ← if reduced.isAppOfArity ``Program.bind 5 then do
         let args := reduced.getAppArgs
-        let left ← stage fuel args[3]!
+        let left ← stage memo fuel args[3]!
         mkAppM ``Certificate.bindDerived #[left, args[4]!]
       else mkAppM ``derive #[program]
-    checkpoint certificate
+    let checked ← checkpoint memo certificate
+    memo.modify fun s => { s with certificates := s.certificates.insert reduced checked }
+    return checked
+
+private unsafe def stageGoal (memo : CheckedPrefixes) (remaining : IO.Ref Nat) : Nat → TacticM Unit
+  | 0 => throwError "finite_derive supports at most 256 finite-family cases. Split the family into proved parts."
+  | fuel+1 => withMainContext do
+    let goal ← getMainGoal
+    let target ← whnf (← instantiateMVars (← goal.getType))
+    if target.isForall then
+      let domain ← whnf target.bindingDomain!
+      unless domain.isAppOfArity ``Fin 1 do
+        throwError "finite_derive expects a closed Certificate or a family indexed by Fin."
+      let bound ← whnf domain.getAppArgs[0]!
+      let .lit (.natVal n) := bound | throwError "The finite-family bound must be a closed natural number."
+      if n > fuel then
+        throwError "finite_derive supports at most 256 finite-family cases. Split the family into proved parts."
+      if n == 0 then
+        evalTactic (← `(tactic| exact fun i => Fin.elim0 i))
+      else
+        evalTactic (← `(tactic| refine Fin.cases ?_ ?_))
+        let goals ← getGoals
+        for next in goals do
+          setGoals [next]
+          stageGoal memo remaining fuel
+      return
+    unless target.isAppOfArity ``Certificate 2 do
+      throwError "finite_derive expects a goal of type SSC.Derivation.Certificate program."
+    let program := target.getAppArgs[1]!
+    if program.hasFVar || program.hasMVar then
+      throwError "finite_derive needs a closed program. Use symbolic derivation theorems for programs with parameters."
+    if (← remaining.get) == 0 then
+      throwError "finite_derive supports at most 256 finite-family cases. Split the family into proved parts."
+    remaining.modify (· - 1)
+    let certificate ← stage memo 256 program
+    goal.assign certificate
+    replaceMainGoal []
 
 /-- Check intermediate finite distributions separately, then compose their
-proofs. Intermediate types need `Lean.ToExpr` instances to propose literals. -/
+proofs. A `(i : Fin n) → Certificate (program i)` goal shares checked prefixes
+across the finite family. Intermediate types need `Lean.ToExpr` instances. -/
 syntax (name := finiteDerive) "finite_derive" : tactic
 
-@[tactic finiteDerive] unsafe def evalFiniteDerive : Tactic := fun _ => withMainContext do
+@[tactic finiteDerive] unsafe def evalFiniteDerive : Tactic := fun _ => do
   let goal ← getMainGoal
-  let target ← instantiateMVars (← goal.getType)
-  unless target.isAppOfArity ``Certificate 2 do
-    throwError "finite_derive expects a goal of type SSC.Derivation.Certificate program."
-  let program := target.getAppArgs[1]!
-  if program.hasFVar || program.hasMVar then
-    throwError "finite_derive needs a closed program. Use symbolic derivation theorems for programs with parameters."
-  let certificate ← stage 256 program
-  goal.assign certificate
-  replaceMainGoal []
+  let rest := (← getGoals).tail
+  setGoals [goal]
+  let memo ← IO.mkRef ({} : StagedCache)
+  let remaining ← IO.mkRef 256
+  stageGoal memo remaining 257
+  setGoals rest
 
 end Staging
 
