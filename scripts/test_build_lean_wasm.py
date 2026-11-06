@@ -1,6 +1,7 @@
 """Cache invalidation and failure atomicity, without invoking a large compiler."""
 import importlib.util
 import gzip
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -84,29 +85,98 @@ class StablePacks(unittest.TestCase):
             library.mkdir(parents=True)
             for group in ['Init', 'Lean', 'SSC', 'Std']:
                 (library/f'{group}.olean').write_bytes((group * 100).encode())
+                # Core IR can be required even when most code is precompiled.
+                # Both compression representations must preserve every byte.
+                (library/f'{group}.ir').write_bytes((group * 90).encode())
+                (library/f'{group}.ir.sig').write_bytes((group * 10).encode())
+            (kit/'brotli').mkdir()
+            for name, body in [('brotli_dec_wasm.js', b'decoder module'),
+                               ('brotli_dec_wasm_bg.wasm', b'decoder binary'),
+                               ('LICENSE-Apache.txt', b'apache license'), ('LICENSE-MIT.txt', b'mit license')]:
+                (kit/'brotli'/name).write_bytes(body)
+            (out/'brotli').mkdir(parents=True)
+            for name in builder.OLD_BROTLI_FILES:
+                (out/'brotli'/name).write_bytes(b'old decoder')
             sources = {'SSC.lean': 'import Lean'}
             builder.package(kit, out, sources)
             original = json.loads((out/'manifest.json').read_text())
+            original_module = original['decoder']['module']['file']
+            self.assertEqual(original_module,
+                f"brotli/brotli_dec_wasm-{original['decoder']['module']['sha256']}.js")
             # Cross a pack-size boundary in SSC and move between the old/new
             # naming schemes. Neither event may invalidate unrelated packs.
             (library/'SSC').mkdir()
             (library/'SSC/Large.olean').write_bytes(b'x' * (16*1024*1024 + 1))
             (out/'library-999.pack').write_bytes(b'obsolete')
+            (out/'library-999.br.pack').write_bytes(b'obsolete')
+            (kit/'brotli/brotli_dec_wasm.js').write_bytes(b'decoder module v2')
             builder.package(kit, out, sources)
             updated = json.loads((out/'manifest.json').read_text())
+            self.assertNotEqual(original_module, updated['decoder']['module']['file'])
+            self.assertFalse((out/original_module).exists())
             before = {p['file']: p['sha256'] for p in original['packs'] if not p['file'].startswith('library-ssc-')}
             after = {p['file']: p['sha256'] for p in updated['packs'] if not p['file'].startswith('library-ssc-')}
             self.assertEqual(before, after)
             self.assertFalse((out/'library-999.pack').exists())
+            self.assertFalse((out/'library-999.br.pack').exists())
             recovered = {}
             for pack in updated['packs']:
                 data = gzip.decompress((out/pack['file']).read_bytes())
+                br = (out/pack['brotli']['file']).read_bytes()
+                decoded = builder.subprocess.check_output(builder.node_command()+['-e',
+                    "process.stdout.write(require('node:zlib').brotliDecompressSync(require('node:fs').readFileSync(0)))"], input=br)
+                self.assertEqual(data, decoded)
+                self.assertEqual(hashlib.sha256(data).hexdigest(), pack['uncompressedSha256'])
+                self.assertEqual(hashlib.sha256(br).hexdigest(), pack['brotli']['sha256'])
+                self.assertEqual(len(br), pack['brotli']['bytes'])
                 self.assertEqual(len(data), pack['bytes'])
                 for entry in pack['entries']:
                     start = entry['offset']
                     recovered[entry['path']] = data[start:start+entry['bytes']]
             self.assertEqual(recovered, {p.relative_to(library).as_posix(): p.read_bytes()
-                                         for p in library.rglob('*.olean')})
+                                         for p in library.rglob('*') if p.is_file()})
+            runtime = updated['runtime']['lean.wasm.pack']
+            self.assertEqual(runtime['uncompressedSha256'], hashlib.sha256(b'compiler fixture').hexdigest())
+            self.assertEqual(runtime['uncompressedBytes'], len(b'compiler fixture'))
+            for part in updated['decoder'].values():
+                self.assertEqual(builder.digest(out/part['file']), part['sha256'])
+            self.assertEqual((out/'brotli/LICENSE-Apache.txt').read_bytes(), b'apache license')
+            self.assertEqual((out/'brotli/LICENSE-MIT.txt').read_bytes(), b'mit license')
+            self.assertFalse(any((out/'brotli'/name).exists() for name in builder.OLD_BROTLI_FILES))
+            self.assertEqual({p.name for p in (out/'brotli').iterdir()},
+                set(builder.BROTLI_LICENSES) | {Path(p['file']).name for p in updated['decoder'].values()})
+            self.assertEqual(updated['brotliDownloadBytes'],
+                sum(p['brotli']['bytes'] for p in updated['packs']) + runtime['brotli']['bytes'] +
+                updated['runtime']['lean.js']['bytes'] + sum(p['bytes'] for p in updated['decoder'].values()))
+            self.assertFalse(list(out.glob('*.json.tmp')))
+            self.assertFalse((out/'compressed').exists())
+
+
+class CompressionCache(unittest.TestCase):
+    def test_reuse_input_invalidation_and_corruption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache, destination = root/'cache', root/'asset.pack'
+            with patch.object(builder.gzip, 'compress', wraps=gzip.compress) as compress:
+                first = builder.compressed_asset(b'payload', destination, cache, 'gzip', ['version-a'])
+                self.assertEqual(compress.call_count, 1)
+                second = builder.compressed_asset(b'payload', destination, cache, 'gzip', ['version-a'])
+                self.assertEqual(first, second)
+                self.assertEqual(compress.call_count, 1)
+                # Neither a damaged compressed cache nor output is reused.
+                next(p for p in cache.iterdir() if not p.suffix).write_bytes(b'corrupt cache')
+                destination.write_bytes(b'corrupt asset')
+                builder.compressed_asset(b'payload', destination, cache, 'gzip', ['version-a'])
+                self.assertEqual(compress.call_count, 2)
+                builder.compressed_asset(b'changed', destination, cache, 'gzip', ['version-a'])
+                self.assertEqual(compress.call_count, 3)
+                self.assertEqual(gzip.decompress(destination.read_bytes()), b'changed')
+                # Codec/version changes have independent keys. A verified existing
+                # lossless asset may seed the new cache without recompression.
+                count = len(list(cache.glob('*.json')))
+                builder.compressed_asset(b'changed', destination, cache, 'gzip', ['version-b'])
+                self.assertEqual(len(list(cache.glob('*.json'))), count+1)
+                self.assertEqual(gzip.decompress(destination.read_bytes()), b'changed')
 
 
 if __name__ == '__main__':

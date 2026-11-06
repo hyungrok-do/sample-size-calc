@@ -28,14 +28,54 @@ async function asset(file, expected) {
   if (await hash(bytes) !== expected) { await cache.delete(url.href); throw Error(`Cached compiler asset is damaged: ${file}. Reload the compiler.`); }
   return bytes;
 }
-async function inflate(bytes) {
-  return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+async function inflate(bytes, format = 'gzip') {
+  // The authenticated bytes are immutable. Enqueue them directly rather than
+  // copying the complete compressed asset into a second Blob first.
+  const input = new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } });
+  return new Uint8Array(await new Response(input.pipeThrough(new DecompressionStream(format))).arrayBuffer());
 }
+async function createBrotliDecoder(descriptor) {
+  const [, wasmBinary] = await Promise.all([
+    asset(descriptor.module.file, descriptor.module.sha256),
+    asset(descriptor.wasm.file, descriptor.wasm.sha256),
+  ]);
+  const worker = new Worker(new URL('./lean-decompress-worker.js?v=dev', self.location.href));
+  const pending = new Map();
+  let serial = 0, closed = false;
+  const close = (message = 'Asset decoder stopped.') => {
+    closed = true; worker.terminate();
+    for (const waiter of pending.values()) waiter.reject(Error(message));
+    pending.clear();
+  };
+  worker.onerror = event => close(event.message || 'Asset decoder failed.');
+  worker.onmessage = ({ data }) => {
+    const waiter = pending.get(data.id);
+    if (!waiter) return;
+    pending.delete(data.id);
+    if (data.type === 'error') waiter.reject(Error(data.message));
+    else waiter.resolve(data.bytes);
+  };
+  const request = (type, payload, transfer = []) => new Promise((resolve, reject) => {
+    if (closed) { reject(Error('Asset decoder is unavailable.')); return; }
+    const id = ++serial;
+    pending.set(id, { resolve, reject });
+    try { worker.postMessage({ type, id, ...payload }, transfer); }
+    catch (error) { pending.delete(id); reject(error); }
+  });
+  const url = new URL(descriptor.module.file, base); url.searchParams.set('v', descriptor.module.sha256);
+  try {
+    await request('initialize', { moduleURL: url.href, wasmBinary }, [wasmBinary.buffer]);
+    return { close, decompress: (bytes, expectedBytes) => request('decompress', { bytes, expectedBytes }, [bytes.buffer]) };
+  } catch (error) { close(); throw error; }
+}
+const directories = new Set(['/']);
 function mkdir(path) {
   let current = '';
   for (const part of path.split('/').filter(Boolean)) {
     current += '/' + part;
+    if (directories.has(current)) continue;
     if (!Module.FS.analyzePath(current).exists) Module.FS.mkdir(current);
+    directories.add(current);
   }
 }
 function line(text) {
@@ -152,6 +192,12 @@ function run(source, nonce, entry = '') {
   return { output, diagnostics, timing: { ...timing, totalMs: performance.now() - started } };
 }
 async function initialize() {
+  const started = performance.now();
+  const initialization = {};
+  const measure = async (name, action) => {
+    const t = performance.now();
+    try { return await action(); } finally { initialization[name] = performance.now() - t; }
+  };
   let response;
   const metadataCache = await caches.open('ssc-lean-metadata').catch(() => null);
   const manifestURL = new URL('manifest.json', base);
@@ -166,12 +212,57 @@ async function initialize() {
   manifest = await response.json();
   if (manifest.schema !== 2 || !Array.isArray(manifest.packs)) throw Error('Unsupported browser compiler package.');
   cache = await caches.open('ssc-lean-content-v1').catch(() => null);
-  progress(`Loading the browser compiler (${Math.ceil(manifest.downloadBytes / 1048576)} MB on first use)…`);
-  const binary = await inflate(await asset('lean.wasm.pack', manifest.runtime['lean.wasm.pack'].sha256));
-  // Authenticate the exact glue too. importScripts uses the same immutable URL.
-  await asset('lean.js', manifest.runtime['lean.js'].sha256);
+  const cachedURLs = new Set((await cache?.keys() || []).map(request => request.url));
+  const cached = (file, sha256) => {
+    const url = new URL(file, base); url.searchParams.set('v', sha256);
+    return cachedURLs.has(url.href);
+  };
+  let nativeBrotli = false;
+  try { new DecompressionStream('brotli'); nativeBrotli = true; } catch {}
+  const brotli = nativeBrotli || Boolean(manifest.decoder);
+  // An existing authenticated gzip copy is cheaper than downloading a new
+  // encoding of the same bytes. Prefer Brotli for uncached assets and when both
+  // encodings are cached. asset() still rehashes every cache read before use.
+  const encoding = (file, descriptor) => brotli && descriptor.brotli &&
+    (cached(descriptor.brotli.file, descriptor.brotli.sha256) || !cached(file, descriptor.sha256))
+    ? { ...descriptor.brotli, format: 'brotli' }
+    : { file, sha256: descriptor.sha256, bytes: descriptor.compressedBytes ?? descriptor.bytes, format: 'gzip' };
+  const wasmAsset = encoding('lean.wasm.pack', manifest.runtime['lean.wasm.pack']);
+  const packs = manifest.packs.map(pack => ({ ...pack, encoding: encoding(pack.file, pack) }));
+  const useDecoder = !nativeBrotli && (wasmAsset.format === 'brotli' || packs.some(p => p.encoding.format === 'brotli'));
+  const decoderReady = useDecoder ? createBrotliDecoder(manifest.decoder) : null;
+  // Observe failure immediately even while authenticated assets are fetched.
+  if (decoderReady) decoderReady.catch(() => {});
+  const decompress = async (bytes, encoded, descriptor, expectedBytes) => {
+    const decoded = encoded.format === 'brotli' && decoderReady
+      ? await (await decoderReady).decompress(bytes, expectedBytes)
+      : await inflate(bytes, encoded.format);
+    if (expectedBytes !== undefined && decoded.length !== expectedBytes) throw Error(`Incorrect compiler asset size: ${encoded.file}`);
+    if (descriptor.uncompressedSha256 && await hash(decoded) !== descriptor.uncompressedSha256)
+      throw Error(`Decoded compiler asset checksum failed: ${encoded.file}`);
+    return decoded;
+  };
+  initialization.compression = wasmAsset.format;
+  initialization.decoder = useDecoder ? 'wasm-worker' : 'native';
+  initialization.downloadBytes = wasmAsset.bytes + manifest.runtime['lean.js'].bytes + packs.reduce((n, p) => n + p.encoding.bytes, 0)
+    + (useDecoder ? manifest.decoder.module.bytes + manifest.decoder.wasm.bytes : 0);
+  progress(`Loading the browser compiler (${Math.ceil(initialization.downloadBytes / 1048576)} MB on first use)…`);
+  initialization.manifestMs = performance.now() - started;
+  let resolveFilesystem, rejectFilesystem;
+  const filesystemReady = new Promise((resolve, reject) => { resolveFilesystem = resolve; rejectFilesystem = reject; });
+  filesystemReady.catch(() => {});
+  const runtimeReady = (async () => {
+  // The runtime/glue and up to three library packs load concurrently. Each
+  // library loader waits only for MEMFS, not for WebAssembly compilation. The
+  // pinned glue calls FS.staticInit and exports FS synchronously, before run's
+  // asynchronous WASM dependency resolves. No Lean code runs until both finish.
+  const [binary] = await Promise.all([
+    measure('runtimeAssetsMs', async () => decompress(await asset(wasmAsset.file, wasmAsset.sha256), wasmAsset,
+      manifest.runtime['lean.wasm.pack'], manifest.runtime['lean.wasm.pack'].uncompressedBytes)),
+    measure('glueAssetMs', () => asset('lean.js', manifest.runtime['lean.js'].sha256)),
+  ]);
   const script = new URL('lean.js', base); script.searchParams.set('v', manifest.runtime['lean.js'].sha256);
-  await new Promise((resolve, reject) => {
+  await measure('wasmInitializeMs', () => new Promise((resolve, reject) => {
     self.Module = {
       wasmBinary: binary, noInitialRun: true, thisProgram: '/bin/lean',
       wasmMemory: new WebAssembly.Memory({ initial: 8192, maximum: 65536, shared: true }),
@@ -191,24 +282,41 @@ async function initialize() {
       },
       onAbort: error => reject(Error(`Lean WebAssembly stopped: ${error}`)),
     };
-    try { importScripts(script.href); } catch (error) { reject(error); }
-  });
+    try {
+      importScripts(script.href);
+      if (!Module.FS?.writeFile) throw Error('Pinned compiler did not initialize its filesystem.');
+      resolveFilesystem();
+    } catch (error) { rejectFilesystem(error); reject(error); }
+  }));
+  })();
+  runtimeReady.catch(rejectFilesystem);
   let finished = 0;
-  const queue = [...manifest.packs];
-  await Promise.all(Array.from({ length: 3 }, async () => {
+  const queue = [...packs];
+  initialization.fileInstallMs = 0;
+  try { await Promise.all([runtimeReady, measure('librariesMs', () => Promise.all(Array.from({ length: 3 }, async () => {
     while (queue.length) {
-      const pack = queue.shift(), bytes = await inflate(await asset(pack.file, pack.sha256));
+      const pack = queue.shift();
+      const bytes = await decompress(await asset(pack.encoding.file, pack.encoding.sha256), pack.encoding, pack, pack.bytes);
       if (bytes.length !== pack.bytes) throw Error(`Incorrect compiler pack size: ${pack.file}`);
+      await filesystemReady;
+      const installStarted = performance.now();
       for (const entry of pack.entries) {
         if (!/^(?:Init|Std|Lean|SSC)(?:\.|\/)/.test(entry.path) || entry.path.split('/').includes('..') || entry.offset < 0 || entry.offset + entry.bytes > bytes.length)
           throw Error('Invalid compiler library entry.');
         const path = '/lib/lean/' + entry.path; mkdir(path.slice(0, path.lastIndexOf('/')));
-        Module.FS.writeFile(path, bytes.subarray(entry.offset, entry.offset + entry.bytes));
+        // Pack storage is immutable after authentication. MEMFS may own these
+        // disjoint views, avoiding a second full copy of every library file.
+        Module.FS.writeFile(path, bytes.subarray(entry.offset, entry.offset + entry.bytes), { canOwn: true });
       }
+      initialization.fileInstallMs += performance.now() - installStarted;
       progress(`Preparing compiler libraries: ${++finished} / ${manifest.packs.length}`);
     }
-  }));
+  })))]); } finally {
+    // Release the decoder's high-water memory before importing Lean modules.
+    if (decoderReady) await decoderReady.then(decoder => decoder.close(), () => {});
+  }
   progress('Initializing Lean proof checking…');
+  const bootstrapStarted = performance.now();
   const bootstrap = run('import SSC\n#ssc_browser_driver');
   const bootstrapLines = [...bootstrap.output, ...bootstrap.diagnostics.filter(d => d.severity === 'information').map(d => d.data)]
     .flatMap(text => text.split('\n'));
@@ -224,10 +332,14 @@ async function initialize() {
   }
   checker = entryPoint('SSC_BROWSER_DRIVER');
   evaluator = entryPoint('SSC_BROWSER_EVALUATOR');
+  initialization.bootstrapMs = performance.now() - bootstrapStarted;
   // A ready compiler must also be ready for the immediately-following offline
   // reload. Writes overlap validation/decompression/imports, but finish here.
-  await Promise.all(cacheWrites);
-  self.postMessage({ type: 'ready', version: manifest.leanVersion });
+  await measure('cacheFlushMs', () => Promise.all(cacheWrites));
+  initialization.totalMs = performance.now() - started;
+  initialization.libraryBytes = manifest.packs.reduce((n, p) => n + p.bytes, 0);
+  initialization.libraryFiles = manifest.packs.reduce((n, p) => n + p.entries.length, 0);
+  self.postMessage({ type: 'ready', version: manifest.leanVersion, initialization });
 }
 async function handleRequest(data) {
   try {

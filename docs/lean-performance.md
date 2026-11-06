@@ -154,15 +154,77 @@ packs. A packaging regression test crosses an SSC pack boundary, checks that
 the other pack hashes remain unchanged, and reconstructs every file from its
 manifest offsets.
 
+New downloads use lossless Brotli packs, with gzip retained for compatibility.
+An existing authenticated gzip cache is reused without downloading a second
+encoding. Compressed bytes are checked before decoding, and decoded bytes are
+checked against their original size and SHA-256 before installation. The
+package preserves all 6,930 library files, including interpreted IR bodies:
+having a native module initializer does not mean every function has a native
+implementation. A browser regression dynamically evaluates an imported
+function that needs that IR fallback.
+
+Browsers without native Brotli decoding use a pinned, small decoder in a
+temporary worker. Its JavaScript has a content-addressed filename, its WASM
+bytes are verified before transfer, and its retained heap is released before
+Lean imports begin. The ordinary same-origin static-host trust model for
+JavaScript remains unchanged. Runtime/glue loading and three bounded library
+loaders overlap. Libraries can be installed as soon as the pinned Emscripten
+filesystem exists, while WebAssembly initialization continues. No Lean code
+runs until both are ready. Immutable pack views are installed directly into
+MEMFS, avoiding a second copy of every library file.
+
+The ready event includes an `initialization` report for runtime assets,
+WebAssembly initialization, library loading, file installation, imports and
+cache completion. These stages overlap, and file installation is a substage
+of library loading, so their durations must not be added together. Readiness
+still waits for the complete runtime, libraries, bootstrap and cache writes.
+
 Build artifacts are keyed by actual runtime/standard-library inputs, the Node
 driver, module source, module name and prior dependency outputs. Cached outputs
 are hash-verified before reuse. A missing/corrupt entry or changed input rebuilds
 the module. A failed invocation cannot reuse an old output file, and reported
 Lean errors fail the build even if the process exits with status zero.
 
+Compression outputs have a separate verified cache keyed by raw content,
+codec, options and compressor version. Unchanged modules therefore avoid both
+recompilation and recompression. Corrupt or missing cache entries regenerate
+their output. Compression caches stay outside published assets.
+
 Trace assembly indexes steps once by declaration instead of repeatedly scanning
 the full trace for every declaration. This changes report assembly from a
 declaration-by-trace product to one indexing pass plus per-declaration sorting.
+
+### Measured startup
+
+The [paired Chromium 157 report](benchmarks/lean-startup-chromium157.json)
+compares the previous loader with this package on one local HTTP server in the
+same browser context. Each package receives a warmup, followed by three cached
+starts in alternating order. All three measured pairs improved. The baseline
+uses commit `1d48e4cf299681e0335c3413db9da6274b540a48` plus the included
+[timing-only instrumentation](benchmarks/lean-startup-baseline.patch).
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Selected compressed download | 176.00 MiB | 142.36 MiB |
+| Cached startup median | 14.72 s | 12.88 s |
+| Library files | 6,930 | 6,930 |
+| Uncompressed library bytes | 453,465,980 | 453,465,980 |
+
+This is a 19.11% reduction in selected transfer and a 12.49% reduction in
+observed cached startup time. It is not an Internet-speed benchmark or a
+cross-device guarantee. Gzip and Brotli are both hosted, so total hosting
+storage increases even though each new browser downloads less. The Lean WASM
+binary and library contents are unchanged. Startup still takes seconds:
+restarting a worker reconstructs the runtime and imported environment even
+when compressed assets are cached.
+
+The same run passed a checked theorem and dynamic imported-IR evaluation after
+every startup, offline startup with zero requests, corrupt-cache rejection,
+cancellation while the decoder was active followed by child-worker termination
+and restart, and reuse of 30 existing gzip assets with no replacement pack
+downloads. The [decoder probe](benchmarks/lean-brotli-decoders-chromium157.json)
+records why the smaller decoder-only package was selected. Full startup
+measurements, rather than isolated decompression times, determine the result.
 
 ## Reproduce
 
@@ -172,6 +234,9 @@ python scripts/test_build_lean_wasm.py
 npm test --prefix web
 npm run test:lean-wasm-browser --prefix web
 npm run test:lean-stress --prefix web
+npm run test:lean-decompress --prefix web
+npm run test:lean-startup-page --prefix web
+SSC_STARTUP_REPORT=/tmp/lean-startup.json npm run test:lean-startup --prefix web
 SSC_PERFORMANCE_REPORT=/tmp/lean-performance.json npm run test:lean-performance --prefix web
 ```
 
@@ -262,7 +327,7 @@ Ordinary CI reports measurements without a hardware-dependent timing assertion.
 
 ### Measured prepared execution
 
-The checked-in [Chromium 157 report](benchmarks/lean-prepared-chromium157.json)
+The checked-in [Chromium 157 report](benchmarks/lean-prepared-compact-chromium157.json)
 records the actual browser WebAssembly run on a local HTTP server. Thirty
 queries varied the standardized effect from 0.500 to 0.645, with two-sided
 alpha 0.05, target power 0.80, and an ordered search of 2 through 200 participants
@@ -271,12 +336,12 @@ searches on each call, not cached answers.
 
 | Measurement | Observed time |
 | --- | --- |
-| Browser runtime initialization | 17.59 s |
-| Model preparation, including replay and audit | 1.55 s |
-| Warm API round trip, median | 14.25 ms |
-| Warm API round trip, 95th percentile | 19.63 ms |
-| Warm API round trip, maximum | 24.69 ms |
-| One simulation call, 100 replicates for each law and 3 observations per replicate | 28.23 ms |
+| Browser runtime initialization | 13.37 s |
+| Model preparation, including replay and audit | 2.56 s |
+| Warm API round trip, median | 18.20 ms |
+| Warm API round trip, 95th percentile | 28.18 ms |
+| Warm API round trip, maximum | 31.55 ms |
+| One simulation call, 100 replicates for each law and 3 observations per replicate | 35.48 ms |
 
 The normal-search results matched ordinary `#eval` for the reference parameter
 sets. Simulation matched ordinary execution, including successes, seeds and
@@ -288,5 +353,7 @@ These timings exclude DOM rendering, are not a cross-device guarantee, and do
 not benchmark the expensive paired categorical certificate workload. The warm
 calls do not create new kernel proofs of their returned numbers. Large
 simulations and fresh exact certificates still require separate optimization.
-The 17.59 s initialization was measured locally and is not an Internet-download
-benchmark.
+The 13.37 s initialization was measured locally and is not an Internet-download
+benchmark. The earlier [prepared-execution report](benchmarks/lean-prepared-chromium157.json)
+is retained for reference. Those separate runs are not a controlled latency
+comparison; use the paired startup experiment above for the loader comparison.

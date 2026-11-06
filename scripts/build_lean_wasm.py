@@ -13,9 +13,11 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 LEAN_COMMIT = '62b6a2291302d4bbeace37642a066b7510d0145c'
@@ -24,7 +26,12 @@ RELEASES = {
                 'a66af27e859464db9849df10ea3bd7aa3b5ee824fbcc7c330fb8cf5931cc5527'),
     'static': ('https://github.com/cauli/lean4-wasm-in-browser/releases/download/runtime-62b6a22-compact1/pages-assets-62b6a22-compact1.tar.gz',
                'e0c1ae4d40fd5c4da18d4a38e254e8adef603b855757daff103659a4b80c9a39'),
+    'brotli': ('https://registry.npmjs.org/brotli-dec-wasm/-/brotli-dec-wasm-2.3.2.tgz',
+               '5006ea904407e2f44ad6616100de196c39af591b772f764ba66fdd720b5d2ab5'),
 }
+BROTLI_FILES = {'module': 'brotli_dec_wasm.js', 'wasm': 'brotli_dec_wasm_bg.wasm'}
+BROTLI_LICENSES = ['LICENSE-Apache.txt', 'LICENSE-MIT.txt']
+OLD_BROTLI_FILES = ['brotli_wasm.js', 'brotli_wasm_bg.wasm', 'LICENSE']
 
 def digest(path):
     value = hashlib.sha256()
@@ -67,6 +74,29 @@ def unpack(archive, kit, runtime):
             dest.parent.mkdir(parents=True, exist_ok=True)
             with tar.extractfile(member) as source, dest.open('wb') as output:
                 shutil.copyfileobj(source, output)
+
+
+def unpack_brotli(archive, kit):
+    """Extract only the pinned browser decoder and its license."""
+    expected = {f'package/pkg/{name}': name for name in BROTLI_FILES.values()}
+    expected.update({f'package/{name}': name for name in BROTLI_LICENSES})
+    found = set()
+    with tarfile.open(archive, 'r:gz') as tar:
+        for member in tar:
+            name = member.name.removeprefix('./')
+            if name not in expected:
+                continue
+            if not member.isfile() or name in found:
+                raise RuntimeError(f'Unexpected decoder archive entry: {name}')
+            destination = kit/'brotli'/expected[name]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with tar.extractfile(member) as source, destination.open('wb') as output:
+                shutil.copyfileobj(source, output)
+            found.add(name)
+    if found != set(expected):
+        raise RuntimeError('Pinned Brotli decoder archive is incomplete')
+    for name in OLD_BROTLI_FILES:
+        (kit/'brotli'/name).unlink(missing_ok=True)
 
 def browser_sources():
     # Ordinary modules in dependency order, compiled by the shipped compiler.
@@ -145,11 +175,90 @@ def compile_module(kit, build, cache, name, source, inputs):
     print(f'Compiled {name} in {time.monotonic()-started:.1f}s', flush=True)
     return sha
 
-def package(kit, out, sources):
+def _atomic_write(path, data):
+    """Publish complete cache records even if a build is interrupted."""
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name+'.', delete=False) as f:
+        temporary = Path(f.name)
+        try:
+            f.write(data)
+            f.flush()
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    temporary.replace(path)
+
+
+def compressed_asset(data, destination, cache, codec, compressor_identity):
+    """Lossless compression cached by exact bytes, options and compressor version.
+
+    The cache lives outside the published directory. Every compressed cache hit
+    is hash-verified; a corrupt/missing record is rebuilt. Existing gzip assets
+    can seed a fresh cache only after their complete decoded bytes are verified.
+    """
+    raw_sha = hashlib.sha256(data).hexdigest()
+    inputs = [1, codec, compressor_identity, raw_sha]
+    key = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+    cache.mkdir(parents=True, exist_ok=True)
+    cached, metadata = cache/key, cache/(key+'.json')
+    compressed = None
+    if cached.is_file() and metadata.is_file():
+        try:
+            record = json.loads(metadata.read_text())
+            candidate = cached.read_bytes()
+            if record['inputs'] == inputs and hashlib.sha256(candidate).hexdigest() == record['sha256']:
+                compressed = candidate
+        except (ValueError, KeyError, OSError, TypeError):
+            pass
+    if compressed is None:
+        # Preserve previous deterministic gzip artifacts without spending minutes
+        # recompressing unchanged libraries on the first cache-enabled build.
+        if codec == 'gzip' and destination.is_file():
+            try:
+                candidate = destination.read_bytes()
+                if hashlib.sha256(gzip.decompress(candidate)).hexdigest() == raw_sha:
+                    compressed = candidate
+            except (OSError, EOFError, zlib.error):
+                pass
+        if compressed is None:
+            if codec == 'gzip':
+                compressed = gzip.compress(data, compresslevel=9, mtime=0)
+            elif codec == 'brotli':
+                script = '''const fs=require('node:fs'),z=require('node:zlib');
+const data=fs.readFileSync(0);
+process.stdout.write(z.brotliCompressSync(data,{params:{
+  [z.constants.BROTLI_PARAM_QUALITY]:6,
+  [z.constants.BROTLI_PARAM_SIZE_HINT]:data.length
+}}));'''
+                compressed = subprocess.check_output(node_command()+['-e', script], input=data)
+            else:
+                raise ValueError(f'Unsupported compression codec: {codec}')
+        _atomic_write(cached, compressed)
+        _atomic_write(metadata, json.dumps({'inputs': inputs,
+            'sha256': hashlib.sha256(compressed).hexdigest()}).encode())
+    destination.write_bytes(compressed)
+    return {'file': destination.name, 'sha256': hashlib.sha256(compressed).hexdigest(),
+            'bytes': len(compressed)}
+
+
+def package(kit, out, sources, compression_cache=None):
     out.mkdir(parents=True, exist_ok=True)
+    compression_cache = compression_cache or kit.parent/'compressed'
+    # The existing build already requires Node 24+. Its built-in Brotli codec
+    # avoids a Python package dependency or an external compression executable.
+    brotli_identity = json.loads(subprocess.check_output(node_command()+['-p',
+        'JSON.stringify([process.versions.node,process.versions.brotli])'], text=True))
+    identities = {'gzip': [9, 0, list(sys.version_info[:3]), zlib.ZLIB_RUNTIME_VERSION],
+                  'brotli': [6, brotli_identity]}
+
+    def compress(data, filename):
+        gzip_info = compressed_asset(data, out/filename, compression_cache, 'gzip', identities['gzip'])
+        brotli_name = filename.removesuffix('.pack')+'.br.pack'
+        gzip_info['brotli'] = compressed_asset(data, out/brotli_name, compression_cache,
+                                               'brotli', identities['brotli'])
+        return gzip_info
+
     # Compressed opaque extensions avoid a static host decompressing them twice.
-    wasm = gzip.compress((kit/'bin/lean.wasm').read_bytes(), compresslevel=9, mtime=0)
-    (out/'lean.wasm.pack').write_bytes(wasm)
+    wasm = compress((kit/'bin/lean.wasm').read_bytes(), 'lean.wasm.pack')
     glue = (kit/'bin/lean.js').read_text()
     # This compact upstream glue omitted wasmBinary from its incoming API.
     # Restore the ordinary Emscripten buffer hook for our authenticated gzip
@@ -175,9 +284,11 @@ def package(kit, out, sources):
         # pack. Stable namespace boundaries and names preserve content-cache hits.
         name = f'library-{group.lower()}-{group_index:03d}.pack'
         group_index += 1
-        data = gzip.compress(b''.join(parts), compresslevel=9, mtime=0)
-        (out/name).write_bytes(data)
-        packs.append({'file': name, 'sha256': digest(out/name), 'compressedBytes': len(data),
+        data = b''.join(parts)
+        compressed = compress(data, name)
+        packs.append({'file': name, 'sha256': compressed['sha256'],
+                      'compressedBytes': compressed['bytes'], 'brotli': compressed['brotli'],
+                      'uncompressedSha256': hashlib.sha256(data).hexdigest(),
                       'bytes': size, 'entries': entries})
         parts, entries, size = [], [], 0
     for file in sorted((kit/'lib/lean').rglob('*')):
@@ -200,17 +311,47 @@ def package(kit, out, sources):
                 'sourceSha256': hashlib.sha256(sources['SSC.lean'].encode()).hexdigest(),
                 'librarySources': {name: hashlib.sha256(source.encode()).hexdigest()
                                    for name, source in sources.items()}, 'packs': packs,
-                'runtime': {name: {'sha256': digest(out/name), 'bytes': (out/name).stat().st_size}
-                            for name in ['lean.js', 'lean.wasm.pack']}}
+                'runtime': {'lean.js': {'sha256': digest(out/'lean.js'),
+                                       'bytes': (out/'lean.js').stat().st_size},
+                            'lean.wasm.pack': {k: v for k, v in wasm.items() if k != 'file'}}}
+    manifest['runtime']['lean.wasm.pack'].update({
+        'uncompressedSha256': digest(kit/'bin/lean.wasm'),
+        'uncompressedBytes': (kit/'bin/lean.wasm').stat().st_size})
+    if (kit/'brotli').is_dir():
+        decoder = {}
+        for key, name in BROTLI_FILES.items():
+            source = kit/'brotli'/name
+            sha = digest(source)
+            # The helper imports this URL after the parent has verified it.
+            # An immutable module URL prevents a deployment from replacing its
+            # contents between those two requests without relaxing script CSP.
+            published_name = f'{Path(name).stem}-{sha}{Path(name).suffix}' if key == 'module' else name
+            path = out/'brotli'/published_name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, path)
+            decoder[key] = {'file': path.relative_to(out).as_posix(),
+                            'sha256': sha, 'bytes': path.stat().st_size}
+        for name in BROTLI_LICENSES:
+            shutil.copyfile(kit/'brotli'/name, out/'brotli'/name)
+        active_decoder = set(BROTLI_LICENSES) | {Path(part['file']).name for part in decoder.values()}
+        for obsolete in (out/'brotli').iterdir():
+            if obsolete.is_file() and obsolete.name not in active_decoder:
+                obsolete.unlink()
+        manifest['decoder'] = decoder
     manifest['version'] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:24]
     manifest['downloadBytes'] = sum(p['compressedBytes'] for p in packs) + sum(p['bytes'] for p in manifest['runtime'].values())
+    manifest['brotliDownloadBytes'] = sum(p['brotli']['bytes'] for p in packs) + \
+        wasm['brotli']['bytes'] + manifest['runtime']['lean.js']['bytes'] + \
+        sum(p['bytes'] for p in manifest.get('decoder', {}).values())
     (out/'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
-    active = {pack['file'] for pack in packs}
+    active = {name for pack in packs for name in [pack['file'], pack['brotli']['file']]}
     for obsolete in out.glob('library-*.pack'):
         if obsolete.name not in active:
             obsolete.unlink()
     shutil.copyfile(ROOT/'packaging/lean-wasm/UPSTREAM-LICENSE', out/'UPSTREAM-LICENSE')
-    print(f'Browser compiler: {len(packs)} packs, {manifest["downloadBytes"]/1048576:.1f} MiB compressed', flush=True)
+    print(f'Browser compiler: {len(packs)} packs, '
+          f'{manifest["downloadBytes"]/1048576:.1f} MiB gzip / '
+          f'{manifest["brotliDownloadBytes"]/1048576:.1f} MiB Brotli', flush=True)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -225,6 +366,7 @@ def main():
         if not marker.exists() or json.loads(marker.read_text()) != {k: list(v) for k, v in RELEASES.items()}:
             unpack(download('runtime', args.cache), kit, True)
             unpack(download('static', args.cache), kit, False)
+            unpack_brotli(download('brotli', args.cache), kit)
             marker.write_text(json.dumps(RELEASES))
     header = (kit/'lib/lean/Init.olean').read_bytes()[:160]
     if LEAN_COMMIT.encode() not in header:
@@ -239,7 +381,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     for obsolete in ['study.mjs', 'study.wasm', 'study-runtime.txt']:
         (out/obsolete).unlink(missing_ok=True)
-    package(kit, out, sources)
+    package(kit, out, sources, args.cache/'compressed')
 
 if __name__ == '__main__':
     main()

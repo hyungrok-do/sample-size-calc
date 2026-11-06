@@ -1,0 +1,397 @@
+{
+  "browser": "157.0.8103.38",
+  "variants": [
+    {
+      "name": "before",
+      "leanVersion": "4.33.0-pre",
+      "packageVersion": "0ecfcc84852196e7135d7276",
+      "hasDecoder": false,
+      "manifestSha256": "e9e116ab6124123c3e0e0b16efcdc5e1f2a2a703e87f01da63b2d9101cf693b8",
+      "workerSha256": "15e1a6b63b8943e36af80ac5aa31a678f617afbc3a1214a8e41d8229b00718c1"
+    },
+    {
+      "name": "after",
+      "leanVersion": "4.33.0-pre",
+      "packageVersion": "e0520052090beaa2097bdce8",
+      "hasDecoder": true,
+      "manifestSha256": "677b76f23fd7288d0c0c482ead4b94891e961d38cc1fa02316ca935cf777bb6d",
+      "workerSha256": "3c8aca9edeceeb4b0b598c3a4d6ee9ec66dc9d782e84a2838bd04f56f889220f"
+    }
+  ],
+  "measurement": "Local HTTP server, one browser/page. Each package receives one unmeasured warmup, then three alternating cached restarts and an offline restart. Browser-level WASM compilation caches may be reused. Warmup results are retained but excluded from summaries.",
+  "settings": {
+    "paired": true,
+    "cachedRuns": 3,
+    "versionedHttpCache": true,
+    "kernelProofAfterEachStartup": true,
+    "startupTimeoutMs": 300000,
+    "sameBrowserContext": true
+  },
+  "runs": [
+    {
+      "variant": "before",
+      "mode": "warmup",
+      "measured": false,
+      "roundTripMs": 21492.579999998212,
+      "initialization": {
+        "manifestMs": 29.734999999403954,
+        "runtimeAssetsMs": 2111.0800000056624,
+        "glueAssetMs": 19.99500000476837,
+        "wasmInitializeMs": 4565.384999997914,
+        "librariesMs": 10952.539999999106,
+        "bootstrapMs": 3798.914999999106,
+        "cacheFlushMs": 0.02499999850988388,
+        "totalMs": 21478.084999993443,
+        "downloadBytes": 184551652,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1078.0049999952316,
+      "network": {
+        "requests": 33,
+        "responseBytes": 185100504,
+        "packRequests": 30
+      }
+    },
+    {
+      "variant": "after",
+      "mode": "warmup",
+      "measured": false,
+      "roundTripMs": 13726.510000005364,
+      "initialization": {
+        "compression": "brotli",
+        "decoder": "wasm-worker",
+        "downloadBytes": 149276947,
+        "manifestMs": 15.904999993741512,
+        "fileInstallMs": 241.80499999970198,
+        "glueAssetMs": 13.725000001490116,
+        "runtimeAssetsMs": 2492.344999998808,
+        "wasmInitializeMs": 4404.10000000149,
+        "librariesMs": 9682.544999994338,
+        "bootstrapMs": 3914.5749999955297,
+        "cacheFlushMs": 0.034999996423721313,
+        "totalMs": 13613.579999998212,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1126.789999999106,
+      "network": {
+        "requests": 36,
+        "responseBytes": 149840960,
+        "packRequests": 30
+      }
+    },
+    {
+      "variant": "before",
+      "mode": "cached-1",
+      "measured": true,
+      "roundTripMs": 14717.240000002086,
+      "initialization": {
+        "manifestMs": 20.950000002980232,
+        "runtimeAssetsMs": 926.9799999967217,
+        "glueAssetMs": 14.970000006258488,
+        "wasmInitializeMs": 3747.5,
+        "librariesMs": 5530.72500000149,
+        "bootstrapMs": 4436.414999999106,
+        "cacheFlushMs": 0.02499999850988388,
+        "totalMs": 14678.045000001788,
+        "downloadBytes": 184551652,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 527.5099999979138,
+      "network": {
+        "requests": 3,
+        "responseBytes": 697487,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "after",
+      "mode": "cached-1",
+      "measured": true,
+      "roundTripMs": 12879.069999992847,
+      "initialization": {
+        "compression": "brotli",
+        "decoder": "wasm-worker",
+        "downloadBytes": 149276947,
+        "manifestMs": 21.895000003278255,
+        "fileInstallMs": 210.52000001072884,
+        "glueAssetMs": 26.28499999642372,
+        "runtimeAssetsMs": 2209.380000002682,
+        "wasmInitializeMs": 4622.339999996126,
+        "librariesMs": 10111.370000004768,
+        "bootstrapMs": 2701.4300000071526,
+        "cacheFlushMs": 0.1550000011920929,
+        "totalMs": 12836.365000002086,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1128.4900000020862,
+      "network": {
+        "requests": 5,
+        "responseBytes": 722003,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "after",
+      "mode": "cached-2",
+      "measured": true,
+      "roundTripMs": 12181.659999996424,
+      "initialization": {
+        "compression": "brotli",
+        "decoder": "wasm-worker",
+        "downloadBytes": 149276947,
+        "manifestMs": 20.695000000298023,
+        "fileInstallMs": 283.6200000345707,
+        "glueAssetMs": 12.024999998509884,
+        "runtimeAssetsMs": 2670.539999999106,
+        "wasmInitializeMs": 4658.439999997616,
+        "librariesMs": 9829.195000000298,
+        "bootstrapMs": 2293.554999999702,
+        "cacheFlushMs": 0.02499999850988388,
+        "totalMs": 12144.179999999702,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1069.6600000038743,
+      "network": {
+        "requests": 1,
+        "responseBytes": 536276,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "before",
+      "mode": "cached-2",
+      "measured": true,
+      "roundTripMs": 12952.22500000149,
+      "initialization": {
+        "manifestMs": 18.174999997019768,
+        "runtimeAssetsMs": 1519.3799999952316,
+        "glueAssetMs": 16.66499999910593,
+        "wasmInitializeMs": 2960.545000001788,
+        "librariesMs": 5605.375,
+        "bootstrapMs": 2793.7099999934435,
+        "cacheFlushMs": 0.030000001192092896,
+        "totalMs": 12914.32499999553,
+        "downloadBytes": 184551652,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 686.7899999991059,
+      "network": {
+        "requests": 1,
+        "responseBytes": 529125,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "before",
+      "mode": "cached-3",
+      "measured": true,
+      "roundTripMs": 15967.875,
+      "initialization": {
+        "manifestMs": 21.95499999821186,
+        "runtimeAssetsMs": 1005.2150000035763,
+        "glueAssetMs": 17.155000001192093,
+        "wasmInitializeMs": 4617.335000000894,
+        "librariesMs": 6208.35000000149,
+        "bootstrapMs": 4056.4950000047684,
+        "cacheFlushMs": 0.030000001192092896,
+        "totalMs": 15926.864999994636,
+        "downloadBytes": 184551652,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 470.304999999702,
+      "network": {
+        "requests": 1,
+        "responseBytes": 529125,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "after",
+      "mode": "cached-3",
+      "measured": true,
+      "roundTripMs": 14384.464999996126,
+      "initialization": {
+        "compression": "brotli",
+        "decoder": "wasm-worker",
+        "downloadBytes": 149276947,
+        "manifestMs": 22.395000003278255,
+        "fileInstallMs": 278.2399999499321,
+        "glueAssetMs": 14.020000003278255,
+        "runtimeAssetsMs": 2678.515000000596,
+        "wasmInitializeMs": 5577.935000002384,
+        "librariesMs": 11618.72500000149,
+        "bootstrapMs": 2704.369999997318,
+        "cacheFlushMs": 0.020000003278255463,
+        "totalMs": 14346.64999999851,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1032.25,
+      "network": {
+        "requests": 1,
+        "responseBytes": 536276,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "before",
+      "mode": "offline-cache",
+      "measured": true,
+      "roundTripMs": 12358.605000004172,
+      "initialization": {
+        "manifestMs": 5.774999998509884,
+        "runtimeAssetsMs": 1082.4349999949336,
+        "glueAssetMs": 5.660000003874302,
+        "wasmInitializeMs": 2781.359999999404,
+        "librariesMs": 5515.035000003874,
+        "bootstrapMs": 2931.670000001788,
+        "cacheFlushMs": 0.02499999850988388,
+        "totalMs": 12322.259999997914,
+        "downloadBytes": 184551652,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 489.9050000011921,
+      "network": {
+        "requests": 0,
+        "responseBytes": 0,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "after",
+      "mode": "offline-cache",
+      "measured": true,
+      "roundTripMs": 12772.609999999404,
+      "initialization": {
+        "compression": "brotli",
+        "decoder": "wasm-worker",
+        "downloadBytes": 149276947,
+        "manifestMs": 11.570000000298023,
+        "fileInstallMs": 227.07000001519918,
+        "glueAssetMs": 10.025000005960464,
+        "runtimeAssetsMs": 2349.9500000029802,
+        "wasmInitializeMs": 4796.190000005066,
+        "librariesMs": 9950.27499999851,
+        "bootstrapMs": 2773,
+        "cacheFlushMs": 3.7150000035762787,
+        "totalMs": 12739.445000000298,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1300.1749999970198,
+      "network": {
+        "requests": 0,
+        "responseBytes": 0,
+        "packRequests": 0
+      }
+    },
+    {
+      "variant": "after",
+      "mode": "cancellation-recovery",
+      "measured": false,
+      "roundTripMs": 11249.295000001788,
+      "initialization": {
+        "compression": "brotli",
+        "decoder": "wasm-worker",
+        "downloadBytes": 149276947,
+        "manifestMs": 18.350000001490116,
+        "fileInstallMs": 246.08999998122454,
+        "glueAssetMs": 8.129999995231628,
+        "runtimeAssetsMs": 1533.9350000023842,
+        "wasmInitializeMs": 4380.369999997318,
+        "librariesMs": 8449.459999993443,
+        "bootstrapMs": 2762.640000000596,
+        "cacheFlushMs": 0.03500000387430191,
+        "totalMs": 11231.625,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1279.2250000014901,
+      "network": {
+        "requests": 2,
+        "responseBytes": 12279027,
+        "packRequests": 1
+      }
+    },
+    {
+      "variant": "after",
+      "mode": "gzip-cache-migration",
+      "measured": false,
+      "roundTripMs": 12170.645000003278,
+      "initialization": {
+        "compression": "gzip",
+        "decoder": "native",
+        "downloadBytes": 184551652,
+        "manifestMs": 18.115000002086163,
+        "fileInstallMs": 283.9649999961257,
+        "glueAssetMs": 6.8900000005960464,
+        "runtimeAssetsMs": 2455.710000000894,
+        "wasmInitializeMs": 4270.745000004768,
+        "librariesMs": 8973.484999999404,
+        "bootstrapMs": 3159.204999998212,
+        "cacheFlushMs": 0.030000001192092896,
+        "totalMs": 12151.210000000894,
+        "libraryBytes": 453465980,
+        "libraryFiles": 6930
+      },
+      "compileMs": 1148.8000000044703,
+      "network": {
+        "requests": 1,
+        "responseBytes": 536276,
+        "packRequests": 0
+      }
+    }
+  ],
+  "features": {
+    "crossOriginIsolated": true,
+    "brotliDecompression": false
+  },
+  "cached": {
+    "before": {
+      "medianMs": 14717.240000002086,
+      "phaseMedians": {
+        "manifestMs": 20.950000002980232,
+        "runtimeAssetsMs": 1005.2150000035763,
+        "glueAssetMs": 16.66499999910593,
+        "wasmInitializeMs": 3747.5,
+        "librariesMs": 5605.375,
+        "bootstrapMs": 4056.4950000047684,
+        "cacheFlushMs": 0.030000001192092896,
+        "totalMs": 14678.045000001788
+      }
+    },
+    "after": {
+      "medianMs": 12879.069999992847,
+      "phaseMedians": {
+        "manifestMs": 21.895000003278255,
+        "fileInstallMs": 278.2399999499321,
+        "glueAssetMs": 14.020000003278255,
+        "runtimeAssetsMs": 2670.539999999106,
+        "wasmInitializeMs": 4658.439999997616,
+        "librariesMs": 10111.370000004768,
+        "bootstrapMs": 2701.4300000071526,
+        "cacheFlushMs": 0.02499999850988388,
+        "totalMs": 12836.365000002086
+      }
+    }
+  },
+  "corruptCacheRejected": "after",
+  "initializationCancellation": {
+    "variant": "after",
+    "childTerminated": true
+  },
+  "gzipCacheMigration": {
+    "copiedAssets": 30,
+    "noPackDownloads": true
+  },
+  "baselineCommit": "1d48e4cf299681e0335c3413db9da6274b540a48",
+  "baselineInstrumentation": "lean-startup-baseline.patch"
+}

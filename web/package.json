@@ -12,7 +12,10 @@
     "test:lean-stress": "node tests/lean-stress.mjs",
     "test:lean-performance": "node tests/lean-performance.mjs",
     "test:lean-prepared": "node tests/lean-prepared.mjs",
-    "test:lean-prepared-ui": "node tests/lean-prepared-ui.mjs"
+    "test:lean-prepared-ui": "node tests/lean-prepared-ui.mjs",
+    "test:lean-startup": "node tests/lean-startup.mjs",
+    "test:lean-startup-page": "node tests/lean-startup-page.mjs",
+    "test:lean-decompress": "node tests/lean-decompress.mjs"
   },
   "devDependencies": {
     "playwright": "1.57.0"

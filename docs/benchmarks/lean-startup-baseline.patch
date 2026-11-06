@@ -1,0 +1,74 @@
+--- a/web/lean-wasm-worker.js
++++ b/web/lean-wasm-worker.js
+@@ -152,6 +152,12 @@
+   return { output, diagnostics, timing: { ...timing, totalMs: performance.now() - started } };
+ }
+ async function initialize() {
++  const started = performance.now();
++  const initialization = {};
++  const measure = async (name, action) => {
++    const t = performance.now();
++    try { return await action(); } finally { initialization[name] = performance.now() - t; }
++  };
+   let response;
+   const metadataCache = await caches.open('ssc-lean-metadata').catch(() => null);
+   const manifestURL = new URL('manifest.json', base);
+@@ -167,11 +173,13 @@
+   if (manifest.schema !== 2 || !Array.isArray(manifest.packs)) throw Error('Unsupported browser compiler package.');
+   cache = await caches.open('ssc-lean-content-v1').catch(() => null);
+   progress(`Loading the browser compiler (${Math.ceil(manifest.downloadBytes / 1048576)} MB on first use)…`);
+-  const binary = await inflate(await asset('lean.wasm.pack', manifest.runtime['lean.wasm.pack'].sha256));
++  initialization.manifestMs = performance.now() - started;
++  const binary = await measure('runtimeAssetsMs', () => inflateAsset());
++  async function inflateAsset() { return inflate(await asset('lean.wasm.pack', manifest.runtime['lean.wasm.pack'].sha256)); }
+   // Authenticate the exact glue too. importScripts uses the same immutable URL.
+-  await asset('lean.js', manifest.runtime['lean.js'].sha256);
++  await measure('glueAssetMs', () => asset('lean.js', manifest.runtime['lean.js'].sha256));
+   const script = new URL('lean.js', base); script.searchParams.set('v', manifest.runtime['lean.js'].sha256);
+-  await new Promise((resolve, reject) => {
++  await measure('wasmInitializeMs', () => new Promise((resolve, reject) => {
+     self.Module = {
+       wasmBinary: binary, noInitialRun: true, thisProgram: '/bin/lean',
+       wasmMemory: new WebAssembly.Memory({ initial: 8192, maximum: 65536, shared: true }),
+@@ -192,10 +200,10 @@
+       onAbort: error => reject(Error(`Lean WebAssembly stopped: ${error}`)),
+     };
+     try { importScripts(script.href); } catch (error) { reject(error); }
+-  });
++  }));
+   let finished = 0;
+   const queue = [...manifest.packs];
+-  await Promise.all(Array.from({ length: 3 }, async () => {
++  await measure('librariesMs', () => Promise.all(Array.from({ length: 3 }, async () => {
+     while (queue.length) {
+       const pack = queue.shift(), bytes = await inflate(await asset(pack.file, pack.sha256));
+       if (bytes.length !== pack.bytes) throw Error(`Incorrect compiler pack size: ${pack.file}`);
+@@ -207,8 +215,9 @@
+       }
+       progress(`Preparing compiler libraries: ${++finished} / ${manifest.packs.length}`);
+     }
+-  }));
++  })));
+   progress('Initializing Lean proof checking…');
++  const bootstrapStarted = performance.now();
+   const bootstrap = run('import SSC\n#ssc_browser_driver');
+   const bootstrapLines = [...bootstrap.output, ...bootstrap.diagnostics.filter(d => d.severity === 'information').map(d => d.data)]
+     .flatMap(text => text.split('\n'));
+@@ -224,10 +233,15 @@
+   }
+   checker = entryPoint('SSC_BROWSER_DRIVER');
+   evaluator = entryPoint('SSC_BROWSER_EVALUATOR');
++  initialization.bootstrapMs = performance.now() - bootstrapStarted;
+   // A ready compiler must also be ready for the immediately-following offline
+   // reload. Writes overlap validation/decompression/imports, but finish here.
+-  await Promise.all(cacheWrites);
+-  self.postMessage({ type: 'ready', version: manifest.leanVersion });
++  await measure('cacheFlushMs', () => Promise.all(cacheWrites));
++  initialization.totalMs = performance.now() - started;
++  initialization.downloadBytes = manifest.downloadBytes;
++  initialization.libraryBytes = manifest.packs.reduce((n, p) => n + p.bytes, 0);
++  initialization.libraryFiles = manifest.packs.reduce((n, p) => n + p.entries.length, 0);
++  self.postMessage({ type: 'ready', version: manifest.leanVersion, initialization });
+ }
+ async function handleRequest(data) {
+   try {
