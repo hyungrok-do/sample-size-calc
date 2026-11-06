@@ -183,12 +183,50 @@ private structure CachedImport where
   isModule : Bool
   env : Environment
 
+/-- A runtime interface for ordinary parameterized Lean programs. Evaluating
+this function is compiled execution, not a new kernel proof of its output. -/
+abbrev PreparedFunction := Json → Except String Json
+
+private unsafe def prepareFunction (entry : String) : CommandElabM PreparedFunction := do
+  let name := (entry.splitOn ".").foldl Name.str .anonymous
+  let info ← getConstInfo name
+  match info with
+  | .defnInfo value =>
+    unless value.safety == .safe do
+      throwError "Prepared entry must be a safe definition."
+  | _ => throwError "Prepared entry must be a definition."
+  unless info.levelParams.isEmpty do
+    throwError "Prepared entry must not have universe parameters."
+  liftTermElabM do
+    unless ← isDefEq info.type (mkConst ``PreparedFunction) do
+      throwError "Prepared entry must have type Lean.Json → Except String Lean.Json."
+    -- evalConst's result type is a host assertion, so the exact function type
+    -- above is mandatory. This runs only after independent replay and audit.
+    match (← getEnv).evalConst PreparedFunction (← getOptions) name with
+    | .ok fn => pure fn
+    | .error message => throwError "{message}"
+
+private def evaluatePrepared (prepared : IO.Ref (Option PreparedFunction))
+    (input : String) : IO String := do
+  -- Empty input is the host's reset operation; valid JSON is never empty.
+  if input.isEmpty then
+    prepared.set none
+    return (Json.mkObj [("ok", toJson true), ("value", Json.null)]).compress
+  let result := do
+    let some fn ← prepared.get | return Except.error "No prepared Lean function."
+    return (Json.parse input).bind fn
+  return (match ← result with
+    | .ok value => Json.mkObj [("ok", toJson true), ("value", value)]
+    | .error message => Json.mkObj [("ok", toJson false), ("error", toJson message)]).compress
+
 /-- Prepare the ordinary Lean frontend one command at a time. The host executes
 returned native frontend actions directly, so the kernel does not run beneath
 an interpreted driver or a nested command evaluation stack. Diagnostics and info
 trees are retained before each top-level command resets them. -/
-private def prepareSource (imports : IO.Ref (Array CachedImport)) (source nonce : String) :
+private unsafe def prepareSource (imports : IO.Ref (Array CachedImport))
+    (prepared : IO.Ref (Option PreparedFunction)) (source nonce entry : String) :
     IO (IO (Option (IO Unit))) := do
+  prepared.set none
   let started ← IO.monoMsNow
   let inputCtx := Parser.mkInputContext source "/workspace/source.lean"
   let (header, parserState, headerMessages) ← Parser.parseHeader inputCtx
@@ -241,6 +279,9 @@ private def prepareSource (imports : IO.Ref (Array CachedImport)) (source nonce 
           if log.hasErrors then
             return Json.mkObj [("ok", toJson false), ("diagnostics", toJson diagnostics)]
           let report ← Elab.Frontend.runCommandElabM checkedReport context state
+          if !entry.isEmpty then
+            let fn ← Elab.Frontend.runCommandElabM (prepareFunction entry) context state
+            prepared.set (some fn)
           return Json.mkObj [("ok", toJson true), ("report", report),
             ("diagnostics", toJson diagnostics),
             ("performance", Json.mkObj [("headerMs", toJson headerMs),
@@ -266,10 +307,9 @@ private def prepareSource (imports : IO.Ref (Array CachedImport)) (source nonce 
     pending.set (some ((← IO.monoMsNow), line.line, command.getKind.toString))
     return some (Elab.Frontend.elabCommandAtFrontend command context state)
 
-/-- Prepare one persistent host-callable function. It captures only the trusted
-import environment, never a user's module or a report nonce. The host invokes
-this function directly through Lean's runtime ABI, without nesting a second
-compiler inside a command evaluation stack. -/
+/-- Persistent host entry points share the clean import cache and one replaceable
+runtime function. User functions are not marked persistent. The host invokes
+the frontend directly without nesting compilation inside command evaluation. -/
 syntax (name := browserDriver) "#ssc_browser_driver" : command
 
 @[command_elab browserDriver] private unsafe def elabBrowserDriver : CommandElab
@@ -278,8 +318,11 @@ syntax (name := browserDriver) "#ssc_browser_driver" : command
         | throwError "Missing trusted compiler import environment."
       let entry : CachedImport := { imports := imported.header.imports, isModule := false, env := imported }
       let imports ← IO.mkRef #[entry]
-      let driver ← liftM (m := BaseIO) <| Runtime.markPersistent (prepareSource imports)
+      let prepared ← IO.mkRef (none : Option PreparedFunction)
+      let driver ← liftM (m := BaseIO) <| Runtime.markPersistent (prepareSource imports prepared)
+      let evaluator ← liftM (m := BaseIO) <| Runtime.markPersistent (evaluatePrepared prepared)
       IO.println s!"SSC_BROWSER_DRIVER {(ptrAddrUnsafe driver).toNat}"
+      IO.println s!"SSC_BROWSER_EVALUATOR {(ptrAddrUnsafe evaluator).toNat}"
   | _ => throwUnsupportedSyntax
 
 end SSC.Report

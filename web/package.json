@@ -10,7 +10,9 @@
     "test:lean-browser": "node tests/lean-browser.mjs",
     "test:lean-wasm-browser": "node tests/lean-wasm-browser.mjs",
     "test:lean-stress": "node tests/lean-stress.mjs",
-    "test:lean-performance": "node tests/lean-performance.mjs"
+    "test:lean-performance": "node tests/lean-performance.mjs",
+    "test:lean-prepared": "node tests/lean-prepared.mjs",
+    "test:lean-prepared-ui": "node tests/lean-prepared-ui.mjs"
   },
   "devDependencies": {
     "playwright": "1.57.0"

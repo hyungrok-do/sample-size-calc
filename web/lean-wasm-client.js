@@ -32,20 +32,31 @@ export class BrowserLeanCompiler {
           const pending = this.pending.get(data.id);
           if (!pending) return;
           this.pending.delete(data.id); clearTimeout(pending.timer);
-          if (data.type === 'error') pending.reject(Error(data.message)); else pending.resolve(extractCalculations(data.value));
+          if (data.type === 'error') pending.reject(Error(data.message));
+          else pending.resolve(data.value.kind === 'prepared-evaluation' ? data.value : extractCalculations(data.value));
         }
       };
       worker.postMessage({ type: 'initialize' });
     });
     return this.initializing;
   }
-  async compile(source) {
+  // Send invalid source types as a cloneable sentinel so the worker still
+  // invalidates the old model before rejecting the new preparation attempt.
+  compile(source) { return this.request('compile', { source: typeof source === 'string' ? source : null }); }
+  prepare(source, entry = 'sscEvaluate') {
+    return this.request('prepare', { source: typeof source === 'string' ? source : null,
+      entry: typeof entry === 'string' ? entry : null });
+  }
+  evaluate(preparedId, parameters) { return this.request('evaluate', { preparedId, parameters }); }
+  async request(type, payload) {
     await this.initialize();
     return new Promise((resolve, reject) => {
       const id = ++this.serial;
-      const timer = setTimeout(() => this.stop('Compilation exceeded its browser time limit.'), 120000);
+      const timer = setTimeout(() => this.stop(type === 'evaluate'
+        ? 'Evaluation exceeded its browser time limit.' : 'Compilation exceeded its browser time limit.'), 120000);
       this.pending.set(id, { resolve, reject, timer });
-      this.worker.postMessage({ type: 'compile', id, source });
+      try { this.worker.postMessage({ type, id, ...payload }); }
+      catch (error) { this.pending.delete(id); clearTimeout(timer); reject(error); }
     });
   }
   stop(message = 'Compilation stopped.') {

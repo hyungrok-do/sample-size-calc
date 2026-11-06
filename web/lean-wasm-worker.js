@@ -1,7 +1,7 @@
 (() => {
 // The genuine Lean parser, elaborator, interpreter and kernel run in this worker.
 // Runtime initialization follows cauli/lean4-wasm-in-browser (Apache-2.0).
-let manifest, cache, checker, output = [], diagnostics = [], outputBytes = 0;
+let manifest, cache, checker, evaluator, prepared = null, output = [], diagnostics = [], outputBytes = 0;
 const cacheWrites = new Set();
 const base = new URL('lean-wasm/', self.location.href);
 const progress = text => self.postMessage({ type: 'progress', text });
@@ -68,7 +68,7 @@ function release(result) {
 function retain(value) {
   const count = Module.getValue(value, 'i32');
   if (count > 0) Module.setValue(value, count + 1, 'i32');
-  else if (count < 0) Atomics.sub(Module.HEAP32, value >>> 2, 1);
+  else if (count < 0) Atomics.sub(new Int32Array(Module.wasmMemory.buffer), value >>> 2, 1);
   return value;
 }
 function ioValue(result) {
@@ -78,7 +78,36 @@ function ioValue(result) {
   }
   return Module.getValue(result + 8, 'i32');
 }
-function run(source, nonce) {
+function readLeanString(value) {
+  // Pinned wasm32 Lean ABI: header (8), size/capacity/UTF8 length (4 each),
+  // then bytes. Size includes the terminal NUL; decode by length, not sentinel.
+  if ((Module.getValue(value + 7, 'i8') & 255) !== 249) throw Error('Invalid Lean string result.');
+  const size = Module.getValue(value + 8, 'i32') >>> 0;
+  if (size < 1 || size - 1 + outputBytes > 8 * 1024 * 1024) throw Error('Compiler output exceeded 8 MB.');
+  // This pinned glue exports the supplied memory, not Emscripten heap views.
+  // Recreate the view after each call because the runtime can grow memory.
+  const heap = new Uint8Array(Module.wasmMemory.buffer);
+  if (value + 20 + size > heap.length) throw Error('Invalid Lean string size.');
+  return new TextDecoder('utf-8', { fatal: true }).decode(heap.slice(value + 20, value + 20 + size - 1));
+}
+function validateJsonNumber(value) {
+  if (typeof value === 'number' && (!Number.isFinite(value)
+      || (Number.isInteger(value) && !Number.isSafeInteger(value))))
+    throw Error('JSON numbers must be finite and integers must be within the safe integer range. Encode exact integers and rationals as strings.');
+  return value;
+}
+function runEvaluation(input) {
+  output = []; diagnostics = []; outputBytes = 0;
+  const started = performance.now();
+  const result = Module._lean_apply_2(evaluator, leanString(input), 1);
+  try {
+    const text = readLeanString(ioValue(result));
+    const envelope = JSON.parse(text, (_key, value) => validateJsonNumber(value));
+    if (!envelope.ok) throw Error(envelope.error || 'Prepared evaluation failed.');
+    return { value: envelope.value, evaluationMs: performance.now() - started };
+  } finally { release(result); output = []; diagnostics = []; outputBytes = 0; }
+}
+function run(source, nonce, entry = '') {
   const started = performance.now();
   const timing = { prepareMs: 0, commandMs: 0, driverMs: 0 };
   output = []; diagnostics = []; outputBytes = 0;
@@ -89,7 +118,7 @@ function run(source, nonce) {
     // Each returned action is Lean's native frontend specialized to the current
     // command. Execute it with a flat host stack, outside the interpreted driver.
     // IO results own their fields; retain before passing a consumed argument.
-    const session = Module._lean_apply_3(checker, leanString(source), leanString(nonce), 1);
+    const session = Module._lean_apply_4(checker, leanString(source), leanString(nonce), leanString(entry), 1);
     timing.prepareMs = performance.now() - started;
     try {
       const next = ioValue(session);
@@ -181,23 +210,50 @@ async function initialize() {
   }));
   progress('Initializing Lean proof checking…');
   const bootstrap = run('import SSC\n#ssc_browser_driver');
-  const drivers = [...bootstrap.output, ...bootstrap.diagnostics.filter(d => d.severity === 'information').map(d => d.data)]
-    .flatMap(text => text.split('\n')).filter(text => /^SSC_BROWSER_DRIVER \d+$/.test(text));
-  if (drivers.length !== 1) throw Error('Missing trusted compiler runtime entry point.');
-  checker = Number(drivers[0].slice('SSC_BROWSER_DRIVER '.length));
-  // LeanClosure = 245, with reference count 0 for Runtime.markPersistent.
-  if (!Number.isSafeInteger(checker) || checker <= 0 || checker % 8 !== 0
-      || (Module.getValue(checker + 7, 'i8') & 255) !== 245 || Module.getValue(checker, 'i32') !== 0)
-    throw Error('Incompatible compiler runtime entry point.');
+  const bootstrapLines = [...bootstrap.output, ...bootstrap.diagnostics.filter(d => d.severity === 'information').map(d => d.data)]
+    .flatMap(text => text.split('\n'));
+  function entryPoint(label) {
+    const entries = bootstrapLines.filter(text => new RegExp('^' + label + ' \\d+$').test(text));
+    if (entries.length !== 1) throw Error('Missing trusted compiler runtime entry point: ' + label);
+    const pointer = Number(entries[0].slice(label.length + 1));
+    // LeanClosure = 245, with reference count 0 for Runtime.markPersistent.
+    if (!Number.isSafeInteger(pointer) || pointer <= 0 || pointer % 8 !== 0
+        || (Module.getValue(pointer + 7, 'i8') & 255) !== 245 || Module.getValue(pointer, 'i32') !== 0)
+      throw Error('Incompatible compiler runtime entry point: ' + label);
+    return pointer;
+  }
+  checker = entryPoint('SSC_BROWSER_DRIVER');
+  evaluator = entryPoint('SSC_BROWSER_EVALUATOR');
   // A ready compiler must also be ready for the immediately-following offline
   // reload. Writes overlap validation/decompression/imports, but finish here.
   await Promise.all(cacheWrites);
   self.postMessage({ type: 'ready', version: manifest.leanVersion });
 }
-self.onmessage = async ({ data }) => {
+async function handleRequest(data) {
   try {
     if (data.type === 'initialize') { await initialize(); return; }
-    if (data.type !== 'compile') return;
+    if (data.type === 'evaluate') {
+      const started = performance.now();
+      if (!prepared || data.preparedId !== prepared.id) throw Error('Prepared calculator is unavailable or stale. Prepare the source again.');
+      const input = JSON.stringify(data.parameters, (_key, value) => {
+        validateJsonNumber(value);
+        if (value === undefined || typeof value === 'bigint') throw Error('Parameters must be JSON values.');
+        return value;
+      });
+      if (typeof input !== 'string' || new TextEncoder().encode(input).length > 131072) throw Error('Supply at most 131072 bytes of JSON parameters.');
+      const evaluation = runEvaluation(input);
+      self.postMessage({ type: 'result', id: data.id, value: {
+        ok: true, kind: 'prepared-evaluation', verification: 'compiled-execution',
+        concreteResultKernelChecked: false, prepared, value: evaluation.value,
+        performance: { evaluationMs: evaluation.evaluationMs, totalMs: performance.now() - started },
+      } });
+      return;
+    }
+    if (data.type !== 'compile' && data.type !== 'prepare') return;
+    // Every source request invalidates the prior artifact, including malformed
+    // input or failed preparation. Evaluation cannot reach a stale closure.
+    prepared = null;
+    runEvaluation(''); // Release the Lean closure even when input validation fails.
     const compileStarted = performance.now();
     const source = data.source;
     if (typeof source !== 'string' || !source.trim() || new TextEncoder().encode(source).length > 131072) throw Error('Supply 1–131072 bytes of Lean source.');
@@ -205,7 +261,10 @@ self.onmessage = async ({ data }) => {
     // nor the final audit command is appended to the user-controlled module.
     const nonce = crypto.randomUUID();
     const prefix = 'SSC_COMPILE_RESULT ' + nonce + ' ';
-    const result = run(source, nonce);
+    const entry = data.type === 'prepare' ? data.entry : '';
+    if (typeof entry !== 'string' || (data.type === 'prepare' && (!entry.trim() || new TextEncoder().encode(entry).length > 1024)))
+      throw Error('Supply a Lean declaration name of 1–1024 bytes.');
+    const result = run(source, nonce, entry);
     const lines = [...result.output, ...result.diagnostics.filter(d => d.severity === 'information').map(d => d.data)]
       .flatMap(text => text.split('\n'));
     const reports = lines.filter(text => text.startsWith(prefix));
@@ -236,7 +295,12 @@ self.onmessage = async ({ data }) => {
       declaration.steps = (byDeclaration.get(declaration.name)?.steps || [])
         .sort((a, b) => a.line - b.line || a.column - b.column);
     }
+    if (data.type === 'prepare') prepared = {
+      id: crypto.randomUUID(), sourceSha256: await hash(new TextEncoder().encode(source)),
+      entry, packageVersion: manifest.version,
+    };
     self.postMessage({ type: 'result', id: data.id, value: {
+      ...(prepared ? { prepared } : {}),
       ok: true, compiler: 'lean-wasm-proofs-v2', language: 'Lean 4', leanVersion: manifest.leanVersion,
       packageVersion: manifest.version, reporterSourceSha256: manifest.sourceSha256,
       performance: { ...result.timing, ...envelope.performance, ...report.performance,
@@ -249,8 +313,16 @@ self.onmessage = async ({ data }) => {
   } catch (error) {
     // A host stack overflow or WASM trap can leave the runtime unusable.
     // Normal Lean diagnostics keep the worker; runtime failures require restart.
-    const fatal = !(error instanceof Error) || error instanceof RangeError || error instanceof WebAssembly.RuntimeError;
+    let fatal = !(error instanceof Error) || error instanceof RangeError || error instanceof WebAssembly.RuntimeError;
+    if (fatal || data.type === 'compile' || data.type === 'prepare') prepared = null;
+    if (!fatal && evaluator && (data.type === 'compile' || data.type === 'prepare')) {
+      try { runEvaluation(''); } catch { fatal = true; }
+    }
     self.postMessage({ type: 'error', id: data.id, fatal, message: error?.message || 'Lean execution stopped unexpectedly. The compiler will restart for the next request.' });
   }
-};
+}
+// Hashing and initialization yield to the event loop. Serialize requests so a
+// preparation handle can never be paired with another source's closure.
+let requests = Promise.resolve();
+self.onmessage = ({ data }) => { requests = requests.then(() => handleRequest(data)); };
 })();

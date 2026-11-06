@@ -132,6 +132,20 @@ jobs:
         env:
           SSC_PERFORMANCE_REPORT: ${{ runner.temp }}/lean-performance.json
         run: cd web && npm run test:lean-performance
+      - name: Prepared Lean execution, isolation and latency
+        env:
+          SSC_PREPARED_REPORT: ${{ runner.temp }}/lean-prepared.json
+        run: |
+          cd web
+          npm run test:lean-prepared
+          npm run test:lean-prepared-ui
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: lean-prepared
+          path: ${{ runner.temp }}/lean-prepared.json
+          retention-days: 14
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:

@@ -194,3 +194,99 @@ Kernel replay, axiom auditing, source/output limits, cancellation and failure
 recovery remain part of the browser and stress suites. Performance claims must
 name the browser, workload and deadline, and must compare the complete workload
 without removing proofs, search rows or simulation replicates.
+
+## Prepared parameterized execution
+
+The browser now exposes an opt-in reusable execution interface. In the Lean tab,
+load **Repeated calculations: parameterized normal sample-size search**, expand
+**Repeated calculations**, and prepare the model. Parameters are JSON data passed
+to an ordinary Lean definition:
+
+```lean
+def sscEvaluate (input : Lean.Json) : Except String Lean.Json := do
+  -- Validate inputs, construct the specification, and evaluate it here.
+  return input
+```
+
+The entry's type must be definitionally equal to
+`Lean.Json → Except String Lean.Json`; it must be a safe, monomorphic definition.
+The interface has no statistical-model dispatcher and introduces no grammar.
+The example uses the existing general probability and candidate-search library.
+Other definitions can use exact arithmetic or simulate the same specification.
+
+```javascript
+const report = await compiler.prepare(source, 'sscEvaluate');
+const answer = await compiler.evaluate(report.prepared.id, {
+  effectMilli: 500, alphaMillion: 50000, targetMilli: 800, maxN: 200
+});
+```
+
+Preparation runs the complete source, then independently replays **all** local
+Lean declarations and audits their axiom dependencies. Only after those checks
+and entry-type validation does the driver retain a runtime function. Every warm
+call executes that function with new data; it does not parse or elaborate new
+Lean source. Changing parameters does not retrieve a previously cached answer.
+
+The warm reply is explicitly `verification: "compiled-execution"` and
+`concreteResultKernelChecked: false`. The module's checked theorems retain their
+original statements and hypotheses. Runtime execution, even of a function with
+a proved specification, is not a new kernel certificate for its returned
+number. A user requiring a fresh theorem about each concrete result must still
+use the ordinary compilation/proof path. This feature does not claim to speed
+up that path or arbitrary proof search.
+
+One worker retains at most one prepared function. The handle identifies the
+exact source SHA-256, package version and entry name. Every compile or prepare
+attempt invalidates the previous handle, including invalid source and failed
+preparation. Source/entry edits invalidate it in the UI. Cancellation, fatal
+runtime failure and worker restart discard the entire session. Parameter errors
+leave a valid prepared function available. Requests are serialized across async
+hashing so a handle cannot refer to another source's function. Runtime result
+JSON is nested under `value`, separate from host-owned verification metadata.
+
+The existing 120-second deadline and 8 MiB output limit remain in effect.
+Parameter JSON is limited to 128 KiB. Input and output reject nonfinite numbers
+and integers outside JavaScript's safe integer range, rather than silently
+rounding exact values. Encode exact integers outside that range and exact
+rationals as strings. Other finite decimal JSON numbers use binary64.
+A safe Lean definition is not a sandbox against compiler overrides
+or expensive computation; the worker/deadline provide execution isolation.
+
+`npm run test:lean-prepared` runs real browser WASM checks for parameter changes,
+reference execution, seeded simulation, replay/audit failures, entry signatures,
+handle replacement and restart, and data isolation. It reports startup,
+preparation, and 30 full warm sample-size searches separately. Set
+`SSC_PREPARED_REPORT=/tmp/lean-prepared.json` to retain the report. A controlled
+runner can enforce an explicit latency target with `SSC_PREPARED_P95_MS`.
+Ordinary CI reports measurements without a hardware-dependent timing assertion.
+
+### Measured prepared execution
+
+The checked-in [Chromium 157 report](benchmarks/lean-prepared-chromium157.json)
+records the actual browser WebAssembly run on a local HTTP server. Thirty
+queries varied the standardized effect from 0.500 to 0.645, with two-sided
+alpha 0.05, target power 0.80, and an ordered search of 2 through 200 participants
+per group, stopping at the first qualifying candidate. These are full numerical
+searches on each call, not cached answers.
+
+| Measurement | Observed time |
+| --- | --- |
+| Browser runtime initialization | 17.59 s |
+| Model preparation, including replay and audit | 1.55 s |
+| Warm API round trip, median | 14.25 ms |
+| Warm API round trip, 95th percentile | 19.63 ms |
+| Warm API round trip, maximum | 24.69 ms |
+| One simulation call, 100 replicates for each law and 3 observations per replicate | 28.23 ms |
+
+The normal-search results matched ordinary `#eval` for the reference parameter
+sets. Simulation matched ordinary execution, including successes, seeds and
+intervals. The same run passed source/type/axiom rejection, original independent
+replay regression checks, 20 model replacements, active/queued cancellation and
+restart, and JSON precision/output-limit recovery.
+
+These timings exclude DOM rendering, are not a cross-device guarantee, and do
+not benchmark the expensive paired categorical certificate workload. The warm
+calls do not create new kernel proofs of their returned numbers. Large
+simulations and fresh exact certificates still require separate optimization.
+The 17.59 s initialization was measured locally and is not an Internet-download
+benchmark.

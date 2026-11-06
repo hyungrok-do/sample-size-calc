@@ -44,6 +44,7 @@
           <option value="dependent-observations">State-dependent observations: derive rejection probability</option>
           </optgroup>
           <optgroup label="Sample size and power">
+          <option value="prepared-normal-search">Normal means: repeated parameter calculations</option>
           <option value="normal-means">Normal means: numerical and simulation</option>
           <option value="student-means">Student t: sample size and detectable effect</option>
           <option value="exact-binomial">Binomial: exact calculation and simulation</option>
@@ -80,6 +81,30 @@
     <section class="panel compile-panel" aria-labelledby="compile-heading">
       <h3 id="compile-heading"><span class="step">2</span> Check &amp; evaluate</h3>
       <div class="actions"><button id="lean-compile" class="primary" type="button" disabled>Compile Lean</button><button id="lean-stop" type="button" hidden>Stop</button></div>
+      <details id="lean-repeated">
+        <summary>Repeated calculations</summary>
+        <p>Prepare a parameterized model once, then change its inputs without recompiling the source. Preparation checks the complete module and its proofs. Each evaluation runs the prepared function and does not produce a new numerical theorem.</p>
+        <div class="prepared-controls">
+          <label for="lean-entry">Lean function</label>
+          <input id="lean-entry" value="sscEvaluate" spellcheck="false" autocomplete="off" aria-describedby="lean-entry-help">
+          <p id="lean-entry-help" class="small">Define a function of type <code>Lean.Json → Except String Lean.Json</code> in the source.</p>
+          <label for="lean-inputs">Parameters (JSON)</label>
+          <textarea id="lean-inputs" rows="6" spellcheck="false" autocapitalize="off" autocomplete="off">{
+  "effectMilli": 500,
+  "alphaMillion": 50000,
+  "targetMilli": 800,
+  "maxN": 200
+}</textarea>
+          <p class="small">The example searches the number per group. Its inputs above mean effect 0.5, significance level 0.05 and target power 0.8. Other models define their own inputs. Encode exact integers beyond JavaScript's safe range as strings.</p>
+        </div>
+        <div class="actions"><button id="lean-prepare" type="button" disabled>Prepare model</button><button id="lean-evaluate-parameters" type="button" disabled>Evaluate parameters</button></div>
+        <p id="lean-prepared-status" class="small" role="status">No prepared model.</p>
+        <div id="lean-prepared-result" hidden>
+          <p class="basis">Runtime evaluation · no new numerical theorem</p>
+          <p id="lean-prepared-timing" class="small"></p>
+          <pre id="lean-prepared-value" class="cpp"></pre>
+        </div>
+      </details>
       <p id="lean-status" class="status" role="status" aria-live="polite">Write Lean or choose an example.</p>
       <pre id="lean-error" class="error" role="alert" hidden></pre>
       <div id="lean-compiled" hidden>
