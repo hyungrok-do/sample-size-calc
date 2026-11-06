@@ -33,3 +33,12 @@ project use Apache-2.0. Exact release URLs and SHA-256 hashes are recorded in
 `scripts/build_lean_wasm.py`. The adapted Node build driver and runtime
 initialization acknowledge that project; its license is included in
 `packaging/lean-wasm/UPSTREAM-LICENSE` and the deployed compiler directory.
+
+The compact asset loader uses [brotli-dec-wasm](https://github.com/ustclug-dev/brotli-dec-wasm)
+2.3.2 (MIT OR Apache-2.0), a decoder-only WebAssembly wrapper around the Rust
+`brotli-decompressor` implementation. It is distributed here under Apache-2.0.
+Its release archive is SHA-256 pinned in the build script. The deployed
+`lean-wasm/brotli/LICENSE-Apache.txt` contains the full license; the original MIT
+license is also included as `LICENSE-MIT.txt`. This temporary decoder
+worker performs lossless asset decompression, and is terminated before Lean
+imports its modules. It does not replace any part of the Lean compiler or kernel.

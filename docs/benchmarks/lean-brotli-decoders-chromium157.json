@@ -1,0 +1,128 @@
+{
+  "browser": "157.0.8103.38",
+  "cases": [
+    {
+      "name": "library-lean-008",
+      "expectedBytes": 16540996,
+      "encodedBytes": 4815406,
+      "sha256": "a686a9eb2f72a6121a92ef88aa0b6c473a6b6c6632ae001cfe2bdcecabf4ff15"
+    },
+    {
+      "name": "lean.wasm",
+      "expectedBytes": 100907960,
+      "encodedBytes": 11742751,
+      "sha256": "48bc0308549841323723743f412d8f5006834758830a4205470e0165734235b5"
+    }
+  ],
+  "runs": [
+    {
+      "initMs": 47.5,
+      "output": [
+        {
+          "name": "library-lean-008",
+          "iteration": 0,
+          "ms": 430.5,
+          "wasmMemoryBefore": 1835008,
+          "wasmMemoryAfter": 47120384
+        },
+        {
+          "name": "library-lean-008",
+          "iteration": 1,
+          "ms": 173.70000000298023,
+          "wasmMemoryBefore": 47120384,
+          "wasmMemoryAfter": 47120384
+        },
+        {
+          "name": "library-lean-008",
+          "iteration": 2,
+          "ms": 178.69999999552965,
+          "wasmMemoryBefore": 47120384,
+          "wasmMemoryAfter": 47120384
+        },
+        {
+          "name": "lean.wasm",
+          "iteration": 0,
+          "ms": 2443.5,
+          "wasmMemoryBefore": 47120384,
+          "wasmMemoryAfter": 394854400
+        },
+        {
+          "name": "lean.wasm",
+          "iteration": 1,
+          "ms": 561.7999999970198,
+          "wasmMemoryBefore": 394854400,
+          "wasmMemoryAfter": 394854400
+        },
+        {
+          "name": "lean.wasm",
+          "iteration": 2,
+          "ms": 445.40000000596046,
+          "wasmMemoryBefore": 394854400,
+          "wasmMemoryAfter": 394854400
+        }
+      ],
+      "package": "brotli-wasm@3.0.1"
+    },
+    {
+      "initMs": 12.099999994039536,
+      "output": [
+        {
+          "name": "library-lean-008",
+          "iteration": 0,
+          "ms": 206.40000000596046,
+          "wasmMemoryBefore": 1245184,
+          "wasmMemoryAfter": 46530560
+        },
+        {
+          "name": "library-lean-008",
+          "iteration": 1,
+          "ms": 156.10000000149012,
+          "wasmMemoryBefore": 46530560,
+          "wasmMemoryAfter": 46530560
+        },
+        {
+          "name": "library-lean-008",
+          "iteration": 2,
+          "ms": 153,
+          "wasmMemoryBefore": 46530560,
+          "wasmMemoryAfter": 46530560
+        },
+        {
+          "name": "lean.wasm",
+          "iteration": 0,
+          "ms": 583.1000000014901,
+          "wasmMemoryBefore": 46530560,
+          "wasmMemoryAfter": 394264576
+        },
+        {
+          "name": "lean.wasm",
+          "iteration": 1,
+          "ms": 676.7000000029802,
+          "wasmMemoryBefore": 394264576,
+          "wasmMemoryAfter": 394264576
+        },
+        {
+          "name": "lean.wasm",
+          "iteration": 2,
+          "ms": 375.1000000014901,
+          "wasmMemoryBefore": 394264576,
+          "wasmMemoryAfter": 394264576
+        }
+      ],
+      "package": "brotli-dec-wasm@2.3.2"
+    }
+  ],
+  "scope": "Sequential isolated workers, brotli-wasm first and brotli-dec-wasm second. Each asset decoded three times. Decode timing includes the package input/output copies and excludes network fetch and SHA-256 validation. Exact decoded size and SHA-256 matched for every sample. Memory counters report only the decoder WASM memory buffer, not total browser memory. Both packages use Rust implementations.",
+  "packages": [
+    {
+      "name": "brotli-wasm@3.0.1",
+      "wasmBytes": 1056860,
+      "archiveSha256": "413c3589dae9b5a9971c24c8649cdf1e5c8cedb110067a381786930ed614f174"
+    },
+    {
+      "name": "brotli-dec-wasm@2.3.2",
+      "wasmBytes": 208439,
+      "archiveSha256": "5006ea904407e2f44ad6616100de196c39af591b772f764ba66fdd720b5d2ab5"
+    }
+  ]
+}

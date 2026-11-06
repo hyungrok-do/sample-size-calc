@@ -40,9 +40,13 @@ jobs:
       - name: Reuse compiler modules with verified inputs and outputs
         uses: actions/cache@v4
         with:
-          path: /tmp/ssc-lean-wasm-cache/modules
-          key: ${{ runner.os }}-lean-modules-v1-${{ hashFiles('lean/browser/**/*.lean', 'packaging/lean-wasm/**', 'scripts/build_lean_wasm.py') }}
-          restore-keys: ${{ runner.os }}-lean-modules-v1-
+          path: |
+            /tmp/ssc-lean-wasm-cache/modules
+            /tmp/ssc-lean-wasm-cache/compressed
+          key: ${{ runner.os }}-lean-modules-v2-${{ hashFiles('lean/browser/**/*.lean', 'packaging/lean-wasm/**', 'scripts/build_lean_wasm.py') }}
+          restore-keys: |
+            ${{ runner.os }}-lean-modules-v2-
+            ${{ runner.os }}-lean-modules-v1-
       - name: The engines
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"

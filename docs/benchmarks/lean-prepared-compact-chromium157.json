@@ -1,0 +1,685 @@
+{
+  "browser": "157.0.8103.38",
+  "deadlineMs": 120000,
+  "sourceSha256": "39e07123a5ffb4dba1eaafbf224bc21e61a28a2f7238e21e03a7a132a0188366",
+  "concreteResultKernelChecked": false,
+  "queries": [
+    {
+      "parameters": {
+        "effectMilli": 500,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 62,
+        "method": "numerical",
+        "power": 0.8013023941055797,
+        "selected": 63,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 18.564999997615814,
+      "evaluationMs": 18.24500000476837,
+      "totalMs": 18.280000001192093
+    },
+    {
+      "parameters": {
+        "effectMilli": 505,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 61,
+        "method": "numerical",
+        "power": 0.8028264301806346,
+        "selected": 62,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 31.549999997019768,
+      "evaluationMs": 31.25,
+      "totalMs": 31.270000003278255
+    },
+    {
+      "parameters": {
+        "effectMilli": 510,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 60,
+        "method": "numerical",
+        "power": 0.8041687488213641,
+        "selected": 61,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 18.42500000447035,
+      "evaluationMs": 17.219999998807907,
+      "totalMs": 17.24500000476837
+    },
+    {
+      "parameters": {
+        "effectMilli": 515,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 59,
+        "method": "numerical",
+        "power": 0.8053287501585248,
+        "selected": 60,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 28.179999999701977,
+      "evaluationMs": 27.600000001490116,
+      "totalMs": 27.63000000268221
+    },
+    {
+      "parameters": {
+        "effectMilli": 520,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 58,
+        "method": "numerical",
+        "power": 0.8063054881724255,
+        "selected": 59,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 25.00499999523163,
+      "evaluationMs": 24.515000000596046,
+      "totalMs": 24.535000003874302
+    },
+    {
+      "parameters": {
+        "effectMilli": 525,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 56,
+        "method": "numerical",
+        "power": 0.8003221466205178,
+        "selected": 57,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 17.945000000298023,
+      "evaluationMs": 16.83500000089407,
+      "totalMs": 16.855000004172325
+    },
+    {
+      "parameters": {
+        "effectMilli": 530,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 55,
+        "method": "numerical",
+        "power": 0.8008149652221873,
+        "selected": 56,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 18.524999998509884,
+      "evaluationMs": 18.109999999403954,
+      "totalMs": 18.20499999821186
+    },
+    {
+      "parameters": {
+        "effectMilli": 535,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 54,
+        "method": "numerical",
+        "power": 0.8011128909389789,
+        "selected": 55,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 14.46000000089407,
+      "evaluationMs": 14.144999995827675,
+      "totalMs": 14.175000004470348
+    },
+    {
+      "parameters": {
+        "effectMilli": 540,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 53,
+        "method": "numerical",
+        "power": 0.8012129430457651,
+        "selected": 54,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 20.75,
+      "evaluationMs": 20.525000005960464,
+      "totalMs": 20.54500000178814
+    },
+    {
+      "parameters": {
+        "effectMilli": 545,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 52,
+        "method": "numerical",
+        "power": 0.8011116477844009,
+        "selected": 53,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 14.824999995529652,
+      "evaluationMs": 14.365000002086163,
+      "totalMs": 14.390000000596046
+    },
+    {
+      "parameters": {
+        "effectMilli": 550,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 51,
+        "method": "numerical",
+        "power": 0.8008050070376553,
+        "selected": 52,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 19.96500000357628,
+      "evaluationMs": 19.689999997615814,
+      "totalMs": 19.725000001490116
+    },
+    {
+      "parameters": {
+        "effectMilli": 555,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 50,
+        "method": "numerical",
+        "power": 0.8002884648283279,
+        "selected": 51,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 14.919999994337559,
+      "evaluationMs": 14.20499999821186,
+      "totalMs": 14.234999999403954
+    },
+    {
+      "parameters": {
+        "effectMilli": 560,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 50,
+        "method": "numerical",
+        "power": 0.8072755912809817,
+        "selected": 51,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 18.19999999552965,
+      "evaluationMs": 16.770000003278255,
+      "totalMs": 16.79500000178814
+    },
+    {
+      "parameters": {
+        "effectMilli": 565,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 49,
+        "method": "numerical",
+        "power": 0.8064913443445451,
+        "selected": 50,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 16.435000002384186,
+      "evaluationMs": 15.705000005662441,
+      "totalMs": 15.729999996721745
+    },
+    {
+      "parameters": {
+        "effectMilli": 570,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 48,
+        "method": "numerical",
+        "power": 0.8054898003407376,
+        "selected": 49,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 19.635000005364418,
+      "evaluationMs": 19.280000001192093,
+      "totalMs": 19.30000000447035
+    },
+    {
+      "parameters": {
+        "effectMilli": 575,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 47,
+        "method": "numerical",
+        "power": 0.8042644154944658,
+        "selected": 48,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 11.339999996125698,
+      "evaluationMs": 10.969999998807907,
+      "totalMs": 10.995000004768372
+    },
+    {
+      "parameters": {
+        "effectMilli": 580,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 46,
+        "method": "numerical",
+        "power": 0.8028079199707849,
+        "selected": 47,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 15.939999997615814,
+      "evaluationMs": 15.690000005066395,
+      "totalMs": 15.709999993443489
+    },
+    {
+      "parameters": {
+        "effectMilli": 585,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 45,
+        "method": "numerical",
+        "power": 0.8011122693625219,
+        "selected": 46,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 21.429999999701977,
+      "evaluationMs": 20.975000001490116,
+      "totalMs": 20.99499999731779
+    },
+    {
+      "parameters": {
+        "effectMilli": 590,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 45,
+        "method": "numerical",
+        "power": 0.8077349247504818,
+        "selected": 46,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 15.600000001490116,
+      "evaluationMs": 14.865000002086163,
+      "totalMs": 14.879999995231628
+    },
+    {
+      "parameters": {
+        "effectMilli": 595,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 44,
+        "method": "numerical",
+        "power": 0.8057585720643613,
+        "selected": 45,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 22.594999998807907,
+      "evaluationMs": 21.325000002980232,
+      "totalMs": 21.350000001490116
+    },
+    {
+      "parameters": {
+        "effectMilli": 600,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 43,
+        "method": "numerical",
+        "power": 0.8035274844561177,
+        "selected": 44,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 17.49500000476837,
+      "evaluationMs": 17.234999999403954,
+      "totalMs": 17.260000005364418
+    },
+    {
+      "parameters": {
+        "effectMilli": 605,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 42,
+        "method": "numerical",
+        "power": 0.8010308284554495,
+        "selected": 43,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 15.950000002980232,
+      "evaluationMs": 15.195000000298023,
+      "totalMs": 15.689999997615814
+    },
+    {
+      "parameters": {
+        "effectMilli": 610,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 42,
+        "method": "numerical",
+        "power": 0.8074376743767122,
+        "selected": 43,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 18.685000002384186,
+      "evaluationMs": 18.385000005364418,
+      "totalMs": 18.429999999701977
+    },
+    {
+      "parameters": {
+        "effectMilli": 615,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 41,
+        "method": "numerical",
+        "power": 0.8046430085264388,
+        "selected": 42,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 11.030000001192093,
+      "evaluationMs": 10.745000004768372,
+      "totalMs": 10.765000000596046
+    },
+    {
+      "parameters": {
+        "effectMilli": 620,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 40,
+        "method": "numerical",
+        "power": 0.8015606145560146,
+        "selected": 41,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 15.325000002980232,
+      "evaluationMs": 14.994999997317791,
+      "totalMs": 15.100000001490116
+    },
+    {
+      "parameters": {
+        "effectMilli": 625,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 40,
+        "method": "numerical",
+        "power": 0.8078079685094397,
+        "selected": 41,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 18.589999996125698,
+      "evaluationMs": 17.760000005364418,
+      "totalMs": 17.78499999642372
+    },
+    {
+      "parameters": {
+        "effectMilli": 630,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 39,
+        "method": "numerical",
+        "power": 0.8044115166546149,
+        "selected": 40,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 13.800000004470348,
+      "evaluationMs": 13.350000001490116,
+      "totalMs": 13.380000002682209
+    },
+    {
+      "parameters": {
+        "effectMilli": 635,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 38,
+        "method": "numerical",
+        "power": 0.8006997976691217,
+        "selected": 39,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 16.66499999910593,
+      "evaluationMs": 15.865000002086163,
+      "totalMs": 15.885000005364418
+    },
+    {
+      "parameters": {
+        "effectMilli": 640,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 38,
+        "method": "numerical",
+        "power": 0.8068104643849247,
+        "selected": 39,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 12.695000000298023,
+      "evaluationMs": 12.200000002980232,
+      "totalMs": 12.219999998807907
+    },
+    {
+      "parameters": {
+        "effectMilli": 645,
+        "alphaMillion": 50000,
+        "targetMilli": 800,
+        "maxN": 200
+      },
+      "result": {
+        "concreteResultKernelChecked": false,
+        "earlierUnresolved": [],
+        "evaluatedCandidates": 37,
+        "method": "numerical",
+        "power": 0.8027622550810383,
+        "selected": 38,
+        "typeI": 0.05000000000000002
+      },
+      "roundTripMs": 21.58500000089407,
+      "evaluationMs": 20.720000006258488,
+      "totalMs": 20.735000006854534
+    }
+  ],
+  "initializationMs": 13373.342171,
+  "packageVersion": "e0520052090beaa2097bdce8",
+  "leanVersion": "4.33.0-pre",
+  "preparationMs": 2556.515000000596,
+  "preparationPhases": {
+    "prepareMs": 11.884999997913837,
+    "commandMs": 2160.0750000029802,
+    "driverMs": 335.4949999898672,
+    "totalMs": 2516.9249999970198,
+    "commands": [
+      {
+        "kind": "Lean.Parser.Command.open",
+        "line": 2,
+        "ms": 7
+      },
+      {
+        "kind": "Lean.Parser.Command.declaration",
+        "line": 7,
+        "ms": 2157
+      },
+      {
+        "kind": "Lean.Parser.Command.eoi",
+        "line": 46,
+        "ms": 1
+      }
+    ],
+    "headerMs": 7,
+    "parseMs": 37,
+    "axiomAuditMs": 3,
+    "declarationRenderMs": 219,
+    "kernelReplayMs": 22,
+    "traceRenderMs": 13
+  },
+  "firstWarmRoundTripMs": 15.770000003278255,
+  "warm": {
+    "runs": 30,
+    "roundTrip": {
+      "medianMs": 18.19999999552965,
+      "p95Ms": 28.179999999701977,
+      "maxMs": 31.549999997019768
+    },
+    "workerTotal": {
+      "medianMs": 17.24500000476837,
+      "p95Ms": 27.63000000268221,
+      "maxMs": 31.270000003278255
+    },
+    "evaluation": {
+      "medianMs": 17.219999998807907,
+      "p95Ms": 27.600000001490116,
+      "maxMs": 31.25
+    }
+  },
+  "simulation": {
+    "parameters": {
+      "n": 3,
+      "numerator": 1,
+      "denominator": 3,
+      "cutoff": 2,
+      "replicates": 100,
+      "seed": 17
+    },
+    "result": {
+      "alternativeSeed": "7566792160692496557",
+      "alternativeSuccesses": 19,
+      "concreteResultKernelChecked": false,
+      "lower": 0.04197928126992018,
+      "method": "simulation",
+      "nullSeed": "17",
+      "nullSuccesses": 25,
+      "replicates": 100,
+      "upper": 0.3380207187300798
+    },
+    "roundTripMs": 35.480000004172325,
+    "evaluationMs": 35,
+    "totalMs": 35.03999999910593
+  },
+  "replacementChecks": 20
+}
